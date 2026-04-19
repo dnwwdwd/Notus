@@ -1,0 +1,39 @@
+package: cloud.lazycat.app.notus
+version: 0.1.0
+name: Notus
+description: 私有化个人知识库与 AI 写作协作工具
+license: MIT
+author: notus-team
+
+application:
+  subdomain: notus
+  image: registry.lazycat.cloud/library/node:20-alpine
+  upstreams:
+    - location: /
+      backend: http://127.0.0.1:3000
+      disable_trim_location: true
+      backend_launch_command: /bin/sh /lzcapp/pkg/content/lzc/run.sh
+  environment:
+    - NODE_ENV=production
+    - PORT=3000
+    - NOTES_DIR=/lzcapp/var/notes
+    - ASSETS_DIR=/lzcapp/var/assets
+    - DB_PATH=/lzcapp/var/data/index.db
+  public_path:
+    - /lzcapp/var/notes
+    - /lzcapp/var/assets
+    - /lzcapp/var/data
+  health_check:
+    start_period: "45s"
+    test_url: "http://127.0.0.1:3000/api/health"
+
+locales:
+  zh:
+    name: Notus
+    description: 私有化个人知识库与 AI 写作协作工具
+  zh_CN:
+    name: Notus
+    description: 私有化个人知识库与 AI 写作协作工具
+  en:
+    name: Notus
+    description: Private personal knowledge base and AI writing assistant

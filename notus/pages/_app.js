@@ -1,0 +1,27 @@
+// _app.js — global styles + theme + providers
+import '../styles/globals.css';
+import Head from 'next/head';
+import { ToastProvider } from '../components/ui/Toast';
+import { AppProvider } from '../contexts/AppContext';
+import { ShortcutsProvider } from '../contexts/ShortcutsContext';
+
+export default function App({ Component, pageProps }) {
+  return (
+    <>
+      <Head>
+        <title>Notus</title>
+        <meta name="application-name" content="Notus" />
+        <meta name="description" content="私有化个人知识库与 AI 写作协作工具" />
+        <meta name="theme-color" content="#C15F3C" />
+        <link rel="icon" href="/notus-logo.svg" type="image/svg+xml" />
+      </Head>
+      <ShortcutsProvider>
+        <AppProvider>
+          <ToastProvider>
+            <Component {...pageProps} />
+          </ToastProvider>
+        </AppProvider>
+      </ShortcutsProvider>
+    </>
+  );
+}

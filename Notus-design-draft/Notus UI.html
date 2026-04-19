@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"/>
+<title>Notus — 全量 UI 设计</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="tokens.css"/>
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+  @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+  .accent-swap { --accent: var(--a-c); --accent-hover: var(--a-h); --accent-subtle: var(--a-s); --accent-muted: var(--a-m); }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="design-canvas.jsx"></script>
+<script type="text/babel" src="icons.jsx"></script>
+<script type="text/babel" src="shell.jsx"></script>
+<script type="text/babel" src="pages-editor.jsx"></script>
+<script type="text/babel" src="pages-chat.jsx"></script>
+<script type="text/babel" src="pages-misc.jsx"></script>
+<script type="text/babel" src="pages-components.jsx"></script>
+
+<script type="text/babel">
+const TWEAK_DEFAULS = /*EDITMODE-BEGIN*/{
+  "accent": "terracotta",
+  "sidebarCollapsed": false
+}/*EDITMODE-END*/;
+
+const ACCENTS = {
+  terracotta: { c: '#C15F3C', h: '#A8502F', s: '#FBEEE8', m: '#D4896E', label: 'Terracotta (Claude)' },
+  forest:     { c: '#4F7A52', h: '#3F6442', s: '#EBF1EC', m: '#84A486', label: '深林' },
+  indigo:     { c: '#4E5BA6', h: '#3E4A8F', s: '#ECEEF7', m: '#858EC4', label: '靛青' },
+  plum:       { c: '#8B4A6B', h: '#743A58', s: '#F3E9EE', m: '#B380A0', label: '李紫' },
+  ochre:      { c: '#B8862B', h: '#9B7020', s: '#FAF1DD', m: '#D4AE6A', label: '赭石' },
+};
+
+// Artboard wrapper with fixed size for canvas layout
+const AB = ({ label, w = 1280, h = 800, children, scale = 0.5 }) => (
+  <DCArtboard label={label} width={w * scale} height={h * scale} style={{ position: 'relative' }}>
+    <div style={{
+      width: w, height: h, transform: `scale(${scale})`, transformOrigin: '0 0',
+    }}>{children}</div>
+  </DCArtboard>
+);
+
+// Tweaks panel
+const TweaksPanel = ({ open, onClose, state, setState }) => {
+  if (!open) return null;
+  return (
+    <div style={{
+      position: 'fixed', bottom: 16, right: 16, width: 280, zIndex: 100,
+      background: 'var(--bg-elevated)', border: '1px solid var(--border-primary)',
+      borderRadius: 'var(--radius-xl)', boxShadow: 'var(--shadow-lg)',
+      fontFamily: 'var(--font-ui)', color: 'var(--text-primary)',
+      overflow: 'hidden',
+    }}>
+      <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-subtle)',
+        display: 'flex', alignItems: 'center' }}>
+        <span style={{ fontSize: 14, fontWeight: 600 }}>Tweaks</span>
+        <div style={{ flex: 1 }}/>
+        <button onClick={onClose} style={{
+          width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)',
+        }}><I.x size={14}/></button>
+      </div>
+      <div style={{ padding: 16 }}>
+        <div style={{ fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase',
+          letterSpacing: 0.5, marginBottom: 8 }}>强调色</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 16 }}>
+          {Object.entries(ACCENTS).map(([k, v]) => {
+            const on = state.accent === k;
+            return (
+              <button key={k} onClick={() => setState({ accent: k })} title={v.label} style={{
+                width: 28, height: 28, borderRadius: '50%', background: v.c,
+                border: on ? '2px solid var(--text-primary)' : '2px solid transparent',
+                outline: on ? '2px solid #fff' : 'none', outlineOffset: -4, cursor: 'pointer',
+              }}/>
+            );
+          })}
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+          {ACCENTS[state.accent]?.label}
+        </div>
+        <div style={{ height: 1, background: 'var(--border-subtle)', margin: '16px 0' }}/>
+        <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }}>
+          <span style={{ fontSize: 13 }}>Sidebar 折叠</span>
+          <input type="checkbox" checked={state.sidebarCollapsed}
+            onChange={e => setState({ sidebarCollapsed: e.target.checked })}/>
+        </label>
+      </div>
+    </div>
+  );
+};
+
+const App = () => {
+  const [tweaksOpen, setTweaksOpen] = React.useState(false);
+  const [state, setStateRaw] = React.useState(TWEAK_DEFAULS);
+  const setState = (partial) => {
+    const next = { ...state, ...partial };
+    setStateRaw(next);
+    window.parent.postMessage({ type: '__edit_mode_set_keys', edits: partial }, '*');
+  };
+
+  React.useEffect(() => {
+    const h = (e) => {
+      if (e.data?.type === '__activate_edit_mode') setTweaksOpen(true);
+      if (e.data?.type === '__deactivate_edit_mode') setTweaksOpen(false);
+    };
+    window.addEventListener('message', h);
+    window.parent.postMessage({ type: '__edit_mode_available' }, '*');
+    return () => window.removeEventListener('message', h);
+  }, []);
+
+  const accent = ACCENTS[state.accent] || ACCENTS.terracotta;
+
+  // Apply accent globally (to design-canvas bg artboards)
+  React.useEffect(() => {
+    document.documentElement.style.setProperty('--accent', accent.c);
+    document.documentElement.style.setProperty('--accent-hover', accent.h);
+    document.documentElement.style.setProperty('--accent-subtle', accent.s);
+    document.documentElement.style.setProperty('--accent-muted', accent.m);
+  }, [accent]);
+
+  return (
+    <>
+      <DesignCanvas>
+        {/* Header block */}
+        <div style={{ padding: '20px 60px 40px', maxWidth: 900 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 12 }}>
+            <NotusLogo size={40}/>
+            <div>
+              <div style={{ fontFamily: 'var(--font-editor)', fontSize: 40, fontWeight: 700,
+                color: 'rgba(40,30,20,0.9)', letterSpacing: -1, lineHeight: 1 }}>
+                Notus
+              </div>
+              <div style={{ fontSize: 14, color: 'rgba(60,50,40,0.6)', marginTop: 4 }}>
+                全量 UI 设计 · 基于 Notus UI Guide v2.1
+              </div>
+            </div>
+          </div>
+          <div style={{ fontSize: 13, color: 'rgba(60,50,40,0.55)', lineHeight: 1.6, maxWidth: 560 }}>
+            9 个页面 + 组件库展示。浅色主题（Claude 风格 cream + terracotta），Noto Serif SC 作为编辑器字体。
+            滚动或滑动平移，双指捏合缩放。<b>右下角 Tweaks</b> 可切换强调色。
+          </div>
+        </div>
+
+        {/* Section 1 — Core pages (shell) */}
+        <DCSection title="核心页面" subtitle="文件管理、知识库问答、AI 创作 — 带 Shell (TopBar + Sidebar) 的主要工作区">
+          <AB label="01 · /files — 编辑器（主）">
+            <PageFilesDefault/>
+          </AB>
+          <AB label="02 · /files — 分栏预览">
+            <PageFilesSplit/>
+          </AB>
+          <AB label="03 · /files — 未选中文件（空态）">
+            <PageFilesEmpty/>
+          </AB>
+        </DCSection>
+
+        <DCSection title="AI 对话与创作" subtitle="知识库问答（左对齐 AI + 引用卡片）与 AI 创作画布（左右分栏）">
+          <AB label="04 · /knowledge — 问答进行中">
+            <PageKnowledgeDefault/>
+          </AB>
+          <AB label="05 · /knowledge — 空态（suggestion chips）">
+            <PageKnowledgeEmpty/>
+          </AB>
+          <AB label="06 · /canvas — 创作进行中" w={1440} h={840}>
+            <PageCanvasDefault/>
+          </AB>
+          <AB label="07 · /canvas — 入口页">
+            <PageCanvasEntry/>
+          </AB>
+        </DCSection>
+
+        {/* Section 2 — Auxiliary */}
+        <DCSection title="配置、进度与无 Shell 页" subtitle="设置 / 登录 / 初始化引导 / 索引进度 / 错误">
+          <AB label="08 · /settings — 模型配置">
+            <PageSettings/>
+          </AB>
+          <AB label="09 · /indexing — 索引进度">
+            <PageIndexing/>
+          </AB>
+          <AB label="10 · /login — 登录中" w={900} h={720}>
+            <PageLogin/>
+          </AB>
+          <AB label="11 · /setup · Step 1 — 配置模型（可跳过）" w={900} h={820}>
+            <PageSetupStep1/>
+          </AB>
+          <AB label="12 · /setup · Step 2 — 导入笔记（必填）" w={900} h={820}>
+            <PageSetupStep2/>
+          </AB>
+          <AB label="13 · /setup · Step 3 — 建立索引（必填、阻塞进入）" w={900} h={820}>
+            <PageSetupStep3/>
+          </AB>
+          <AB label="14 · 404" w={1280} h={720}>
+            <Page404/>
+          </AB>
+          <AB label="15 · 错误页（无 Shell）" w={900} h={720}>
+            <PageError/>
+          </AB>
+        </DCSection>
+
+        {/* Section 3 — Component library */}
+        <DCSection title="组件库" subtitle="§11 的 25 个通用组件集中陈列，便于 review">
+          <AB label="16 · 组件库总览" w={1280} h={1600}>
+            <PageComponents/>
+          </AB>
+        </DCSection>
+
+        {/* Post-its */}
+        <DCPostIt top={80} left={760} rotate={-3} width={200}>
+          强调色、Sidebar 折叠<br/>可在 Tweaks 面板切换 ↘
+        </DCPostIt>
+        <DCPostIt top={520} left={60} rotate={2} width={180}>
+          编辑器主体用 Noto Serif SC，UI 走 Noto Sans SC，代码块 JetBrains Mono。
+        </DCPostIt>
+      </DesignCanvas>
+
+      <TweaksPanel open={tweaksOpen} onClose={() => setTweaksOpen(false)} state={state} setState={setState}/>
+    </>
+  );
+};
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>

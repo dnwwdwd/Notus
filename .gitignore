@@ -1,0 +1,12 @@
+.DS_Store
+.claude/
+.inkbase-dev/
+.next/
+notus/.next/
+node_modules/
+notus/node_modules/
+.env
+.env.local
+notus/.env.local
+npm-debug.log*
+lzc-dist/

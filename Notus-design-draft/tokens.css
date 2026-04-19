@@ -1,0 +1,115 @@
+/* Notus design tokens — Light theme (Claude style) */
+:root {
+  /* Backgrounds */
+  --bg-primary: #FAF9F5;
+  --bg-secondary: #F0EDE6;
+  --bg-elevated: #FFFFFF;
+  --bg-hover: #EAE7E0;
+  --bg-active: #E2DED6;
+  --bg-sidebar: #EEEBE4;
+  --bg-input: #FFFFFF;
+
+  /* Diff / state */
+  --bg-diff-add: #DAFBE1;
+  --bg-diff-remove: #FFE2E0;
+  --bg-diff-modified: #FFF8C5;
+
+  /* Message bubbles */
+  --bg-ai-bubble: #FAF9F5;
+  --bg-user-bubble: #F0EDE6;
+
+  /* Borders */
+  --border-primary: #D8D4CB;
+  --border-subtle: #E8E5DE;
+
+  /* Text */
+  --text-primary: #1A1311;
+  --text-secondary: #6B6158;
+  --text-tertiary: #9C9489;
+  --text-on-accent: #FFFFFF;
+
+  /* Accent — Terracotta */
+  --accent: #C15F3C;
+  --accent-hover: #A8502F;
+  --accent-subtle: #FBEEE8;
+  --accent-muted: #D4896E;
+
+  /* Semantic */
+  --danger: #D93025;
+  --danger-subtle: #FDE7E7;
+  --warning: #E09A1A;
+  --warning-subtle: #FFF8E1;
+  --success: #1E8E3E;
+  --success-subtle: #E6F4EA;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(26,19,17,0.06);
+  --shadow-md: 0 4px 12px rgba(26,19,17,0.08);
+  --shadow-lg: 0 8px 24px rgba(26,19,17,0.12);
+
+  /* Fonts */
+  --font-ui: 'Noto Sans SC', 'PingFang SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-editor: 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', Georgia, serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace;
+
+  /* Sizes */
+  --text-xs: 11px;
+  --text-sm: 13px;
+  --text-base: 15px;
+  --text-lg: 18px;
+  --text-xl: 22px;
+  --text-2xl: 28px;
+  --text-3xl: 36px;
+
+  /* Spacing */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* Radius */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-full: 9999px;
+}
+
+/* Base reset within artboards */
+.nt, .nt * { box-sizing: border-box; }
+.nt {
+  font-family: var(--font-ui);
+  color: var(--text-primary);
+  font-size: var(--text-base);
+  line-height: 1.5;
+  background: var(--bg-primary);
+  width: 100%;
+  height: 100%;
+  -webkit-font-smoothing: antialiased;
+}
+.nt button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; padding: 0; }
+.nt input, .nt textarea, .nt select { font-family: inherit; color: inherit; }
+.nt svg { display: block; }
+
+/* Subtle striped placeholder for imagery */
+.img-placeholder {
+  background:
+    repeating-linear-gradient(135deg,
+      #EAE7E0 0 8px,
+      #E2DED6 8px 16px);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+}
+
+/* Scrollbar minimal (only inside artboards where scrolling shown) */
+.nt-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+.nt-scroll::-webkit-scrollbar-thumb { background: #D8D4CB; border-radius: 4px; }
+.nt-scroll::-webkit-scrollbar-track { background: transparent; }

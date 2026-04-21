@@ -1,6 +1,7 @@
 // /files — File management + WYSIWYG markdown editor (Tiptap)
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import dynamic from 'next/dynamic';
+import { useRouter } from 'next/router';
 import { Shell } from '../../components/Layout/Shell';
 import { EditorToolbar } from '../../components/Editor/EditorToolbar';
 import { EmptyState } from '../../components/ui/EmptyState';
@@ -29,9 +30,79 @@ function extractToc(markdown) {
     .filter(Boolean);
 }
 
+function getQueryValue(value) {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function normalizeText(value = '') {
+  return String(value).replace(/\s+/g, ' ').trim();
+}
+
+function previewFromLines(markdown, lineStart, lineEnd) {
+  const start = Number(lineStart);
+  const end = Number(lineEnd);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start <= 0 || end < start) return '';
+  const lines = String(markdown || '').split('\n');
+  return normalizeText(lines.slice(start - 1, end).join(' '));
+}
+
+function getEditorRoot(editor) {
+  try {
+    return editor?.view?.dom || null;
+  } catch {
+    return null;
+  }
+}
+
+function getEditorScrollContainer(editor) {
+  return getEditorRoot(editor)?.closest('.wysiwyg-root') || null;
+}
+
+function findBestMatchElement(editor, options = {}) {
+  const root = getEditorRoot(editor);
+  if (!root) return null;
+
+  const preview = normalizeText(options.preview);
+  const headingPath = normalizeText(options.headingPath);
+
+  if (headingPath) {
+    const headingParts = headingPath.split('>').map((item) => normalizeText(item)).filter(Boolean);
+    const lastHeading = headingParts[headingParts.length - 1];
+    if (lastHeading) {
+      const headingNodes = [...root.querySelectorAll('h1,h2,h3,h4,h5,h6')];
+      const headingMatch = headingNodes.find((node) => normalizeText(node.textContent).includes(lastHeading));
+      if (headingMatch) return headingMatch;
+    }
+  }
+
+  if (!preview) return null;
+  const candidates = [...root.querySelectorAll('h1,h2,h3,h4,h5,h6,p,blockquote,li,pre')];
+  let bestNode = null;
+  let bestScore = -1;
+
+  candidates.forEach((node) => {
+    const text = normalizeText(node.textContent);
+    if (!text) return;
+    let score = 0;
+    if (text.includes(preview)) score = preview.length;
+    else if (preview.includes(text)) score = text.length;
+    else {
+      const previewWords = preview.split(' ').filter(Boolean);
+      score = previewWords.reduce((count, word) => (text.includes(word) ? count + word.length : count), 0);
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      bestNode = node;
+    }
+  });
+
+  return bestScore > 0 ? bestNode : null;
+}
+
 export default function FilesPage() {
+  const router = useRouter();
   const toast = useToast();
-  const { activeFile } = useApp();
+  const { activeFile, allFiles, selectFile } = useApp();
   const activeFileId = activeFile?.id;
   const saveTimer = useRef(null);
 
@@ -41,6 +112,7 @@ export default function FilesPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [showIndexToast, setShowIndexToast] = useState(false);
+  const [activeHeadingIndex, setActiveHeadingIndex] = useState(-1);
 
   const loadFile = useCallback(async (fileId) => {
     const response = await fetch(`/api/files/${fileId}`);
@@ -52,6 +124,14 @@ export default function FilesPage() {
 
     return payload;
   }, []);
+
+  useEffect(() => {
+    if (!router.isReady) return;
+    const requestedFileId = Number(getQueryValue(router.query.fileId));
+    if (!Number.isFinite(requestedFileId) || activeFile?.id === requestedFileId) return;
+    const targetFile = allFiles.find((file) => file.id === requestedFileId);
+    if (targetFile) selectFile(targetFile);
+  }, [activeFile?.id, allFiles, router.isReady, router.query.fileId, selectFile]);
 
   useEffect(() => {
     if (!activeFileId) {
@@ -80,6 +160,75 @@ export default function FilesPage() {
       cancelled = true;
     };
   }, [activeFileId, loadFile]);
+
+  const jumpToHeading = useCallback((index) => {
+    if (!editor) return;
+    const container = getEditorScrollContainer(editor);
+    const root = getEditorRoot(editor);
+    const headings = root ? [...root.querySelectorAll('h1,h2,h3')] : [];
+    const target = headings[index];
+    if (!container || !target) return;
+    container.scrollTo({ top: Math.max(target.offsetTop - 48, 0), behavior: 'smooth' });
+  }, [editor]);
+
+  useEffect(() => {
+    if (!editor) return undefined;
+    const container = getEditorScrollContainer(editor);
+    const root = getEditorRoot(editor);
+    if (!container || !root) return undefined;
+
+    const syncActiveHeading = () => {
+      const nextRoot = getEditorRoot(editor);
+      const headings = nextRoot ? [...nextRoot.querySelectorAll('h1,h2,h3')] : [];
+      if (headings.length === 0) {
+        setActiveHeadingIndex(-1);
+        return;
+      }
+
+      const threshold = container.scrollTop + 96;
+      let nextIndex = 0;
+      headings.forEach((heading, index) => {
+        if (heading.offsetTop <= threshold) nextIndex = index;
+      });
+      setActiveHeadingIndex(nextIndex);
+    };
+
+    syncActiveHeading();
+    container.addEventListener('scroll', syncActiveHeading, { passive: true });
+    window.addEventListener('resize', syncActiveHeading);
+    return () => {
+      container.removeEventListener('scroll', syncActiveHeading);
+      window.removeEventListener('resize', syncActiveHeading);
+    };
+  }, [content, editor]);
+
+  useEffect(() => {
+    if (!router.isReady || !editor || !activeFile?.id) return;
+
+    const requestedFileId = Number(getQueryValue(router.query.fileId));
+    if (!Number.isFinite(requestedFileId) || requestedFileId !== activeFile.id) return;
+
+    const lineStart = Number(getQueryValue(router.query.lineStart));
+    const lineEnd = Number(getQueryValue(router.query.lineEnd));
+    const preview = getQueryValue(router.query.preview) || previewFromLines(content, lineStart, lineEnd);
+    const headingPath = getQueryValue(router.query.headingPath) || '';
+
+    const container = getEditorScrollContainer(editor);
+    const target = findBestMatchElement(editor, { preview, headingPath });
+    if (container && target) {
+      container.scrollTo({ top: Math.max(target.offsetTop - 56, 0), behavior: 'smooth' });
+      target.classList.add('citation-highlight');
+      window.setTimeout(() => target.classList.remove('citation-highlight'), 3000);
+    }
+
+    const nextQuery = { ...router.query };
+    delete nextQuery.fileId;
+    delete nextQuery.lineStart;
+    delete nextQuery.lineEnd;
+    delete nextQuery.preview;
+    delete nextQuery.headingPath;
+    router.replace({ pathname: '/files', query: nextQuery }, undefined, { shallow: true });
+  }, [activeFile?.id, content, editor, router]);
 
   const handleChange = useCallback((newContent) => {
     setContent(newContent);
@@ -116,7 +265,14 @@ export default function FilesPage() {
     }
   }, [activeFile, content, toast]);
 
-  const tocItems = useMemo(() => extractToc(content), [content]);
+  const tocItems = useMemo(
+    () => extractToc(content).map((item, index) => ({
+      ...item,
+      active: index === activeHeadingIndex,
+      onJump: () => jumpToHeading(index),
+    })),
+    [activeHeadingIndex, content, jumpToHeading]
+  );
 
   return (
     <Shell

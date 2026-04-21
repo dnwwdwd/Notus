@@ -158,13 +158,11 @@ function recreateFts(database) {
     END;
 
     CREATE TRIGGER chunks_ad AFTER DELETE ON chunks BEGIN
-      INSERT INTO chunks_fts(chunks_fts, rowid, content, search_text)
-      VALUES('delete', old.id, old.content, old.search_text);
+      DELETE FROM chunks_fts WHERE rowid = old.id;
     END;
 
     CREATE TRIGGER chunks_au AFTER UPDATE ON chunks BEGIN
-      INSERT INTO chunks_fts(chunks_fts, rowid, content, search_text)
-      VALUES('delete', old.id, old.content, old.search_text);
+      DELETE FROM chunks_fts WHERE rowid = old.id;
       INSERT INTO chunks_fts(rowid, content, search_text)
       VALUES (new.id, new.content, new.search_text);
     END;

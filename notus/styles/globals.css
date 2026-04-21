@@ -213,6 +213,11 @@ a {
   100% { background: transparent; }
 }
 
+@keyframes citationFlash {
+  0% { background: var(--accent-subtle); box-shadow: 0 0 0 0 rgba(193, 95, 60, 0.18); }
+  100% { background: transparent; box-shadow: 0 0 0 0 rgba(193, 95, 60, 0); }
+}
+
 /* ===== Tiptap WYSIWYG Editor ===== */
 .wysiwyg-root {
   height: 100%;
@@ -434,4 +439,10 @@ a {
 .wysiwyg-content .ProseMirror > h1:first-child,
 .wysiwyg-content .ProseMirror > h2:first-child {
   margin-top: 0;
+}
+
+.wysiwyg-content .ProseMirror .citation-highlight {
+  background: var(--accent-subtle);
+  border-radius: var(--radius-sm);
+  animation: citationFlash 3s ease forwards;
 }

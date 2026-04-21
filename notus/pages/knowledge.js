@@ -1,6 +1,7 @@
 // /knowledge — Knowledge base Q&A page
 import { useState, useRef, useEffect, useCallback } from 'react';
 import dynamic from 'next/dynamic';
+import { useRouter } from 'next/router';
 import { Shell } from '../components/Layout/Shell';
 import { EditorToolbar } from '../components/Editor/EditorToolbar';
 import { UserBubble, AiBubble, RetrievalStatus } from '../components/ChatArea/ChatMessage';
@@ -28,8 +29,9 @@ const SUGGESTIONS = [
 ];
 
 export default function KnowledgePage() {
+  const router = useRouter();
   const toast = useToast();
-  const { activeFile, allFiles } = useApp();
+  const { activeFile, allFiles, selectFile } = useApp();
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
   const [streamText, setStreamText] = useState('');
@@ -210,6 +212,25 @@ export default function KnowledgePage() {
   };
 
   const isEmpty = messages.length === 0 && !loading;
+
+  const handleCitationClick = useCallback((citation) => {
+    const fileId = Number(citation?.file_id);
+    if (!Number.isFinite(fileId)) return;
+
+    const targetFile = allFiles.find((file) => file.id === fileId);
+    if (targetFile) selectFile(targetFile);
+
+    router.push({
+      pathname: '/files',
+      query: {
+        fileId,
+        lineStart: citation?.line_start || '',
+        lineEnd: citation?.line_end || '',
+        preview: citation?.preview || '',
+        headingPath: citation?.heading_path || '',
+      },
+    });
+  }, [allFiles, router, selectFile]);
 
   return (
     <Shell
@@ -398,7 +419,7 @@ export default function KnowledgePage() {
                   {messages.map((msg) =>
                     msg.role === 'user'
                       ? <UserBubble key={msg.id}>{msg.content}</UserBubble>
-                      : <AiBubble key={msg.id} text={msg.content} citations={msg.citations} />
+                      : <AiBubble key={msg.id} text={msg.content} citations={msg.citations} onCitationClick={handleCitationClick} />
                   )}
 
                   {loading && (

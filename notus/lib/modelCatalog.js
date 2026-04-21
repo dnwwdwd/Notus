@@ -18,7 +18,7 @@ export const EMBEDDING_PROVIDERS = [
       { value: 'text-embedding-v2', label: 'text-embedding-v2 (1536d)', dimension: '1536', multimodal: false },
       { value: 'qwen3-vl-embedding', label: 'qwen3-vl-embedding（多模态，1024d）', dimension: '1024', multimodal: true },
       { value: 'qwen2.5-vl-embedding', label: 'qwen2.5-vl-embedding（多模态，1024d）', dimension: '1024', multimodal: true },
-      { value: 'tongyi-embedding-vision-plus', label: 'tongyi-embedding-vision-plus（多模态，1024d）', dimension: '1024', multimodal: true },
+      { value: 'tongyi-embedding-vision-plus', label: 'tongyi-embedding-vision-plus（多模态，1152d）', dimension: '1152', multimodal: true },
     ],
   },
   {
@@ -117,12 +117,7 @@ export function getEmbeddingModelMeta(providerValue, modelValue) {
 export function isEmbeddingModelMultimodal(providerValue, modelValue) {
   const meta = getEmbeddingModelMeta(providerValue, modelValue);
   if (meta) return Boolean(meta.multimodal);
-
-  if (providerValue === 'custom') {
-    return /(?:vision|vl|multimodal|omni)/i.test(String(modelValue || ''));
-  }
-
-  return false;
+  return /(?:vision|vl|multimodal|omni)/i.test(String(modelValue || ''));
 }
 
 export function getProviderOptions(catalog) {

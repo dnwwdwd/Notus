@@ -9,11 +9,11 @@ export default async function handler(req, res) {
   const runtime = ensureRuntime();
   if (!runtime.ok) return res.status(500).json({ error: runtime.error.message, code: 'RUNTIME_ERROR' });
 
-  const { query, topK, top_k: top_k } = req.body || {};
+  const { query, topK, top_k: top_k, file_ids: fileIds = [] } = req.body || {};
   if (!query) return res.status(400).json({ error: 'query is required', code: 'QUERY_REQUIRED' });
 
   try {
-    const chunks = await hybridSearch(query, { topK: topK || top_k });
+    const chunks = await hybridSearch(query, { topK: topK || top_k, fileIds });
     return res.status(200).json({ chunks });
   } catch (error) {
     return res.status(500).json({ error: error.message, code: 'SEARCH_FAILED' });

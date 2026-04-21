@@ -4,6 +4,7 @@ const DEFAULTS = {
   notesDir: './notes',
   assetsDir: './notes/.assets',
   dbPath: './notus.db',
+  logLevel: 'info',
   embeddingProvider: 'qwen',
   embeddingModel: 'text-embedding-v3',
   embeddingDim: 1024,
@@ -66,13 +67,18 @@ function absolutePath(value, fallback) {
 }
 
 function readEnvConfig() {
+  const notesDir = absolutePath(process.env.NOTES_DIR, DEFAULTS.notesDir);
+  const assetsDir = absolutePath(process.env.ASSETS_DIR, DEFAULTS.assetsDir);
+  const dbPath = absolutePath(process.env.DB_PATH, DEFAULTS.dbPath);
   const embeddingProvider = process.env.EMBEDDING_PROVIDER || DEFAULTS.embeddingProvider;
   const llmProvider = process.env.LLM_PROVIDER || DEFAULTS.llmProvider;
 
   return {
-    notesDir: absolutePath(process.env.NOTES_DIR, DEFAULTS.notesDir),
-    assetsDir: absolutePath(process.env.ASSETS_DIR, DEFAULTS.assetsDir),
-    dbPath: absolutePath(process.env.DB_PATH, DEFAULTS.dbPath),
+    notesDir,
+    assetsDir,
+    dbPath,
+    logDir: absolutePath(process.env.LOG_DIR, path.join(path.dirname(dbPath), 'logs')),
+    logLevel: String(process.env.LOG_LEVEL || DEFAULTS.logLevel).trim().toLowerCase(),
 
     embeddingProvider,
     embeddingModel: process.env.EMBEDDING_MODEL || DEFAULTS.embeddingModel,

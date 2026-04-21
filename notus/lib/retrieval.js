@@ -22,6 +22,12 @@ function classifySource(item) {
   return 'fts_only';
 }
 
+function normalizeFileIds(value) {
+  const input = Array.isArray(value) ? value : [];
+  const normalized = [...new Set(input.map((item) => Number(item)).filter((item) => Number.isFinite(item) && item > 0))];
+  return normalized;
+}
+
 async function queryEmbedding(query) {
   try {
     return await getEmbedding(query);
@@ -139,6 +145,8 @@ async function hybridSearch(query, opts = {}) {
   const rrfK = Number(opts.rrfK || 60);
   const headingBoost = Number(opts.headingBoost || 0.1);
   const recencyBoost = Number(opts.recencyBoost || 0.05);
+  const fileIds = normalizeFileIds(opts.fileIds || opts.file_ids);
+  const hasFileFilter = fileIds.length > 0;
   const db = getDb();
 
   const embedding = await queryEmbedding(query);
@@ -161,7 +169,8 @@ async function hybridSearch(query, opts = {}) {
       FROM images i
       JOIN chunks c ON c.id = i.chunk_id
       WHERE i.id IN (${rawImageRows.map(() => '?').join(',')})
-    `).all(...rawImageRows.map((row) => row.image_id))
+      ${hasFileFilter ? `AND c.file_id IN (${fileIds.map(() => '?').join(',')})` : ''}
+    `).all(...rawImageRows.map((row) => row.image_id), ...(hasFileFilter ? fileIds : []))
     : [];
 
   const imageMap = new Map(imageRows.map((row) => [row.id, row]));
@@ -188,7 +197,8 @@ async function hybridSearch(query, opts = {}) {
     FROM chunks c
     JOIN files f ON f.id = c.file_id
     WHERE c.id IN (${candidates.map(() => '?').join(',')})
-  `).all(...candidates.map((candidate) => candidate.chunk_id));
+    ${hasFileFilter ? `AND f.id IN (${fileIds.map(() => '?').join(',')})` : ''}
+  `).all(...candidates.map((candidate) => candidate.chunk_id), ...(hasFileFilter ? fileIds : []));
 
   const rowMap = new Map(rows.map((row) => [row.id, row]));
   const now = Date.now();

@@ -47,7 +47,13 @@ export default async function handler(req, res) {
   const runtime = ensureRuntime();
   if (!runtime.ok) return res.status(500).json({ error: runtime.error.message, code: 'RUNTIME_ERROR' });
 
-  const { conversation_id: conversationId, query, model } = req.body || {};
+  const {
+    conversation_id: conversationId,
+    query,
+    model,
+    reference_mode: referenceMode,
+    reference_file_ids: referenceFileIds = [],
+  } = req.body || {};
   if (!query) return res.status(400).json({ error: 'query is required', code: 'QUERY_REQUIRED' });
 
   res.setHeader('Content-Type', 'text/event-stream');
@@ -60,7 +66,10 @@ export default async function handler(req, res) {
     db.prepare('INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)')
       .run(convId, 'user', query);
 
-    const chunks = await hybridSearch(query, { topK: 5 });
+    const chunks = await hybridSearch(query, {
+      topK: 5,
+      fileIds: referenceMode === 'manual' ? referenceFileIds : [],
+    });
     send(res, { type: 'chunks', chunks });
 
     const citations = citationsFromChunks(chunks);

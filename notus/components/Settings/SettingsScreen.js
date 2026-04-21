@@ -4,13 +4,15 @@ import { TopBar } from '../Layout/TopBar';
 import { NotusLogo, Icons } from '../ui/Icons';
 import { Button } from '../ui/Button';
 import { DropdownSelect } from '../ui/DropdownSelect';
-import { TextInput } from '../ui/Input';
+import { ModelSelectField } from '../ui/ModelSelectField';
+import { SearchInput, TextInput } from '../ui/Input';
 import { ProviderSelect } from '../ui/ProviderSelect';
 import { ConfirmDialog } from '../ui/Dialog';
 import { ProgressBar } from '../ui/ProgressBar';
 import { Badge } from '../ui/Badge';
 import { Toggle } from '../ui/Toggle';
 import { useToast } from '../ui/Toast';
+import { useDiscoveredModels } from '../../hooks/useDiscoveredModels';
 import {
   EMBEDDING_PROVIDERS,
   findProvider,
@@ -23,6 +25,7 @@ import { useShortcuts, normalizeShortcut, DEFAULT_SHORTCUTS } from '../../contex
 export const SETTINGS_SECTIONS = [
   { id: 'model', label: '模型配置', icon: <Icons.robot size={14} />, href: '/settings/model' },
   { id: 'storage', label: '存储', icon: <Icons.database size={14} />, href: '/settings/storage' },
+  { id: 'logs', label: '日志', icon: <Icons.list size={14} />, href: '/settings/logs' },
   { id: 'shortcuts', label: '快捷键', icon: <Icons.dots size={14} />, href: '/settings/shortcuts' },
   { id: 'about', label: '关于', icon: <Icons.info size={14} />, href: '/settings/about' },
 ];
@@ -126,14 +129,12 @@ const ModelConfig = () => {
   const [embModel, setEmbModel] = useState('text-embedding-v3');
   const [embApiKey, setEmbApiKey] = useState('');
   const [embBaseUrl, setEmbBaseUrl] = useState(findProvider(EMBEDDING_PROVIDERS, 'qwen').baseUrl);
-  const [embCustomModel, setEmbCustomModel] = useState('');
   const [embCustomDim, setEmbCustomDim] = useState('');
   const [embMultimodalEnabled, setEmbMultimodalEnabled] = useState(false);
   const [llmProvider, setLlmProvider] = useState('qwen');
   const [llmModel, setLlmModel] = useState('qwen-max');
   const [llmApiKey, setLlmApiKey] = useState('');
   const [llmBaseUrl, setLlmBaseUrl] = useState(findProvider(LLM_PROVIDERS, 'qwen').baseUrl);
-  const [llmCustomModel, setLlmCustomModel] = useState('');
   const [testState, setTestState] = useState('idle');
   const [saving, setSaving] = useState(false);
   const [keyHints, setKeyHints] = useState({ embedding: false, llm: false });
@@ -149,29 +150,43 @@ const ModelConfig = () => {
   const isCustomEmb = embProvider === 'custom';
   const isCustomLlm = llmProvider === 'custom';
   const selectedEmbeddingModel = useMemo(
-    () => isCustomEmb ? null : getEmbeddingModelMeta(embProvider, embModel),
-    [embModel, embProvider, isCustomEmb]
+    () => getEmbeddingModelMeta(embProvider, embModel),
+    [embModel, embProvider]
   );
-  const effectiveEmbeddingModel = isCustomEmb ? embCustomModel : embModel;
+  const effectiveEmbeddingModel = embModel;
   const embeddingModelSupportsMultimodal = useMemo(
     () => isEmbeddingModelMultimodal(embProvider, effectiveEmbeddingModel),
     [effectiveEmbeddingModel, embProvider]
   );
   const showMultimodalWarning = embMultimodalEnabled && !embeddingModelSupportsMultimodal;
   const showMultimodalReady = embMultimodalEnabled && embeddingModelSupportsMultimodal;
+  const embeddingDiscovery = useDiscoveredModels({
+    kind: 'embedding',
+    provider: embProvider,
+    baseUrl: embBaseUrl,
+    apiKey: embApiKey,
+    fallbackOptions: currentEmbProvider.models,
+  });
+  const llmDiscovery = useDiscoveredModels({
+    kind: 'llm',
+    provider: llmProvider,
+    baseUrl: llmBaseUrl,
+    apiKey: llmApiKey,
+    fallbackOptions: currentLlmProvider.models,
+  });
 
   const handleSelectEmbProvider = (providerId) => {
     setEmbProvider(providerId);
     const provider = findProvider(EMBEDDING_PROVIDERS, providerId);
     setEmbBaseUrl(provider.baseUrl || '');
-    setEmbModel(provider.models[0]?.value || '');
+    setEmbModel(provider.models[0]?.value || embModel);
   };
 
   const handleSelectLlmProvider = (providerId) => {
     setLlmProvider(providerId);
     const provider = findProvider(LLM_PROVIDERS, providerId);
     setLlmBaseUrl(provider.baseUrl || '');
-    setLlmModel(provider.models[0]?.value || '');
+    setLlmModel(provider.models[0]?.value || llmModel);
   };
 
   useEffect(() => {
@@ -185,14 +200,12 @@ const ModelConfig = () => {
           setEmbModel(settings.embedding.model || 'text-embedding-v3');
           setEmbBaseUrl(settings.embedding.base_url || '');
           setEmbCustomDim(String(settings.embedding.dim || ''));
-          setEmbCustomModel(settings.embedding.model || '');
           setEmbMultimodalEnabled(Boolean(settings.embedding.multimodal_enabled));
         }
         if (settings.llm) {
           setLlmProvider(settings.llm.provider || 'qwen');
           setLlmModel(settings.llm.model || 'qwen-max');
           setLlmBaseUrl(settings.llm.base_url || '');
-          setLlmCustomModel(settings.llm.model || '');
         }
         setKeyHints({
           embedding: Boolean(settings.embedding?.api_key_set),
@@ -206,19 +219,32 @@ const ModelConfig = () => {
   }, [toast]);
 
   const handleTest = async () => {
+    if (!embModel.trim()) {
+      toast('请填写 Embedding 模型名', 'warning');
+      return;
+    }
+    if (!llmModel.trim()) {
+      toast('请填写 LLM 模型名', 'warning');
+      return;
+    }
+    if (!selectedEmbeddingModel?.dimension && !String(embCustomDim || '').trim()) {
+      toast('请填写 Embedding 向量维度', 'warning');
+      return;
+    }
+
     setTestState('loading');
     try {
       const embeddingConfig = {
         provider: embProvider,
-        model: isCustomEmb ? embCustomModel : embModel,
+        model: embModel,
         api_key: embApiKey,
         base_url: embBaseUrl,
-        dim: isCustomEmb ? embCustomDim : embDim,
+        dim: selectedEmbeddingModel?.dimension || embCustomDim,
         multimodal_enabled: embMultimodalEnabled,
       };
       const llmConfig = {
         provider: llmProvider,
-        model: isCustomLlm ? llmCustomModel : llmModel,
+        model: llmModel,
         api_key: llmApiKey,
         base_url: llmBaseUrl,
       };
@@ -247,11 +273,22 @@ const ModelConfig = () => {
     setTimeout(() => setTestState('idle'), 2500);
   };
 
-  const embDim = embProvider === 'custom'
-    ? (embCustomDim || '—')
-    : (selectedEmbeddingModel?.dimension || '—');
+  const embDim = selectedEmbeddingModel?.dimension || embCustomDim || '—';
 
   const handleSave = async () => {
+    if (!embModel.trim()) {
+      toast('请填写 Embedding 模型名', 'warning');
+      return;
+    }
+    if (!llmModel.trim()) {
+      toast('请填写 LLM 模型名', 'warning');
+      return;
+    }
+    if (!selectedEmbeddingModel?.dimension && !String(embCustomDim || '').trim()) {
+      toast('请填写 Embedding 向量维度', 'warning');
+      return;
+    }
+
     setSaving(true);
     try {
       const response = await fetch('/api/settings', {
@@ -260,15 +297,15 @@ const ModelConfig = () => {
         body: JSON.stringify({
           embedding: {
             provider: embProvider,
-            model: isCustomEmb ? embCustomModel : embModel,
-            dim: isCustomEmb ? embCustomDim : embDim,
+            model: embModel,
+            dim: selectedEmbeddingModel?.dimension || embCustomDim,
             multimodal_enabled: embMultimodalEnabled,
             base_url: embBaseUrl,
             api_key: embApiKey,
           },
           llm: {
             provider: llmProvider,
-            model: isCustomLlm ? llmCustomModel : llmModel,
+            model: llmModel,
             base_url: llmBaseUrl,
             api_key: llmApiKey,
           },
@@ -315,21 +352,14 @@ const ModelConfig = () => {
           />
         </Field>
         <Field label="模型">
-          {isCustomEmb ? (
-            <TextInput
-              value={embCustomModel}
-              onChange={(event) => setEmbCustomModel(event.target.value)}
-              placeholder="text-embedding-xxx"
-            />
-          ) : (
-            <DropdownSelect
-              value={embModel}
-              options={currentEmbProvider.models}
-              onChange={setEmbModel}
-              searchable
-              searchPlaceholder="搜索 Embedding 模型"
-            />
-          )}
+          <ModelSelectField
+            value={embModel}
+            options={embeddingDiscovery.models}
+            onChange={setEmbModel}
+            loading={embeddingDiscovery.loading}
+            selectPlaceholder={currentEmbProvider.models.length ? '选择候选 Embedding 模型' : '当前提供商没有内置候选'}
+            inputPlaceholder="也可以直接输入 Embedding 模型名"
+          />
         </Field>
         <Field label="多模态向量">
           <div
@@ -387,10 +417,10 @@ const ModelConfig = () => {
           hint={embMultimodalEnabled ? '文本块和图片向量必须使用同一维度；切换模型时需重建索引' : '切换模型时需重建索引'}
         >
           <TextInput
-            value={embDim}
+            value={selectedEmbeddingModel?.dimension || embCustomDim}
             onChange={(event) => setEmbCustomDim(event.target.value)}
-            disabled={!isCustomEmb}
-            style={{ opacity: isCustomEmb ? 1 : 0.65, maxWidth: 120 }}
+            disabled={Boolean(selectedEmbeddingModel)}
+            style={{ opacity: selectedEmbeddingModel ? 0.65 : 1, maxWidth: 120 }}
           />
         </Field>
       </Section>
@@ -413,21 +443,14 @@ const ModelConfig = () => {
           />
         </Field>
         <Field label="模型">
-          {isCustomLlm ? (
-            <TextInput
-              value={llmCustomModel}
-              onChange={(event) => setLlmCustomModel(event.target.value)}
-              placeholder="模型标识，如 kimi-k2-preview"
-            />
-          ) : (
-            <DropdownSelect
-              value={llmModel}
-              options={currentLlmProvider.models}
-              onChange={setLlmModel}
-              searchable
-              searchPlaceholder="搜索 LLM 模型"
-            />
-          )}
+          <ModelSelectField
+            value={llmModel}
+            options={llmDiscovery.models}
+            onChange={setLlmModel}
+            loading={llmDiscovery.loading}
+            selectPlaceholder={currentLlmProvider.models.length ? '选择候选 LLM 模型' : '当前提供商没有内置候选'}
+            inputPlaceholder="也可以直接输入 LLM 模型名"
+          />
         </Field>
         <Field label="API Key">
           <TextInput
@@ -457,10 +480,145 @@ const ModelConfig = () => {
   );
 };
 
+const Logs = () => {
+  const toast = useToast();
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [level, setLevel] = useState('');
+  const [route, setRoute] = useState('');
+  const [requestId, setRequestId] = useState('');
+
+  const fetchLogs = async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({ limit: '100' });
+      if (level) params.set('level', level);
+      if (route.trim()) params.set('route', route.trim());
+      if (requestId.trim()) params.set('request_id', requestId.trim());
+
+      const response = await fetch(`/api/logs?${params.toString()}`);
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || '读取日志失败');
+      setItems(payload.items || []);
+    } catch (error) {
+      toast(error.message || '读取日志失败', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchLogs().catch(() => {});
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return (
+    <div>
+      <div style={{ fontSize: 'var(--text-xl)', fontWeight: 600, marginBottom: 6 }}>日志</div>
+      <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', marginBottom: 28 }}>
+        查看最近的服务端结构化日志，用于排查导入、索引、模型配置和运行时错误。
+      </div>
+
+      <Section title="筛选">
+        <div style={{ display: 'grid', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: 12 }}>
+            <DropdownSelect
+              value={level}
+              options={[
+                { value: '', label: '全部级别' },
+                { value: 'debug', label: 'debug' },
+                { value: 'info', label: 'info' },
+                { value: 'warn', label: 'warn' },
+                { value: 'error', label: 'error' },
+              ]}
+              onChange={setLevel}
+            />
+            <TextInput
+              value={route}
+              onChange={(event) => setRoute(event.target.value)}
+              placeholder="按路由过滤，例如 /api/files/import"
+            />
+          </div>
+          <SearchInput
+            value={requestId}
+            placeholder="按请求 ID 搜索"
+            onChange={(event) => setRequestId(event.target.value)}
+          />
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setLevel('');
+                setRoute('');
+                setRequestId('');
+              }}
+            >
+              清空筛选
+            </Button>
+            <Button variant="secondary" loading={loading} onClick={fetchLogs}>刷新日志</Button>
+          </div>
+        </div>
+      </Section>
+
+      <Section title="最近记录">
+        {items.length === 0 ? (
+          <NoteBox>当前还没有匹配的日志记录。</NoteBox>
+        ) : (
+          <div style={{ display: 'grid', gap: 12 }}>
+            {items.map((item, index) => (
+              <div
+                key={`${item.timestamp}-${item.event}-${index}`}
+                style={{
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: 'var(--radius-lg)',
+                  background: 'var(--bg-elevated)',
+                  padding: 16,
+                  display: 'grid',
+                  gap: 8,
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                    <Badge tone={
+                      item.level === 'error'
+                        ? 'danger'
+                        : item.level === 'warn'
+                          ? 'warning'
+                          : item.level === 'info'
+                            ? 'accent'
+                            : 'default'
+                    }>
+                      {item.level}
+                    </Badge>
+                    <div style={{ fontSize: 'var(--text-sm)', fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {item.event}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
+                    {item.timestamp}
+                  </div>
+                </div>
+                <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)', lineHeight: 1.7 }}>
+                  <div>路由：{item.route || '—'}</div>
+                  <div>请求 ID：{item.request_id || '—'}</div>
+                  {item.file_path ? <div>文件：{item.file_path}</div> : null}
+                  {item.message ? <div>消息：{item.message}</div> : null}
+                  {item.error ? <div>错误：{item.error}</div> : null}
+                  {item.error_code ? <div>错误码：{item.error_code}</div> : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Section>
+    </div>
+  );
+};
+
 const Storage = () => {
   const toast = useToast();
   const [confirmClear, setConfirmClear] = useState(false);
   const [confirmRebuild, setConfirmRebuild] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const [rebuilding, setRebuilding] = useState(false);
   const [rebuildProgress, setRebuildProgress] = useState(0);
   const [notesDir, setNotesDir] = useState('/lzcapp/var/notes');
@@ -517,6 +675,23 @@ const Storage = () => {
     }
   };
 
+  const handleClear = async () => {
+    setConfirmClear(false);
+    setClearing(true);
+    try {
+      const response = await fetch('/api/index/clear', { method: 'POST' });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || '清除索引失败');
+      await refreshStatus();
+      setRebuildProgress(0);
+      toast('索引已清除', 'warning');
+    } catch (error) {
+      toast(error.message || '清除索引失败', 'error');
+    } finally {
+      setClearing(false);
+    }
+  };
+
   return (
     <div>
       <div style={{ fontSize: 'var(--text-xl)', fontWeight: 600, marginBottom: 28 }}>存储</div>
@@ -545,17 +720,14 @@ const Storage = () => {
         )}
         <div style={{ display: 'flex', gap: 10 }}>
           <Button variant="secondary" loading={rebuilding} onClick={() => setConfirmRebuild(true)}>重建索引</Button>
-          <Button variant="danger" onClick={() => setConfirmClear(true)}>清除索引</Button>
+          <Button variant="danger" loading={clearing} onClick={() => setConfirmClear(true)}>清除索引</Button>
         </div>
       </Section>
 
       <ConfirmDialog
         open={confirmClear}
         onClose={() => setConfirmClear(false)}
-        onConfirm={() => {
-          setConfirmClear(false);
-          toast('索引已清除', 'warning');
-        }}
+        onConfirm={handleClear}
         title="清除索引"
         message="此操作将删除所有向量索引数据，知识库查询将不可用，直到重建完成。原始笔记文件不受影响。"
         confirmLabel="清除"
@@ -695,6 +867,7 @@ const About = () => (
 const CONTENT_MAP = {
   model: <ModelConfig />,
   storage: <Storage />,
+  logs: <Logs />,
   shortcuts: <ShortcutsSettings />,
   about: <About />,
 };

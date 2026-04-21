@@ -1,5 +1,6 @@
 const fs = require('fs');
 const { getEffectiveConfig } = require('./config');
+const { createAppError } = require('./errors');
 
 const QWEN_MULTIMODAL_MODELS = [
   'qwen3-vl-embedding',
@@ -10,6 +11,8 @@ const QWEN_MULTIMODAL_MODELS = [
 const DOUBAO_MULTIMODAL_MODELS = [
   'doubao-embedding-vision',
 ];
+
+const DEFAULT_TEXT_BATCH_SIZE = 20;
 
 function normalizeConfig(override = null) {
   return { ...getEffectiveConfig(), ...(override || {}) };
@@ -23,6 +26,10 @@ function isKnownQwenMultimodalModel(model) {
 function isKnownDoubaoMultimodalModel(model) {
   const normalized = String(model || '').toLowerCase();
   return DOUBAO_MULTIMODAL_MODELS.some((item) => normalized.startsWith(item));
+}
+
+function supportsQwenDimensionParameter(model) {
+  return String(model || '').toLowerCase().startsWith('qwen3-vl-embedding');
 }
 
 function looksLikeMultimodalModel(model) {
@@ -43,8 +50,8 @@ function supportsImageEmbedding(config) {
 }
 
 function assertEmbeddingConfig(config) {
-  if (!config.embeddingApiKey) throw new Error('Embedding API Key 未配置');
-  if (!config.embeddingModel) throw new Error('Embedding 模型未配置');
+  if (!config.embeddingApiKey) throw createAppError('EMBEDDING_API_KEY_MISSING', 'Embedding API Key 未配置');
+  if (!config.embeddingModel) throw createAppError('EMBEDDING_MODEL_MISSING', 'Embedding 模型未配置');
 }
 
 function cleanBaseUrl(value) {
@@ -106,20 +113,40 @@ function toEmbeddingsArray(payload) {
 
 function assertEmbeddings(embeddings, config) {
   if (!Array.isArray(embeddings) || embeddings.length === 0) {
-    throw new Error('Embedding API 响应格式不正确');
+    throw createAppError('EMBEDDING_RESPONSE_INVALID', 'Embedding API 响应格式不正确');
   }
 
   embeddings.forEach((embedding) => {
-    if (!Array.isArray(embedding)) throw new Error('Embedding 结果不是数组');
+    if (!Array.isArray(embedding)) throw createAppError('EMBEDDING_VECTOR_INVALID', 'Embedding 结果不是数组');
     if (config.embeddingDim && embedding.length !== Number(config.embeddingDim)) {
-      throw new Error(`Embedding 维度不匹配：期望 ${config.embeddingDim}，实际 ${embedding.length}`);
+      throw createAppError(
+        'EMBEDDING_DIMENSION_MISMATCH',
+        `Embedding 维度不匹配：期望 ${config.embeddingDim}，实际 ${embedding.length}`
+      );
     }
   });
 }
 
+function chunkItems(items, size) {
+  const normalizedSize = Math.max(Number(size) || DEFAULT_TEXT_BATCH_SIZE, 1);
+  const chunks = [];
+  for (let index = 0; index < items.length; index += normalizedSize) {
+    chunks.push(items.slice(index, index + normalizedSize));
+  }
+  return chunks;
+}
+
+function getTextBatchSize(config) {
+  const configured = Number(config?.embeddingBatchSize);
+  if (Number.isFinite(configured) && configured > 0) {
+    return Math.min(configured, DEFAULT_TEXT_BATCH_SIZE);
+  }
+  return DEFAULT_TEXT_BATCH_SIZE;
+}
+
 async function openAiCompatibleEmbeddings(texts, config) {
   const baseUrl = cleanBaseUrl(config.embeddingBaseUrl);
-  if (!baseUrl) throw new Error('Embedding Base URL 未配置');
+  if (!baseUrl) throw createAppError('EMBEDDING_BASE_URL_MISSING', 'Embedding Base URL 未配置');
 
   const response = await fetch(`${baseUrl}/embeddings`, {
     method: 'POST',
@@ -134,7 +161,7 @@ async function openAiCompatibleEmbeddings(texts, config) {
     }),
   });
 
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw createAppError('EMBEDDING_API_ERROR', await readError(response), { status: response.status });
 
   const payload = await response.json();
   const embeddings = toEmbeddingsArray(payload);
@@ -146,10 +173,13 @@ async function qwenMultimodalEmbeddings(texts, config) {
   const url = `${resolveQwenBaseUrl(config.embeddingBaseUrl)}/api/v1/services/embeddings/multimodal-embedding/multimodal-embedding`;
   const requestBody = {
     model: config.embeddingModel,
-    input: texts.map((text) => ({
-      contents: [{ text }],
-    })),
+    input: {
+      contents: texts.map((text) => ({ text })),
+    },
   };
+  if (supportsQwenDimensionParameter(config.embeddingModel) && config.embeddingDim) {
+    requestBody.parameters = { dimension: Number(config.embeddingDim) };
+  }
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -159,7 +189,7 @@ async function qwenMultimodalEmbeddings(texts, config) {
     body: JSON.stringify(requestBody),
   });
 
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw createAppError('EMBEDDING_API_ERROR', await readError(response), { status: response.status });
 
   const payload = await response.json();
   const embeddings = toEmbeddingsArray(payload);
@@ -184,7 +214,7 @@ async function doubaoMultimodalTextEmbeddings(texts, config) {
     }),
   });
 
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw createAppError('EMBEDDING_API_ERROR', await readError(response), { status: response.status });
 
   const payload = await response.json();
   const embeddings = toEmbeddingsArray(payload);
@@ -210,6 +240,9 @@ async function qwenImageEmbedding(image, config) {
       ],
     },
   };
+  if (supportsQwenDimensionParameter(config.embeddingModel) && config.embeddingDim) {
+    requestBody.parameters = { dimension: Number(config.embeddingDim) };
+  }
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -219,7 +252,7 @@ async function qwenImageEmbedding(image, config) {
     body: JSON.stringify(requestBody),
   });
 
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw createAppError('EMBEDDING_API_ERROR', await readError(response), { status: response.status });
 
   const payload = await response.json();
   const embeddings = toEmbeddingsArray(payload);
@@ -246,7 +279,7 @@ async function doubaoImageEmbedding(image, config) {
     }),
   });
 
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw createAppError('EMBEDDING_API_ERROR', await readError(response), { status: response.status });
 
   const payload = await response.json();
   const embeddings = toEmbeddingsArray(payload);
@@ -256,7 +289,7 @@ async function doubaoImageEmbedding(image, config) {
 
 async function customImageEmbedding(image, config) {
   const baseUrl = cleanBaseUrl(config.embeddingBaseUrl);
-  if (!baseUrl) throw new Error('Embedding Base URL 未配置');
+  if (!baseUrl) throw createAppError('EMBEDDING_BASE_URL_MISSING', 'Embedding Base URL 未配置');
 
   const response = await fetch(`${baseUrl}/embeddings`, {
     method: 'POST',
@@ -273,7 +306,7 @@ async function customImageEmbedding(image, config) {
     }),
   });
 
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw createAppError('EMBEDDING_API_ERROR', await readError(response), { status: response.status });
 
   const payload = await response.json();
   const embeddings = toEmbeddingsArray(payload);
@@ -289,16 +322,37 @@ async function getEmbedding(text, override = null) {
 async function getEmbeddings(texts, override = null) {
   const config = normalizeConfig(override);
   assertEmbeddingConfig(config);
+  const normalizedTexts = Array.isArray(texts) ? texts : [texts];
 
-  if (isKnownQwenMultimodalModel(config.embeddingModel)) {
-    return qwenMultimodalEmbeddings(texts, config);
+  if (normalizedTexts.length === 0) return [];
+
+  const requestBatch = async (batchTexts) => {
+    if (isKnownQwenMultimodalModel(config.embeddingModel)) {
+      return qwenMultimodalEmbeddings(batchTexts, config);
+    }
+
+    if (isKnownDoubaoMultimodalModel(config.embeddingModel)) {
+      return doubaoMultimodalTextEmbeddings(batchTexts, config);
+    }
+
+    return openAiCompatibleEmbeddings(batchTexts, config);
+  };
+
+  const embeddings = [];
+  const batches = chunkItems(normalizedTexts, getTextBatchSize(config));
+
+  for (const batchTexts of batches) {
+    const batchEmbeddings = await requestBatch(batchTexts);
+    if (batchEmbeddings.length !== batchTexts.length) {
+      throw createAppError(
+        'EMBEDDING_RESPONSE_COUNT_MISMATCH',
+        `Embedding 返回数量不匹配：请求 ${batchTexts.length}，实际 ${batchEmbeddings.length}`
+      );
+    }
+    embeddings.push(...batchEmbeddings);
   }
 
-  if (isKnownDoubaoMultimodalModel(config.embeddingModel)) {
-    return doubaoMultimodalTextEmbeddings(texts, config);
-  }
-
-  return openAiCompatibleEmbeddings(texts, config);
+  return embeddings;
 }
 
 async function getImageEmbedding(image, override = null) {
@@ -306,7 +360,7 @@ async function getImageEmbedding(image, override = null) {
   assertEmbeddingConfig(config);
 
   if (!config.embeddingMultimodalEnabled) {
-    throw new Error('当前未启用多模态向量模型');
+    throw createAppError('EMBEDDING_MULTIMODAL_DISABLED', '当前未启用多模态向量模型');
   }
 
   if (isKnownQwenMultimodalModel(config.embeddingModel)) {
@@ -321,7 +375,7 @@ async function getImageEmbedding(image, override = null) {
     return customImageEmbedding(image, config);
   }
 
-  throw new Error('当前 Embedding 模型不支持图片向量化');
+  throw createAppError('EMBEDDING_IMAGE_UNSUPPORTED', '当前 Embedding 模型不支持图片向量化');
 }
 
 module.exports = {

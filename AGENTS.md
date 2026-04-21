@@ -4,6 +4,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ---
 
+## 回复语言
+
+- 始终以中文回复任何问题。
+
+---
+
+## Bug 台账流程
+
+- Bug 台账文件位于仓库根目录 `BUG_TRACKER.md`，用于记录每个 bug 的描述、影响范围、根因、修复方案、当前状态与验证结果。
+- 每次发现 bug、收到 bug 报告、开始修 bug 或完成 bug 修复时，必须新增或更新 `BUG_TRACKER.md` 中的对应条目。
+- 修复过程中应同步更新状态与进度；修复完成后必须补充根因、修复情况和验证结果。
+- Bug 修复默认只记录到 `BUG_TRACKER.md`，不要同步更新 `PROGRESS.md`；除非用户明确要求，或该修复同时改变了产品里程碑/功能完成状态。
+- 回答 bug 相关问题时，必须明确说明是否已按此流程更新 `BUG_TRACKER.md`。
+
+---
+
 ## 项目概述
 
 Notus 是一款运行在**懒猫微服（Lazycat MicroServer）**上的私人知识库 + AI 写作助手。用户将本地 Markdown 笔记文件夹挂载到设备，Notus 自动索引、支持语义检索问答，并提供基于块（Block）的 AI 辅助创作画布。

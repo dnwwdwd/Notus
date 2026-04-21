@@ -1,14 +1,16 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
 import { NotusLogo, Icons } from '../components/ui/Icons';
 import { Button } from '../components/ui/Button';
-import { DropdownSelect } from '../components/ui/DropdownSelect';
+import { ModelSelectField } from '../components/ui/ModelSelectField';
 import { TextInput } from '../components/ui/Input';
 import { ProviderSelect } from '../components/ui/ProviderSelect';
 import { ProgressBar } from '../components/ui/ProgressBar';
 import { Spinner } from '../components/ui/Spinner';
 import { Toggle } from '../components/ui/Toggle';
 import { useToast } from '../components/ui/Toast';
+import { useAppStatus } from '../contexts/AppStatusContext';
+import { useDiscoveredModels } from '../hooks/useDiscoveredModels';
 import {
   EMBEDDING_PROVIDERS,
   findProvider,
@@ -95,18 +97,63 @@ const NoteBox = ({ tone = 'info', children }) => {
   );
 };
 
-const Step1 = ({ form, onChange, keyHints, loading }) => {
+async function consumeSseResponse(response, onPayload) {
+  if (!response.ok) {
+    let message = '请求失败';
+    try {
+      const payload = await response.json();
+      message = payload.error || message;
+    } catch {
+      message = await response.text();
+    }
+    throw new Error(message);
+  }
+  if (!response.body) throw new Error('接口没有返回可读取的流');
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split('\n\n');
+    buffer = events.pop() || '';
+    events.forEach((event) => {
+      const line = event.split('\n').find((item) => item.startsWith('data:'));
+      if (!line) return;
+      onPayload(JSON.parse(line.slice(5)));
+    });
+  }
+
+  if (buffer.trim()) {
+    const line = buffer.split('\n').find((item) => item.startsWith('data:'));
+    if (line) onPayload(JSON.parse(line.slice(5)));
+  }
+}
+
+const Step1 = ({
+  form,
+  onChange,
+  keyHints,
+  loading,
+  embeddingOptions,
+  embeddingLoading,
+  llmOptions,
+  llmLoading,
+}) => {
   const currentEmbProvider = findProvider(EMBEDDING_PROVIDERS, form.embProvider);
   const currentLlmProvider = findProvider(LLM_PROVIDERS, form.llmProvider);
-  const isCustomEmb = form.embProvider === 'custom';
-  const isCustomLlm = form.llmProvider === 'custom';
-  const effectiveEmbeddingModel = isCustomEmb ? form.embCustomModel : form.embModel;
-  const selectedEmbeddingModel = isCustomEmb ? null : getEmbeddingModelMeta(form.embProvider, form.embModel);
+  const isCustomEmbProvider = form.embProvider === 'custom';
+  const isCustomLlmProvider = form.llmProvider === 'custom';
+  const effectiveEmbeddingModel = form.embModel;
+  const selectedEmbeddingModel = getEmbeddingModelMeta(form.embProvider, form.embModel);
   const embeddingModelSupportsMultimodal = useMemo(
     () => isEmbeddingModelMultimodal(form.embProvider, effectiveEmbeddingModel),
     [effectiveEmbeddingModel, form.embProvider]
   );
-  const embDim = isCustomEmb ? (form.embCustomDim || '—') : (selectedEmbeddingModel?.dimension || '—');
+  const embDim = selectedEmbeddingModel?.dimension || form.embCustomDim || '—';
 
   return (
     <div>
@@ -134,7 +181,7 @@ const Step1 = ({ form, onChange, keyHints, loading }) => {
               onChange({
                 embProvider: value,
                 embBaseUrl: provider.baseUrl || '',
-                embModel: provider.models[0]?.value || '',
+                embModel: provider.models[0]?.value || form.embModel,
               });
             }}
           />
@@ -144,26 +191,19 @@ const Step1 = ({ form, onChange, keyHints, loading }) => {
             value={form.embBaseUrl}
             onChange={(event) => onChange({ embBaseUrl: event.target.value })}
             placeholder="https://your-openai-compatible-endpoint/v1"
-            disabled={!isCustomEmb}
-            style={{ opacity: isCustomEmb ? 1 : 0.65 }}
+            disabled={!isCustomEmbProvider}
+            style={{ opacity: isCustomEmbProvider ? 1 : 0.65 }}
           />
         </div>
         <div style={{ marginBottom: 10 }}>
-          {isCustomEmb ? (
-            <TextInput
-              value={form.embCustomModel}
-              onChange={(event) => onChange({ embCustomModel: event.target.value })}
-              placeholder="自定义 Embedding 模型名"
-            />
-          ) : (
-            <DropdownSelect
-              value={form.embModel}
-              options={currentEmbProvider.models}
-              onChange={(nextValue) => onChange({ embModel: nextValue })}
-              searchable
-              searchPlaceholder="搜索 Embedding 模型"
-            />
-          )}
+          <ModelSelectField
+            value={form.embModel}
+            options={embeddingOptions}
+            onChange={(nextValue) => onChange({ embModel: nextValue })}
+            loading={embeddingLoading}
+            selectPlaceholder={currentEmbProvider.models.length ? '选择候选 Embedding 模型' : '当前提供商没有内置候选'}
+            inputPlaceholder="也可以直接输入 Embedding 模型名"
+          />
         </div>
         <div style={{ marginBottom: 10 }}>
           <TextInput
@@ -173,20 +213,18 @@ const Step1 = ({ form, onChange, keyHints, loading }) => {
             masked
           />
         </div>
-        {isCustomEmb && (
-          <div style={{ marginBottom: 10 }}>
-            <TextInput
-              value={form.embCustomDim}
-              onChange={(event) => onChange({ embCustomDim: event.target.value })}
-              placeholder="自定义维度，例如 1024"
-            />
-          </div>
-        )}
-        {!isCustomEmb && (
-          <div style={{ marginBottom: 14, fontSize: 11, color: 'var(--text-tertiary)' }}>
+        <div style={{ marginBottom: 14 }}>
+          <TextInput
+            value={selectedEmbeddingModel?.dimension || form.embCustomDim}
+            onChange={(event) => onChange({ embCustomDim: event.target.value })}
+            placeholder="向量维度，例如 1024"
+            disabled={Boolean(selectedEmbeddingModel)}
+            style={{ opacity: selectedEmbeddingModel ? 0.65 : 1 }}
+          />
+          <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-tertiary)' }}>
             当前向量维度：{embDim}
           </div>
-        )}
+        </div>
 
         <div
           style={{
@@ -244,7 +282,7 @@ const Step1 = ({ form, onChange, keyHints, loading }) => {
               onChange({
                 llmProvider: value,
                 llmBaseUrl: provider.baseUrl || '',
-                llmModel: provider.models[0]?.value || '',
+                llmModel: provider.models[0]?.value || form.llmModel,
               });
             }}
           />
@@ -254,26 +292,19 @@ const Step1 = ({ form, onChange, keyHints, loading }) => {
             value={form.llmBaseUrl}
             onChange={(event) => onChange({ llmBaseUrl: event.target.value })}
             placeholder="https://your-openai-compatible-endpoint/v1"
-            disabled={!isCustomLlm}
-            style={{ opacity: isCustomLlm ? 1 : 0.65 }}
+            disabled={!isCustomLlmProvider}
+            style={{ opacity: isCustomLlmProvider ? 1 : 0.65 }}
           />
         </div>
         <div style={{ marginBottom: 10 }}>
-          {isCustomLlm ? (
-            <TextInput
-              value={form.llmCustomModel}
-              onChange={(event) => onChange({ llmCustomModel: event.target.value })}
-              placeholder="自定义 LLM 模型名"
-            />
-          ) : (
-            <DropdownSelect
-              value={form.llmModel}
-              options={currentLlmProvider.models}
-              onChange={(nextValue) => onChange({ llmModel: nextValue })}
-              searchable
-              searchPlaceholder="搜索 LLM 模型"
-            />
-          )}
+          <ModelSelectField
+            value={form.llmModel}
+            options={llmOptions}
+            onChange={(nextValue) => onChange({ llmModel: nextValue })}
+            loading={llmLoading}
+            selectPlaceholder={currentLlmProvider.models.length ? '选择候选 LLM 模型' : '当前提供商没有内置候选'}
+            inputPlaceholder="也可以直接输入 LLM 模型名"
+          />
         </div>
         <TextInput
           value={form.llmApiKey}
@@ -286,16 +317,50 @@ const Step1 = ({ form, onChange, keyHints, loading }) => {
   );
 };
 
-const Step2 = () => {
+const Step2 = ({ selectedFiles, onSelectFiles, onClear }) => {
+  const fileInputRef = useRef(null);
+  const directoryInputRef = useRef(null);
   const [dragging, setDragging] = useState(false);
-  const [selected] = useState('~/Documents/Notes');
+
+  const handleSelection = (fileList) => {
+    const markdownFiles = Array.from(fileList || [])
+      .filter((file) => /\.md$/i.test(file.name))
+      .reduce((items, file) => {
+        const key = file.webkitRelativePath || file.name;
+        if (!items.seen.has(key)) {
+          items.seen.add(key);
+          items.files.push(file);
+        }
+        return items;
+      }, { seen: new Set(), files: [] }).files;
+
+    onSelectFiles(markdownFiles);
+  };
 
   return (
     <div>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".md,text/markdown"
+        multiple
+        style={{ display: 'none' }}
+        onChange={(event) => handleSelection(event.target.files)}
+      />
+      <input
+        ref={directoryInputRef}
+        type="file"
+        accept=".md,text/markdown"
+        multiple
+        webkitdirectory=""
+        directory=""
+        style={{ display: 'none' }}
+        onChange={(event) => handleSelection(event.target.files)}
+      />
       <div
         onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
         onDragLeave={() => setDragging(false)}
-        onDrop={(e) => { e.preventDefault(); setDragging(false); }}
+        onDrop={(e) => { e.preventDefault(); setDragging(false); handleSelection(e.dataTransfer.files); }}
         style={{
           border: `2px dashed ${dragging ? 'var(--accent)' : 'var(--border-primary)'}`,
           borderRadius: 'var(--radius-xl)',
@@ -311,12 +376,15 @@ const Step2 = () => {
         </div>
         <div style={{ fontSize: 'var(--text-base)', fontWeight: 500, marginBottom: 4 }}>拖拽文件夹到这里</div>
         <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', marginBottom: 16 }}>或</div>
-        <Button variant="secondary">选择文件夹</Button>
+        <div style={{ display: 'flex', justifyContent: 'center', gap: 8 }}>
+          <Button variant="secondary" onClick={() => fileInputRef.current?.click()}>选择 Markdown 文件</Button>
+          <Button variant="secondary" onClick={() => directoryInputRef.current?.click()}>选择文件夹</Button>
+        </div>
         <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 20 }}>
-          支持 .md、.markdown · 最多 10,000 篇
+          支持 .md · 也会扫描已挂载到笔记目录中的文件
         </div>
       </div>
-      {selected && (
+      {selectedFiles.length > 0 ? (
         <div style={{
           marginBottom: 10,
           padding: '10px 14px',
@@ -328,17 +396,35 @@ const Step2 = () => {
           gap: 10,
         }}>
           <span style={{ color: 'var(--text-secondary)' }}><Icons.folder size={14} /></span>
-          <span style={{ fontSize: 'var(--text-sm)', flex: 1, fontFamily: 'var(--font-mono)' }}>{selected}</span>
-          <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>已选 · 128 篇</span>
+          <span style={{ fontSize: 'var(--text-sm)', flex: 1, fontFamily: 'var(--font-mono)' }}>
+            {selectedFiles.slice(0, 2).map((file) => file.webkitRelativePath || file.name).join('，')}
+            {selectedFiles.length > 2 ? ` 等 ${selectedFiles.length} 个文件` : ''}
+          </span>
+          <button type="button" onClick={onClear} style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>清空</button>
         </div>
+      ) : (
+        <NoteBox>
+          如果你已经在懒猫微服里挂载了笔记目录，可以不选择文件，下一步会直接扫描并建立索引。
+        </NoteBox>
       )}
-      <Button variant="ghost" size="sm">+ 使用空目录从头开始</Button>
     </div>
   );
 };
 
-const Step3 = () => {
-  const [progress] = useState(77);
+const Step3 = ({ running, progress, indexStatus, summary, errors }) => {
+  const total = Number(indexStatus?.total || progress.total || 0);
+  const indexed = Number(indexStatus?.indexed || 0);
+  const failed = Number(indexStatus?.failed || 0);
+  const pending = Number(indexStatus?.pending || 0);
+  const progressValue = progress.total
+    ? Math.round((Math.min(progress.current, progress.total) / progress.total) * 100)
+    : (total > 0 ? Math.round((indexed / total) * 100) : 100);
+  const countLabel = progress.total
+    ? `${Math.min(progress.current, progress.total)} / ${progress.total} 篇`
+    : `${indexed} / ${total} 篇`;
+  const statusText = running
+    ? (progress.currentFile ? `→ ${progress.currentFile}` : '正在准备索引任务…')
+    : (total === 0 ? '当前目录还没有 Markdown 文件' : '索引任务已完成');
 
   return (
     <div>
@@ -350,20 +436,22 @@ const Step3 = () => {
         marginBottom: 14,
       }}>
         <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 10 }}>
-          <div style={{ fontSize: 'var(--text-base)', fontWeight: 600 }}>98 / 128 篇</div>
-          <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>约剩 42 秒</div>
+          <div style={{ fontSize: 'var(--text-base)', fontWeight: 600 }}>{countLabel}</div>
+          <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+            {running ? (progress.stage === 'importing' || progress.stage === 'saving' ? '正在导入' : '正在索引') : (failed > 0 || (summary?.warnings || 0) > 0 ? '存在异常项' : '已完成')}
+          </div>
         </div>
-        <ProgressBar value={progress} max={100} />
+        <ProgressBar value={progressValue} max={100} />
         <div style={{ marginTop: 14, fontSize: 11, color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', display: 'flex', alignItems: 'center', gap: 8 }}>
-          <Spinner size={12} />
-          <span>→ 技术文章 / 缓存系列 / 性能优化实践.md</span>
+          {running ? <Spinner size={12} /> : <Icons.check size={12} />}
+          <span>{statusText}</span>
         </div>
         <div style={{ height: 1, background: 'var(--border-subtle)', margin: '18px 0' }} />
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16 }}>
           {[
-            { n: '3,842', l: '已生成向量' },
-            { n: '98', l: '已处理文件' },
-            { n: '2', l: '解析失败' },
+            { n: indexed, l: '已索引文件' },
+            { n: pending, l: '待处理文件' },
+            { n: failed, l: '失败文件' },
           ].map((s, i) => (
             <div key={i}>
               <div style={{ fontSize: 'var(--text-xl)', fontWeight: 600, fontFamily: 'var(--font-editor)' }}>{s.n}</div>
@@ -372,8 +460,24 @@ const Step3 = () => {
           ))}
         </div>
       </div>
+      {summary && (
+        <div style={{ marginBottom: 12 }}>
+          <NoteBox tone={summary.failed > 0 || (summary.warnings || 0) > 0 ? 'warning' : 'success'}>
+            本轮处理完成：新增索引 {summary.indexed || 0}，跳过 {summary.skipped || 0}，告警 {summary.warnings || 0}，失败 {summary.failed || 0}。
+          </NoteBox>
+        </div>
+      )}
+      {errors.length > 0 && (
+        <div style={{ maxHeight: 120, overflow: 'auto', display: 'grid', gap: 6, marginBottom: 12 }}>
+          {errors.slice(0, 5).map((item, index) => (
+            <div key={`${item.path || item.name}-${index}`} style={{ padding: '8px 10px', borderRadius: 'var(--radius-md)', background: 'var(--warning-subtle)', color: 'var(--warning)', fontSize: 'var(--text-xs)' }}>
+              {item.path || item.name}：{item.error}
+            </div>
+          ))}
+        </div>
+      )}
       <div style={{ fontSize: 11, color: 'var(--text-tertiary)', textAlign: 'center' }}>
-        索引完成后将自动进入 Notus。你也可以在设置中随时重建索引。
+        完成后你可以进入 Notus；也可以稍后在设置中重建索引。
       </div>
     </div>
   );
@@ -399,12 +503,41 @@ function createInitialForm() {
 export default function SetupPage() {
   const router = useRouter();
   const toast = useToast();
+  const { status: appStatus, refreshStatus } = useAppStatus();
   const [step, setStep] = useState(0);
   const [form, setForm] = useState(createInitialForm);
   const [keyHints, setKeyHints] = useState({ embedding: false, llm: false });
   const [loadingConfig, setLoadingConfig] = useState(true);
   const [savingConfig, setSavingConfig] = useState(false);
   const [finishing, setFinishing] = useState(false);
+  const [selectedImportFiles, setSelectedImportFiles] = useState([]);
+  const [step3Started, setStep3Started] = useState(false);
+  const [step3Running, setStep3Running] = useState(false);
+  const [step3Progress, setStep3Progress] = useState({ stage: 'idle', current: 0, total: 0, currentFile: '' });
+  const [step3Summary, setStep3Summary] = useState(null);
+  const [step3Errors, setStep3Errors] = useState([]);
+  const currentEmbeddingProvider = useMemo(
+    () => findProvider(EMBEDDING_PROVIDERS, form.embProvider),
+    [form.embProvider]
+  );
+  const currentLlmProvider = useMemo(
+    () => findProvider(LLM_PROVIDERS, form.llmProvider),
+    [form.llmProvider]
+  );
+  const embeddingDiscovery = useDiscoveredModels({
+    kind: 'embedding',
+    provider: form.embProvider,
+    baseUrl: form.embBaseUrl,
+    apiKey: form.embApiKey,
+    fallbackOptions: currentEmbeddingProvider.models,
+  });
+  const llmDiscovery = useDiscoveredModels({
+    kind: 'llm',
+    provider: form.llmProvider,
+    baseUrl: form.llmBaseUrl,
+    apiKey: form.llmApiKey,
+    fallbackOptions: currentLlmProvider.models,
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -418,13 +551,11 @@ export default function SetupPage() {
           embProvider: settings.embedding?.provider || prev.embProvider,
           embModel: settings.embedding?.model || prev.embModel,
           embBaseUrl: settings.embedding?.base_url || prev.embBaseUrl,
-          embCustomModel: settings.embedding?.model || prev.embCustomModel,
           embCustomDim: String(settings.embedding?.dim || prev.embCustomDim || ''),
           embMultimodalEnabled: Boolean(settings.embedding?.multimodal_enabled),
           llmProvider: settings.llm?.provider || prev.llmProvider,
           llmModel: settings.llm?.model || prev.llmModel,
           llmBaseUrl: settings.llm?.base_url || prev.llmBaseUrl,
-          llmCustomModel: settings.llm?.model || prev.llmCustomModel,
         }));
         setKeyHints({
           embedding: Boolean(settings.embedding?.api_key_set),
@@ -445,6 +576,19 @@ export default function SetupPage() {
 
   const handleChange = (patch) => {
     setForm((prev) => ({ ...prev, ...patch }));
+  };
+
+  const resetStep3 = () => {
+    setStep3Started(false);
+    setStep3Running(false);
+    setStep3Progress({ stage: 'idle', current: 0, total: 0, currentFile: '' });
+    setStep3Summary(null);
+    setStep3Errors([]);
+  };
+
+  const handleSelectImportFiles = (files) => {
+    setSelectedImportFiles(files);
+    resetStep3();
   };
 
   const stepMeta = [
@@ -468,13 +612,9 @@ export default function SetupPage() {
   const labels = ['配置模型', '导入笔记', '建立索引'];
 
   const persistModelConfig = async () => {
-    const isCustomEmb = form.embProvider === 'custom';
-    const isCustomLlm = form.llmProvider === 'custom';
-    const effectiveEmbModel = isCustomEmb ? form.embCustomModel.trim() : form.embModel;
-    const effectiveLlmModel = isCustomLlm ? form.llmCustomModel.trim() : form.llmModel;
-    const embDim = isCustomEmb
-      ? form.embCustomDim.trim()
-      : (getEmbeddingModelMeta(form.embProvider, form.embModel)?.dimension || '');
+    const effectiveEmbModel = form.embModel.trim();
+    const effectiveLlmModel = form.llmModel.trim();
+    const embDim = getEmbeddingModelMeta(form.embProvider, effectiveEmbModel)?.dimension || form.embCustomDim.trim();
 
     if (!effectiveEmbModel) {
       toast('请填写 Embedding 模型名', 'warning');
@@ -482,6 +622,10 @@ export default function SetupPage() {
     }
     if (!effectiveLlmModel) {
       toast('请填写 LLM 模型名', 'warning');
+      return false;
+    }
+    if (!embDim) {
+      toast('请填写 Embedding 向量维度', 'warning');
       return false;
     }
 
@@ -515,8 +659,6 @@ export default function SetupPage() {
         embApiKey: '',
         llmApiKey: '',
         embCustomDim: embDim || prev.embCustomDim,
-        embCustomModel: effectiveEmbModel,
-        llmCustomModel: effectiveLlmModel,
       }));
       setKeyHints({
         embedding: Boolean(payload.embedding?.api_key_set),
@@ -533,6 +675,7 @@ export default function SetupPage() {
   };
 
   const finishSetup = async () => {
+    if (step3Running) return;
     setFinishing(true);
     try {
       const response = await fetch('/api/setup/complete', {
@@ -542,7 +685,8 @@ export default function SetupPage() {
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || '初始化完成失败');
-      router.replace('/files');
+      const latest = await refreshStatus();
+      router.replace(latest.index.total > 0 && latest.index.pending > 0 ? '/indexing' : '/files');
     } catch (error) {
       toast(error.message || '初始化完成失败', 'warning');
     } finally {
@@ -550,13 +694,128 @@ export default function SetupPage() {
     }
   };
 
+  const importSelectedFiles = async () => {
+    if (selectedImportFiles.length === 0) return null;
+
+    const payloadFiles = await Promise.all(
+      selectedImportFiles.map(async (file) => ({
+        name: file.webkitRelativePath || file.name,
+        content: await file.text(),
+      }))
+    );
+
+    let summary = null;
+    const response = await fetch('/api/files/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        conflict_policy: 'skip',
+        files: payloadFiles,
+      }),
+    });
+
+    await consumeSseResponse(response, (event) => {
+      if (event.type === 'progress') {
+        setStep3Progress({
+          stage: event.stage || 'importing',
+          current: event.current || 0,
+          total: event.total || payloadFiles.length,
+          currentFile: event.currentFile || '',
+        });
+      }
+      if (event.type === 'file' && (event.status === 'failed' || event.warning)) {
+        setStep3Errors((prev) => [...prev, { name: event.name, path: event.path, error: event.error || event.warning }]);
+      }
+      if (event.type === 'done') {
+        summary = {
+          indexed: Math.max((event.imported || 0) + (event.overwritten || 0) - (event.warnings || 0), 0),
+          skipped: event.skipped || 0,
+          warnings: event.warnings || 0,
+          failed: event.failed || 0,
+          errors: [...(event.errors || []), ...(event.warning_items || [])],
+        };
+        setStep3Summary(summary);
+        if (event.errors?.length || event.warning_items?.length) {
+          setStep3Errors((prev) => [...prev, ...(event.errors || []), ...(event.warning_items || [])]);
+        }
+      }
+    });
+
+    return summary;
+  };
+
+  const rebuildIndex = async () => {
+    let summary = null;
+    const response = await fetch('/api/index/rebuild', { method: 'POST' });
+
+    await consumeSseResponse(response, (event) => {
+      if (event.type === 'progress') {
+        setStep3Progress({
+          stage: 'indexing',
+          current: event.current || 0,
+          total: event.total || 0,
+          currentFile: event.currentFile || '',
+        });
+        if (event.status === 'failed' && event.error) {
+          setStep3Errors((prev) => [...prev, { path: event.currentFile, error: event.error }]);
+        }
+      }
+      if (event.type === 'done') {
+        summary = event;
+        setStep3Summary(event);
+        if (event.errors?.length) setStep3Errors((prev) => [...prev, ...event.errors]);
+      }
+      if (event.type === 'error') {
+        throw new Error(event.error || '索引重建失败');
+      }
+    });
+
+    return summary;
+  };
+
+  const runInitialSetupPipeline = async () => {
+    setStep3Running(true);
+    setStep3Summary(null);
+    setStep3Errors([]);
+    setStep3Progress({ stage: 'idle', current: 0, total: 0, currentFile: '' });
+
+    try {
+      await importSelectedFiles();
+      let latest = await refreshStatus();
+      const shouldRebuild = latest.index.total > 0 &&
+        (latest.index.pending > 0 || latest.index.failed > 0 || latest.index.indexed < latest.index.total);
+
+      if (shouldRebuild) {
+        await rebuildIndex();
+        latest = await refreshStatus();
+      }
+
+      if (latest.index.total === 0) {
+        setStep3Progress({ stage: 'done', current: 0, total: 0, currentFile: '' });
+      }
+    } catch (error) {
+      toast(error.message || '初始化索引失败', 'warning');
+    } finally {
+      setStep3Running(false);
+      setStep3Started(true);
+    }
+  };
+
+  useEffect(() => {
+    if (step !== 2 || step3Started || step3Running) return;
+    runInitialSetupPipeline();
+  }, [step, step3Started, step3Running]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleNext = async () => {
     if (step === 0) {
       const saved = await persistModelConfig();
       if (!saved) return;
     }
 
-    if (step < 2) setStep(step + 1);
+    if (step < 2) {
+      if (step === 1) resetStep3();
+      setStep(step + 1);
+    }
   };
 
   const handleSkip = () => setStep((prev) => Math.min(prev + 1, 2));
@@ -587,10 +846,28 @@ export default function SetupPage() {
             onChange={handleChange}
             keyHints={keyHints}
             loading={loadingConfig}
+            embeddingOptions={embeddingDiscovery.models}
+            embeddingLoading={embeddingDiscovery.loading}
+            llmOptions={llmDiscovery.models}
+            llmLoading={llmDiscovery.loading}
           />
         )}
-        {step === 1 && <Step2 />}
-        {step === 2 && <Step3 />}
+        {step === 1 && (
+          <Step2
+            selectedFiles={selectedImportFiles}
+            onSelectFiles={handleSelectImportFiles}
+            onClear={() => handleSelectImportFiles([])}
+          />
+        )}
+        {step === 2 && (
+          <Step3
+            running={step3Running}
+            progress={step3Progress}
+            indexStatus={appStatus.index}
+            summary={step3Summary}
+            errors={step3Errors}
+          />
+        )}
 
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 24 }}>
           <div>
@@ -603,7 +880,7 @@ export default function SetupPage() {
           <div style={{ display: 'flex', gap: 8 }}>
             {step > 0 && step < 2 && <Button variant="ghost" onClick={handlePrev}>上一步</Button>}
             {step === 2
-              ? <Button variant="primary" loading={finishing} onClick={finishSetup}>开始使用</Button>
+              ? <Button variant="primary" loading={finishing || step3Running} onClick={finishSetup}>开始使用</Button>
               : <Button variant="primary" loading={savingConfig} onClick={handleNext}>下一步</Button>}
           </div>
         </div>

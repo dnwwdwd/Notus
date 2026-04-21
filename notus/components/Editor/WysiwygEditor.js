@@ -53,8 +53,20 @@ export const WysiwygEditor = ({ value, onChange, onSave, onEditorReady }) => {
 
   // Lift editor instance to parent once ready
   useEffect(() => {
-    if (editor) onEditorReady?.(editor);
-  }, [!!editor]); // eslint-disable-line
+    if (!editor) {
+      onEditorReady?.(null);
+      return undefined;
+    }
+
+    const frameId = window.requestAnimationFrame(() => {
+      onEditorReady?.(editor);
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      onEditorReady?.(null);
+    };
+  }, [editor, onEditorReady]);
 
   // Sync when file switches (value changes externally)
   useEffect(() => {

@@ -1,6 +1,6 @@
 # Notus 项目进度
 
-> 最后更新：2026-04-19
+> 最后更新：2026-04-20
 > 对应文档版本：PDD v2.0 / PRD v2.1 / UI Guide v1.0
 
 ---
@@ -12,6 +12,7 @@
 | 前端 UI（完整交互） | 所有页面、组件、样式 + 完整前端交互逻辑 | ✅ 完成 |
 | 后端核心库 | 数据库、运行时、索引、检索、Agent、设置 | ✅ 核心链路完成 |
 | 真实后端接口 | 接入真实文件系统 + SQLite + SSE + LLM / Embedding | ✅ 已切到真实后端，批量导入/导出、图片代理与图片向量检索已补齐 |
+| 可观测性 | 结构化日志 + 请求 ID + 日志查询接口 + 设置页日志查看 | ✅ 已完成 |
 | 懒猫微服部署 | manifest / build / run 脚本 | ✅ 完成（未验证打包） |
 
 ---
@@ -34,13 +35,13 @@
 | 子任务 | 文件 | 状态 | 备注 |
 |--------|------|------|------|
 | M2-01 App Shell（TopBar + Sidebar + Shell） | `components/Layout/` | ✅ | |
-| M2-02 FileTree 组件（前端交互） | `components/Layout/Sidebar.js` `contexts/AppContext.js` `pages/api/files/` | ✅ | 已接真实文件系统与 SQLite，保留原有树结构和交互 |
+| M2-02 FileTree 组件（前端交互） | `components/Layout/Sidebar.js` `contexts/AppContext.js` `pages/api/files/` | ✅ | 已接真实文件系统与 SQLite；新建文件无需输入 `.md` 后缀，索引告警不再阻断文件创建 |
 | M2-03 WYSIWYG Markdown 编辑器 | `components/Editor/WysiwygEditor.js` `components/Editor/EditorToolbar.js` | ✅ | Tiptap + Markdown 双向转换；支持标题、链接、加粗、斜体、下划线、列表、任务列表、引用、代码块、分隔线、图片；代码块已接入 lowlight 语法高亮与语言选择 |
 | M2-04 MarkdownRenderer | `components/Editor/MarkdownPreview.js` | ✅ | remark-gfm，待接入 rehype-katex |
-| M2-05 TocTree | `components/Layout/Sidebar.js` `pages/files/index.js` | ✅ | TOC 从 markdown heading 正则提取并渲染；滚动联动高亮**未实现** |
-| M2-06 URL hash 来源跳转 + 高亮淡出 | — | ❌ | 未实现 |
-| M2-07 批量导入/导出 + SSE 进度 | `pages/api/files/` `components/Layout/Sidebar.js` | ✅ | 已完成 `/api/files/import` `/api/files/export`，侧边栏已接导入 `.md` 与多选导出入口 |
-| M2-08 `/indexing` 页面 | `pages/indexing.js` | ⚠️ 部分 | 页面仍是示意数据；底层 `/api/index/status` `/api/index/rebuild` 已接真实后端 |
+| M2-05 TocTree | `components/Layout/Sidebar.js` `pages/files/index.js` | ✅ | TOC 从 markdown heading 提取并渲染；已支持点击跳转与滚动联动高亮 |
+| M2-06 URL hash 来源跳转 + 高亮淡出 | `pages/files/index.js` `components/ui/SourceCard.js` | ⚠️ 部分 | 来源卡片已支持按 fileId + lineStart/lineEnd 跳转并高亮淡出；`#L24-L28` hash 格式仍未补 |
+| M2-07 批量导入/导出 + SSE 进度 | `pages/api/files/` `components/Layout/Sidebar.js` | ✅ | 已完成 `/api/files/import` `/api/files/export`；导入支持 50MB 请求体、保存/索引阶段进度、逐文件告警与请求 ID |
+| M2-08 `/indexing` 页面 | `pages/indexing.js` | ✅ | 已接 `/api/index/status` 与 `/api/index/rebuild` SSE，支持真实进度、当前文件、失败项与重新构建 |
 
 ---
 
@@ -54,7 +55,7 @@
 | M3-04 `/api/chat` SSE 流式 | `pages/api/chat.js` | ✅ | 已接真实检索、对话存储与 LLM 流式输出 |
 | M3-05 ChatArea + SourceCard 组件 | `components/ChatArea/` `components/ui/SourceCard.js` | ✅ | 知识库页已支持“无文件时仅问答，选中文件后显示左侧编辑器”的分屏模式 |
 | M3-06 多模型切换 Select | `components/ChatArea/InputBar.js` | ✅ | UI 与 `/api/chat` 的 `model` 参数已打通；模型选择框在底部输入栏改为上拉展开 |
-| M3-07 知识库参考来源手动指定 | `pages/knowledge.js` | ⚠️ 部分 | 已切到真实 `/api/chat` SSE；手动来源选择 UI 保留，后端暂未按 file id 过滤检索 |
+| M3-07 知识库参考来源手动指定 | `pages/knowledge.js` `pages/api/chat.js` `lib/retrieval.js` | ✅ | 前端选择与后端 file id 过滤已打通，来源卡片可跳转到文件页定位 |
 
 ---
 
@@ -66,11 +67,11 @@
 | M4-02 `/api/articles/parse` + `/api/articles/save` | `pages/api/articles/` `utils/markdownBlocks.js` | ✅ | 已接本地 Markdown 文章解析与保存，不再走网页抓取 |
 | M4-03 `lib/agent.js` 9 个工具 + runAgent | `lib/agent.js` | ✅ | 已接 Chat Completions 风格工具调用循环 |
 | M4-04 意图识别 `/api/agent/intent` | `pages/api/agent/intent.js` | ✅ | 已接真实 LLM，失败时回退到规则判断 |
-| M4-05 大纲生成 `/api/agent/outline` SSE | `pages/api/agent/outline.js` | ⚠️ 部分 | 已接真实 SSE 与检索增强模板；当前仍不是完整 LLM 大纲生成 |
+| M4-05 大纲生成 `/api/agent/outline` SSE | `pages/api/agent/outline.js` `lib/prompt.js` | ✅ | 已接 LLM 大纲生成，保留检索增强与固定模板降级 |
 | M4-06 Agent 运行 `/api/agent/run` SSE | `pages/api/agent/run.js` | ✅ | 已接真实 Agent，输出 `thinking/tool_call/tool_result/operation/done` |
-| M4-07 CanvasBlock 组件 | `components/Canvas/CanvasBlock.js` `pages/canvas.js` | ✅ | 6 状态完整；双击进入 textarea 内联编辑；快捷键提示已从界面隐藏，配置移入设置页 |
+| M4-07 CanvasBlock 组件 | `components/Canvas/CanvasBlock.js` `pages/canvas.js` | ✅ | 6 状态完整；双击进入 textarea 内联编辑；已接 dnd-kit 拖拽排序；快捷键提示已从界面隐藏，配置移入设置页 |
 | M4-08 AIPanel + OperationPreview | `components/AIPanel/OperationPreview.js` `pages/canvas.js` | ✅ | diff 展示 + apply/cancel 逻辑 |
-| M4-09 新建创作入口页 | `pages/canvas.js` CanvasEntry | ✅ | 话题输入 + 最近列表全部可点击，"从空白开始"按钮可用；侧边栏选中文件后会在当前页基于该文章进入创作 |
+| M4-09 新建创作入口页 | `pages/canvas.js` CanvasEntry | ✅ | 话题输入 + 最近列表全部可点击，"从空白开始"按钮可用；侧边栏选中文件后会在当前页基于该文章进入创作；新主题内容可保存为 Markdown 并索引 |
 | M4-10 编辑器"AI 创作"按钮 | `components/Editor/EditorToolbar.js` | ✅ | 点击跳转 /canvas |
 | M4-11 图片延迟处理后台任务 | `lib/images.js` `pages/api/files/[id]/content-image.js` | ✅ | 已实现远程图片缓存代理、失败降级外链、图片向量写入与重试不阻塞文本索引 |
 
@@ -80,16 +81,17 @@
 
 | 子任务 | 文件 | 状态 | 备注 |
 |--------|------|------|------|
-| M5-01 设置页（模型/存储/关于） | `pages/settings/[section].js` `components/Settings/SettingsScreen.js` | ✅ | 已拆为独立路径；Embedding 配置增加多模态开关与提示，外观项已移除 |
+| M5-01 设置页（模型/存储/日志/关于） | `pages/settings/[section].js` `components/Settings/SettingsScreen.js` | ✅ | 模型配置支持远端 `/api/models` 获取、内置回退与手动输入；存储页已接真实重建/清除索引；日志页可查询服务端 JSONL 日志 |
 | M5-02 CommandPalette（cmdk） | `components/Layout/TopBar.js` | ⚠️ 部分 | 已提供全局文章搜索弹层和 ⌘K 快捷键；空输入时不再展示文章；完整命令面板仍未实现 |
 | M5-03 快捷键绑定 | `contexts/ShortcutsContext.js` `components/Editor/WysiwygEditor.js` `components/Layout/TopBar.js` `components/ChatArea/InputBar.js` `components/Canvas/CanvasBlock.js` | ✅ | 常用快捷键已集中到 `/settings/shortcuts` 维护，并接入搜索、发送、保存文档、保存块编辑、取消块编辑 |
 | M5-04 Toast 全局错误降级 | `components/ui/Toast.js` | ✅ | |
 | M5-05 主题样式基础 | `styles/globals.css` | ✅ | 保留亮/暗色 token 结构，但当前设置页不再暴露外观配置 |
-| M5-06 `/setup` 三步引导 | `pages/setup.js` | ⚠️ 部分 | Step 1 已接真实设置读取 / 保存，并增加多模态开关；目录选择与索引进度仍是示意 UI |
+| M5-06 `/setup` 三步引导 | `pages/setup.js` `contexts/AppStatusContext.js` | ✅ | Step 1 支持模型获取、内置回退与手动输入；Step 2 支持真实 Markdown 文件/目录导入；Step 3 已接真实导入、索引进度与告警展示；入口守卫已接入 |
 | M5-07 404 / 错误页 | `pages/404.js` `pages/error.js` | ✅ | |
-| M5-08 懒猫打包 | `lzc-manifest.yml` `lzc-build.yml` `lzc/` | ✅ | 脚本已写，**实机打包未验证** |
+| M5-08 懒猫打包 | `lzc-manifest.yml` `lzc-build.yml` `lzc/` | ✅ | 脚本已写并修正运行目录，**实机打包未验证** |
 | M5-09 sqlite-vec 双平台预编译验证 | — | ❌ | x86_64 + aarch64 (Lazycat) 均需验证 |
 | M5-10 健康检查 + 启动延迟调优 | `pages/api/health.js` | ✅ | 已接运行时初始化、sqlite-vec 状态与目录检查 |
+| M5-11 可观测日志系统 | `lib/logger.js` `pages/api/logs.js` `components/Settings/SettingsScreen.js` | ✅ | JSONL 落盘、`x-request-id`、日志查询 API、设置页日志查看；核心导入/索引/模型/设置链路已接入 |
 
 ---
 
@@ -121,6 +123,9 @@
 | `/api/index/status` | GET | ✅ |
 | `/api/index/rebuild` | POST SSE | ✅ |
 | `/api/index/retry` | POST | ✅ |
+| `/api/index/clear` | POST | ✅ |
+| `/api/models` | GET / POST | ✅ |
+| `/api/logs` | GET | ✅ |
 | `/api/search` | POST | ✅ |
 | `/api/chat` | POST SSE | ✅ |
 | `/api/agent/intent` | POST | ✅ |
@@ -135,19 +140,42 @@
 | `/api/settings` | GET / PUT | ✅ |
 | `/api/settings/test` | POST | ✅ |
 
-### 尚未实现
+### 尚未实现 / 待验证
 
-- 本轮计划内的核心后端接口已补齐。
-- 仍待补的主要是 `/indexing` 页面接真实进度、`agent/outline` 进一步增强，以及懒猫实机打包验证。
+- `#L24-L28` 形式的 URL hash 精确定位仍未实现；当前已完成来源卡片 query 参数定位与高亮。
+- 完整 CommandPalette（cmdk 命令面板）仍未实现；当前是全局文章搜索弹层。
+- 登录页仍是演示跳转，尚未接真实 Lazycat/OIDC 认证。
+- sqlite-vec x86_64 / aarch64 与 `.lpk` 实机打包部署仍待验证。
 
 ---
 
 ## 后续实现优先级
 
-1. **`/indexing` 页面接真实进度** — 页面改为消费 `/api/index/status` 与 `/api/index/rebuild` SSE
-2. **大纲生成增强** — `agent/outline` 从检索增强模板升级为完整 LLM 大纲
-3. **多模态向量实测** — 用真实阿里 / 豆包 / 自定义兼容接口验证图片向量请求体
-4. **懒猫实机验证** — `sqlite-vec` aarch64 预编译、`.lpk` 打包与部署联调
+### P0 已完成：核心可用性闭环
+
+1. **`/setup` 三步引导接真实流程** — 已完成真实导入、索引进度与入口守卫。
+2. **`/indexing` 页面接真实进度** — 已完成状态统计、SSE 重建进度、当前文件与失败项展示。
+3. **设置页索引维护** — 已完成真实重建与清除索引。
+
+### P1 已完成：知识库主链路补全
+
+1. **手动参考来源过滤** — 已完成 `/api/chat` + `hybridSearch(fileIds)` 后端过滤。
+2. **来源卡片跳转** — 已完成从来源卡片跳转文件页并按引用内容/行号高亮。
+3. **TOC 交互** — 已完成点击跳转与滚动联动高亮。
+
+### P2 已完成：创作画布闭环
+
+1. **画布保存为 Markdown** — 已完成新主题保存、文件树刷新与自动索引。
+2. **手动风格来源过滤** — 已完成 Agent 风格样本按 file id 过滤。
+3. **大纲生成增强** — 已完成 LLM 大纲生成，保留降级。
+4. **块拖拽排序** — 已完成 dnd-kit 拖拽排序。
+
+### P3 待完成：体验与部署
+
+1. **完整 CommandPalette** — 从文章搜索弹层扩展为命令面板。
+2. **真实登录/OIDC** — 替换当前演示登录逻辑。
+3. **多模态向量实测** — 用真实阿里 / 豆包 / 自定义兼容接口验证图片向量请求体。
+4. **懒猫实机验证** — `sqlite-vec` aarch64 预编译、`.lpk` 打包与部署联调。
 
 ---
 

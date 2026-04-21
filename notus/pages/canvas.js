@@ -1,5 +1,7 @@
 // /canvas — AI creation canvas page
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { closestCenter, DndContext, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
+import { arrayMove, SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { useRouter } from 'next/router';
 import { Shell } from '../components/Layout/Shell';
 import { CanvasBlock, AddBlockButton } from '../components/Canvas/CanvasBlock';
@@ -36,6 +38,33 @@ const MOCK_BLOCKS_BY_TOPIC = {
 
 function getInitialBlocks(topic) {
   return MOCK_BLOCKS_BY_TOPIC[topic] || MOCK_BLOCKS_BY_TOPIC.default;
+}
+
+function getQueryValue(value) {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function SortableCanvasItem({ block, index, state, onAI, onContentChange }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: block.id });
+  const style = {
+    transform: transform ? `translate3d(${transform.x}px, ${transform.y}px, 0)` : undefined,
+    transition,
+    opacity: isDragging ? 0.7 : 1,
+  };
+
+  return (
+    <div ref={setNodeRef} style={style}>
+      <CanvasBlock
+        idx={index + 1}
+        blockId={block.id}
+        content={block.content}
+        state={state}
+        onAI={onAI}
+        onContentChange={onContentChange}
+        dragHandleProps={{ ...attributes, ...listeners }}
+      />
+    </div>
+  );
 }
 
 async function readSse(response, onEvent) {
@@ -161,8 +190,9 @@ const CanvasEntry = ({ onStart }) => {
 export default function CanvasPage() {
   const router = useRouter();
   const toast = useToast();
-  const { allFiles, activeFile } = useApp();
+  const { allFiles, activeFile, refreshFiles, selectFile } = useApp();
   const chatEndRef = useRef(null);
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
 
   const [article, setArticle] = useState(null);
   const [blocks, setBlocks] = useState([]);
@@ -174,6 +204,8 @@ export default function CanvasPage() {
   const [manualStyleFileIds, setManualStyleFileIds] = useState([]);
   const [aiInjected, setAiInjected] = useState('');
   const [loadingSourceFile, setLoadingSourceFile] = useState(false);
+  const [saveState, setSaveState] = useState('saved');
+  const [savingArticle, setSavingArticle] = useState(false);
 
   const styleFileOptions = allFiles.map((file) => ({
     value: file.id,
@@ -191,12 +223,11 @@ export default function CanvasPage() {
 
   // Support ?fileId=X coming from editor "AI 创作" button
   useEffect(() => {
-    const { fileId } = router.query;
-    if (fileId && !article) {
-      setArticle({ title: '基于当前文章创作', blocks: getInitialBlocks('default') });
-      setBlocks(getInitialBlocks('default'));
-    }
-  }, [router.query]); // eslint-disable-line
+    const queryFileId = Number(getQueryValue(router.query.fileId));
+    if (!Number.isFinite(queryFileId) || activeFile?.id === queryFileId) return;
+    const nextFile = allFiles.find((file) => file.id === queryFileId);
+    if (nextFile) selectFile(nextFile);
+  }, [activeFile?.id, allFiles, router.query.fileId, selectFile]);
 
   const loadArticleFromFile = useCallback(async (file) => {
     if (!file?.id) return;
@@ -217,6 +248,7 @@ export default function CanvasPage() {
       setMessages([]);
       setPendingOp(null);
       setAiInjected('');
+      setSaveState('saved');
     } catch (error) {
       toast(error.message || '文章加载失败', 'error');
     } finally {
@@ -236,6 +268,7 @@ export default function CanvasPage() {
     setBlocks([]);
     setMessages([]);
     setPendingOp(null);
+    setSaveState('dirty');
     if (!topic) {
       setBlocks(getInitialBlocks(topic));
       return;
@@ -342,13 +375,57 @@ export default function CanvasPage() {
   // Inline edit save
   const handleContentChange = useCallback((blockId, newContent) => {
     setBlocks((prev) => prev.map((b) => b.id === blockId ? { ...b, content: newContent } : b));
+    setSaveState('dirty');
   }, []);
 
   // Add new empty block
   const handleAddBlock = useCallback(() => {
-    const newId = `b${Date.now()}`;
+    const newId = `b_${Date.now()}`;
     setBlocks((prev) => [...prev, { id: newId, type: 'paragraph', content: '' }]);
+    setSaveState('dirty');
   }, []);
+
+  const handleSaveArticle = useCallback(async () => {
+    if (!article) return;
+    setSavingArticle(true);
+    setSaveState('saving');
+
+    try {
+      const response = await fetch('/api/articles/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          article: {
+            ...article,
+            file_id: article.file_id || article.fileId,
+            blocks,
+          },
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error || '保存文章失败');
+      }
+
+      setArticle({
+        ...(payload.article || article),
+        file_id: payload.file_id,
+        fileId: payload.file_id,
+        sourcePath: payload.path,
+      });
+      setBlocks(payload.article?.blocks || blocks);
+      await refreshFiles();
+      const nextFile = allFiles.find((file) => file.id === payload.file_id) || { id: payload.file_id, path: payload.path, name: payload.title };
+      if (nextFile?.id) selectFile(nextFile);
+      setSaveState('saved');
+      toast('文章已保存并建立索引', 'success');
+    } catch (error) {
+      setSaveState('dirty');
+      toast(error.message || '保存文章失败', 'error');
+    } finally {
+      setSavingArticle(false);
+    }
+  }, [allFiles, article, blocks, refreshFiles, selectFile, toast]);
 
   const handleApplyOp = useCallback(async (op) => {
     if (!op?.operation) {
@@ -356,6 +433,7 @@ export default function CanvasPage() {
         prev.map((b, i) => i === op.blockIdx - 1 ? { ...b, content: op.newContent } : b)
       );
       setPendingOp(null);
+      setSaveState('dirty');
       return;
     }
 
@@ -372,9 +450,18 @@ export default function CanvasPage() {
       if (!response.ok || !payload.success) {
         throw new Error(payload.error || '应用修改失败');
       }
-      setArticle(payload.article || article);
+      const nextArticle = payload.article
+        ? {
+          ...payload.article,
+          file_id: payload.article.file_id || article?.file_id || article?.fileId,
+          fileId: payload.article.file_id || article?.file_id || article?.fileId,
+          sourcePath: article?.sourcePath,
+        }
+        : article;
+      setArticle(nextArticle);
       setBlocks(payload.article?.blocks || blocks);
       setPendingOp(null);
+      setSaveState(nextArticle?.file_id || nextArticle?.fileId ? 'saved' : 'dirty');
       toast('修改已应用', 'success');
     } catch (error) {
       toast(error.message || '应用修改失败', 'error');
@@ -382,6 +469,17 @@ export default function CanvasPage() {
   }, [article, blocks, toast]);
 
   const handleCancelOp = useCallback(() => setPendingOp(null), []);
+
+  const handleDragEnd = useCallback(({ active, over }) => {
+    if (!over || active.id === over.id) return;
+    setBlocks((prev) => {
+      const oldIndex = prev.findIndex((block) => block.id === active.id);
+      const newIndex = prev.findIndex((block) => block.id === over.id);
+      if (oldIndex === -1 || newIndex === -1) return prev;
+      return arrayMove(prev, oldIndex, newIndex);
+    });
+    setSaveState('dirty');
+  }, []);
 
   // ── Entry screen ──
   if (!article) {
@@ -394,7 +492,13 @@ export default function CanvasPage() {
 
   // ── Canvas editor ──
   return (
-    <Shell active="canvas" fileName={`${article.title} · 草稿`} tocDisabled navigateOnFileSelect={false}>
+    <Shell
+      active="canvas"
+      fileName={`${article.title} · 草稿`}
+      saveState={saveState}
+      tocDisabled
+      navigateOnFileSelect={false}
+    >
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
         {/* Canvas area */}
         <div style={{ flex: 1, overflow: 'auto', background: 'var(--bg-primary)' }}>
@@ -410,6 +514,9 @@ export default function CanvasPage() {
               }}>
                 {article.title}
               </h1>
+              <Button variant="secondary" size="sm" loading={savingArticle} onClick={handleSaveArticle}>
+                保存文章
+              </Button>
               <button
                 onClick={() => setArticle(null)}
                 title="返回入口"
@@ -423,20 +530,23 @@ export default function CanvasPage() {
             </div>
 
             {/* Blocks */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-              {blocks.map((block, i) => (
-                <CanvasBlock
-                  key={block.id}
-                  idx={i + 1}
-                  blockId={block.id}
-                  content={block.content}
-                  state={pendingOp?.blockIdx === i + 1 ? 'modified' : 'default'}
-                  onAI={handleBlockAI}
-                  onContentChange={handleContentChange}
-                />
-              ))}
-              <AddBlockButton onClick={handleAddBlock} />
-            </div>
+            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+              <SortableContext items={blocks.map((block) => block.id)} strategy={verticalListSortingStrategy}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  {blocks.map((block, i) => (
+                    <SortableCanvasItem
+                      key={block.id}
+                      block={block}
+                      index={i}
+                      state={pendingOp?.blockIdx === i + 1 ? 'modified' : 'default'}
+                      onAI={handleBlockAI}
+                      onContentChange={handleContentChange}
+                    />
+                  ))}
+                  <AddBlockButton onClick={handleAddBlock} />
+                </div>
+              </SortableContext>
+            </DndContext>
           </div>
         </div>
 

@@ -1,8 +1,10 @@
 // _app.js — global styles + theme + providers
 import '../styles/globals.css';
 import Head from 'next/head';
+import { AppStatusGate } from '../components/AppStatusGate';
 import { ToastProvider } from '../components/ui/Toast';
 import { AppProvider } from '../contexts/AppContext';
+import { AppStatusProvider } from '../contexts/AppStatusContext';
 import { ShortcutsProvider } from '../contexts/ShortcutsContext';
 
 export default function App({ Component, pageProps }) {
@@ -16,11 +18,15 @@ export default function App({ Component, pageProps }) {
         <link rel="icon" href="/notus-logo.svg" type="image/svg+xml" />
       </Head>
       <ShortcutsProvider>
-        <AppProvider>
-          <ToastProvider>
-            <Component {...pageProps} />
-          </ToastProvider>
-        </AppProvider>
+        <AppStatusProvider>
+          <AppProvider>
+            <ToastProvider>
+              <AppStatusGate>
+                <Component {...pageProps} />
+              </AppStatusGate>
+            </ToastProvider>
+          </AppProvider>
+        </AppStatusProvider>
       </ShortcutsProvider>
     </>
   );

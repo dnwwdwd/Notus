@@ -5,6 +5,7 @@ const DEFAULTS = {
   assetsDir: './notes/.assets',
   dbPath: './notus.db',
   logLevel: 'info',
+  embeddingBatchSize: 20,
   embeddingProvider: 'qwen',
   embeddingModel: 'text-embedding-v3',
   embeddingDim: 1024,
@@ -79,6 +80,7 @@ function readEnvConfig() {
     dbPath,
     logDir: absolutePath(process.env.LOG_DIR, path.join(path.dirname(dbPath), 'logs')),
     logLevel: String(process.env.LOG_LEVEL || DEFAULTS.logLevel).trim().toLowerCase(),
+    embeddingBatchSize: numberFromEnv(process.env.EMBEDDING_BATCH_SIZE, DEFAULTS.embeddingBatchSize),
 
     embeddingProvider,
     embeddingModel: process.env.EMBEDDING_MODEL || DEFAULTS.embeddingModel,

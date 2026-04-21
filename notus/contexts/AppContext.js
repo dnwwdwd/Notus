@@ -1,5 +1,5 @@
 // Shared app-level state: file tree, active file selection, file creation
-import { createContext, useContext, useState, useCallback, useEffect, useMemo } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 
 export const AppContext = createContext(null);
 
@@ -26,6 +26,9 @@ function getAncestorPaths(targetPath) {
 export function AppProvider({ children }) {
   const [files, setFiles] = useState([]);
   const [loadingFiles, setLoadingFiles] = useState(true);
+
+  // In-memory file content cache (fileId → markdown string)
+  const contentCache = useRef(new Map());
   const [openFolders, setOpenFolders] = useState(
     () => new Set(['技术文章', '技术文章/缓存系列', '随笔', '读书笔记'])
   );
@@ -110,6 +113,10 @@ export function AppProvider({ children }) {
     return payload;
   }, [refreshFiles]);
 
+  const getCachedContent = useCallback((fileId) => contentCache.current.get(fileId), []);
+  const setCachedContent = useCallback((fileId, content) => { contentCache.current.set(fileId, content); }, []);
+  const clearCachedContent = useCallback((fileId) => { contentCache.current.delete(fileId); }, []);
+
   const createFile = useCallback(async ({ parentPath = '', name, content = '' }) => {
     const filePath = [parentPath, name].filter(Boolean).join('/');
     const response = await fetch('/api/files', {
@@ -147,6 +154,9 @@ export function AppProvider({ children }) {
         selectFile,
         createFile,
         createFolder,
+        getCachedContent,
+        setCachedContent,
+        clearCachedContent,
       }}
     >
       {children}

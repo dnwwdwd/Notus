@@ -1,45 +1,64 @@
 // Input, TextInput, TextArea, Select
+import { useState } from 'react';
 import { Icons } from './Icons';
 import { DropdownSelect } from './DropdownSelect';
 
 export const TextInput = ({ value, placeholder, masked, state, onChange, style, ...rest }) => {
+  const [showPassword, setShowPassword] = useState(false);
   const border = { success: 'var(--success)', error: 'var(--danger)' }[state] || 'var(--border-primary)';
+  const inputType = masked ? (showPassword ? 'text' : 'password') : 'text';
+
   return (
     <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
       <input
-        type={masked ? 'password' : 'text'}
+        type={inputType}
         value={value || ''}
         placeholder={placeholder}
         onChange={onChange}
         style={{
           width: '100%',
           height: 40,
-          padding: '0 36px 0 12px',
+          padding: masked ? '0 36px 0 12px' : (state ? '0 36px 0 12px' : '0 12px'),
           background: 'var(--bg-input)',
           border: `1px solid ${border}`,
           borderRadius: 'var(--radius-md)',
           fontSize: 'var(--text-sm)',
           color: 'var(--text-primary)',
           outline: 'none',
-          fontFamily: masked ? 'var(--font-mono)' : 'inherit',
+          fontFamily: (masked && !showPassword) ? 'var(--font-mono)' : 'inherit',
           ...style,
         }}
         {...rest}
       />
-      {state === 'success' && (
-        <span style={{ position: 'absolute', right: 10, color: 'var(--success)' }}>
+      {state === 'success' && !masked && (
+        <span style={{ position: 'absolute', right: 10, color: 'var(--success)', pointerEvents: 'none' }}>
           <Icons.check size={14} />
         </span>
       )}
-      {state === 'error' && (
-        <span style={{ position: 'absolute', right: 10, color: 'var(--danger)' }}>
+      {state === 'error' && !masked && (
+        <span style={{ position: 'absolute', right: 10, color: 'var(--danger)', pointerEvents: 'none' }}>
           <Icons.x size={14} />
         </span>
       )}
-      {masked && !state && (
-        <span style={{ position: 'absolute', right: 10, color: 'var(--text-tertiary)' }}>
-          <Icons.eye size={14} />
-        </span>
+      {masked && (
+        <button
+          type="button"
+          onClick={() => setShowPassword((v) => !v)}
+          tabIndex={-1}
+          style={{
+            position: 'absolute', right: 8,
+            width: 24, height: 24,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            color: showPassword ? 'var(--accent)' : 'var(--text-tertiary)',
+            borderRadius: 'var(--radius-sm)',
+            cursor: 'pointer',
+            transition: 'color var(--transition-fast)',
+          }}
+          onMouseEnter={(e) => { if (!showPassword) e.currentTarget.style.color = 'var(--text-secondary)'; }}
+          onMouseLeave={(e) => { if (!showPassword) e.currentTarget.style.color = 'var(--text-tertiary)'; }}
+        >
+          {showPassword ? <Icons.eyeOff size={14} /> : <Icons.eye size={14} />}
+        </button>
       )}
     </div>
   );

@@ -8,6 +8,7 @@ import { CanvasBlock, AddBlockButton } from '../components/Canvas/CanvasBlock';
 import { UserBubble, AiBubble } from '../components/ChatArea/ChatMessage';
 import { InputBar } from '../components/ChatArea/InputBar';
 import { OperationPreview } from '../components/AIPanel/OperationPreview';
+import { ResizableLayout } from '../components/ui/ResizableLayout';
 import { DropdownSelect } from '../components/ui/DropdownSelect';
 import { Icons } from '../components/ui/Icons';
 import { Badge } from '../components/ui/Badge';
@@ -499,9 +500,12 @@ export default function CanvasPage() {
       tocDisabled
       navigateOnFileSelect={false}
     >
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-        {/* Canvas area */}
-        <div style={{ flex: 1, overflow: 'auto', background: 'var(--bg-primary)' }}>
+      <ResizableLayout
+        initialLeftPercent={62}
+        minLeftPercent={30}
+        maxLeftPercent={80}
+        left={
+        <div style={{ overflow: 'auto', background: 'var(--bg-primary)', height: '100%' }}>
           <div style={{ maxWidth: 720, margin: '0 auto', padding: '40px 32px 80px' }}>
             {/* Title bar */}
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 4 }}>
@@ -549,13 +553,13 @@ export default function CanvasPage() {
             </DndContext>
           </div>
         </div>
-
-        {/* AI Panel */}
+        }
+        right={
         <div style={{
-          width: '35%', minWidth: 280, maxWidth: 440,
           borderLeft: '1px solid var(--border-primary)',
           background: 'var(--bg-primary)',
           display: 'flex', flexDirection: 'column',
+          height: '100%',
         }}>
           <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-subtle)', flexShrink: 0, display: 'grid', gap: 10 }}>
             <div>
@@ -658,7 +662,8 @@ export default function CanvasPage() {
             injectedValue={aiInjected}
           />
         </div>
-      </div>
+        }
+      />
     </Shell>
   );
 }

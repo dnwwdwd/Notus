@@ -105,6 +105,19 @@ function formatImportSummary(summary) {
   return `新增 ${summary.imported || 0}，覆盖 ${summary.overwritten || 0}，跳过 ${summary.skipped || 0}，失败 ${summary.failed || 0}`;
 }
 
+function getImportDisplayName(file) {
+  return file?.webkitRelativePath || file?.name || '';
+}
+
+function getImportStatusLabel(status) {
+  return {
+    imported: '已导入',
+    overwritten: '已覆盖',
+    skipped: '已跳过',
+    failed: '导入失败',
+  }[status] || '处理中';
+}
+
 const FileRow = ({ item, isActive, onSelect, onToggle }) => {
   const pad = 8 + item.depth * 16;
   const isFolder = item.type === 'folder';
@@ -187,13 +200,15 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, navigateOnF
   const [submitting, setSubmitting] = useState(false);
 
   const [importOpen, setImportOpen] = useState(false);
+  const [importResultOpen, setImportResultOpen] = useState(false);
   const [importParentPath, setImportParentPath] = useState('');
   const [conflictPolicy, setConflictPolicy] = useState('skip');
   const [selectedImportFiles, setSelectedImportFiles] = useState([]);
   const [importing, setImporting] = useState(false);
-  const [importProgress, setImportProgress] = useState({ current: 0, total: 0, currentFile: '' });
+  const [importProgress, setImportProgress] = useState({ current: 0, total: 0, currentFile: '', stage: 'idle' });
   const [importResults, setImportResults] = useState([]);
   const [importSummary, setImportSummary] = useState(null);
+  const [importRunError, setImportRunError] = useState('');
 
   const [exportOpen, setExportOpen] = useState(false);
   const [exportQuery, setExportQuery] = useState('');
@@ -219,6 +234,27 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, navigateOnF
     });
   }, [allFiles, exportQuery]);
 
+  const importSucceededResults = useMemo(
+    () => importResults.filter((item) => ['imported', 'overwritten'].includes(item.status)),
+    [importResults]
+  );
+
+  const importSkippedResults = useMemo(
+    () => importResults.filter((item) => item.status === 'skipped'),
+    [importResults]
+  );
+
+  const importFailedResults = useMemo(
+    () => importResults.filter((item) => item.status === 'failed'),
+    [importResults]
+  );
+
+  const retryableImportFiles = useMemo(() => {
+    if (importFailedResults.length === 0 || selectedImportFiles.length === 0) return [];
+    const failedNames = new Set(importFailedResults.map((item) => item.name || item.path));
+    return selectedImportFiles.filter((file) => failedNames.has(getImportDisplayName(file)));
+  }, [importFailedResults, selectedImportFiles]);
+
   const handleSelectFile = (file) => {
     selectFile(file);
     if (navigateOnFileSelect && router.pathname !== '/files') {
@@ -233,28 +269,38 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, navigateOnF
     setSubmitting(false);
   };
 
+  const clearImportInputs = () => {
+    if (importFileInputRef.current) importFileInputRef.current.value = '';
+    if (importDirectoryInputRef.current) importDirectoryInputRef.current.value = '';
+  };
+
+  const clearImportRunState = () => {
+    setImportProgress({ current: 0, total: 0, currentFile: '', stage: 'idle' });
+    setImportResults([]);
+    setImportSummary(null);
+    setImportRunError('');
+  };
+
   const resetImportDialog = () => {
     if (importing) return;
     setImportOpen(false);
+    setImportResultOpen(false);
     setImportParentPath('');
     setConflictPolicy('skip');
     setSelectedImportFiles([]);
-    setImportProgress({ current: 0, total: 0, currentFile: '' });
-    setImportResults([]);
-    setImportSummary(null);
-    if (importFileInputRef.current) importFileInputRef.current.value = '';
-    if (importDirectoryInputRef.current) importDirectoryInputRef.current.value = '';
+    clearImportRunState();
+    clearImportInputs();
   };
 
   const handleOpenImportDialog = () => {
     setActiveTab('tree');
     setImportOpen(true);
+    setImportResultOpen(false);
     setImportParentPath(extractParentPath(activeFile?.path));
     setConflictPolicy('skip');
     setSelectedImportFiles([]);
-    setImportProgress({ current: 0, total: 0, currentFile: '' });
-    setImportResults([]);
-    setImportSummary(null);
+    clearImportRunState();
+    clearImportInputs();
   };
 
   const handleOpenExportDialog = () => {
@@ -276,8 +322,8 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, navigateOnF
         await createFolder({ parentPath, name: newName.trim() });
         toast('目录已创建', 'success');
       } else {
-        await createFile({ parentPath, name: newName.trim() });
-        toast('文件已创建', 'success');
+        const created = await createFile({ parentPath, name: newName.trim() });
+        toast(created.warning ? `文件已创建，但索引告警：${created.warning}` : '文件已创建', created.warning ? 'warning' : 'success');
         if (navigateOnFileSelect && router.pathname !== '/files') {
           router.push('/files');
         }
@@ -299,33 +345,34 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, navigateOnF
     const deduped = [];
     const seen = new Set();
     nextFiles.forEach((file) => {
-      const key = file.webkitRelativePath || file.name;
+      const key = getImportDisplayName(file);
       if (seen.has(key)) return;
       seen.add(key);
       deduped.push(file);
     });
 
     setSelectedImportFiles(deduped);
-    setImportResults([]);
-    setImportSummary(null);
-    setImportProgress({ current: 0, total: deduped.length, currentFile: '' });
+    clearImportRunState();
+    setImportProgress({ current: 0, total: deduped.length, currentFile: '', stage: 'idle' });
   };
 
-  const handleImport = async () => {
-    if (selectedImportFiles.length === 0) {
+  const runImport = async (filesToImport = selectedImportFiles) => {
+    if (filesToImport.length === 0) {
       toast('请先选择要导入的 Markdown 文件', 'warning');
       return;
     }
 
+    setSelectedImportFiles(filesToImport);
+    setImportOpen(false);
+    setImportResultOpen(true);
     setImporting(true);
-    setImportResults([]);
-    setImportSummary(null);
-    setImportProgress({ current: 0, total: selectedImportFiles.length, currentFile: '' });
+    clearImportRunState();
+    setImportProgress({ current: 0, total: filesToImport.length, currentFile: '', stage: 'idle' });
 
     try {
       const payloadFiles = await Promise.all(
-        selectedImportFiles.map(async (file) => ({
-          name: file.webkitRelativePath || file.name,
+        filesToImport.map(async (file) => ({
+          name: getImportDisplayName(file),
           content: await file.text(),
         }))
       );
@@ -347,6 +394,7 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, navigateOnF
             current: event.current || 0,
             total: event.total || payloadFiles.length,
             currentFile: event.currentFile || '',
+            stage: event.stage || 'idle',
           });
           return;
         }
@@ -363,17 +411,36 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, navigateOnF
             current: event.total || payloadFiles.length,
             total: event.total || payloadFiles.length,
             currentFile: '',
+            stage: 'done',
           });
         }
       });
 
       await refreshFiles();
-      toast(summary ? `导入完成：${formatImportSummary(summary)}` : '导入完成', 'success');
+      toast(
+        summary ? `导入完成：${formatImportSummary(summary)}` : '导入完成',
+        summary && summary.failed > 0 ? 'warning' : 'success'
+      );
     } catch (error) {
-      toast(error.message || '导入失败', 'warning');
+      const message = error.message || '导入失败';
+      setImportRunError(message);
+      setImportProgress((prev) => ({
+        ...prev,
+        stage: 'error',
+      }));
+      toast(message, 'warning');
     } finally {
       setImporting(false);
     }
+  };
+
+  const handleImport = async () => {
+    await runImport(selectedImportFiles);
+  };
+
+  const handleRetryFailedImports = async () => {
+    if (retryableImportFiles.length === 0) return;
+    await runImport(retryableImportFiles);
   };
 
   const toggleExportSelection = (fileId) => {
@@ -479,12 +546,17 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, navigateOnF
             <TextInput
               value={newName}
               onChange={(event) => setNewName(event.target.value)}
-              placeholder={createMode === 'folder' ? '例如：新的专题' : '例如：新的草稿.md'}
+              placeholder={createMode === 'folder' ? '例如：新的专题' : '例如：新的草稿'}
               autoFocus
               onKeyDown={(event) => {
                 if (event.key === 'Enter') handleCreate();
               }}
             />
+            {createMode !== 'folder' && (
+              <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 6 }}>
+                无需输入 `.md` 后缀，系统会自动补齐。
+              </div>
+            )}
           </div>
         </div>
       </Dialog>
@@ -568,70 +640,182 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, navigateOnF
               </div>
             )}
           </div>
+        </div>
+      </Dialog>
 
-          {(importing || importSummary) && (
-            <div style={{ padding: '12px 14px', borderRadius: 'var(--radius-lg)', background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 10 }}>
-                <div style={{ fontSize: 'var(--text-sm)', fontWeight: 500 }}>导入进度</div>
-                <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
-                  {importProgress.total ? `${Math.min(importProgress.current, importProgress.total)} / ${importProgress.total}` : '等待开始'}
+      <Dialog
+        open={importResultOpen}
+        onClose={resetImportDialog}
+        title={importing ? '正在导入 Markdown' : '导入结果'}
+        maxWidth={720}
+        footer={
+          importing ? (
+            <Button variant="ghost" disabled>处理中…</Button>
+          ) : (
+            <>
+              <Button variant="ghost" onClick={handleOpenImportDialog}>重新选择</Button>
+              <Button
+                variant="secondary"
+                onClick={handleRetryFailedImports}
+                disabled={retryableImportFiles.length === 0}
+              >
+                重试失败项
+              </Button>
+              <Button variant="primary" onClick={resetImportDialog}>关闭</Button>
+            </>
+          )
+        }
+      >
+        <div style={{ display: 'grid', gap: 14 }}>
+          <div style={{ padding: '12px 14px', borderRadius: 'var(--radius-lg)', background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 10 }}>
+              <div style={{ fontSize: 'var(--text-sm)', fontWeight: 500 }}>
+                {importing ? '导入进度' : '处理概览'}
+              </div>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
+                {importProgress.total ? `${Math.min(importProgress.current, importProgress.total)} / ${importProgress.total}` : '等待开始'}
+              </div>
+            </div>
+            {importProgress.total > 0 && (
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ height: 8, borderRadius: 999, background: 'var(--bg-active)', overflow: 'hidden' }}>
+                  <div
+                    style={{
+                      width: `${Math.round((Math.min(importProgress.current, importProgress.total) / importProgress.total) * 100)}%`,
+                      height: '100%',
+                      background: importProgress.stage === 'error' ? 'var(--danger)' : 'var(--accent)',
+                    }}
+                  />
                 </div>
               </div>
-              {importProgress.total > 0 && (
-                <div style={{ marginBottom: 8 }}>
-                  <div style={{ height: 8, borderRadius: 999, background: 'var(--bg-active)', overflow: 'hidden' }}>
-                    <div
-                      style={{
-                        width: `${Math.round((Math.min(importProgress.current, importProgress.total) / importProgress.total) * 100)}%`,
-                        height: '100%',
-                        background: 'var(--accent)',
-                      }}
-                    />
+            )}
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)', lineHeight: 1.7 }}>
+              {importing
+                ? (importProgress.currentFile
+                  ? `当前${importProgress.stage === 'indexing' ? '索引' : '保存'}：${importProgress.currentFile}`
+                  : '正在准备导入…')
+                : (importSummary ? formatImportSummary(importSummary) : '本轮导入已结束')}
+            </div>
+            {(importSummary?.warnings || 0) > 0 && (
+              <div style={{ marginTop: 8, fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', lineHeight: 1.7 }}>
+                另有 {importSummary.warnings} 个文件已写入，但索引后台告警已记录到日志，不影响本次导入结果。
+              </div>
+            )}
+          </div>
+
+          {importRunError && (
+            <div style={{
+              padding: '12px 14px',
+              borderRadius: 'var(--radius-lg)',
+              background: 'var(--danger-subtle)',
+              border: '1px solid color-mix(in srgb, var(--danger) 24%, transparent)',
+              color: 'var(--danger)',
+              fontSize: 'var(--text-sm)',
+              lineHeight: 1.7,
+              whiteSpace: 'normal',
+              overflowWrap: 'anywhere',
+            }}>
+              {importRunError}
+            </div>
+          )}
+
+          {importSucceededResults.length > 0 && (
+            <div style={{ padding: '12px 14px', borderRadius: 'var(--radius-lg)', background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)' }}>
+              <div style={{ fontSize: 'var(--text-sm)', fontWeight: 500, marginBottom: 8 }}>
+                导入成功 · {importSucceededResults.length}
+              </div>
+              <div style={{ maxHeight: 220, overflow: 'auto', display: 'grid', gap: 8 }}>
+                {importSucceededResults.map((item, index) => (
+                  <div
+                    key={`${item.path || item.name}-${index}`}
+                    style={{
+                      padding: '10px 12px',
+                      borderRadius: 'var(--radius-md)',
+                      background: 'var(--bg-primary)',
+                      border: '1px solid var(--border-subtle)',
+                      display: 'grid',
+                      gap: 4,
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                      <span style={{ color: item.status === 'overwritten' ? 'var(--accent)' : 'var(--success)', fontWeight: 600, flexShrink: 0 }}>
+                        {getImportStatusLabel(item.status)}
+                      </span>
+                      <span style={{ color: 'var(--text-primary)', minWidth: 0, whiteSpace: 'normal', overflowWrap: 'anywhere' }}>
+                        {item.path || item.name}
+                      </span>
+                    </div>
+                    {item.warning && (
+                      <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', lineHeight: 1.6 }}>
+                        文件已导入，索引后台告警已记录到日志。
+                      </div>
+                    )}
                   </div>
-                </div>
-              )}
-              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)', minHeight: 18 }}>
-                {importProgress.currentFile ? `当前文件：${importProgress.currentFile}` : (importSummary ? formatImportSummary(importSummary) : '正在准备…')}
+                ))}
               </div>
             </div>
           )}
 
-          {importResults.length > 0 && (
+          {importSkippedResults.length > 0 && (
             <div style={{ padding: '12px 14px', borderRadius: 'var(--radius-lg)', background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)' }}>
-              <div style={{ fontSize: 'var(--text-sm)', fontWeight: 500, marginBottom: 8 }}>处理结果</div>
-              <div style={{ maxHeight: 180, overflow: 'auto', display: 'grid', gap: 6 }}>
-                {importResults.map((item, index) => {
-                  const tone = {
-                    imported: 'var(--success)',
-                    overwritten: 'var(--accent)',
-                    skipped: 'var(--warning)',
-                    failed: 'var(--danger)',
-                  }[item.status] || 'var(--text-secondary)';
+              <div style={{ fontSize: 'var(--text-sm)', fontWeight: 500, marginBottom: 8 }}>
+                已跳过 · {importSkippedResults.length}
+              </div>
+              <div style={{ maxHeight: 160, overflow: 'auto', display: 'grid', gap: 8 }}>
+                {importSkippedResults.map((item, index) => (
+                  <div
+                    key={`${item.path || item.name}-${index}`}
+                    style={{
+                      padding: '10px 12px',
+                      borderRadius: 'var(--radius-md)',
+                      background: 'var(--bg-primary)',
+                      border: '1px solid var(--border-subtle)',
+                      fontSize: 'var(--text-sm)',
+                      color: 'var(--text-secondary)',
+                      whiteSpace: 'normal',
+                      overflowWrap: 'anywhere',
+                    }}
+                  >
+                    {item.path || item.name}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
-                  return (
-                    <div
-                      key={`${item.path || item.name}-${index}`}
-                      style={{
-                        padding: '8px 10px',
-                        borderRadius: 'var(--radius-md)',
-                        background: 'var(--bg-primary)',
-                        border: '1px solid var(--border-subtle)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 8,
-                        fontSize: 'var(--text-sm)',
-                      }}
-                    >
-                      <span style={{ color: tone, minWidth: 48, fontWeight: 500 }}>{item.status}</span>
-                      <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {importFailedResults.length > 0 && (
+            <div style={{ padding: '12px 14px', borderRadius: 'var(--radius-lg)', background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)' }}>
+              <div style={{ fontSize: 'var(--text-sm)', fontWeight: 500, marginBottom: 8 }}>
+                导入失败 · {importFailedResults.length}
+              </div>
+              <div style={{ maxHeight: 220, overflow: 'auto', display: 'grid', gap: 8 }}>
+                {importFailedResults.map((item, index) => (
+                  <div
+                    key={`${item.path || item.name}-${index}`}
+                    style={{
+                      padding: '10px 12px',
+                      borderRadius: 'var(--radius-md)',
+                      background: 'var(--bg-primary)',
+                      border: '1px solid var(--border-subtle)',
+                      display: 'grid',
+                      gap: 4,
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                      <span style={{ color: 'var(--danger)', fontWeight: 600, flexShrink: 0 }}>
+                        {getImportStatusLabel(item.status)}
+                      </span>
+                      <span style={{ color: 'var(--text-primary)', minWidth: 0, whiteSpace: 'normal', overflowWrap: 'anywhere' }}>
                         {item.path || item.name}
                       </span>
-                      {item.error && (
-                        <span style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-xs)' }}>{item.error}</span>
-                      )}
                     </div>
-                  );
-                })}
+                    {item.error && (
+                      <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', lineHeight: 1.6, whiteSpace: 'normal', overflowWrap: 'anywhere' }}>
+                        {item.error}
+                      </div>
+                    )}
+                  </div>
+                ))}
               </div>
             </div>
           )}

@@ -1,10 +1,11 @@
 const { getEffectiveConfig } = require('./config');
+const { createAppError } = require('./errors');
 
 function resolveLlmConfig(override = null) {
   const config = { ...getEffectiveConfig(), ...(override || {}) };
-  if (!config.llmApiKey) throw new Error('LLM API Key 未配置');
-  if (!config.llmBaseUrl) throw new Error('LLM Base URL 未配置');
-  if (!config.llmModel) throw new Error('LLM 模型未配置');
+  if (!config.llmApiKey) throw createAppError('LLM_API_KEY_MISSING', 'LLM API Key 未配置');
+  if (!config.llmBaseUrl) throw createAppError('LLM_BASE_URL_MISSING', 'LLM Base URL 未配置');
+  if (!config.llmModel) throw createAppError('LLM_MODEL_MISSING', 'LLM 模型未配置');
   return config;
 }
 
@@ -32,7 +33,7 @@ async function completeChat(messages, { tools, model, responseFormat, config: ov
     body: JSON.stringify(body),
   });
 
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw createAppError('LLM_API_ERROR', await readError(response), { status: response.status });
   const payload = await response.json();
   return payload.choices?.[0]?.message || { role: 'assistant', content: '' };
 }
@@ -70,8 +71,8 @@ async function streamChat(messages, { model, config: override, onToken } = {}) {
     }),
   });
 
-  if (!response.ok) throw new Error(await readError(response));
-  if (!response.body) throw new Error('LLM API 未返回可读取的流');
+  if (!response.ok) throw createAppError('LLM_API_ERROR', await readError(response), { status: response.status });
+  if (!response.body) throw createAppError('LLM_STREAM_MISSING', 'LLM API 未返回可读取的流');
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();

@@ -3,11 +3,14 @@ const path = require('path');
 const { getDb, isVecAvailable } = require('./db');
 const { getEmbeddings } = require('./embeddings');
 const { getEffectiveConfig } = require('./config');
+const { ensureError } = require('./errors');
+const { createLogger } = require('./logger');
 const { buildSearchText } = require('./tokenizer');
 const { processImagesForFile, deleteImageVectorsByFileId } = require('./images');
 const {
   ensureMarkdownPath,
   extractTitle,
+  syncFilesFromDisk,
   readMarkdownFile,
   sha256,
 } = require('./files');
@@ -22,6 +25,7 @@ const BLOCK_NODE_TYPES = new Set([
   'html',
   'thematicBreak',
 ]);
+const logger = createLogger({ subsystem: 'indexer' });
 
 function normalizeContent(content = '') {
   return String(content).replace(/\r\n/g, '\n').replace(/^\n+|\n+$/g, '');
@@ -201,7 +205,12 @@ async function indexFile(inputPath) {
     const embeddingInputs = chunks.map((chunk) => `${chunk.heading_path || ''}\n${chunk.content}`);
     embeddings = embeddingInputs.length > 0 ? await getEmbeddings(embeddingInputs) : [];
   } catch (error) {
-    embeddingError = error;
+    embeddingError = ensureError(error, 'INDEX_EMBEDDING_FAILED', '向量化失败');
+    logger.warn('index.file.embedding_failed', {
+      file_path: relativePath,
+      chunk_count: chunks.length,
+      error: embeddingError,
+    });
   }
 
   const insertChunk = db.prepare(`
@@ -269,7 +278,11 @@ async function indexFile(inputPath) {
 
   if (chunks.some((chunk) => chunk.has_image)) {
     await processImagesForFile(fileId).catch((error) => {
-      console.error('[indexer] image processing failed:', error);
+      logger.warn('index.file.image_processing_failed', {
+        file_id: Number(fileId),
+        file_path: relativePath,
+        error,
+      });
     });
   }
 
@@ -282,30 +295,88 @@ async function indexFile(inputPath) {
   };
 }
 
+function markFileIndexFailed(inputPath, error) {
+  const db = getDb();
+  const relativePath = resolveIndexPath(inputPath);
+  const normalized = ensureError(error, 'INDEX_FAILED', '索引失败');
+  db.prepare(`
+    UPDATE files
+    SET indexed = 0,
+        indexed_at = NULL,
+        index_error = ?,
+        retry_count = retry_count + 1,
+        updated_at = datetime('now')
+    WHERE path = ?
+  `).run(normalized.message, relativePath);
+  logger.error('index.file.failed', {
+    file_path: relativePath,
+    error: normalized,
+  });
+}
+
 async function indexBatch(paths, onProgress) {
   const results = { indexed: 0, skipped: 0, failed: 0, errors: [] };
   for (let index = 0; index < paths.length; index += 1) {
     const currentFile = paths[index];
+    let progressPayload = {
+      current: index + 1,
+      total: paths.length,
+      currentFile,
+      status: 'indexed',
+      skipped: false,
+      error: null,
+    };
     try {
       const result = await indexFile(currentFile);
+      progressPayload = {
+        ...progressPayload,
+        skipped: Boolean(result.skipped),
+        status: result.skipped ? 'skipped' : (result.embeddingFailed ? 'failed' : 'indexed'),
+        chunksCount: result.chunksCount || 0,
+        error: result.error || null,
+      };
       if (result.skipped) results.skipped += 1;
       else if (result.embeddingFailed) {
         results.failed += 1;
         results.errors.push({ path: currentFile, error: result.error });
       } else results.indexed += 1;
     } catch (error) {
+      markFileIndexFailed(currentFile, error);
       results.failed += 1;
       results.errors.push({ path: currentFile, error: error.message });
+      progressPayload = {
+        ...progressPayload,
+        status: 'failed',
+        skipped: false,
+        error: error.message,
+      };
     }
     if (onProgress) {
-      onProgress({
-        current: index + 1,
-        total: paths.length,
-        currentFile,
-      });
+      onProgress(progressPayload);
     }
   }
   return results;
+}
+
+function clearIndex() {
+  syncFilesFromDisk();
+  const db = getDb();
+
+  if (isVecAvailable()) {
+    db.prepare('DELETE FROM images_vec').run();
+    db.prepare('DELETE FROM chunks_vec').run();
+  }
+
+  db.prepare('DELETE FROM images').run();
+  db.prepare('DELETE FROM chunks').run();
+  db.prepare(`
+    UPDATE files
+    SET indexed = 0,
+        indexed_at = NULL,
+        index_error = NULL,
+        retry_count = 0,
+        updated_at = datetime('now')
+  `).run();
 }
 
 function removeFile(relativePath) {
@@ -327,10 +398,11 @@ async function retryFailedIndexing(limit = 10) {
   return indexBatch(rows.map((row) => row.path));
 }
 
-async function rebuildIndex(onProgress) {
+async function rebuildIndex(onProgress, options = {}) {
   const { listMarkdownFiles } = require('./files');
   const config = getEffectiveConfig();
   fs.mkdirSync(config.notesDir, { recursive: true });
+  if (options.clear !== false) clearIndex();
   const paths = listMarkdownFiles();
   return indexBatch(paths, onProgress);
 }
@@ -339,7 +411,9 @@ module.exports = {
   splitIntoChunks,
   indexFile,
   indexBatch,
+  clearIndex,
   removeFile,
   retryFailedIndexing,
   rebuildIndex,
+  markFileIndexFailed,
 };

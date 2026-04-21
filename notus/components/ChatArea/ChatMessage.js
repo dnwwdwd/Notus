@@ -40,7 +40,7 @@ export const RetrievalStatus = ({ stage, sources = 3 }) => (
   </div>
 );
 
-export const AiBubble = ({ text, streaming, citations, children }) => (
+export const AiBubble = ({ text, streaming, citations, onCitationClick, children }) => (
   <div style={{ margin: '16px 0' }}>
     <div style={{
       display: 'flex',
@@ -72,6 +72,7 @@ export const AiBubble = ({ text, streaming, citations, children }) => (
             imageProxyUrl={c.image_proxy_url}
             imageAltText={c.image_alt_text}
             imageCaption={c.image_caption}
+            onClick={() => onCitationClick?.(c)}
           />
         ))}
       </div>

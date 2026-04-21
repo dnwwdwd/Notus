@@ -60,7 +60,32 @@ ${blockList}${style}
 - insert_block(after_block_id, type, content) — 在指定块后插入新块
 - delete_block(block_id) — 删除指定块
 
-每次修改必须包含 old 字段（被替换的原始内容），用于乐观锁校验。`;
+  每次修改必须包含 old 字段（被替换的原始内容），用于乐观锁校验。`;
+}
+
+function buildOutlinePrompt(topic, chunks = []) {
+  const references = chunks.length > 0
+    ? chunks
+      .map((chunk, index) => `[${index + 1}] 《${chunk.file_title}》 ${chunk.heading_path || '正文'}\n${chunk.content}`)
+      .join('\n\n')
+    : '暂无可用参考，请根据主题生成一个结构清晰、可继续扩写的 Markdown 大纲。';
+
+  return [
+    {
+      role: 'system',
+      content: [
+        '你是用户的中文写作助手。',
+        '请根据主题和参考笔记生成一组适合画布编辑的文章块。',
+        '只输出 JSON，格式为 {"blocks":[{"type":"heading|paragraph","content":"..."}]}。',
+        '第一块必须是一级标题，使用 Markdown heading 语法。',
+        '后续块以二级标题和简洁段落为主，总块数控制在 4 到 8 个之间。',
+      ].join('\n'),
+    },
+    {
+      role: 'user',
+      content: `创作主题：${topic}\n\n参考资料：\n${references}`,
+    },
+  ];
 }
 
 function buildDraftPrompt(blockId, content, instruction, context) {
@@ -91,6 +116,7 @@ function buildPolishPrompt(blockId, content, styleRef) {
 
 module.exports = {
   buildKnowledgeQAPrompt,
+  buildOutlinePrompt,
   buildCanvasIntentPrompt,
   buildAgentSystemPrompt,
   buildDraftPrompt,

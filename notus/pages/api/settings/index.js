@@ -1,6 +1,8 @@
 const { ensureRuntime } = require('../../../lib/runtime');
 const { getEffectiveConfig, applySettings, readEnvConfig } = require('../../../lib/config');
-const { getSettingsMap, setSettings } = require('../../../lib/db');
+const { getSettingsMap, resetVec, setSettings } = require('../../../lib/db');
+const { createLogger, createRequestContext } = require('../../../lib/logger');
+const { clearIndex } = require('../../../lib/indexer');
 
 function publicSettings() {
   const stored = getSettingsMap();
@@ -27,15 +29,21 @@ function publicSettings() {
 }
 
 export default function handler(req, res) {
+  const context = createRequestContext(req, res, '/api/settings');
+  const logger = createLogger(context);
   const runtime = ensureRuntime();
-  if (!runtime.ok) return res.status(500).json({ error: runtime.error.message, code: 'RUNTIME_ERROR' });
+  if (!runtime.ok) {
+    logger.error('settings.runtime.failed', { error: runtime.error });
+    return res.status(500).json({ error: runtime.error.message, code: 'RUNTIME_ERROR', request_id: context.request_id });
+  }
 
   if (req.method === 'GET') {
-    return res.status(200).json(publicSettings());
+    return res.status(200).json({ ...publicSettings(), request_id: context.request_id });
   }
 
   if (req.method === 'PUT') {
     const body = req.body || {};
+    const previousConfig = getEffectiveConfig();
     const current = getSettingsMap();
     const nextValues = {};
 
@@ -63,12 +71,36 @@ export default function handler(req, res) {
 
     const candidate = applySettings(readEnvConfig(), { ...current, ...nextValues });
     if (!candidate.embeddingModel || !candidate.llmModel) {
-      return res.status(400).json({ error: '模型配置不完整', code: 'INVALID_SETTINGS' });
+      return res.status(400).json({ error: '模型配置不完整', code: 'INVALID_SETTINGS', request_id: context.request_id });
     }
 
     setSettings(nextValues);
-    return res.status(200).json(publicSettings());
+    const embeddingChanged =
+      candidate.embeddingProvider !== previousConfig.embeddingProvider ||
+      candidate.embeddingModel !== previousConfig.embeddingModel ||
+      Number(candidate.embeddingDim) !== Number(previousConfig.embeddingDim) ||
+      Boolean(candidate.embeddingMultimodalEnabled) !== Boolean(previousConfig.embeddingMultimodalEnabled);
+
+    if (embeddingChanged) {
+      clearIndex();
+      if (Number(candidate.embeddingDim) !== Number(previousConfig.embeddingDim)) {
+        resetVec(Number(candidate.embeddingDim));
+      }
+      logger.warn('settings.embedding_changed.reindex_required', {
+        previous_model: previousConfig.embeddingModel,
+        next_model: candidate.embeddingModel,
+        previous_dim: previousConfig.embeddingDim,
+        next_dim: candidate.embeddingDim,
+      });
+    }
+
+    logger.info('settings.updated', {
+      embedding_provider: nextValues.embedding_provider || null,
+      llm_provider: nextValues.llm_provider || null,
+      notes_dir: nextValues.notes_dir || null,
+    });
+    return res.status(200).json({ ...publicSettings(), request_id: context.request_id });
   }
 
-  return res.status(405).json({ error: 'Method not allowed', code: 'METHOD_NOT_ALLOWED' });
+  return res.status(405).json({ error: 'Method not allowed', code: 'METHOD_NOT_ALLOWED', request_id: context.request_id });
 }

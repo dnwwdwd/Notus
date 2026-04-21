@@ -12,6 +12,7 @@ export const CanvasBlock = ({
   state: externalState = 'default',
   onAI,
   onContentChange,
+  dragHandleProps,
 }) => {
   const [state, setState] = useState(externalState || 'default');
   const [editContent, setEditContent] = useState(content);
@@ -118,6 +119,7 @@ export const CanvasBlock = ({
             style={{ width: 26, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)', cursor: 'grab', borderRadius: 'var(--radius-sm)' }}
             onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-hover)'}
             onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+            {...dragHandleProps}
           >
             <Icons.drag size={12} />
           </button>

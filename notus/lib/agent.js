@@ -186,7 +186,10 @@ async function executeTool(name, args, context) {
   }
 
   if (name === 'get_style_samples') {
-    const samples = await hybridSearch(args.topic, { topK: args.k || 3 });
+    const samples = await hybridSearch(args.topic, {
+      topK: args.k || 3,
+      fileIds: context.styleFileIds,
+    });
     return { samples };
   }
 
@@ -245,6 +248,9 @@ async function runAgent({ userInput, article, styleSource }, onStream) {
   const context = {
     article,
     styleSamples: [],
+    styleFileIds: Array.isArray(styleSource?.file_ids)
+      ? styleSource.file_ids.map((item) => Number(item)).filter((item) => Number.isFinite(item))
+      : [],
     citations: [],
     operations: [],
   };

@@ -102,7 +102,7 @@ function findBestMatchElement(editor, options = {}) {
 export default function FilesPage() {
   const router = useRouter();
   const toast = useToast();
-  const { activeFile, allFiles, selectFile } = useApp();
+  const { activeFile, allFiles, selectFile, getCachedContent, setCachedContent } = useApp();
   const activeFileId = activeFile?.id;
   const saveTimer = useRef(null);
 
@@ -115,6 +115,10 @@ export default function FilesPage() {
   const [activeHeadingIndex, setActiveHeadingIndex] = useState(-1);
 
   const loadFile = useCallback(async (fileId) => {
+    // Check in-memory cache first for instant navigation
+    const cached = getCachedContent(fileId);
+    if (cached !== undefined) return { content: cached };
+
     const response = await fetch(`/api/files/${fileId}`);
     const payload = await response.json();
 
@@ -122,8 +126,9 @@ export default function FilesPage() {
       throw new Error(payload.error || '文件加载失败');
     }
 
+    setCachedContent(fileId, payload.content || '');
     return payload;
-  }, []);
+  }, [getCachedContent, setCachedContent]);
 
   useEffect(() => {
     if (!router.isReady) return;
@@ -255,7 +260,9 @@ export default function FilesPage() {
         throw new Error(payload.error || '保存失败');
       }
 
-      setContent(payload.content || nextContent);
+      const savedContent = payload.content || nextContent;
+      setContent(savedContent);
+      setCachedContent(activeFile.id, savedContent);
       setSaveState('saved');
       setShowIndexToast(true);
       setTimeout(() => setShowIndexToast(false), 4000);
@@ -263,7 +270,7 @@ export default function FilesPage() {
       setSaveState('dirty');
       toast(saveError.message || '保存失败', 'error');
     }
-  }, [activeFile, content, toast]);
+  }, [activeFile, content, toast, setCachedContent]);
 
   const tocItems = useMemo(
     () => extractToc(content).map((item, index) => ({

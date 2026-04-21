@@ -4,6 +4,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ---
 
+## 回复语言
+
+- 始终以中文回复任何问题。
+
+---
+
+## Bug 台账流程
+
+- Bug 台账文件位于仓库根目录 `BUG_TRACKER.md`，用于记录每个 bug 的描述、影响范围、根因、修复方案、当前状态与验证结果。
+- 每次发现 bug、收到 bug 报告、开始修 bug 或完成 bug 修复时，必须新增或更新 `BUG_TRACKER.md` 中的对应条目。
+- 修复过程中应同步更新状态与进度；修复完成后必须补充根因、修复情况和验证结果。
+- Bug 修复默认只记录到 `BUG_TRACKER.md`，不要同步更新 `PROGRESS.md`；除非用户明确要求，或该修复同时改变了产品里程碑/功能完成状态。
+- 回答 bug 相关问题时，必须明确说明是否已按此流程更新 `BUG_TRACKER.md`。
+
+---
+
 ## 项目概述
 
 Notus 是一款运行在**懒猫微服（Lazycat MicroServer）**上的私人知识库 + AI 写作助手。用户将本地 Markdown 笔记文件夹挂载到设备，Notus 自动索引、支持语义检索问答，并提供基于块（Block）的 AI 辅助创作画布。
@@ -15,7 +31,6 @@ Notus 是一款运行在**懒猫微服（Lazycat MicroServer）**上的私人知
 ## 技术栈约束
 
 - **Next.js 15 Pages Router**（不是 App Router）+ React 19，**纯 JavaScript**（不引入 TypeScript）
-- **Node.js 20.19.x**（开发和构建统一使用 Node 20，避免 Next 15 在更高版本 Node 下生成异常的 `.next` 产物）
 - 包管理器：**npm**（不用 yarn/pnpm）
 - 样式：**CSS token 驱动**，不用 Tailwind，不用 shadcn-ui
 - UI 行为层：Radix Primitives（`@radix-ui/*`）
@@ -69,17 +84,14 @@ Notus/
 ├── lzc-manifest.yml             # 懒猫应用声明（端口、volume、env、healthcheck）
 ├── lzc-build.yml                # 懒猫构建步骤
 └── notus/                       # Next.js 应用主目录
-    ├── contexts/
-    │   ├── AppContext.js        # 跨页面共享状态（文件树、openFolders Set、activeFile）
-    │   └── ShortcutsContext.js  # 快捷键配置与本地持久化
     ├── pages/
-    │   ├── _app.js              # 全局入口：Head + Provider 注入（App/Toast/Shortcuts）
+    │   ├── _app.js              # 全局入口：注入 ToastProvider，从 localStorage 恢复主题
     │   ├── index.js             # 重定向 → /files
     │   ├── login.js             # 登录页（当前为演示自动跳转）
     │   ├── setup.js             # 三步初始化引导
     │   ├── files/index.js       # 主编辑器页：文件树 + WYSIWYG Markdown 编辑器 + 自动保存
-    │   ├── knowledge.js         # 知识库问答页：右侧问答为主；选中文件后显示左侧文章编辑，并支持手动指定参考来源
-    │   ├── canvas.js            # AI 创作画布：左侧创作块 / 右侧 Agent 对话；侧边栏点击文件会在当前页载入对应文章创作
+    │   ├── knowledge.js         # 知识库问答页：SSE 流式对话
+    │   ├── canvas.js            # AI 创作画布：块编辑 + Agent 对话 + OperationPreview
     │   ├── settings/
     │   │   ├── index.js         # /settings → 重定向 /settings/model
     │   │   └── [section].js     # /settings/model|storage|shortcuts|about
@@ -104,7 +116,6 @@ Notus/
     │   ├── Editor/              # WysiwygEditor（SSR:false, Tiptap + lowlight）, EditorToolbar, MarkdownPreview
     │   ├── ChatArea/            # ChatMessage（UserBubble/RetrievalStatus/AiBubble）, InputBar
     │   ├── Canvas/              # CanvasBlock（6 状态）, AddBlockButton, InsertIndicator
-    │   ├── Settings/            # 设置页布局与分区内容
     │   └── AIPanel/             # OperationPreview（diff 展示 + apply/cancel）
     ├── lib/                     # 后端核心库（数据库、运行时、索引、检索、LLM、Agent）
     │   ├── config.js            # 所有 process.env 读取的唯一入口
@@ -128,25 +139,14 @@ Notus/
 
 ## 架构关键点
 
-### 跨页面共享状态（AppContext）
-`contexts/AppContext.js` 通过 React Context 维护文件树所有交互状态：`openFolders`（`Set<folderPath>`，控制展开/折叠）、`activeFileId`、`activeFile`、`selectFile()`、`toggleFolder()`。`AppProvider` 在 `_app.js` 根层挂载，因此切换页面不会丢失状态。Sidebar 通过 `useApp()` 消费，不再接受文件树 props 传入。
-
-默认情况下，当用户在非 `/files` 页面点击文件树中的文件时，Sidebar 会先调用 `selectFile(file)` 更新 context，再执行 `router.push('/files')`。知识库页与创作页通过 `navigateOnFileSelect={false}` 保持在当前页：知识库页会在选中文件后显示左侧文章编辑器，创作页会直接载入对应文章并进入创作。
-
 ### 主题系统
-当前默认提供统一的亮色工作界面；样式 token 仍保留 `:root` 和 `[data-theme="dark"]` 两套结构，便于后续扩展，但设置页已经不再提供单独的“外观”配置入口。
+暗色模式通过 `document.documentElement.setAttribute('data-theme', 'dark')` 切换，CSS 用 `[data-theme="dark"]` 选择器覆盖。主题持久化在 `localStorage('notus-theme')`，在 `pages/_app.js` `useEffect` 中恢复。
 
 ### SSE 流式接口规范
 所有流式接口（chat、agent/run、agent/outline、index/rebuild）使用 Server-Sent Events，事件格式统一为 `data: JSON\n\n`。事件类型字段 `type` 取值：
 - `/api/chat`：`chunks` → `token` → `citations` → `done` | `error`
 - `/api/agent/run`：`thinking` → `tool_call` → `tool_result` → `operation` → `done` | `error`
 - `/api/agent/outline`：`block`（逐个）→ `done`
-
-### EditorToolbar ↔ WysiwygEditor 通信
-`WysiwygEditor` 基于 Tiptap，`pages/files/index.js` 通过 `onEditorReady` 拿到 editor 实例，再传给 `EditorToolbar editor={editor}`。工具栏按钮直接调用 Tiptap command chain，例如 `toggleBold()`、`toggleHeading()`、`setLink()`、`toggleTaskList()`、`setHorizontalRule()` 等；代码块高亮通过 `@tiptap/extension-code-block-lowlight + lowlight` 实现，并支持在工具栏中切换语言。
-
-### 快捷键配置
-`contexts/ShortcutsContext.js` 统一维护搜索、发送、保存文档、保存块编辑、取消块编辑等快捷键，保存在浏览器 `localStorage('notus-shortcuts')`。页面中的快捷键提示默认隐藏，统一通过 `/settings/shortcuts` 管理。
 
 ### Block 编辑与 str_replace
 画布操作使用 Claude Artifacts 同款 str_replace 语义：每次 AI 操作必须携带 `old` 字段（被替换的原始内容），`lib/diff.js:applyOperation` 先校验 `old` 是否存在于文件中再执行替换，防止 Block ID 错位导致误修改。

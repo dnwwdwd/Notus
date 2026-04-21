@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
 import { NotusLogo, Icons } from '../components/ui/Icons';
 import { Button } from '../components/ui/Button';
-import { ModelSelectField } from '../components/ui/ModelSelectField';
 import { TextInput } from '../components/ui/Input';
 import { ProviderSelect } from '../components/ui/ProviderSelect';
 import { ProgressBar } from '../components/ui/ProgressBar';
@@ -10,7 +9,6 @@ import { Spinner } from '../components/ui/Spinner';
 import { Toggle } from '../components/ui/Toggle';
 import { useToast } from '../components/ui/Toast';
 import { useAppStatus } from '../contexts/AppStatusContext';
-import { useDiscoveredModels } from '../hooks/useDiscoveredModels';
 import {
   EMBEDDING_PROVIDERS,
   findProvider,
@@ -18,6 +16,10 @@ import {
   isEmbeddingModelMultimodal,
   LLM_PROVIDERS,
 } from '../lib/modelCatalog';
+
+const MODEL_PROFILES_KEY = 'notus-model-profiles';
+
+const SETUP_STEP_STORAGE_KEY = 'notus-setup-step';
 
 const StepIndicator = ({ current, labels }) => (
   <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'center', marginBottom: 36 }}>
@@ -133,185 +135,260 @@ async function consumeSseResponse(response, onPayload) {
   }
 }
 
+// ── Helpers for model profiles ──────────────────────────────────
+function loadProfiles() {
+  if (typeof window === 'undefined') return [];
+  try { return JSON.parse(localStorage.getItem(MODEL_PROFILES_KEY) || '[]'); } catch { return []; }
+}
+function saveProfilesToStorage(profiles) {
+  if (typeof window === 'undefined') return;
+  try { localStorage.setItem(MODEL_PROFILES_KEY, JSON.stringify(profiles)); } catch {}
+}
+
+// ── Step1 — model config (horizontal layout) ────────────────────
 const Step1 = ({
   form,
   onChange,
   keyHints,
   loading,
-  embeddingOptions,
-  embeddingLoading,
-  llmOptions,
-  llmLoading,
+  testState,
+  onTest,
+  testErrorMsg,
+  profiles,
+  onLoadProfile,
+  onDeleteProfile,
+  onSaveProfile,
 }) => {
-  const currentEmbProvider = findProvider(EMBEDDING_PROVIDERS, form.embProvider);
-  const currentLlmProvider = findProvider(LLM_PROVIDERS, form.llmProvider);
-  const isCustomEmbProvider = form.embProvider === 'custom';
-  const isCustomLlmProvider = form.llmProvider === 'custom';
-  const effectiveEmbeddingModel = form.embModel;
-  const selectedEmbeddingModel = getEmbeddingModelMeta(form.embProvider, form.embModel);
-  const embeddingModelSupportsMultimodal = useMemo(
-    () => isEmbeddingModelMultimodal(form.embProvider, effectiveEmbeddingModel),
-    [effectiveEmbeddingModel, form.embProvider]
+  const [profileName, setProfileName] = useState('');
+  const [showSaveBox, setShowSaveBox] = useState(false);
+
+  const isCustomEmb = form.embProvider === 'custom';
+  const isCustomLlm = form.llmProvider === 'custom';
+  const selectedEmbModel = getEmbeddingModelMeta(form.embProvider, form.embModel);
+  const embDim = selectedEmbModel?.dimension || form.embCustomDim || '';
+  const multimodalSupported = useMemo(
+    () => isEmbeddingModelMultimodal(form.embProvider, form.embModel),
+    [form.embProvider, form.embModel]
   );
-  const embDim = selectedEmbeddingModel?.dimension || form.embCustomDim || '—';
+
+  const handleSaveProfile = () => {
+    const name = profileName.trim() || `配置 ${profiles.length + 1}`;
+    onSaveProfile(name);
+    setProfileName('');
+    setShowSaveBox(false);
+  };
+
+  const testButtonStyle = {
+    ...(testState === 'success' ? { borderColor: 'var(--success)', color: 'var(--success)' } : {}),
+    ...(testState === 'error' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : {}),
+  };
 
   return (
     <div>
-      <div style={{
-        background: 'var(--bg-elevated)',
-        border: '1px solid var(--border-subtle)',
-        borderRadius: 'var(--radius-xl)',
-        padding: 20,
-        marginBottom: 20,
-      }}>
-        {loading && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16, fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>
-            <Spinner size={14} />
-            正在读取当前配置…
-          </div>
-        )}
-
-        <div style={{ fontSize: 'var(--text-sm)', fontWeight: 600, marginBottom: 10 }}>Embedding 模型</div>
-        <div style={{ marginBottom: 10 }}>
-          <ProviderSelect
-            value={form.embProvider}
-            catalog={EMBEDDING_PROVIDERS}
-            onChange={(value) => {
-              const provider = findProvider(EMBEDDING_PROVIDERS, value);
-              onChange({
-                embProvider: value,
-                embBaseUrl: provider.baseUrl || '',
-                embModel: provider.models[0]?.value || form.embModel,
-              });
-            }}
-          />
-        </div>
-        <div style={{ marginBottom: 10 }}>
-          <TextInput
-            value={form.embBaseUrl}
-            onChange={(event) => onChange({ embBaseUrl: event.target.value })}
-            placeholder="https://your-openai-compatible-endpoint/v1"
-            disabled={!isCustomEmbProvider}
-            style={{ opacity: isCustomEmbProvider ? 1 : 0.65 }}
-          />
-        </div>
-        <div style={{ marginBottom: 10 }}>
-          <ModelSelectField
-            value={form.embModel}
-            options={embeddingOptions}
-            onChange={(nextValue) => onChange({ embModel: nextValue })}
-            loading={embeddingLoading}
-            selectPlaceholder={currentEmbProvider.models.length ? '选择候选 Embedding 模型' : '当前提供商没有内置候选'}
-            inputPlaceholder="也可以直接输入 Embedding 模型名"
-          />
-        </div>
-        <div style={{ marginBottom: 10 }}>
-          <TextInput
-            value={form.embApiKey}
-            onChange={(event) => onChange({ embApiKey: event.target.value })}
-            placeholder={keyHints.embedding ? '已保存，留空不修改' : 'sk-...'}
-            masked
-          />
-        </div>
-        <div style={{ marginBottom: 14 }}>
-          <TextInput
-            value={selectedEmbeddingModel?.dimension || form.embCustomDim}
-            onChange={(event) => onChange({ embCustomDim: event.target.value })}
-            placeholder="向量维度，例如 1024"
-            disabled={Boolean(selectedEmbeddingModel)}
-            style={{ opacity: selectedEmbeddingModel ? 0.65 : 1 }}
-          />
-          <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-tertiary)' }}>
-            当前向量维度：{embDim}
+      {/* Saved profiles */}
+      {profiles.length > 0 && (
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 8 }}>已保存配置</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {profiles.map((profile) => (
+              <div key={profile.id} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <button
+                  type="button"
+                  onClick={() => onLoadProfile(profile)}
+                  style={{
+                    height: 28, padding: '0 12px',
+                    background: 'var(--bg-elevated)',
+                    border: '1px solid var(--border-primary)',
+                    borderRadius: 'var(--radius-md)',
+                    fontSize: 12,
+                    color: 'var(--text-secondary)',
+                    cursor: 'pointer',
+                    transition: 'all var(--transition-fast)',
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--border-primary)'; e.currentTarget.style.color = 'var(--text-secondary)'; }}
+                >
+                  {profile.name}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onDeleteProfile(profile.id)}
+                  style={{ width: 20, height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)', cursor: 'pointer', borderRadius: 'var(--radius-sm)' }}
+                  title="删除此配置"
+                >
+                  <Icons.x size={10} />
+                </button>
+              </div>
+            ))}
           </div>
         </div>
+      )}
 
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 16,
-            padding: '12px 14px',
-            border: '1px solid var(--border-subtle)',
-            borderRadius: 'var(--radius-lg)',
-            background: 'var(--bg-primary)',
-            marginBottom: 14,
-          }}
-        >
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 'var(--text-sm)', fontWeight: 500 }}>多模态向量模型</div>
-            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)', marginTop: 4, lineHeight: 1.6 }}>
-              开启后会尝试为图片建立向量；如果当前模型不支持，系统会自动跳过，不影响文本索引。
+      {loading && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14, fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>
+          <Spinner size={14} />
+          正在读取当前配置…
+        </div>
+      )}
+
+      {/* Two-column layout */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+        {/* Left column: Embedding */}
+        <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-xl)', padding: 18, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ fontSize: 'var(--text-sm)', fontWeight: 600, color: 'var(--text-primary)', marginBottom: 2 }}>Embedding 模型</div>
+
+          <div>
+            <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 5 }}>提供商</div>
+            <ProviderSelect
+              value={form.embProvider}
+              catalog={EMBEDDING_PROVIDERS}
+              onChange={(value) => {
+                const provider = findProvider(EMBEDDING_PROVIDERS, value);
+                onChange({ embProvider: value, embBaseUrl: provider.baseUrl || '', embModel: provider.models[0]?.value || '' });
+              }}
+            />
+          </div>
+
+          <div>
+            <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 5 }}>Base URL</div>
+            <TextInput
+              value={form.embBaseUrl}
+              onChange={(e) => onChange({ embBaseUrl: e.target.value })}
+              placeholder="https://api.openai.com/v1"
+              disabled={!isCustomEmb}
+              style={{ opacity: isCustomEmb ? 1 : 0.6 }}
+            />
+          </div>
+
+          <div>
+            <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 5 }}>模型名称</div>
+            <TextInput
+              value={form.embModel}
+              onChange={(e) => onChange({ embModel: e.target.value })}
+              placeholder="text-embedding-3-small"
+            />
+          </div>
+
+          <div>
+            <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 5 }}>API Key</div>
+            <TextInput
+              value={form.embApiKey}
+              onChange={(e) => onChange({ embApiKey: e.target.value })}
+              placeholder={keyHints.embedding ? '已保存，留空不修改' : 'sk-…'}
+              masked
+            />
+          </div>
+
+          <div>
+            <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 5 }}>向量维度</div>
+            <TextInput
+              value={selectedEmbModel?.dimension || form.embCustomDim}
+              onChange={(e) => onChange({ embCustomDim: e.target.value })}
+              placeholder="例如 1024"
+              disabled={Boolean(selectedEmbModel)}
+              style={{ opacity: selectedEmbModel ? 0.6 : 1 }}
+            />
+            {embDim && <div style={{ marginTop: 4, fontSize: 11, color: 'var(--text-tertiary)' }}>当前：{embDim}</div>}
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', background: 'var(--bg-primary)', marginTop: 2 }}>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 500 }}>多模态向量</div>
+              <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>
+                {multimodalSupported ? '当前模型支持多模态' : '仅建立文本向量'}
+              </div>
             </div>
+            <Toggle on={form.embMultimodalEnabled} onChange={(v) => onChange({ embMultimodalEnabled: v })} />
           </div>
-          <Toggle on={form.embMultimodalEnabled} onChange={(nextValue) => onChange({ embMultimodalEnabled: nextValue })} />
         </div>
 
-        {form.embMultimodalEnabled && embeddingModelSupportsMultimodal && (
-          <div style={{ marginBottom: 14 }}>
-            <NoteBox tone="success">
-              当前模型支持多模态向量化。图片和文本会共用同一套向量维度；切换模型后需要重建索引。
-            </NoteBox>
+        {/* Right column: LLM */}
+        <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-xl)', padding: 18, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ fontSize: 'var(--text-sm)', fontWeight: 600, color: 'var(--text-primary)', marginBottom: 2 }}>LLM 模型</div>
+
+          <div>
+            <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 5 }}>提供商</div>
+            <ProviderSelect
+              value={form.llmProvider}
+              catalog={LLM_PROVIDERS}
+              onChange={(value) => {
+                const provider = findProvider(LLM_PROVIDERS, value);
+                onChange({ llmProvider: value, llmBaseUrl: provider.baseUrl || '', llmModel: provider.models[0]?.value || '' });
+              }}
+            />
           </div>
-        )}
-        {form.embMultimodalEnabled && !embeddingModelSupportsMultimodal && (
-          <div style={{ marginBottom: 14 }}>
-            <NoteBox tone="warning">
-              当前模型更像纯文本向量模型。保存后系统仍可正常使用，但图片和视频向量会跳过。
-            </NoteBox>
+
+          <div>
+            <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 5 }}>Base URL</div>
+            <TextInput
+              value={form.llmBaseUrl}
+              onChange={(e) => onChange({ llmBaseUrl: e.target.value })}
+              placeholder="https://api.openai.com/v1"
+              disabled={!isCustomLlm}
+              style={{ opacity: isCustomLlm ? 1 : 0.6 }}
+            />
           </div>
-        )}
-        {!form.embMultimodalEnabled && (
-          <div style={{ marginBottom: 14 }}>
-            <NoteBox>
-              默认只建立文本向量，已经可以完成普通检索和问答。需要图片检索时，再切换到支持多模态的模型即可。
-            </NoteBox>
+
+          <div>
+            <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 5 }}>模型名称</div>
+            <TextInput
+              value={form.llmModel}
+              onChange={(e) => onChange({ llmModel: e.target.value })}
+              placeholder="gpt-4o"
+            />
           </div>
+
+          <div>
+            <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 5 }}>API Key</div>
+            <TextInput
+              value={form.llmApiKey}
+              onChange={(e) => onChange({ llmApiKey: e.target.value })}
+              placeholder={keyHints.llm ? '已保存，留空不修改' : 'sk-…'}
+              masked
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Test connection row */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <Button
+          variant="secondary"
+          loading={testState === 'loading'}
+          onClick={onTest}
+          style={testButtonStyle}
+        >
+          {testState === 'success' ? '✓ 连接正常' : testState === 'error' ? '✕ 连接失败' : '测试连接'}
+        </Button>
+
+        {testErrorMsg && (
+          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--danger)' }}>{testErrorMsg}</span>
         )}
 
-        <div style={{ height: 1, background: 'var(--border-subtle)', margin: '18px 0' }} />
+        {testState === 'success' && (
+          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--success)', marginLeft: 4 }}>两项模型均连接成功，可以继续</span>
+        )}
 
-        <div style={{ fontSize: 'var(--text-sm)', fontWeight: 600, marginBottom: 10 }}>LLM 模型</div>
-        <div style={{ marginBottom: 10 }}>
-          <ProviderSelect
-            value={form.llmProvider}
-            catalog={LLM_PROVIDERS}
-            onChange={(value) => {
-              const provider = findProvider(LLM_PROVIDERS, value);
-              onChange({
-                llmProvider: value,
-                llmBaseUrl: provider.baseUrl || '',
-                llmModel: provider.models[0]?.value || form.llmModel,
-              });
-            }}
-          />
-        </div>
-        <div style={{ marginBottom: 10 }}>
-          <TextInput
-            value={form.llmBaseUrl}
-            onChange={(event) => onChange({ llmBaseUrl: event.target.value })}
-            placeholder="https://your-openai-compatible-endpoint/v1"
-            disabled={!isCustomLlmProvider}
-            style={{ opacity: isCustomLlmProvider ? 1 : 0.65 }}
-          />
-        </div>
-        <div style={{ marginBottom: 10 }}>
-          <ModelSelectField
-            value={form.llmModel}
-            options={llmOptions}
-            onChange={(nextValue) => onChange({ llmModel: nextValue })}
-            loading={llmLoading}
-            selectPlaceholder={currentLlmProvider.models.length ? '选择候选 LLM 模型' : '当前提供商没有内置候选'}
-            inputPlaceholder="也可以直接输入 LLM 模型名"
-          />
-        </div>
-        <TextInput
-          value={form.llmApiKey}
-          onChange={(event) => onChange({ llmApiKey: event.target.value })}
-          placeholder={keyHints.llm ? '已保存，留空不修改' : 'sk-...'}
-          masked
-        />
+        <div style={{ flex: 1 }} />
+
+        {/* Save as profile */}
+        {showSaveBox ? (
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <TextInput
+              value={profileName}
+              onChange={(e) => setProfileName(e.target.value)}
+              placeholder="配置名称"
+              style={{ width: 140 }}
+              onKeyDown={(e) => e.key === 'Enter' && handleSaveProfile()}
+            />
+            <Button variant="primary" size="sm" onClick={handleSaveProfile}>保存</Button>
+            <Button variant="ghost" size="sm" onClick={() => setShowSaveBox(false)}>取消</Button>
+          </div>
+        ) : (
+          <Button variant="ghost" size="sm" onClick={() => setShowSaveBox(true)}>
+            保存为配置…
+          </Button>
+        )}
       </div>
     </div>
   );
@@ -489,55 +566,82 @@ function createInitialForm() {
     embModel: 'text-embedding-v3',
     embBaseUrl: findProvider(EMBEDDING_PROVIDERS, 'qwen').baseUrl,
     embApiKey: '',
-    embCustomModel: '',
     embCustomDim: '',
     embMultimodalEnabled: false,
     llmProvider: 'qwen',
     llmModel: 'qwen-max',
     llmBaseUrl: findProvider(LLM_PROVIDERS, 'qwen').baseUrl,
     llmApiKey: '',
-    llmCustomModel: '',
   };
+}
+
+function clampSetupStep(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.min(Math.max(Math.trunc(parsed), 0), 2);
+}
+
+function deriveSetupStep(status) {
+  const setup = status?.setup || {};
+  const index = status?.index || {};
+
+  if (!setup.model_configured) return 0;
+
+  const hasAnyImportedFile = Number(index.total || setup.total_files || setup.indexed_files || 0) > 0;
+  if (hasAnyImportedFile) return 2;
+
+  return 1;
+}
+
+function pickResumedStep(restoredStep, derivedStep) {
+  if (restoredStep === null || restoredStep === undefined) return derivedStep;
+  if (derivedStep === 0) return 0;
+  if (derivedStep === 1) return restoredStep >= 2 ? 2 : 1;
+  return 2;
 }
 
 export default function SetupPage() {
   const router = useRouter();
   const toast = useToast();
-  const { status: appStatus, refreshStatus } = useAppStatus();
+  const { status: appStatus, loading: statusLoading, refreshStatus } = useAppStatus();
   const [step, setStep] = useState(0);
+  const [stepReady, setStepReady] = useState(false);
   const [form, setForm] = useState(createInitialForm);
   const [keyHints, setKeyHints] = useState({ embedding: false, llm: false });
   const [loadingConfig, setLoadingConfig] = useState(true);
   const [savingConfig, setSavingConfig] = useState(false);
   const [finishing, setFinishing] = useState(false);
+  const [testState, setTestState] = useState('idle'); // 'idle' | 'loading' | 'success' | 'error'
+  const [testErrorMsg, setTestErrorMsg] = useState('');
+  const [nextBlockedMsg, setNextBlockedMsg] = useState('');
+  const [profiles, setProfiles] = useState(() => loadProfiles());
   const [selectedImportFiles, setSelectedImportFiles] = useState([]);
   const [step3Started, setStep3Started] = useState(false);
   const [step3Running, setStep3Running] = useState(false);
   const [step3Progress, setStep3Progress] = useState({ stage: 'idle', current: 0, total: 0, currentFile: '' });
   const [step3Summary, setStep3Summary] = useState(null);
   const [step3Errors, setStep3Errors] = useState([]);
-  const currentEmbeddingProvider = useMemo(
-    () => findProvider(EMBEDDING_PROVIDERS, form.embProvider),
-    [form.embProvider]
-  );
-  const currentLlmProvider = useMemo(
-    () => findProvider(LLM_PROVIDERS, form.llmProvider),
-    [form.llmProvider]
-  );
-  const embeddingDiscovery = useDiscoveredModels({
-    kind: 'embedding',
-    provider: form.embProvider,
-    baseUrl: form.embBaseUrl,
-    apiKey: form.embApiKey,
-    fallbackOptions: currentEmbeddingProvider.models,
-  });
-  const llmDiscovery = useDiscoveredModels({
-    kind: 'llm',
-    provider: form.llmProvider,
-    baseUrl: form.llmBaseUrl,
-    apiKey: form.llmApiKey,
-    fallbackOptions: currentLlmProvider.models,
-  });
+
+  useEffect(() => {
+    if (statusLoading || stepReady) return;
+
+    let restoredStep = null;
+    if (typeof window !== 'undefined') {
+      const raw = window.sessionStorage.getItem(SETUP_STEP_STORAGE_KEY);
+      if (raw !== null) restoredStep = clampSetupStep(raw);
+    }
+
+    const derivedStep = deriveSetupStep(appStatus);
+    const nextStep = pickResumedStep(restoredStep, derivedStep);
+
+    setStep(nextStep);
+    setStepReady(true);
+  }, [appStatus, statusLoading, stepReady]);
+
+  useEffect(() => {
+    if (!stepReady || typeof window === 'undefined') return;
+    window.sessionStorage.setItem(SETUP_STEP_STORAGE_KEY, String(step));
+  }, [step, stepReady]);
 
   useEffect(() => {
     let cancelled = false;
@@ -576,6 +680,85 @@ export default function SetupPage() {
 
   const handleChange = (patch) => {
     setForm((prev) => ({ ...prev, ...patch }));
+    // If any key model/url/key field changes, invalidate the test
+    const testFields = ['embModel', 'embApiKey', 'embBaseUrl', 'embProvider', 'llmModel', 'llmApiKey', 'llmBaseUrl', 'llmProvider'];
+    if (testFields.some((field) => field in patch)) {
+      setTestState('idle');
+      setTestErrorMsg('');
+      setNextBlockedMsg('');
+    }
+  };
+
+  const handleTest = async () => {
+    const embModel = form.embModel.trim();
+    const llmModel = form.llmModel.trim();
+    const embDimValue = getEmbeddingModelMeta(form.embProvider, embModel)?.dimension || form.embCustomDim.trim();
+
+    if (!embModel) { toast('请填写 Embedding 模型名', 'warning'); return; }
+    if (!llmModel) { toast('请填写 LLM 模型名', 'warning'); return; }
+    if (!embDimValue) { toast('请填写 Embedding 向量维度', 'warning'); return; }
+
+    setTestState('loading');
+    setTestErrorMsg('');
+    try {
+      const embResponse = await fetch('/api/settings/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind: 'embedding', config: { provider: form.embProvider, model: embModel, api_key: form.embApiKey, base_url: form.embBaseUrl, dim: embDimValue } }),
+      });
+      const embResult = await embResponse.json();
+      if (!embResult.success) throw new Error(`Embedding：${embResult.error}`);
+
+      const llmResponse = await fetch('/api/settings/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind: 'llm', config: { provider: form.llmProvider, model: llmModel, api_key: form.llmApiKey, base_url: form.llmBaseUrl } }),
+      });
+      const llmResult = await llmResponse.json();
+      if (!llmResult.success) throw new Error(`LLM：${llmResult.error}`);
+
+      setTestState('success');
+      setNextBlockedMsg('');
+    } catch (err) {
+      setTestState('error');
+      setTestErrorMsg(err.message || '连接失败，请检查配置');
+    }
+  };
+
+  const handleLoadProfile = (profile) => {
+    handleChange({
+      embProvider: profile.embProvider || 'qwen',
+      embModel: profile.embModel || '',
+      embBaseUrl: profile.embBaseUrl || '',
+      embCustomDim: profile.embDim || '',
+      llmProvider: profile.llmProvider || 'qwen',
+      llmModel: profile.llmModel || '',
+      llmBaseUrl: profile.llmBaseUrl || '',
+    });
+  };
+
+  const handleSaveProfile = (name) => {
+    const profile = {
+      id: Date.now().toString(),
+      name,
+      embProvider: form.embProvider,
+      embModel: form.embModel,
+      embBaseUrl: form.embBaseUrl,
+      embDim: form.embCustomDim,
+      llmProvider: form.llmProvider,
+      llmModel: form.llmModel,
+      llmBaseUrl: form.llmBaseUrl,
+    };
+    const next = [...profiles, profile];
+    setProfiles(next);
+    saveProfilesToStorage(next);
+    toast(`配置"${name}"已保存`, 'success');
+  };
+
+  const handleDeleteProfile = (id) => {
+    const next = profiles.filter((profile) => profile.id !== id);
+    setProfiles(next);
+    saveProfilesToStorage(next);
   };
 
   const resetStep3 = () => {
@@ -686,6 +869,9 @@ export default function SetupPage() {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || '初始化完成失败');
       const latest = await refreshStatus();
+      if (typeof window !== 'undefined') {
+        window.sessionStorage.removeItem(SETUP_STEP_STORAGE_KEY);
+      }
       router.replace(latest.index.total > 0 && latest.index.pending > 0 ? '/indexing' : '/files');
     } catch (error) {
       toast(error.message || '初始化完成失败', 'warning');
@@ -781,13 +967,13 @@ export default function SetupPage() {
 
     try {
       await importSelectedFiles();
-      let latest = await refreshStatus();
+      let latest = await refreshStatus({ quiet: true });
       const shouldRebuild = latest.index.total > 0 &&
         (latest.index.pending > 0 || latest.index.failed > 0 || latest.index.indexed < latest.index.total);
 
       if (shouldRebuild) {
         await rebuildIndex();
-        latest = await refreshStatus();
+        latest = await refreshStatus({ quiet: true });
       }
 
       if (latest.index.total === 0) {
@@ -808,8 +994,13 @@ export default function SetupPage() {
 
   const handleNext = async () => {
     if (step === 0) {
+      if (testState !== 'success') {
+        setNextBlockedMsg('请先完成连接测试，确保模型可以正常使用。');
+        return;
+      }
       const saved = await persistModelConfig();
       if (!saved) return;
+      setNextBlockedMsg('');
     }
 
     if (step < 2) {
@@ -821,6 +1012,23 @@ export default function SetupPage() {
   const handleSkip = () => setStep((prev) => Math.min(prev + 1, 2));
   const handlePrev = () => step > 0 && setStep(step - 1);
 
+  if (!stepReady) {
+    return (
+      <div style={{
+        minHeight: '100vh',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        background: 'var(--bg-primary)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: 'var(--text-secondary)', fontSize: 'var(--text-sm)' }}>
+          <Spinner size={18} />
+          <span>正在恢复引导进度…</span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{
       display: 'flex',
@@ -831,7 +1039,7 @@ export default function SetupPage() {
       background: 'var(--bg-primary)',
       overflow: 'auto',
     }}>
-      <div style={{ maxWidth: 560, width: '100%', padding: 24 }}>
+      <div style={{ maxWidth: step === 0 ? 880 : 560, width: '100%', padding: 24 }}>
         <div style={{ textAlign: 'center', marginBottom: 28 }}>
           <div style={{ display: 'inline-flex', marginBottom: 14 }}><NotusLogo size={40} /></div>
           <div style={{ fontSize: 'var(--text-xl)', fontWeight: 600, marginBottom: 6 }}>{meta.title}</div>
@@ -846,10 +1054,13 @@ export default function SetupPage() {
             onChange={handleChange}
             keyHints={keyHints}
             loading={loadingConfig}
-            embeddingOptions={embeddingDiscovery.models}
-            embeddingLoading={embeddingDiscovery.loading}
-            llmOptions={llmDiscovery.models}
-            llmLoading={llmDiscovery.loading}
+            testState={testState}
+            onTest={handleTest}
+            testErrorMsg={testErrorMsg}
+            profiles={profiles}
+            onLoadProfile={handleLoadProfile}
+            onDeleteProfile={handleDeleteProfile}
+            onSaveProfile={handleSaveProfile}
           />
         )}
         {step === 1 && (
@@ -869,7 +1080,13 @@ export default function SetupPage() {
           />
         )}
 
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 24 }}>
+        {nextBlockedMsg && (
+          <div style={{ marginTop: 12, padding: '10px 14px', background: 'var(--danger-subtle)', border: '1px solid var(--danger)', borderRadius: 'var(--radius-md)', fontSize: 'var(--text-sm)', color: 'var(--danger)' }}>
+            {nextBlockedMsg}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 16 }}>
           <div>
             {meta.canSkip
               ? <Button variant="ghost" onClick={handleSkip}>跳过，稍后配置</Button>

@@ -58,8 +58,8 @@ export function AppStatusProvider({ children }) {
 
     try {
       const [setupResponse, indexResponse] = await Promise.all([
-        fetch('/api/setup/status'),
-        fetch('/api/index/status'),
+        fetch('/api/setup/status', { cache: 'no-store' }),
+        fetch('/api/index/status', { cache: 'no-store' }),
       ]);
 
       const setupPayload = await setupResponse.json();

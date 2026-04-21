@@ -6,6 +6,7 @@ import { Shell } from '../components/Layout/Shell';
 import { EditorToolbar } from '../components/Editor/EditorToolbar';
 import { UserBubble, AiBubble, RetrievalStatus } from '../components/ChatArea/ChatMessage';
 import { InputBar } from '../components/ChatArea/InputBar';
+import { ResizableLayout } from '../components/ui/ResizableLayout';
 import { DropdownSelect } from '../components/ui/DropdownSelect';
 import { EmptyState } from '../components/ui/EmptyState';
 import { InlineError } from '../components/ui/InlineError';
@@ -31,7 +32,7 @@ const SUGGESTIONS = [
 export default function KnowledgePage() {
   const router = useRouter();
   const toast = useToast();
-  const { activeFile, allFiles, selectFile } = useApp();
+  const { activeFile, allFiles, selectFile, getCachedContent, setCachedContent } = useApp();
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
   const [streamText, setStreamText] = useState('');
@@ -62,11 +63,15 @@ export default function KnowledgePage() {
   }, [messages, streamText]);
 
   const loadFile = useCallback(async (fileId) => {
+    const cached = getCachedContent(fileId);
+    if (cached !== undefined) return { content: cached };
+
     const response = await fetch(`/api/files/${fileId}`);
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || '文章加载失败');
+    setCachedContent(fileId, payload.content || '');
     return payload;
-  }, []);
+  }, [getCachedContent, setCachedContent]);
 
   useEffect(() => {
     if (!activeFile?.id) {
@@ -119,13 +124,15 @@ export default function KnowledgePage() {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || '保存失败');
 
-      setDocContent(payload.content || nextContent);
+      const savedContent = payload.content || nextContent;
+      setDocContent(savedContent);
+      setCachedContent(activeFile.id, savedContent);
       setDocSaveState('saved');
     } catch (saveError) {
       setDocSaveState('dirty');
       toast(saveError.message || '保存失败', 'error');
     }
-  }, [activeFile?.id, docContent, toast]);
+  }, [activeFile?.id, docContent, toast, setCachedContent]);
 
   const handleDocChange = useCallback((nextContent) => {
     setDocContent(nextContent);
@@ -240,10 +247,11 @@ export default function KnowledgePage() {
       tocDisabled
       navigateOnFileSelect={false}
     >
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden', background: 'var(--bg-primary)' }}>
-        {activeFile && editorOpen && (
-          <div style={{ width: '44%', minWidth: 320, borderRight: '1px solid var(--border-subtle)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-            <div style={{ height: 40, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 14px', borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)' }}>
+      {/* Chat panel content — extracted so it can be used with or without ResizableLayout */}
+      {(() => {
+        const editorPanel = activeFile && editorOpen ? (
+          <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', height: '100%', borderRight: '1px solid var(--border-subtle)' }}>
+            <div style={{ height: 40, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 14px', borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)', flexShrink: 0 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                 <Icons.file size={14} />
                 <span style={{ fontSize: 'var(--text-sm)', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -265,7 +273,6 @@ export default function KnowledgePage() {
                 <SkeletonText lines={8} />
               </div>
             )}
-
             {docError && !docLoading && (
               <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
                 <InlineError
@@ -273,20 +280,12 @@ export default function KnowledgePage() {
                   onRetry={() => {
                     setDocLoading(true);
                     loadFile(activeFile.id)
-                      .then((file) => {
-                        setDocError(null);
-                        setDocContent(file.content || '');
-                        setDocLoading(false);
-                      })
-                      .catch((loadError) => {
-                        setDocError(loadError.message);
-                        setDocLoading(false);
-                      });
+                      .then((file) => { setDocError(null); setDocContent(file.content || ''); setDocLoading(false); })
+                      .catch((loadError) => { setDocError(loadError.message); setDocLoading(false); });
                   }}
                 />
               </div>
             )}
-
             {!docLoading && !docError && (
               <WysiwygEditor
                 key={`knowledge-${activeFile.id}`}
@@ -297,9 +296,10 @@ export default function KnowledgePage() {
               />
             )}
           </div>
-        )}
+        ) : null;
 
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        const chatPanel = (
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)', display: 'grid', gap: 10 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
               <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>
@@ -447,7 +447,21 @@ export default function KnowledgePage() {
             loading={loading}
           />
         </div>
-      </div>
+        );
+
+        if (editorPanel) {
+          return (
+            <ResizableLayout
+              initialLeftPercent={44}
+              minLeftPercent={20}
+              maxLeftPercent={75}
+              left={editorPanel}
+              right={chatPanel}
+            />
+          );
+        }
+        return <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>{chatPanel}</div>;
+      })()}
     </Shell>
   );
 }

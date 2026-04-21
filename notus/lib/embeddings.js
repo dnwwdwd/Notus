@@ -13,6 +13,10 @@ const DOUBAO_MULTIMODAL_MODELS = [
 ];
 
 const DEFAULT_TEXT_BATCH_SIZE = 20;
+const PROVIDER_TEXT_BATCH_LIMITS = {
+  qwen: 10,
+  aliyun: 10,
+};
 
 function normalizeConfig(override = null) {
   return { ...getEffectiveConfig(), ...(override || {}) };
@@ -137,11 +141,18 @@ function chunkItems(items, size) {
 }
 
 function getTextBatchSize(config) {
+  const providerLimit = PROVIDER_TEXT_BATCH_LIMITS[config?.embeddingProvider] || DEFAULT_TEXT_BATCH_SIZE;
   const configured = Number(config?.embeddingBatchSize);
   if (Number.isFinite(configured) && configured > 0) {
-    return Math.min(configured, DEFAULT_TEXT_BATCH_SIZE);
+    return Math.min(configured, providerLimit);
   }
-  return DEFAULT_TEXT_BATCH_SIZE;
+  return providerLimit;
+}
+
+function shouldRetryWithSmallerBatch(error) {
+  if (!error || error.code !== 'EMBEDDING_API_ERROR') return false;
+  const message = String(error.message || '').toLowerCase();
+  return /batch|too many|too large|larger than|maximum|max|limit|invalidparameter/.test(message);
 }
 
 async function openAiCompatibleEmbeddings(texts, config) {
@@ -338,11 +349,25 @@ async function getEmbeddings(texts, override = null) {
     return openAiCompatibleEmbeddings(batchTexts, config);
   };
 
+  const requestAdaptiveBatch = async (batchTexts) => {
+    try {
+      return await requestBatch(batchTexts);
+    } catch (error) {
+      if (!shouldRetryWithSmallerBatch(error) || batchTexts.length <= 1) {
+        throw error;
+      }
+
+      const midpoint = Math.ceil(batchTexts.length / 2);
+      const left = await requestAdaptiveBatch(batchTexts.slice(0, midpoint));
+      const right = await requestAdaptiveBatch(batchTexts.slice(midpoint));
+      return [...left, ...right];
+    }
+  };
+
   const embeddings = [];
   const batches = chunkItems(normalizedTexts, getTextBatchSize(config));
-
   for (const batchTexts of batches) {
-    const batchEmbeddings = await requestBatch(batchTexts);
+    const batchEmbeddings = await requestAdaptiveBatch(batchTexts);
     if (batchEmbeddings.length !== batchTexts.length) {
       throw createAppError(
         'EMBEDDING_RESPONSE_COUNT_MISMATCH',

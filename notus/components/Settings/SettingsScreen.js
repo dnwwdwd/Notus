@@ -4,7 +4,6 @@ import { TopBar } from '../Layout/TopBar';
 import { NotusLogo, Icons } from '../ui/Icons';
 import { Button } from '../ui/Button';
 import { DropdownSelect } from '../ui/DropdownSelect';
-import { ModelSelectField } from '../ui/ModelSelectField';
 import { SearchInput, TextInput } from '../ui/Input';
 import { ProviderSelect } from '../ui/ProviderSelect';
 import { ConfirmDialog } from '../ui/Dialog';
@@ -12,7 +11,6 @@ import { ProgressBar } from '../ui/ProgressBar';
 import { Badge } from '../ui/Badge';
 import { Toggle } from '../ui/Toggle';
 import { useToast } from '../ui/Toast';
-import { useDiscoveredModels } from '../../hooks/useDiscoveredModels';
 import {
   EMBEDDING_PROVIDERS,
   findProvider,
@@ -20,6 +18,16 @@ import {
   isEmbeddingModelMultimodal,
   LLM_PROVIDERS,
 } from '../../lib/modelCatalog';
+
+const MODEL_PROFILES_KEY = 'notus-model-profiles';
+function loadProfiles() {
+  if (typeof window === 'undefined') return [];
+  try { return JSON.parse(localStorage.getItem(MODEL_PROFILES_KEY) || '[]'); } catch { return []; }
+}
+function saveProfilesToStorage(profiles) {
+  if (typeof window === 'undefined') return;
+  try { localStorage.setItem(MODEL_PROFILES_KEY, JSON.stringify(profiles)); } catch {}
+}
 import { useShortcuts, normalizeShortcut, DEFAULT_SHORTCUTS } from '../../contexts/ShortcutsContext';
 
 export const SETTINGS_SECTIONS = [
@@ -138,48 +146,29 @@ const ModelConfig = () => {
   const [testState, setTestState] = useState('idle');
   const [saving, setSaving] = useState(false);
   const [keyHints, setKeyHints] = useState({ embedding: false, llm: false });
+  const [profiles, setProfiles] = useState(() => loadProfiles());
+  const [profileName, setProfileName] = useState('');
+  const [showSaveBox, setShowSaveBox] = useState(false);
 
-  const currentEmbProvider = useMemo(
-    () => findProvider(EMBEDDING_PROVIDERS, embProvider),
-    [embProvider]
-  );
-  const currentLlmProvider = useMemo(
-    () => findProvider(LLM_PROVIDERS, llmProvider),
-    [llmProvider]
-  );
   const isCustomEmb = embProvider === 'custom';
   const isCustomLlm = llmProvider === 'custom';
   const selectedEmbeddingModel = useMemo(
     () => getEmbeddingModelMeta(embProvider, embModel),
     [embModel, embProvider]
   );
-  const effectiveEmbeddingModel = embModel;
   const embeddingModelSupportsMultimodal = useMemo(
-    () => isEmbeddingModelMultimodal(embProvider, effectiveEmbeddingModel),
-    [effectiveEmbeddingModel, embProvider]
+    () => isEmbeddingModelMultimodal(embProvider, embModel),
+    [embModel, embProvider]
   );
   const showMultimodalWarning = embMultimodalEnabled && !embeddingModelSupportsMultimodal;
   const showMultimodalReady = embMultimodalEnabled && embeddingModelSupportsMultimodal;
-  const embeddingDiscovery = useDiscoveredModels({
-    kind: 'embedding',
-    provider: embProvider,
-    baseUrl: embBaseUrl,
-    apiKey: embApiKey,
-    fallbackOptions: currentEmbProvider.models,
-  });
-  const llmDiscovery = useDiscoveredModels({
-    kind: 'llm',
-    provider: llmProvider,
-    baseUrl: llmBaseUrl,
-    apiKey: llmApiKey,
-    fallbackOptions: currentLlmProvider.models,
-  });
 
   const handleSelectEmbProvider = (providerId) => {
     setEmbProvider(providerId);
     const provider = findProvider(EMBEDDING_PROVIDERS, providerId);
     setEmbBaseUrl(provider.baseUrl || '');
     setEmbModel(provider.models[0]?.value || embModel);
+    setTestState('idle');
   };
 
   const handleSelectLlmProvider = (providerId) => {
@@ -187,6 +176,41 @@ const ModelConfig = () => {
     const provider = findProvider(LLM_PROVIDERS, providerId);
     setLlmBaseUrl(provider.baseUrl || '');
     setLlmModel(provider.models[0]?.value || llmModel);
+    setTestState('idle');
+  };
+
+  const handleLoadProfile = (profile) => {
+    setEmbProvider(profile.embProvider || 'qwen');
+    setEmbModel(profile.embModel || '');
+    setEmbBaseUrl(profile.embBaseUrl || '');
+    setEmbCustomDim(profile.embDim || '');
+    setLlmProvider(profile.llmProvider || 'qwen');
+    setLlmModel(profile.llmModel || '');
+    setLlmBaseUrl(profile.llmBaseUrl || '');
+    setTestState('idle');
+    toast(`已载入配置"${profile.name}"`, 'success');
+  };
+
+  const handleDeleteProfile = (id) => {
+    const next = profiles.filter((p) => p.id !== id);
+    setProfiles(next);
+    saveProfilesToStorage(next);
+  };
+
+  const handleSaveProfile = () => {
+    const name = profileName.trim() || `配置 ${profiles.length + 1}`;
+    const profile = {
+      id: Date.now().toString(),
+      name,
+      embProvider, embModel, embBaseUrl, embDim: embCustomDim,
+      llmProvider, llmModel, llmBaseUrl,
+    };
+    const next = [...profiles, profile];
+    setProfiles(next);
+    saveProfilesToStorage(next);
+    setProfileName('');
+    setShowSaveBox(false);
+    toast(`配置"${name}"已保存`, 'success');
   };
 
   useEffect(() => {
@@ -274,6 +298,8 @@ const ModelConfig = () => {
   };
 
   const embDim = selectedEmbeddingModel?.dimension || embCustomDim || '—';
+  const embModelChanged = () => setTestState('idle');
+  const llmModelChanged = () => setTestState('idle');
 
   const handleSave = async () => {
     if (!embModel.trim()) {
@@ -330,9 +356,46 @@ const ModelConfig = () => {
   return (
     <div>
       <div style={{ fontSize: 'var(--text-xl)', fontWeight: 600, marginBottom: 6 }}>模型配置</div>
-      <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', marginBottom: 28 }}>
+      <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', marginBottom: 20 }}>
         选择内置提供商，或填写兼容 OpenAI API 的自定义服务。API Key 仅保存在本地。
       </div>
+
+      {/* Saved profiles */}
+      {profiles.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 8 }}>已保存配置</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {profiles.map((profile) => (
+              <div key={profile.id} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <button
+                  type="button"
+                  onClick={() => handleLoadProfile(profile)}
+                  style={{
+                    height: 28, padding: '0 12px',
+                    background: 'var(--bg-elevated)',
+                    border: '1px solid var(--border-primary)',
+                    borderRadius: 'var(--radius-md)',
+                    fontSize: 12, color: 'var(--text-secondary)', cursor: 'pointer',
+                    transition: 'all var(--transition-fast)',
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--border-primary)'; e.currentTarget.style.color = 'var(--text-secondary)'; }}
+                >
+                  {profile.name}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDeleteProfile(profile.id)}
+                  style={{ width: 20, height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)', cursor: 'pointer', borderRadius: 'var(--radius-sm)' }}
+                  title="删除此配置"
+                >
+                  <Icons.x size={10} />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <Section title="Embedding 模型">
         <Field label="提供商">
@@ -346,19 +409,16 @@ const ModelConfig = () => {
         <Field label="Base URL" hint={isCustomEmb ? '填写兼容 OpenAI Embeddings API 的服务地址' : undefined}>
           <TextInput
             value={embBaseUrl}
-            onChange={(event) => setEmbBaseUrl(event.target.value)}
+            onChange={(event) => { setEmbBaseUrl(event.target.value); embModelChanged(); }}
             disabled={!isCustomEmb}
             style={!isCustomEmb ? { opacity: 0.65 } : undefined}
           />
         </Field>
-        <Field label="模型">
-          <ModelSelectField
+        <Field label="模型名称">
+          <TextInput
             value={embModel}
-            options={embeddingDiscovery.models}
-            onChange={setEmbModel}
-            loading={embeddingDiscovery.loading}
-            selectPlaceholder={currentEmbProvider.models.length ? '选择候选 Embedding 模型' : '当前提供商没有内置候选'}
-            inputPlaceholder="也可以直接输入 Embedding 模型名"
+            onChange={(event) => { setEmbModel(event.target.value); embModelChanged(); }}
+            placeholder="输入 Embedding 模型名称"
           />
         </Field>
         <Field label="多模态向量">
@@ -437,19 +497,16 @@ const ModelConfig = () => {
         <Field label="Base URL" hint={isCustomLlm ? '填写兼容 OpenAI Chat Completions API 的服务地址' : undefined}>
           <TextInput
             value={llmBaseUrl}
-            onChange={(event) => setLlmBaseUrl(event.target.value)}
+            onChange={(event) => { setLlmBaseUrl(event.target.value); llmModelChanged(); }}
             disabled={!isCustomLlm}
             style={!isCustomLlm ? { opacity: 0.65 } : undefined}
           />
         </Field>
-        <Field label="模型">
-          <ModelSelectField
+        <Field label="模型名称">
+          <TextInput
             value={llmModel}
-            options={llmDiscovery.models}
-            onChange={setLlmModel}
-            loading={llmDiscovery.loading}
-            selectPlaceholder={currentLlmProvider.models.length ? '选择候选 LLM 模型' : '当前提供商没有内置候选'}
-            inputPlaceholder="也可以直接输入 LLM 模型名"
+            onChange={(event) => { setLlmModel(event.target.value); llmModelChanged(); }}
+            placeholder="输入 LLM 模型名称"
           />
         </Field>
         <Field label="API Key">
@@ -462,19 +519,38 @@ const ModelConfig = () => {
         </Field>
       </Section>
 
-      <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-        <Button
-          variant="secondary"
-          loading={testState === 'loading'}
-          onClick={handleTest}
-          style={{
-            ...(testState === 'success' ? { borderColor: 'var(--success)', color: 'var(--success)' } : {}),
-            ...(testState === 'error' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : {}),
-          }}
-        >
-          {testState === 'success' ? '✓ 连接正常' : testState === 'error' ? '✕ 连接失败' : '测试连接'}
-        </Button>
-        <Button variant="primary" loading={saving} onClick={handleSave}>保存配置</Button>
+      <div style={{ display: 'flex', gap: 10, justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap' }}>
+        {/* Save as profile */}
+        {showSaveBox ? (
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <TextInput
+              value={profileName}
+              onChange={(e) => setProfileName(e.target.value)}
+              placeholder="配置名称"
+              style={{ width: 160 }}
+              onKeyDown={(e) => e.key === 'Enter' && handleSaveProfile()}
+            />
+            <Button variant="primary" size="sm" onClick={handleSaveProfile}>保存</Button>
+            <Button variant="ghost" size="sm" onClick={() => setShowSaveBox(false)}>取消</Button>
+          </div>
+        ) : (
+          <Button variant="ghost" onClick={() => setShowSaveBox(true)}>保存为配置…</Button>
+        )}
+
+        <div style={{ display: 'flex', gap: 10 }}>
+          <Button
+            variant="secondary"
+            loading={testState === 'loading'}
+            onClick={handleTest}
+            style={{
+              ...(testState === 'success' ? { borderColor: 'var(--success)', color: 'var(--success)' } : {}),
+              ...(testState === 'error' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : {}),
+            }}
+          >
+            {testState === 'success' ? '✓ 连接正常' : testState === 'error' ? '✕ 连接失败' : '测试连接'}
+          </Button>
+          <Button variant="primary" loading={saving} onClick={handleSave}>保存配置</Button>
+        </div>
       </div>
     </div>
   );

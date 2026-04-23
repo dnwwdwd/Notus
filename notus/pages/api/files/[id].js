@@ -1,6 +1,7 @@
 const { ensureRuntime } = require('../../../lib/runtime');
 const { deleteFile, getFileById, updateFile } = require('../../../lib/files');
-const { indexFileWithFallback } = require('../../../lib/fileIndexing');
+const { queueFileIndexing } = require('../../../lib/fileIndexing');
+const { getIndexCoordinator } = require('../../../lib/indexCoordinator');
 const { createLogger, createRequestContext } = require('../../../lib/logger');
 
 export const config = {
@@ -32,12 +33,12 @@ export default async function handler(req, res) {
     try {
       const { content = '' } = req.body || {};
       const file = updateFile(id, content);
-      const indexState = await indexFileWithFallback(file.path, logger, { action: 'save', file_id: Number(id) });
+      const indexState = await queueFileIndexing(file.path, logger, { action: 'save', file_id: Number(id) });
       return res.status(200).json({
         ...file,
-        indexed: indexState.indexed,
-        warning: indexState.warning,
-        warning_code: indexState.warning_code,
+        save_status: 'saved',
+        index_state: indexState.index_state,
+        active_generation_id: indexState.active_generation_id,
         request_id: context.request_id,
       });
     } catch (error) {
@@ -47,6 +48,8 @@ export default async function handler(req, res) {
   }
 
   if (req.method === 'DELETE') {
+    const existing = getFileById(id);
+    if (existing?.path) getIndexCoordinator().removePath(existing.path);
     if (!deleteFile(id)) {
       return res.status(404).json({ error: 'File not found', code: 'FILE_NOT_FOUND', request_id: context.request_id });
     }

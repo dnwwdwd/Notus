@@ -323,7 +323,7 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, navigateOnF
         toast('目录已创建', 'success');
       } else {
         const created = await createFile({ parentPath, name: newName.trim() });
-        toast(created.warning ? `文件已创建，但索引告警：${created.warning}` : '文件已创建', created.warning ? 'warning' : 'success');
+        toast(created.index_state === 'queued' ? '文件已创建，后台索引已入队' : '文件已创建', 'success');
         if (navigateOnFileSelect && router.pathname !== '/files') {
           router.push('/files');
         }
@@ -745,9 +745,9 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, navigateOnF
                         {item.path || item.name}
                       </span>
                     </div>
-                    {item.warning && (
+                    {item.index_state === 'queued' && (
                       <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', lineHeight: 1.6 }}>
-                        文件已导入，索引后台告警已记录到日志。
+                        文件已导入，后台索引已排队处理。
                       </div>
                     )}
                   </div>

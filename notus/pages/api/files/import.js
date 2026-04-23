@@ -1,6 +1,6 @@
 const { ensureRuntime } = require('../../../lib/runtime');
 const { ensureMarkdownPath, getFileByPath, normalizeRelativePath, saveFileByPath } = require('../../../lib/files');
-const { indexFileWithFallback } = require('../../../lib/fileIndexing');
+const { queueFileIndexing } = require('../../../lib/fileIndexing');
 const { createLogger, createRequestContext } = require('../../../lib/logger');
 
 export const config = {
@@ -97,21 +97,9 @@ export default async function handler(req, res) {
       }
 
       const saved = saveFileByPath(targetPath, String(current.content || ''));
-      send(res, {
-        type: 'progress',
-        stage: 'indexing',
-        current: index + 1,
-        total: files.length,
-        currentFile: saved.path,
-      });
-
-      const indexResult = await indexFileWithFallback(saved.path, logger, { action: 'import' });
+      const indexResult = await queueFileIndexing(saved.path, logger, { action: 'import' });
       if (existing) summary.overwritten += 1;
       else summary.imported += 1;
-      if (indexResult.warning) {
-        summary.warnings += 1;
-        summary.warning_items.push({ path: saved.path, error: indexResult.warning });
-      }
 
       send(res, {
         type: 'file',
@@ -119,9 +107,8 @@ export default async function handler(req, res) {
         id: saved.id,
         name: displayName,
         path: saved.path,
-        indexed: indexResult.indexed,
-        warning: indexResult.warning,
-        warning_code: indexResult.warning_code,
+        index_state: indexResult.index_state,
+        active_generation_id: indexResult.active_generation_id,
       });
     } catch (error) {
       summary.failed += 1;

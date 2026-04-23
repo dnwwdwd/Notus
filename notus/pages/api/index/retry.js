@@ -1,6 +1,6 @@
 const { ensureRuntime } = require('../../../lib/runtime');
 const { getDb } = require('../../../lib/db');
-const { indexBatch, retryFailedIndexing } = require('../../../lib/indexer');
+const { getIndexCoordinator } = require('../../../lib/indexCoordinator');
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -16,11 +16,11 @@ export default async function handler(req, res) {
     if (Array.isArray(fileIds) && fileIds.length > 0) {
       const placeholders = fileIds.map(() => '?').join(',');
       const rows = getDb().prepare(`SELECT path FROM files WHERE id IN (${placeholders})`).all(...fileIds.map(Number));
-      const result = await indexBatch(rows.map((row) => row.path));
+      const result = { queued: getIndexCoordinator().enqueuePaths(rows.map((row) => row.path), { reason: 'retry_selected' }).length };
       return res.status(200).json(result);
     }
 
-    const result = await retryFailedIndexing(100);
+    const result = await getIndexCoordinator().retryFailed(100);
     return res.status(200).json(result);
   } catch (error) {
     return res.status(500).json({ error: error.message, code: 'INDEX_RETRY_FAILED' });

@@ -1,7 +1,7 @@
 const { ensureRuntime } = require('../../../lib/runtime');
 const { blocksToMarkdown } = require('../../../utils/markdownBlocks');
 const { createFile, getFileById, updateFile } = require('../../../lib/files');
-const { indexFileWithFallback } = require('../../../lib/fileIndexing');
+const { queueFileIndexing } = require('../../../lib/fileIndexing');
 const { createLogger, createRequestContext } = require('../../../lib/logger');
 
 export const config = {
@@ -36,16 +36,15 @@ export default async function handler(req, res) {
       file = createFile(targetPath, markdown);
     }
 
-    const indexState = await indexFileWithFallback(file.path, logger, { action: 'article-save' });
+    const indexState = await queueFileIndexing(file.path, logger, { action: 'article-save' });
     const latest = getFileById(file.id);
     return res.status(200).json({
       ok: true,
       file_id: latest.id,
       path: latest.path,
       title: latest.title,
-      indexed: indexState.indexed,
-      warning: indexState.warning,
-      warning_code: indexState.warning_code,
+      index_state: indexState.index_state,
+      active_generation_id: indexState.active_generation_id,
       request_id: context.request_id,
       article: {
         id: article.id || `article_${latest.id}`,

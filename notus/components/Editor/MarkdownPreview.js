@@ -1,6 +1,7 @@
 // MarkdownPreview — react-markdown based rendered preview
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
 import rehypeHighlight from 'rehype-highlight';
 import rehypeKatex from 'rehype-katex';
 
@@ -35,7 +36,7 @@ export const MarkdownPreview = ({ content }) => (
       .md-preview a { color: var(--accent); text-decoration: underline; }
       .md-preview hr { border: none; border-top: 1px solid var(--border-subtle); margin: 24px 0; }
     `}</style>
-    <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight, rehypeKatex]}>
+    <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeHighlight, rehypeKatex]}>
       {content || ''}
     </ReactMarkdown>
   </div>

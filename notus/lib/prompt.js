@@ -36,31 +36,87 @@ function buildCanvasIntentPrompt(userInput, article) {
   ];
 }
 
-function buildAgentSystemPrompt(blocks, styleSamples) {
+function normalizeStyleContext(styleContext = {}) {
+  if (Array.isArray(styleContext)) {
+    return {
+      mode: 'auto',
+      summary: '',
+      samples: styleContext,
+      citationCount: styleContext.length,
+    };
+  }
+
+  return {
+    mode: styleContext.mode === 'manual' ? 'manual' : 'auto',
+    summary: String(styleContext.summary || '').trim(),
+    samples: Array.isArray(styleContext.samples) ? styleContext.samples : [],
+    citationCount: Number(styleContext.citationCount || 0),
+  };
+}
+
+function formatStyleSamples(samples = []) {
+  return samples.map((sample, index) => {
+    const file = sample.file_title || sample.file || '未命名笔记';
+    const heading = sample.heading_path || sample.path || '';
+    const lines = sample.line_start && sample.line_end
+      ? `L${sample.line_start}-${sample.line_end}`
+      : '';
+    const meta = [file, heading, lines].filter(Boolean).join(' · ');
+    return `[样本 ${index + 1}] ${meta}\n${sample.content || sample.preview || sample.quote || ''}`;
+  }).join('\n\n');
+}
+
+function buildStyleSection(styleContextInput) {
+  const styleContext = normalizeStyleContext(styleContextInput);
+  const { mode, summary, samples, citationCount } = styleContext;
+
+  if (!summary && samples.length === 0) {
+    return '\n\n当前没有可用风格样本。请按用户现有文章内容自然续写，不要凭空编造“用户惯用风格”。';
+  }
+
+  const modeInstruction = mode === 'manual'
+    ? '当前是手动风格来源模式：只能从下方给出的样本中提炼写作风格，不要自行扩展到其他文章。'
+    : '当前是自动风格来源模式：优先模仿下方样本的表达方式，但不要把样本中的事实内容直接搬到当前文章。';
+
+  const summaryText = summary ? `\n\n风格画像：\n${summary}` : '';
+  const sampleText = samples.length > 0 ? `\n\n风格样本：\n${formatStyleSamples(samples)}` : '';
+  const sourceCountText = citationCount > 0 ? `\n当前已收集 ${citationCount} 个可追溯来源。` : '';
+
+  return `
+
+写作风格使用要求：
+${modeInstruction}
+这些样本只用于模仿表达方式，不是事实依据，也不是必须照抄的内容。
+在生成或修改前，请先在内部识别并应用以下五个维度：
+1. 句子节奏：偏短促还是偏舒展，长短句如何交替。
+2. 人称与视角：更偏“我/我们”，还是偏客观观察。
+3. 惯用修辞：是否常用对比、比喻、反问、递进、总结句。
+4. 段落结构：习惯先抛结论、先讲背景，还是先举例再收束。
+5. 词汇风格：偏口语、偏书面，还是偏技术说明。${sourceCountText}${summaryText}${sampleText}`;
+}
+
+function buildAgentSystemPrompt(blocks, styleContext = {}) {
   const blockList = blocks
     .map((b) => `<block id="${b.id}" type="${b.type}">${b.content}</block>`)
     .join('\n');
 
-  const style = styleSamples
-    ? `\n\n参考写作风格（用户已有笔记片段）：\n${styleSamples}`
-    : '';
-
   return `你是用户的AI写作助手，帮助创作和改进笔记文章。
 当前文章的所有块如下：
-${blockList}${style}
+${blockList}${buildStyleSection(styleContext)}
 
 你有以下工具可用：
-- search_knowledge(query) — 搜索用户知识库
-- get_style_samples(topic) — 获取同主题写作风格样本
+- search_knowledge(query) — 搜索事实相关的知识片段，用于补充内容依据
+- get_style_samples(query) — 获取更多可模仿的写作风格样本，不是用来查事实
 - get_outline(topic) — 生成文章大纲
 - draft_block(block_id, instruction) — 为指定块起草内容
 - expand_block(block_id) — 展开扩充指定块
 - shrink_block(block_id) — 压缩精简指定块
-- polish_style(block_id, style_ref) — 按风格润色指定块
-- insert_block(after_block_id, type, content) — 在指定块后插入新块
+- polish_style(block_id, instruction) — 按当前风格要求润色指定块
+- insert_block(block_id, type, content) — 在指定块后插入新块
 - delete_block(block_id) — 删除指定块
 
-  每次修改必须包含 old 字段（被替换的原始内容），用于乐观锁校验。`;
+每次修改必须包含 old 字段（被替换的原始内容），用于乐观锁校验。
+如果你已经拿到了风格样本，请把风格体现在生成结果里，不要只在回答里口头描述风格。`;
 }
 
 function buildOutlinePrompt(topic, chunks = []) {
@@ -92,7 +148,7 @@ function buildDraftPrompt(blockId, content, instruction, context) {
   return [
     {
       role: 'system',
-      content: buildAgentSystemPrompt(context.blocks, context.styleSamples),
+      content: buildAgentSystemPrompt(context.blocks, context.styleContext || context.styleSamples),
     },
     {
       role: 'user',
@@ -101,11 +157,14 @@ function buildDraftPrompt(blockId, content, instruction, context) {
   ];
 }
 
-function buildPolishPrompt(blockId, content, styleRef) {
+function buildPolishPrompt(blockId, content, styleRef, styleContext) {
   return [
     {
       role: 'system',
-      content: `你是文字润色专家，擅长保留原意的同时提升表达质量。根据提供的风格参考调整语言风格，但保持核心观点不变。`,
+      content: [
+        '你是文字润色专家，擅长保留原意的同时提升表达质量。',
+        buildStyleSection(styleContext || { samples: styleRef ? [{ content: styleRef }] : [] }),
+      ].join('\n\n'),
     },
     {
       role: 'user',

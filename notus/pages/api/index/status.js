@@ -1,6 +1,11 @@
 const { ensureRuntime } = require('../../../lib/runtime');
-const { getDb } = require('../../../lib/db');
 const { syncFilesFromDisk } = require('../../../lib/files');
+const {
+  summarizeFileIndexStatus,
+  sanitizeGenerationForApi,
+  getActiveGeneration,
+  getLatestRebuildGeneration,
+} = require('../../../lib/indexGenerations');
 const { createLogger, createRequestContext } = require('../../../lib/logger');
 
 export default function handler(req, res) {
@@ -17,21 +22,23 @@ export default function handler(req, res) {
   }
 
   syncFilesFromDisk();
-  const db = getDb();
-  const row = db.prepare(`
-    SELECT
-      COUNT(*) AS total,
-      SUM(CASE WHEN indexed = 1 THEN 1 ELSE 0 END) AS indexed,
-      SUM(CASE WHEN indexed = 0 AND index_error IS NULL THEN 1 ELSE 0 END) AS pending,
-      SUM(CASE WHEN indexed = 0 AND index_error IS NOT NULL THEN 1 ELSE 0 END) AS failed
-    FROM files
-  `).get();
+  const summary = summarizeFileIndexStatus();
+  const activeGeneration = getActiveGeneration();
+  const rebuildGeneration = getLatestRebuildGeneration();
+  const rebuildProgress = rebuildGeneration?.progress_object || {};
 
   return res.status(200).json({
-    total: row.total || 0,
-    indexed: row.indexed || 0,
-    pending: row.pending || 0,
-    failed: row.failed || 0,
+    ...summary,
+    active_generation: sanitizeGenerationForApi(activeGeneration),
+    rebuild_generation: rebuildGeneration && rebuildGeneration.id !== activeGeneration?.id
+      ? {
+        ...sanitizeGenerationForApi(rebuildGeneration),
+        current: Number(rebuildProgress.current || rebuildGeneration.processed_files || 0),
+        total: Number(rebuildProgress.total || rebuildGeneration.total_files || 0),
+        dirty_files: Number(rebuildProgress.dirty_files || 0),
+        error: rebuildProgress.error || rebuildGeneration.error_summary || null,
+      }
+      : null,
     request_id: context.request_id,
   });
 }

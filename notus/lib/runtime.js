@@ -3,6 +3,8 @@ const { initDb, isVecAvailable } = require('./db');
 const { readEnvConfig } = require('./config');
 const { createLogger } = require('./logger');
 const { startWatcher } = require('./watcher');
+const { getIndexCoordinator } = require('./indexCoordinator');
+const { syncFilesFromDisk } = require('./files');
 
 let runtimeStarted = false;
 let retryTimer = null;
@@ -18,9 +20,9 @@ function ensureDirs(config) {
 
 function scheduleRetries() {
   if (retryTimer) return;
-  const { retryFailedIndexing } = require('./indexer');
+  const coordinator = getIndexCoordinator();
   retryTimer = setInterval(() => {
-    retryFailedIndexing().catch((error) => {
+    coordinator.retryFailed(100).catch((error) => {
       logger.error('runtime.retry.failed', { error });
     });
   }, 5 * 60 * 1000);
@@ -34,6 +36,7 @@ function ensureRuntime({ startBackground = true } = {}) {
     const config = readEnvConfig();
     ensureDirs(config);
     initDb();
+    syncFilesFromDisk();
     logger.info('runtime.ready', {
       notes_dir: config.notesDir,
       db_path: config.dbPath,
@@ -42,11 +45,12 @@ function ensureRuntime({ startBackground = true } = {}) {
     });
 
     if (startBackground) {
-      const { indexFile, removeFile } = require('./indexer');
+      const coordinator = getIndexCoordinator();
+      coordinator.init();
       startWatcher({
-        onAdd: (filePath) => indexFile(filePath).catch((error) => logger.error('watcher.add.failed', { file_path: filePath, error })),
-        onChange: (filePath) => indexFile(filePath).catch((error) => logger.error('watcher.change.failed', { file_path: filePath, error })),
-        onRemove: (relativePath) => removeFile(relativePath),
+        onAdd: (filePath) => coordinator.enqueuePath(filePath, { reason: 'watcher_add' }),
+        onChange: (filePath) => coordinator.enqueuePath(filePath, { reason: 'watcher_change' }),
+        onRemove: (relativePath) => coordinator.removePath(relativePath),
       }).catch((error) => {
         logger.error('runtime.watcher.start_failed', { error });
       });

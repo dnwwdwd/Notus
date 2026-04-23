@@ -1,6 +1,6 @@
 const { ensureRuntime } = require('../../../lib/runtime');
 const { moveFiles } = require('../../../lib/files');
-const { indexBatch } = require('../../../lib/indexer');
+const { getIndexCoordinator } = require('../../../lib/indexCoordinator');
 const { createLogger, createRequestContext } = require('../../../lib/logger');
 
 export default async function handler(req, res) {
@@ -23,10 +23,12 @@ export default async function handler(req, res) {
     }
 
     const files = moveFiles(paths, dest);
-    const indexSummary = await indexBatch(files.map((file) => file.path));
+    const indexSummary = {
+      queued: getIndexCoordinator().enqueuePaths(files.map((file) => file.path), { reason: 'move' }).length,
+    };
     logger.info('files.move.completed', {
       moved_count: files.length,
-      failed_count: indexSummary.failed || 0,
+      queued_count: indexSummary.queued || 0,
     });
     return res.status(200).json({ files, index_summary: indexSummary, request_id: context.request_id });
   } catch (error) {

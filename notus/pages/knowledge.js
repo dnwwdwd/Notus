@@ -16,6 +16,8 @@ import { Badge } from '../components/ui/Badge';
 import { SkeletonText } from '../components/ui/Skeleton';
 import { useToast } from '../components/ui/Toast';
 import { useApp } from '../contexts/AppContext';
+import { useAppStatus } from '../contexts/AppStatusContext';
+import { buildLineHash, buildPathWithHash } from '../utils/lineHash';
 
 const WysiwygEditor = dynamic(
   () => import('../components/Editor/WysiwygEditor').then((module) => module.WysiwygEditor),
@@ -33,11 +35,13 @@ export default function KnowledgePage() {
   const router = useRouter();
   const toast = useToast();
   const { activeFile, allFiles, selectFile, getCachedContent, setCachedContent } = useApp();
+  const { refreshStatus } = useAppStatus();
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
   const [streamText, setStreamText] = useState('');
   const [error, setError] = useState(null);
   const [retrievalStage, setRetrievalStage] = useState(null);
+  const [retrievalSourcesCount, setRetrievalSourcesCount] = useState(0);
   const [docLoading, setDocLoading] = useState(false);
   const [docError, setDocError] = useState(null);
   const [docContent, setDocContent] = useState('');
@@ -46,7 +50,6 @@ export default function KnowledgePage() {
   const [editorOpen, setEditorOpen] = useState(true);
   const [referenceMode, setReferenceMode] = useState('auto');
   const [manualReferenceFileIds, setManualReferenceFileIds] = useState([]);
-  const saveTimer = useRef(null);
   const chatEndRef = useRef(null);
 
   const referenceFileOptions = allFiles.map((file) => ({
@@ -112,7 +115,6 @@ export default function KnowledgePage() {
 
   const handleDocSave = useCallback(async (nextContent = docContent) => {
     if (!activeFile?.id) return;
-    clearTimeout(saveTimer.current);
     setDocSaveState('saving');
 
     try {
@@ -128,20 +130,17 @@ export default function KnowledgePage() {
       setDocContent(savedContent);
       setCachedContent(activeFile.id, savedContent);
       setDocSaveState('saved');
+      refreshStatus({ quiet: true }).catch(() => {});
     } catch (saveError) {
       setDocSaveState('dirty');
       toast(saveError.message || '保存失败', 'error');
     }
-  }, [activeFile?.id, docContent, toast, setCachedContent]);
+  }, [activeFile?.id, docContent, toast, setCachedContent, refreshStatus]);
 
   const handleDocChange = useCallback((nextContent) => {
     setDocContent(nextContent);
     setDocSaveState('dirty');
-    clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => {
-      handleDocSave(nextContent);
-    }, 1200);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   const readSse = async (response, onEvent) => {
     if (!response.body) throw new Error('接口没有返回可读取的流');
@@ -167,9 +166,16 @@ export default function KnowledgePage() {
   };
 
   const handleSend = async (query, model) => {
+    if (referenceMode === 'manual' && manualReferenceFileIds.length === 0) {
+      setError('手动参考来源至少选择 1 篇文章');
+      toast('手动参考来源至少选择 1 篇文章', 'error');
+      return;
+    }
+
     setError(null);
     setLoading(true);
     setRetrievalStage('searching');
+    setRetrievalSourcesCount(0);
     setMessages((prev) => [...prev, { id: Date.now(), role: 'user', content: query }]);
     setStreamText('');
 
@@ -193,7 +199,9 @@ export default function KnowledgePage() {
 
       await readSse(response, (event) => {
         if (event.type === 'chunks') {
-          setRetrievalStage('found');
+          const chunkCount = Array.isArray(event.chunks) ? event.chunks.length : 0;
+          setRetrievalSourcesCount(chunkCount);
+          setRetrievalStage(chunkCount > 0 ? 'found' : null);
         } else if (event.type === 'token') {
           answer += event.text || '';
           setStreamText(answer);
@@ -215,6 +223,7 @@ export default function KnowledgePage() {
       setError(err.message || 'AI 请求失败，请检查网络或 API Key 设置');
       setLoading(false);
       setRetrievalStage(null);
+      setRetrievalSourcesCount(0);
     }
   };
 
@@ -227,16 +236,19 @@ export default function KnowledgePage() {
     const targetFile = allFiles.find((file) => file.id === fileId);
     if (targetFile) selectFile(targetFile);
 
-    router.push({
-      pathname: '/files',
-      query: {
-        fileId,
-        lineStart: citation?.line_start || '',
-        lineEnd: citation?.line_end || '',
-        preview: citation?.preview || '',
-        headingPath: citation?.heading_path || '',
-      },
-    });
+    const hash = buildLineHash(citation?.line_start, citation?.line_end);
+    const query = {
+      fileId,
+      preview: citation?.preview || '',
+      headingPath: citation?.heading_path || '',
+    };
+
+    if (!hash) {
+      query.lineStart = citation?.line_start || '';
+      query.lineEnd = citation?.line_end || '';
+    }
+
+    router.push(buildPathWithHash('/files', query, hash));
   }, [allFiles, router, selectFile]);
 
   return (
@@ -266,7 +278,13 @@ export default function KnowledgePage() {
                 <Icons.x size={14} />
               </button>
             </div>
-            <EditorToolbar editor={editor} fileId={activeFile?.id} showAICreate={false} />
+            <EditorToolbar
+              editor={editor}
+              fileId={activeFile?.id}
+              showAICreate={false}
+              onSave={() => handleDocSave()}
+              saveDisabled={!activeFile?.id || docSaveState === 'saving' || docSaveState === 'saved'}
+            />
 
             {docLoading && (
               <div style={{ flex: 1, padding: '32px 28px' }}>
@@ -422,9 +440,9 @@ export default function KnowledgePage() {
                       : <AiBubble key={msg.id} text={msg.content} citations={msg.citations} onCitationClick={handleCitationClick} />
                   )}
 
-                  {loading && (
+      {loading && (
                     <div style={{ margin: '16px 0' }}>
-                      {retrievalStage && <RetrievalStatus stage={retrievalStage} />}
+                      {retrievalStage && <RetrievalStatus stage={retrievalStage} sources={retrievalSourcesCount} />}
                       {streamText && <AiBubble text={streamText} streaming />}
                     </div>
                   )}

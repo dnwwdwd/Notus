@@ -16,6 +16,7 @@ import { Button } from '../components/ui/Button';
 import { useToast } from '../components/ui/Toast';
 import { useApp } from '../contexts/AppContext';
 import { markdownToCanvasBlocks } from '../utils/markdownBlocks';
+import { buildLineHash, buildPathWithHash } from '../utils/lineHash';
 
 const RECENT_ITEMS = [
   { title: '关于慢的意义', sub: '草稿 · 5 个块 · 2 小时前' },
@@ -298,6 +299,11 @@ export default function CanvasPage() {
   }, [toast]);
 
   const handleSend = useCallback(async (query) => {
+    if (styleSource === 'manual' && manualStyleFileIds.length === 0) {
+      toast('手动风格来源至少选择 1 篇文章', 'error');
+      return;
+    }
+
     setLoading(true);
     setAiInjected('');
     setMessages((prev) => [...prev, { id: Date.now(), role: 'user', content: query }]);
@@ -305,6 +311,8 @@ export default function CanvasPage() {
     try {
       let assistantText = '';
       let receivedOperation = false;
+      let finalCitations = [];
+      const operationMessageIds = [];
       const response = await fetch('/api/agent/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -343,16 +351,30 @@ export default function CanvasPage() {
             operation,
           };
           setPendingOp(pending);
+          const messageId = Date.now() + Math.random();
+          operationMessageIds.push(messageId);
           setMessages((prev) => [
             ...prev,
-            { id: Date.now(), role: 'assistant', content: '已生成可应用的修改。', operation: pending },
+            { id: messageId, role: 'assistant', content: '已生成可应用的修改。', operation: pending, citations: [] },
           ]);
         } else if (event.type === 'done') {
+          finalCitations = event.citations || finalCitations;
           if (!receivedOperation) {
             setMessages((prev) => [
               ...prev,
-              { id: event.message_id || Date.now(), role: 'assistant', content: assistantText || '处理完成。' },
+              {
+                id: event.message_id || Date.now(),
+                role: 'assistant',
+                content: assistantText || '处理完成。',
+                citations: finalCitations,
+              },
             ]);
+          } else if (finalCitations.length > 0) {
+            setMessages((prev) => prev.map((message) => (
+              operationMessageIds.includes(message.id)
+                ? { ...message, citations: finalCitations }
+                : message
+            )));
           }
           setStreamText('');
           setLoading(false);
@@ -366,6 +388,28 @@ export default function CanvasPage() {
       setLoading(false);
     }
   }, [article, blocks, manualStyleFileIds, styleSource, toast]);
+
+  const handleCitationClick = useCallback((citation) => {
+    const fileId = Number(citation?.file_id);
+    if (!Number.isFinite(fileId)) return;
+
+    const targetFile = allFiles.find((file) => file.id === fileId);
+    if (targetFile) selectFile(targetFile);
+
+    const hash = buildLineHash(citation?.line_start, citation?.line_end);
+    const query = {
+      fileId,
+      preview: citation?.preview || '',
+      headingPath: citation?.heading_path || '',
+    };
+
+    if (!hash) {
+      query.lineStart = citation?.line_start || '';
+      query.lineEnd = citation?.line_end || '';
+    }
+
+    router.push(buildPathWithHash('/files', query, hash));
+  }, [allFiles, router, selectFile]);
 
   // Canvas block AI button → populate InputBar
   const handleBlockAI = useCallback((blockId) => {
@@ -638,7 +682,12 @@ export default function CanvasPage() {
               msg.role === 'user'
                 ? <UserBubble key={msg.id}>{msg.content}</UserBubble>
                 : (
-                  <AiBubble key={msg.id} text={msg.content}>
+                  <AiBubble
+                    key={msg.id}
+                    text={msg.content}
+                    citations={msg.citations}
+                    onCitationClick={handleCitationClick}
+                  >
                     {msg.operation && (
                       <OperationPreview
                         blockIdx={msg.operation.blockIdx}

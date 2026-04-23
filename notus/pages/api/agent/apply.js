@@ -2,7 +2,7 @@ const { ensureRuntime } = require('../../../lib/runtime');
 const { applyOperation } = require('../../../lib/diff');
 const { blocksToMarkdown } = require('../../../utils/markdownBlocks');
 const { getFileById, updateFile } = require('../../../lib/files');
-const { indexFile } = require('../../../lib/indexer');
+const { queueFileIndexing } = require('../../../lib/fileIndexing');
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).end();
@@ -25,7 +25,7 @@ export default async function handler(req, res) {
       if (file) {
         const markdown = blocksToMarkdown(result.article.blocks);
         const saved = updateFile(file.id, markdown);
-        await indexFile(saved.path);
+        await queueFileIndexing(saved.path);
       }
     }
     return res.status(200).json(result);

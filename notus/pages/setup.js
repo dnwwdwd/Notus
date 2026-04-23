@@ -951,7 +951,7 @@ export default function SetupPage() {
         setStep3Summary(event);
         if (event.errors?.length) setStep3Errors((prev) => [...prev, ...event.errors]);
       }
-      if (event.type === 'error') {
+      if (event.type === 'failed') {
         throw new Error(event.error || '索引重建失败');
       }
     });

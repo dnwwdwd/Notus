@@ -65,6 +65,7 @@ export const AiBubble = ({ text, streaming, citations, onCitationClick, children
         {citations.map((c, i) => (
           <SourceCard
             key={i}
+            kind={c.citation_kind}
             file={c.file}
             path={c.path}
             quote={c.quote}

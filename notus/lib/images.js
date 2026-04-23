@@ -354,6 +354,7 @@ async function ensureImageAvailableForRequest(fileId, src) {
 module.exports = {
   MAX_IMAGE_BYTES,
   buildImageProxyUrl,
+  downloadImage,
   getImageRecord,
   deleteImageVectorsByFileId,
   processImagesForFile,

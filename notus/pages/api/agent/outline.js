@@ -46,7 +46,8 @@ export default async function handler(req, res) {
   res.setHeader('Connection', 'keep-alive');
 
   try {
-    const chunks = await hybridSearch(topic, { topK: 3 });
+    const retrieval = await hybridSearch(topic, { topK: 3 });
+    const chunks = retrieval.chunks || [];
     const reply = await completeChat(buildOutlinePrompt(topic, chunks));
     const parsed = safeJsonParse(reply.content);
     const blocks = Array.isArray(parsed?.blocks) && parsed.blocks.length > 0

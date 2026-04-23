@@ -263,6 +263,62 @@ function initDb() {
         value      TEXT,
         updated_at TEXT DEFAULT (datetime('now'))
       );
+
+      CREATE TABLE IF NOT EXISTS index_generations (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind           TEXT NOT NULL,
+        state          TEXT NOT NULL,
+        config_snapshot TEXT NOT NULL,
+        db_path        TEXT NOT NULL UNIQUE,
+        progress       TEXT,
+        total_files    INTEGER NOT NULL DEFAULT 0,
+        processed_files INTEGER NOT NULL DEFAULT 0,
+        error_summary  TEXT,
+        started_at     TEXT DEFAULT (datetime('now')),
+        finished_at    TEXT,
+        activated_at   TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_index_generations_state ON index_generations(state, started_at);
+
+      CREATE TABLE IF NOT EXISTS generation_file_results (
+        generation_id       INTEGER NOT NULL REFERENCES index_generations(id) ON DELETE CASCADE,
+        file_id             INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+        path                TEXT NOT NULL,
+        content_hash        TEXT,
+        status              TEXT NOT NULL,
+        chunks_count        INTEGER NOT NULL DEFAULT 0,
+        text_indexed        INTEGER NOT NULL DEFAULT 0,
+        vector_indexed      INTEGER NOT NULL DEFAULT 0,
+        image_vector_indexed INTEGER NOT NULL DEFAULT 0,
+        error               TEXT,
+        updated_at          TEXT DEFAULT (datetime('now')),
+        PRIMARY KEY (generation_id, file_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_generation_file_results_status
+        ON generation_file_results(generation_id, status, updated_at);
+
+      CREATE TABLE IF NOT EXISTS generation_dirty_files (
+        generation_id INTEGER NOT NULL REFERENCES index_generations(id) ON DELETE CASCADE,
+        file_id       INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+        path          TEXT NOT NULL,
+        content_hash  TEXT,
+        updated_at    TEXT DEFAULT (datetime('now')),
+        PRIMARY KEY (generation_id, file_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS file_index_status (
+        file_id              INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+        generation_id        INTEGER REFERENCES index_generations(id) ON DELETE SET NULL,
+        status               TEXT NOT NULL,
+        content_hash         TEXT,
+        chunks_count         INTEGER NOT NULL DEFAULT 0,
+        text_indexed         INTEGER NOT NULL DEFAULT 0,
+        vector_indexed       INTEGER NOT NULL DEFAULT 0,
+        image_vector_indexed INTEGER NOT NULL DEFAULT 0,
+        error                TEXT,
+        updated_at           TEXT DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_file_index_status_state ON file_index_status(status, updated_at);
     `);
 
     migrateRegularTables(db);

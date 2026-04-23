@@ -1,6 +1,6 @@
 # Notus 项目进度
 
-> 最后更新：2026-04-20
+> 最后更新：2026-04-22
 > 对应文档版本：PDD v2.0 / PRD v2.1 / UI Guide v1.0
 
 ---
@@ -23,9 +23,9 @@
 |--------|------|------|------|
 | M1-01 项目初始化 + CSS Token 系统 | `notus/package.json` `notus/next.config.js` `styles/globals.css` | ✅ | 含 light/dark 双主题，所有设计 token |
 | M1-02 `lib/db.js` SQLite + sqlite-vec 初始化 | `lib/db.js` | ✅ | 已补齐 `files/chunks/chunks_vec/chunks_fts/images/conversations/messages/settings`、FTS5 触发器与运行时设置读写 |
-| M1-03 `lib/indexer.js` 分块 + 索引 | `lib/indexer.js` | ✅ | 已改为 AST 分块；Embedding 失败时保留 FTS 检索并标记待重试 |
+| M1-03 `lib/indexer.js` 分块 + 索引 | `lib/indexer.js` `lib/indexGenerationDb.js` `lib/indexGenerations.js` `lib/indexCoordinator.js` | ✅ | 已完成 P0 索引稳定性改造：多版本 generation 索引、后台队列、active generation 原子切换、rebuild catch-up、`queued/running/degraded/ready/failed` 状态模型 |
 | M1-04 `lib/embeddings.js` | `lib/embeddings.js` | ⚠️ 部分 | 已接真实文本 / 多模态 Embedding API；图片向量支持已补，仍需用真实 API Key 做多提供商实测 |
-| M1-05 `lib/watcher.js` chokidar | `lib/watcher.js` | ✅ | 已接入运行时初始化，监听 `add/change/unlink` 并触发索引 |
+| M1-05 `lib/watcher.js` chokidar | `lib/watcher.js` `lib/runtime.js` | ✅ | watcher 仍保留外部修改监听，但现在只负责把文件变更入队后台协调器，不再直接执行整文件索引 |
 | M1-06 env.local.example + _app.js + globals.css | `.env.local.example` `pages/_app.js` | ✅ | |
 
 ---
@@ -37,9 +37,9 @@
 | M2-01 App Shell（TopBar + Sidebar + Shell） | `components/Layout/` | ✅ | |
 | M2-02 FileTree 组件（前端交互） | `components/Layout/Sidebar.js` `contexts/AppContext.js` `pages/api/files/` | ✅ | 已接真实文件系统与 SQLite；新建文件无需输入 `.md` 后缀，索引告警不再阻断文件创建 |
 | M2-03 WYSIWYG Markdown 编辑器 | `components/Editor/WysiwygEditor.js` `components/Editor/EditorToolbar.js` | ✅ | Tiptap + Markdown 双向转换；支持标题、链接、加粗、斜体、下划线、列表、任务列表、引用、代码块、分隔线、图片；代码块已接入 lowlight 语法高亮与语言选择 |
-| M2-04 MarkdownRenderer | `components/Editor/MarkdownPreview.js` | ✅ | remark-gfm，待接入 rehype-katex |
+| M2-04 MarkdownRenderer | `components/Editor/MarkdownPreview.js` | ✅ | 已接入 `remark-gfm + remark-math + rehype-highlight + rehype-katex`，支持 LaTeX 公式渲染 |
 | M2-05 TocTree | `components/Layout/Sidebar.js` `pages/files/index.js` | ✅ | TOC 从 markdown heading 提取并渲染；已支持点击跳转与滚动联动高亮 |
-| M2-06 URL hash 来源跳转 + 高亮淡出 | `pages/files/index.js` `components/ui/SourceCard.js` | ⚠️ 部分 | 来源卡片已支持按 fileId + lineStart/lineEnd 跳转并高亮淡出；`#L24-L28` hash 格式仍未补 |
+| M2-06 URL hash 来源跳转 + 高亮淡出 | `pages/files/index.js` `components/ui/SourceCard.js` | ✅ | 已支持 `#L24-L28` / `#L24` 行号 hash，来源卡片跳转会保留 hash 并高亮淡出 |
 | M2-07 批量导入/导出 + SSE 进度 | `pages/api/files/` `components/Layout/Sidebar.js` | ✅ | 已完成 `/api/files/import` `/api/files/export`；导入支持 50MB 请求体、保存/索引阶段进度、逐文件告警与请求 ID |
 | M2-08 `/indexing` 页面 | `pages/indexing.js` | ✅ | 已接 `/api/index/status` 与 `/api/index/rebuild` SSE，支持真实进度、当前文件、失败项与重新构建 |
 
@@ -81,7 +81,7 @@
 
 | 子任务 | 文件 | 状态 | 备注 |
 |--------|------|------|------|
-| M5-01 设置页（模型/存储/日志/关于） | `pages/settings/[section].js` `components/Settings/SettingsScreen.js` | ✅ | 模型配置支持远端 `/api/models` 获取、内置回退与手动输入；存储页已接真实重建/清除索引；日志页可查询服务端 JSONL 日志 |
+| M5-01 设置页（模型/存储/日志/关于） | `pages/settings/[section].js` `components/Settings/SettingsScreen.js` | ✅ | 模型配置支持远端 `/api/models` 获取、内置回退与手动输入；Embedding 配置已拆分为“当前在线 / 待生效”，保存后会显示后台重建状态；日志页可查询服务端 JSONL 日志 |
 | M5-02 CommandPalette（cmdk） | `components/Layout/TopBar.js` | ⚠️ 部分 | 已提供全局文章搜索弹层和 ⌘K 快捷键；空输入时不再展示文章；完整命令面板仍未实现 |
 | M5-03 快捷键绑定 | `contexts/ShortcutsContext.js` `components/Editor/WysiwygEditor.js` `components/Layout/TopBar.js` `components/ChatArea/InputBar.js` `components/Canvas/CanvasBlock.js` | ✅ | 常用快捷键已集中到 `/settings/shortcuts` 维护，并接入搜索、发送、保存文档、保存块编辑、取消块编辑 |
 | M5-04 Toast 全局错误降级 | `components/ui/Toast.js` | ✅ | |
@@ -100,10 +100,12 @@
 ## 当前需求口径
 
 - 知识库页以问答为主；未选中文件时不显示文章编辑器。
-- 知识库页和创作页都支持手动指定参考来源，但目前只是前端交互层完成。
+- 文件页与知识库页的文章编辑均改为手动保存；保存成功后只负责入队后台索引，不再同步等待向量化完成。
+- 知识库页和创作页都支持手动指定参考来源，后端过滤已打通。
 - 创作页点击侧边栏文件时，保持在 `/canvas`，并基于对应文章进入创作。
 - 创作页文章分块已从按文本规则切分改为基于 remark AST 的结构化分块，列表、引用、代码块会尽量保持整体。
 - 快捷键提示默认不直接展示，统一通过设置页维护。
+- embedding 配置已拆分为“当前生效”和“待生效”；模型 / 维度 / 多模态变更会创建新的 rebuild generation，只有激活后才正式参与检索。
 
 ### 已接真实后端
 
@@ -142,7 +144,6 @@
 
 ### 尚未实现 / 待验证
 
-- `#L24-L28` 形式的 URL hash 精确定位仍未实现；当前已完成来源卡片 query 参数定位与高亮。
 - 完整 CommandPalette（cmdk 命令面板）仍未实现；当前是全局文章搜索弹层。
 - 登录页仍是演示跳转，尚未接真实 Lazycat/OIDC 认证。
 - sqlite-vec x86_64 / aarch64 与 `.lpk` 实机打包部署仍待验证。
@@ -155,7 +156,7 @@
 
 1. **`/setup` 三步引导接真实流程** — 已完成真实导入、索引进度与入口守卫。
 2. **`/indexing` 页面接真实进度** — 已完成状态统计、SSE 重建进度、当前文件与失败项展示。
-3. **设置页索引维护** — 已完成真实重建与清除索引。
+3. **设置页索引维护** — 已完成真实重建、active/desired embedding 拆分与后台重建状态展示。
 
 ### P1 已完成：知识库主链路补全
 

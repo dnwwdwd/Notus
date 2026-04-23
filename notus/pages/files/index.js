@@ -10,6 +10,8 @@ import { InlineError } from '../../components/ui/InlineError';
 import { Icons } from '../../components/ui/Icons';
 import { useToast } from '../../components/ui/Toast';
 import { useApp } from '../../contexts/AppContext';
+import { useAppStatus } from '../../contexts/AppStatusContext';
+import { buildPathWithHash, extractHashFromAsPath, parseLineHash } from '../../utils/lineHash';
 
 // WysiwygEditor: SSR-incompatible (Tiptap uses DOM APIs)
 // onEditorReady lifts the editor instance up so the toolbar can use it
@@ -103,8 +105,8 @@ export default function FilesPage() {
   const router = useRouter();
   const toast = useToast();
   const { activeFile, allFiles, selectFile, getCachedContent, setCachedContent } = useApp();
+  const { refreshStatus } = useAppStatus();
   const activeFileId = activeFile?.id;
-  const saveTimer = useRef(null);
 
   const [editor, setEditor] = useState(null);      // Tiptap editor instance
   const [content, setContent] = useState('');       // markdown string
@@ -113,6 +115,7 @@ export default function FilesPage() {
   const [error, setError] = useState(null);
   const [showIndexToast, setShowIndexToast] = useState(false);
   const [activeHeadingIndex, setActiveHeadingIndex] = useState(-1);
+  const lastNavigationSignature = useRef('');
 
   const loadFile = useCallback(async (fileId) => {
     // Check in-memory cache first for instant navigation
@@ -211,12 +214,37 @@ export default function FilesPage() {
     if (!router.isReady || !editor || !activeFile?.id) return;
 
     const requestedFileId = Number(getQueryValue(router.query.fileId));
-    if (!Number.isFinite(requestedFileId) || requestedFileId !== activeFile.id) return;
+    const hashFragment = extractHashFromAsPath(router.asPath);
+    const hashRange = parseLineHash(hashFragment);
+    const targetFileId = Number.isFinite(requestedFileId) ? requestedFileId : activeFile.id;
+    if (targetFileId !== activeFile.id) return;
 
-    const lineStart = Number(getQueryValue(router.query.lineStart));
-    const lineEnd = Number(getQueryValue(router.query.lineEnd));
+    const queryLineStart = Number(getQueryValue(router.query.lineStart));
+    const queryLineEnd = Number(getQueryValue(router.query.lineEnd));
+    const lineStart = hashRange?.lineStart ?? queryLineStart;
+    const lineEnd = hashRange?.lineEnd ?? queryLineEnd;
     const preview = getQueryValue(router.query.preview) || previewFromLines(content, lineStart, lineEnd);
     const headingPath = getQueryValue(router.query.headingPath) || '';
+    const hasNavigationIntent = Boolean(
+      hashRange ||
+      Number.isFinite(requestedFileId) ||
+      Number.isFinite(queryLineStart) ||
+      Number.isFinite(queryLineEnd) ||
+      preview ||
+      headingPath
+    );
+    if (!hasNavigationIntent) return;
+
+    const navigationSignature = JSON.stringify([
+      targetFileId,
+      Number.isFinite(lineStart) ? lineStart : null,
+      Number.isFinite(lineEnd) ? lineEnd : null,
+      preview || '',
+      headingPath || '',
+      hashFragment || '',
+    ]);
+    if (lastNavigationSignature.current === navigationSignature) return;
+    lastNavigationSignature.current = navigationSignature;
 
     const container = getEditorScrollContainer(editor);
     const target = findBestMatchElement(editor, { preview, headingPath });
@@ -226,27 +254,26 @@ export default function FilesPage() {
       window.setTimeout(() => target.classList.remove('citation-highlight'), 3000);
     }
 
-    const nextQuery = { ...router.query };
-    delete nextQuery.fileId;
-    delete nextQuery.lineStart;
-    delete nextQuery.lineEnd;
-    delete nextQuery.preview;
-    delete nextQuery.headingPath;
-    router.replace({ pathname: '/files', query: nextQuery }, undefined, { shallow: true });
+    const hasQueryIntent = ['fileId', 'lineStart', 'lineEnd', 'preview', 'headingPath']
+      .some((key) => router.query[key] !== undefined);
+    if (hasQueryIntent) {
+      const nextQuery = { ...router.query };
+      delete nextQuery.fileId;
+      delete nextQuery.lineStart;
+      delete nextQuery.lineEnd;
+      delete nextQuery.preview;
+      delete nextQuery.headingPath;
+      router.replace(buildPathWithHash('/files', nextQuery, hashFragment), undefined, { shallow: true });
+    }
   }, [activeFile?.id, content, editor, router]);
 
   const handleChange = useCallback((newContent) => {
     setContent(newContent);
     setSaveState('dirty');
-    clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => {
-      handleSave(newContent);
-    }, 1200);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleSave = useCallback(async (nextContent = content) => {
     if (!activeFile) return;
-    clearTimeout(saveTimer.current);
     setSaveState('saving');
     try {
       const response = await fetch(`/api/files/${activeFile.id}`, {
@@ -264,13 +291,14 @@ export default function FilesPage() {
       setContent(savedContent);
       setCachedContent(activeFile.id, savedContent);
       setSaveState('saved');
+      refreshStatus({ quiet: true }).catch(() => {});
       setShowIndexToast(true);
       setTimeout(() => setShowIndexToast(false), 4000);
     } catch (saveError) {
       setSaveState('dirty');
       toast(saveError.message || '保存失败', 'error');
     }
-  }, [activeFile, content, toast, setCachedContent]);
+  }, [activeFile, content, toast, setCachedContent, refreshStatus]);
 
   const tocItems = useMemo(
     () => extractToc(content).map((item, index) => ({
@@ -292,6 +320,8 @@ export default function FilesPage() {
       <EditorToolbar
         editor={editor}
         fileId={activeFile?.id}
+        onSave={() => handleSave()}
+        saveDisabled={!activeFile || saveState === 'saving' || saveState === 'saved'}
       />
 
       {/* Empty state */}
@@ -367,7 +397,7 @@ export default function FilesPage() {
               }}>
                 <Icons.check size={11} />
               </span>
-              <span>已保存并索引到知识库</span>
+              <span>已保存，后台索引已入队</span>
               <span style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-xs)', marginLeft: 4 }}>刚刚</span>
             </div>
           )}

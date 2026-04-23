@@ -149,6 +149,8 @@ const ModelConfig = () => {
   const [profiles, setProfiles] = useState(() => loadProfiles());
   const [profileName, setProfileName] = useState('');
   const [showSaveBox, setShowSaveBox] = useState(false);
+  const [embeddingApplyState, setEmbeddingApplyState] = useState('active');
+  const [activeEmbedding, setActiveEmbedding] = useState(null);
 
   const isCustomEmb = embProvider === 'custom';
   const isCustomLlm = llmProvider === 'custom';
@@ -226,6 +228,8 @@ const ModelConfig = () => {
           setEmbCustomDim(String(settings.embedding.dim || ''));
           setEmbMultimodalEnabled(Boolean(settings.embedding.multimodal_enabled));
         }
+        setActiveEmbedding(settings.active_embedding || null);
+        setEmbeddingApplyState(settings.embedding_apply_state || 'active');
         if (settings.llm) {
           setLlmProvider(settings.llm.provider || 'qwen');
           setLlmModel(settings.llm.model || 'qwen-max');
@@ -345,7 +349,9 @@ const ModelConfig = () => {
         embedding: Boolean(payload.embedding?.api_key_set),
         llm: Boolean(payload.llm?.api_key_set),
       });
-      toast('配置已保存', 'success');
+      setActiveEmbedding(payload.active_embedding || null);
+      setEmbeddingApplyState(payload.embedding_apply_state || 'active');
+      toast(payload.embedding_apply_state === 'rebuilding' ? '配置已保存，新的向量配置正在后台重建' : '配置已保存', 'success');
     } catch (error) {
       toast(error.message || '保存失败', 'error');
     } finally {
@@ -358,6 +364,25 @@ const ModelConfig = () => {
       <div style={{ fontSize: 'var(--text-xl)', fontWeight: 600, marginBottom: 6 }}>模型配置</div>
       <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', marginBottom: 20 }}>
         选择内置提供商，或填写兼容 OpenAI API 的自定义服务。API Key 仅保存在本地。
+      </div>
+
+      <div style={{ marginBottom: 20 }}>
+        <NoteBox tone={
+          embeddingApplyState === 'active'
+            ? 'success'
+            : embeddingApplyState === 'failed'
+              ? 'warning'
+              : 'info'
+        }>
+          {embeddingApplyState === 'active'
+            ? '当前在线检索配置已经与设置页保持一致。'
+            : embeddingApplyState === 'rebuilding'
+              ? '新的向量配置已保存，但要等后台重建完成后才会正式参与检索。重建期间仍继续使用旧的在线索引。'
+              : embeddingApplyState === 'failed'
+                ? '最近一次向量配置重建失败，当前检索仍继续使用旧的在线索引。'
+                : '当前设置已经变化，但尚未完成新的索引重建。'}
+          {activeEmbedding?.model ? ` 当前在线模型：${activeEmbedding.model}。` : ''}
+        </NoteBox>
       </div>
 
       {/* Saved profiles */}

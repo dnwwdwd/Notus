@@ -220,7 +220,19 @@ db.exec(`
 `);
 ```
 
-切换维度时提示用户重建索引（设置页 [重建索引] 按钮）。
+当前在线检索不再直接依赖这组主库向量表。P0 稳定性改造后，真正参与检索的是 generation 独立索引库；切换模型 / 维度 / 多模态时会创建新的 rebuild generation，成功后再切换 active generation。
+
+### 3.3 P0 索引稳定性补充
+
+为避免“先清空旧索引再重建”带来的不可用窗口，索引链路改为：
+
+- 主库继续保存 `files / settings / conversations / messages`
+- 新增 `index_generations` 元数据表，记录 generation 的 `id / kind / state / config_snapshot / db_path / progress`
+- 新增 `generation_file_results`，记录某次 rebuild 对每个文件的结果
+- 新增 `generation_dirty_files`，记录 rebuild 期间发生变化、需要 catch-up 的文件
+- 新增 `file_index_status`，记录当前 active generation 对每个文件的真实状态：`queued / running / ready / degraded / failed`
+- 每个 generation 使用独立 SQLite 文件保存 `chunks / chunks_fts / chunks_vec / images / images_vec`
+- `active_generation_id` 作为唯一在线指针；检索只读 active generation
 
 ---
 
@@ -231,7 +243,6 @@ db.exec(`
 ```javascript
 module.exports.db                      // better-sqlite3 Database 单例
 module.exports.initDb()                // 建表、建索引、开启 WAL、加载 sqlite-vec
-module.exports.resetVec(dim)           // 切换维度时重建 chunks_vec
 ```
 
 初始化后立即执行 `PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;`。
@@ -247,27 +258,37 @@ module.exports.resetVec(dim)           // 切换维度时重建 chunks_vec
 function splitIntoChunks(content)
 
 /**
- * 索引单个文件（增量）
+ * 在指定 generation 中索引单个文件
  * @param {string} relativePath
- * @returns {Promise<{fileId, chunksCount, skipped: boolean}>}
+ * @returns {Promise<{status, contentHash, chunksCount, textIndexed, vectorIndexed, imageVectorIndexed}>}
  */
-async function indexFile(relativePath)
-
-async function indexBatch(paths, onProgress)  // onProgress({current,total,currentFile})
-function removeFile(relativePath)
+async function indexFileToGeneration({ generation, relativePath, fileId })
+function removeFileFromGeneration(generation, { fileId })
 ```
 
-**`indexFile` 流程：**
-1. 读文件，计算 SHA-256 hash
-2. 查 files 表，hash 未变 → 返回 `{skipped: true}`
-3. hash 变化 → 删除旧 chunks（CASCADE 自动清 vec/fts/images）
-4. `splitIntoChunks` 分块
-5. 事务批量写 chunks 表（FTS 触发器自动同步）
-6. 逐块调用 `getEmbedding`，写 chunks_vec
-7. Embedding 失败 → 标记 `files.indexed = 0`，不抛错，后台任务重试
-8. 成功 → 更新 files 表 hash、indexed=1、indexed_at
+`lib/indexer.js` 不再负责直接操作在线状态；它只负责对某个 generation DB 执行“删旧块 → 分块 → 写 chunks / FTS / vec / images”的单文件索引，并返回 `ready / degraded / failed` 结果。
 
-### 4.3 `lib/embeddings.js`
+### 4.3 `lib/indexCoordinator.js`
+
+```javascript
+function getIndexCoordinator()
+
+coordinator.enqueuePath(filePath, { reason })   // 保存 / watcher / retry / 导入统一入队
+coordinator.removePath(filePath)                // 删除文件时移除 active generation 数据
+coordinator.handleRename(oldPath, newPath)      // 重命名后清旧路径并入队新路径
+coordinator.retryFailed(limit)
+coordinator.startRebuild({ kind, configSnapshot })
+```
+
+协调器是单进程内的统一入口，负责：
+
+- 同一路径去重，只保留最新内容哈希
+- active generation 单文件串行后台索引
+- rebuild generation 全量扫描 + dirty file catch-up
+- 失败文件重试
+- 服务重启后的 queued/running/rebuild 状态恢复
+
+### 4.4 `lib/embeddings.js`
 
 ```javascript
 async function getEmbedding(text)              // 返回 number[]（长度=EMBEDDING_DIM）
@@ -276,7 +297,7 @@ async function getEmbeddings(texts)            // 批量
 
 从 `EMBEDDING_PROVIDER`/`EMBEDDING_MODEL`/`EMBEDDING_API_KEY` 读配置，支持 qwen/doubao，失败抛错不静默。
 
-### 4.4 `lib/retrieval.js`
+### 4.5 `lib/retrieval.js`
 
 ```javascript
 /**
@@ -288,7 +309,7 @@ async function getEmbeddings(texts)            // 批量
  * @param {number} [opts.rrfK=60]
  * @param {number} [opts.headingBoost=0.1]
  * @param {number} [opts.recencyBoost=0.05]
- * @returns {Promise<Chunk[]>}
+ * @returns {Promise<{chunks: Chunk[], retrieval_mode: string, active_generation_id: number|null}>}
  */
 async function hybridSearch(query, opts)
 
@@ -305,7 +326,9 @@ async function hybridSearch(query, opts)
 ```
 
 **七步流程：**
-1. 向量：`getEmbedding(query)` → `chunks_vec` KNN Top 20
+1. 读取 `active_generation_id`，打开对应 generation DB
+2. 使用 active generation 的 `config_snapshot` 生成 query embedding
+3. 向量：`getEmbedding(query)` → `chunks_vec` KNN Top 20
 2. FTS：jieba 分词 → `chunks_fts MATCH '词1 OR 词2 OR ...'` Top 20（索引字段为 `search_text`）
 3. 合并去重：以 `chunk_id` 为 key
 4. RRF：`1/(k+vec_rank) + 1/(k+fts_rank)`（未命中一侧为 0）
@@ -313,7 +336,7 @@ async function hybridSearch(query, opts)
 6. 阈值过滤：**`vec_score < 0.5` 直接丢弃**（作用于向量原始分，非 RRF 分）
 7. 取 Top K（问答 K=5，风格召回 K=3）
 
-**降级：** 向量失败或零结果 → FTS5 兜底，结果标 `source: 'fts_only'`。`jieba-wasm` 失败 → `lib/tokenizer.js` 回退到简化分词（拉丁词、中文单字、中文双字 gram）。
+**降级：** query embedding 失败或当前 generation 不可用时 → FTS5 兜底，并显式返回 `retrieval_mode: 'fts_fallback'`。`jieba-wasm` 失败 → `lib/tokenizer.js` 回退到简化分词（拉丁词、中文单字、中文双字 gram）。
 
 ### 4.5 `lib/prompt.js`
 
@@ -329,10 +352,10 @@ function buildDraftBlockPrompt(blockId, instruction, styleChunks, contextBlocks)
 ### 4.6 `lib/watcher.js`
 
 ```javascript
-function startWatcher()  // chokidar 监听 NOTES_DIR
+function startWatcher()  // chokidar 监听 NOTES_DIR，并把变更入队 coordinator
 ```
 
-配置 `{ usePolling: true, interval: 3000, awaitWriteFinish: { stabilityThreshold: 1500, pollInterval: 500 } }`。监听 `add`/`change` → `indexFile`；`unlink` → `removeFile`。
+配置 `{ usePolling: true, interval: 3000, awaitWriteFinish: { stabilityThreshold: 1500, pollInterval: 500 } }`。监听 `add`/`change` 只负责入队后台协调器；`unlink` 则移除 active generation 的对应文件数据。
 
 ### 4.7 `lib/agent.js`
 
@@ -418,7 +441,7 @@ GET  /api/files/tree                 → Array<folder|file 节点>
                                      folder: { type:'folder', name, path, children }
 GET  /api/files/:id                  → { id, path, title, name, content, indexed, updated_at }
 POST /api/files                      Body: { path, content?, kind?: 'file'|'folder' } → 创建文件或文件夹
-PUT  /api/files/:id                  Body: { content } → 保存 + 触发增量索引
+PUT  /api/files/:id                  Body: { content } → 立即保存并返回 `{ save_status: 'saved', index_state: 'queued', active_generation_id }`
 DELETE /api/files/:id
 POST /api/files/rename               Body: { old_path, new_path }
 POST /api/files/move                 Body: { paths, dest }
@@ -429,7 +452,7 @@ POST /api/files/import               Body: {
                                      }
                                      → SSE:
                                        { type: 'progress', current, total, currentFile }
-                                       { type: 'file', status, name, path, id?, indexed?, error? }
+                                       { type: 'file', status, name, path, id?, index_state?, error? }
                                        { type: 'done', imported, overwritten, skipped, failed, total }
 GET  /api/files/export               Query: ?ids=1,2 or ?paths=a.md,b.md → ZIP
 GET  /api/files/:id/content-image    Query: ?src=https://... → 缓存图片并返回；失败时 307 回源
@@ -438,16 +461,20 @@ GET  /api/files/:id/content-image    Query: ?src=https://... → 缓存图片并
 ### 5.3 索引
 
 ```
-GET  /api/index/status               → { total, indexed, pending, failed }
-POST /api/index/rebuild              Body: {} → 清空 chunks_*，全量重建（SSE 进度）
-                                     SSE: progress → done | error
-POST /api/index/retry                Body: { file_ids? } → 重试失败项
+GET  /api/index/status               → {
+                                       total, ready, degraded, queued, running, failed, indexed, pending,
+                                       active_generation,
+                                       rebuild_generation
+                                     }
+POST /api/index/rebuild              Body: {} → 创建后台 rebuild generation，并流式返回持久化进度
+                                     SSE: queued → progress* → catching_up* → activated? → failed? → done
+POST /api/index/retry                Body: { file_ids? } → 只重试 active generation 下的 failed 文件
 ```
 
 ### 5.4 检索 & 问答
 
 ```
-POST /api/search                     Body: { query, topK? } → { chunks }
+POST /api/search                     Body: { query, topK? } → { chunks, retrieval_mode, active_generation_id }
                                      chunks[i] 包含：
                                      {
                                        chunk_id, file_id, file_title, file_path, content,
@@ -459,7 +486,7 @@ POST /api/search                     Body: { query, topK? } → { chunks }
 
 POST /api/chat                       Body: { conversation_id?, query, model? }
                                      → SSE:
-                                       { type: 'chunks', chunks }
+                                       { type: 'chunks', chunks, retrieval_mode?, active_generation_id? }
                                        { type: 'token', text }
                                        { type: 'citations', citations }   // citations 支持图片字段
                                        { type: 'done', conversation_id, message_id }
@@ -495,7 +522,7 @@ POST /api/agent/run                  Body: {
 
 POST /api/agent/apply                Body: { article_id?, article: Article, operation }
                                      → { success, article?, error? }
-                                     若 article.file_id 或 article_id 存在，则应用 operation → 同步写 MD → 触发增量索引
+                                     若 article.file_id 或 article_id 存在，则应用 operation → 同步写 MD → 入队后台索引
 ```
 
 ### 5.6 画布 / 文章
@@ -530,13 +557,18 @@ DELETE /api/conversations/:id
 ### 5.8 设置
 
 ```
-GET  /api/settings                   → { notes_dir, assets_dir, setup_completed, embedding, llm }
+GET  /api/settings                   → {
+                                       notes_dir, assets_dir, setup_completed,
+                                       embedding, llm,
+                                       active_embedding, desired_embedding, embedding_apply_state,
+                                       rebuild_generation?
+                                     }
 PUT  /api/settings                   Body: {
                                        notes_dir?, assets_dir?, setup_completed?,
                                        embedding?: { provider?, model?, dim?, multimodal_enabled?, base_url?, api_key? },
                                        llm?: { provider?, model?, base_url?, api_key? }
                                      }
-                                     → 持久化到 settings 表
+                                     → embedding 只更新 desired 配置；若签名变化则创建 `embedding_change` generation 后台重建
 POST /api/settings/test              Body: { kind: 'embedding'|'llm', config }
                                      → { success, error?, latency_ms? }
 ```
@@ -560,9 +592,11 @@ POST /api/settings/test              Body: { kind: 'embedding'|'llm', config }
 
 向量化输入 = `{heading_path}\n{content}`（拼接后 embedding）。
 
-**增量索引：** hash 比对 → 相同跳过 / 不同 CASCADE 删除旧块 + 重新索引。
+**增量索引：** 保存 / watcher / retry 都不再直接同步索引，而是统一进入 `IndexCoordinator`。active generation 的单文件任务按路径串行执行，同一路径只保留最后一个版本。
 
-**Embedding 失败重试：** `setInterval(5 * 60 * 1000)` 扫描 `files.indexed=0` 重试；失败次数通过 `settings` 表记录，超过 5 次停止自动重试。
+**全量重建：** 创建 rebuild generation → 全量扫描当前磁盘文件 → rebuild 期间继续维护旧 active generation → 记录 dirty files → `catching_up` 补差 → 验证完成后原子切换 `active_generation_id`。
+
+**Embedding 失败重试：** `setInterval(5 * 60 * 1000)` 只扫描 `file_index_status.status='failed'` 的 active generation 文件并重新入队；`degraded` 表示文本检索仍可用，不进入致命失败。
 
 ### 6.2 混合检索
 
@@ -609,7 +643,7 @@ function applyOperation(article, op) {
 }
 ```
 
-成功后：更新画布 state → 序列化 blocks 为 MD 文本 → 写回 MD 文件 → watcher 触发增量索引。
+成功后：更新画布 state → 序列化 blocks 为 MD 文本 → 写回 MD 文件 → coordinator 入队后台索引。
 
 ---
 
@@ -617,7 +651,7 @@ function applyOperation(article, op) {
 
 | 故障场景 | 降级 |
 |---------|------|
-| Embedding API 超限/故障 | 文件正常保存，`files.indexed=0`，5 分钟后台重试，不阻塞写作 |
+| Embedding API 超限/故障 | 文件正常保存，active generation 中的该文件进入 `degraded` 或 `failed`，5 分钟后台重试，不阻塞写作 |
 | 图片 fetch 失败 | `images.status=failed`，RAG 用文字，不阻塞 |
 | 当前 embedding 模型不支持图片输入 | 图片向量跳过，文本索引与问答照常工作 |
 | 向量零结果 | 降级 FTS5 全文，来源卡片标注"来自全文搜索" |
@@ -791,7 +825,7 @@ exec node server.js
 - M2-01 App Shell（TopBar + Sidebar + Layout）
 - M2-02 FileTree 组件 + `/api/files/*` API
 - M2-03 WYSIWYG Markdown 编辑器 + Typora 风格 CSS
-- M2-04 MarkdownRenderer（remark/rehype 插件链）
+- M2-04 MarkdownRenderer（`remark-gfm + remark-math + rehype-highlight + rehype-katex`）
 - M2-05 TocTree + 滚动高亮
 - M2-06 URL hash 来源跳转 + 3s 高亮淡出
 - M2-07 批量导入/导出 API + SSE 进度

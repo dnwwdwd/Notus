@@ -1,9 +1,10 @@
 // SourceCard — citation card from knowledge retrieval
 import { Icons } from './Icons';
 
-export const SourceCard = ({ file, path, quote, lines, imageProxyUrl, imageAltText, imageCaption, onClick }) => {
+export const SourceCard = ({ kind, file, path, quote, lines, imageProxyUrl, imageAltText, imageCaption, onClick }) => {
   const imageHit = Boolean(imageProxyUrl || imageAltText || imageCaption);
   const previewText = quote || imageCaption || imageAltText || '';
+  const kindLabel = kind === 'style' ? '风格' : '';
 
   return (
     <div
@@ -46,6 +47,20 @@ export const SourceCard = ({ file, path, quote, lines, imageProxyUrl, imageAltTe
             padding: '1px 6px',
             borderRadius: 3,
           }}>{lines}</span>
+        )}
+        {kindLabel && (
+          <span style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 4,
+            fontSize: 10,
+            color: 'var(--accent)',
+            background: 'var(--accent-subtle)',
+            padding: '1px 6px',
+            borderRadius: 999,
+          }}>
+            {kindLabel}
+          </span>
         )}
         {imageHit && (
           <span style={{

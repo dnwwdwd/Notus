@@ -114,26 +114,38 @@ function listFolders() {
   return [...folders].filter(Boolean).sort((left, right) => left.localeCompare(right, 'zh-Hans-CN'));
 }
 
-function upsertFileRecord(relativePath, content = null, indexed = 0) {
+function syncFileRecord(relativePath, content = null, options = {}) {
   const db = getDb();
   const normalized = ensureMarkdownPath(relativePath);
   const source = content === null ? readMarkdownFile(normalized) : String(content || '');
   const title = extractTitle(normalized, source);
   const hash = sha256(source);
+  const hasIndexedFlag = options.indexed !== undefined && options.indexed !== null;
+  const indexed = hasIndexedFlag ? Number(options.indexed) : null;
 
-  const result = db.prepare(`
-    INSERT INTO files (path, title, hash, indexed, updated_at)
-    VALUES (?, ?, ?, ?, datetime('now'))
-    ON CONFLICT(path) DO UPDATE SET
-      title = excluded.title,
-      hash = CASE WHEN files.hash IS NULL OR files.hash = '' THEN excluded.hash ELSE files.hash END,
-      indexed = excluded.indexed,
-      index_error = NULL,
-      updated_at = datetime('now')
-  `).run(normalized, title, hash, indexed);
+  if (hasIndexedFlag) {
+    db.prepare(`
+      INSERT INTO files (path, title, hash, indexed, index_error, updated_at)
+      VALUES (?, ?, ?, ?, NULL, datetime('now'))
+      ON CONFLICT(path) DO UPDATE SET
+        title = excluded.title,
+        hash = excluded.hash,
+        indexed = excluded.indexed,
+        index_error = NULL,
+        updated_at = excluded.updated_at
+    `).run(normalized, title, hash, indexed);
+  } else {
+    db.prepare(`
+      INSERT INTO files (path, title, hash, indexed, updated_at)
+      VALUES (?, ?, ?, 0, datetime('now'))
+      ON CONFLICT(path) DO UPDATE SET
+        title = excluded.title,
+        hash = excluded.hash
+    `).run(normalized, title, hash);
+  }
 
   const row = db.prepare('SELECT * FROM files WHERE path = ?').get(normalized);
-  return { ...row, inserted: result.changes > 0 };
+  return row;
 }
 
 function syncFilesFromDisk() {
@@ -142,13 +154,7 @@ function syncFilesFromDisk() {
   const seen = new Set(paths);
 
   paths.forEach((relativePath) => {
-    const content = readMarkdownFile(relativePath);
-    const title = extractTitle(relativePath, content);
-    db.prepare(`
-      INSERT INTO files (path, title, hash, indexed, updated_at)
-      VALUES (?, ?, '', 0, datetime('now'))
-      ON CONFLICT(path) DO UPDATE SET title = excluded.title
-    `).run(relativePath, title);
+    syncFileRecord(relativePath, null, { indexed: undefined });
   });
 
   const rows = db.prepare('SELECT path FROM files').all();
@@ -162,7 +168,14 @@ function syncFilesFromDisk() {
 function getFileById(id) {
   syncFilesFromDisk();
   const db = getDb();
-  const row = db.prepare('SELECT * FROM files WHERE id = ?').get(Number(id));
+  const row = db.prepare(`
+    SELECT
+      f.*,
+      s.status AS index_state
+    FROM files f
+    LEFT JOIN file_index_status s ON s.file_id = f.id
+    WHERE f.id = ?
+  `).get(Number(id));
   if (!row) return null;
   const content = readMarkdownFile(row.path);
   return {
@@ -172,6 +185,7 @@ function getFileById(id) {
     name: getBaseName(row.path),
     content,
     indexed: row.indexed,
+    index_state: row.index_state || (row.indexed ? 'ready' : 'queued'),
     updated_at: row.updated_at,
   };
 }
@@ -180,7 +194,14 @@ function getFileByPath(filePath) {
   syncFilesFromDisk();
   const db = getDb();
   const normalized = ensureMarkdownPath(filePath);
-  const row = db.prepare('SELECT * FROM files WHERE path = ?').get(normalized);
+  const row = db.prepare(`
+    SELECT
+      f.*,
+      s.status AS index_state
+    FROM files f
+    LEFT JOIN file_index_status s ON s.file_id = f.id
+    WHERE f.path = ?
+  `).get(normalized);
   if (!row) return null;
   const content = readMarkdownFile(row.path);
   return {
@@ -190,6 +211,7 @@ function getFileByPath(filePath) {
     name: getBaseName(row.path),
     content,
     indexed: row.indexed,
+    index_state: row.index_state || (row.indexed ? 'ready' : 'queued'),
     updated_at: row.updated_at,
   };
 }
@@ -198,8 +220,16 @@ function getAllFiles() {
   syncFilesFromDisk();
   const db = getDb();
   return db.prepare(`
-    SELECT id, path, title, indexed, updated_at, index_error
-    FROM files
+    SELECT
+      f.id,
+      f.path,
+      f.title,
+      f.indexed,
+      f.updated_at,
+      f.index_error,
+      s.status AS index_state
+    FROM files f
+    LEFT JOIN file_index_status s ON s.file_id = f.id
     ORDER BY path COLLATE NOCASE
   `).all().map((row) => ({
     id: row.id,
@@ -207,8 +237,13 @@ function getAllFiles() {
     title: row.title || getBaseName(row.path).replace(/\.md$/i, ''),
     name: getBaseName(row.path),
     indexed: row.indexed,
+    index_state: row.index_state || (row.indexed ? 'ready' : 'queued'),
     updated_at: row.updated_at,
-    status: row.index_error ? 'error' : (row.indexed ? undefined : 'indexing'),
+    status: row.index_state === 'failed'
+      ? 'error'
+      : (row.index_state === 'queued' || row.index_state === 'running' || (!row.indexed && !row.index_state))
+        ? 'indexing'
+        : undefined,
   }));
 }
 
@@ -278,7 +313,7 @@ function createFolder(folderPath) {
 
 function createFile(filePath, content = '') {
   const finalPath = writeMarkdownFile(filePath, content || `# ${getBaseName(filePath).replace(/\.md$/i, '')}\n\n`);
-  const row = upsertFileRecord(finalPath, readMarkdownFile(finalPath), 0);
+  const row = syncFileRecord(finalPath, readMarkdownFile(finalPath), { indexed: 0 });
   return {
     id: row.id,
     path: row.path,
@@ -292,7 +327,7 @@ function createFile(filePath, content = '') {
 
 function saveFileByPath(filePath, content = '') {
   const finalPath = writeMarkdownFile(filePath, String(content || ''));
-  const row = upsertFileRecord(finalPath, String(content || ''), 0);
+  const row = syncFileRecord(finalPath, String(content || ''), { indexed: 0 });
   return {
     id: row.id,
     path: row.path,
@@ -308,7 +343,7 @@ function updateFile(id, content) {
   const existing = getFileById(id);
   if (!existing) throw new Error('file not found');
   const finalPath = writeMarkdownFile(existing.path, String(content || ''));
-  const row = upsertFileRecord(finalPath, String(content || ''), 0);
+  const row = syncFileRecord(finalPath, String(content || ''), { indexed: 0 });
   return {
     id: row.id,
     path: row.path,
@@ -338,7 +373,7 @@ function renameFile(oldPath, newPath) {
   fs.renameSync(oldTarget.absolutePath, newTarget.absolutePath);
   getDb().prepare('UPDATE files SET path = ?, title = ?, updated_at = datetime("now") WHERE path = ?')
     .run(newTarget.relativePath, getBaseName(newTarget.relativePath).replace(/\.md$/i, ''), oldTarget.relativePath);
-  return upsertFileRecord(newTarget.relativePath, readMarkdownFile(newTarget.relativePath), 0);
+  return syncFileRecord(newTarget.relativePath, readMarkdownFile(newTarget.relativePath), { indexed: 0 });
 }
 
 function moveFiles(paths, dest) {
@@ -395,6 +430,7 @@ module.exports = {
   listFilesByIds,
   listFilesByPaths,
   buildTree,
+  syncFileRecord,
   createFile,
   createFolder,
   saveFileByPath,

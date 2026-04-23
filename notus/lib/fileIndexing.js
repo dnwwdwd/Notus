@@ -1,54 +1,29 @@
-const { ensureError } = require('./errors');
-const { indexFile, markFileIndexFailed } = require('./indexer');
+const { createLogger } = require('./logger');
+const { getIndexCoordinator } = require('./indexCoordinator');
 
-async function indexFileWithFallback(filePath, logger, context = {}) {
-  try {
-    const result = await indexFile(filePath);
-    if (result.embeddingFailed) {
-      logger?.warn('file.index.warning', {
-        ...context,
-        file_path: filePath,
-        error: {
-          message: result.error || '索引降级',
-          code: 'INDEX_EMBEDDING_FAILED',
-        },
-      });
-      return {
-        indexed: 0,
-        warning: result.error || '索引失败',
-        warning_code: 'INDEX_EMBEDDING_FAILED',
-        result,
-      };
-    }
+const fallbackLogger = createLogger({ subsystem: 'file-indexing' });
 
-    logger?.info('file.index.success', {
-      ...context,
-      file_path: filePath,
-      chunks_count: result.chunksCount || 0,
-    });
-    return {
-      indexed: 1,
-      warning: null,
-      warning_code: null,
-      result,
-    };
-  } catch (error) {
-    const normalized = ensureError(error, 'INDEX_FAILED', '索引失败');
-    markFileIndexFailed(filePath, normalized);
-    logger?.error('file.index.failed', {
-      ...context,
-      file_path: filePath,
-      error: normalized,
-    });
-    return {
-      indexed: 0,
-      warning: normalized.message,
-      warning_code: normalized.code || 'INDEX_FAILED',
-      result: null,
-    };
-  }
+async function queueFileIndexing(filePath, logger = fallbackLogger, context = {}) {
+  const result = getIndexCoordinator().enqueuePath(filePath, {
+    reason: context.action || 'api',
+  });
+
+  logger.info('file.index.queued', {
+    ...context,
+    file_path: result.path,
+    active_generation_id: result.active_generation_id,
+  });
+
+  return {
+    indexed: 0,
+    warning: null,
+    warning_code: null,
+    result,
+    index_state: 'queued',
+    active_generation_id: result.active_generation_id,
+  };
 }
 
 module.exports = {
-  indexFileWithFallback,
+  queueFileIndexing,
 };

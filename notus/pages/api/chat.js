@@ -55,6 +55,9 @@ export default async function handler(req, res) {
     reference_file_ids: referenceFileIds = [],
   } = req.body || {};
   if (!query) return res.status(400).json({ error: 'query is required', code: 'QUERY_REQUIRED' });
+  if (referenceMode === 'manual' && (!Array.isArray(referenceFileIds) || referenceFileIds.length === 0)) {
+    return res.status(400).json({ error: '手动参考来源至少选择 1 篇文章', code: 'REFERENCE_SOURCE_REQUIRED' });
+  }
 
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -66,11 +69,17 @@ export default async function handler(req, res) {
     db.prepare('INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)')
       .run(convId, 'user', query);
 
-    const chunks = await hybridSearch(query, {
+    const retrieval = await hybridSearch(query, {
       topK: 5,
       fileIds: referenceMode === 'manual' ? referenceFileIds : [],
     });
-    send(res, { type: 'chunks', chunks });
+    const chunks = retrieval.chunks || [];
+    send(res, {
+      type: 'chunks',
+      chunks,
+      retrieval_mode: retrieval.retrieval_mode || 'hybrid',
+      active_generation_id: retrieval.active_generation_id || null,
+    });
 
     const citations = citationsFromChunks(chunks);
     let answer = '';

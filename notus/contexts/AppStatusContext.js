@@ -20,29 +20,57 @@ function defaultSetup() {
 function defaultIndex() {
   return {
     total: 0,
+    ready: 0,
+    degraded: 0,
+    queued: 0,
+    running: 0,
     indexed: 0,
     pending: 0,
     failed: 0,
+    active_generation: null,
+    rebuild_generation: null,
   };
 }
 
 function normalizeIndexStatus(index = {}, setup = {}) {
   const total = Number(index.total ?? setup.total_files ?? 0) || 0;
-  const indexed = Number(index.indexed ?? setup.indexed_files ?? 0) || 0;
-  const pending = Number(index.pending ?? Math.max(total - indexed, 0)) || 0;
+  const ready = Number(index.ready ?? 0) || 0;
+  const degraded = Number(index.degraded ?? 0) || 0;
+  const queued = Number(index.queued ?? 0) || 0;
+  const running = Number(index.running ?? 0) || 0;
+  const indexed = Number(index.indexed ?? ready + degraded ?? setup.indexed_files ?? 0) || 0;
+  const pending = Number(index.pending ?? queued + running ?? Math.max(total - indexed, 0)) || 0;
   const failed = Number(index.failed ?? 0) || 0;
-  return { total, indexed, pending, failed };
+  return {
+    total,
+    ready,
+    degraded,
+    queued,
+    running,
+    indexed,
+    pending,
+    failed,
+    active_generation: index.active_generation || null,
+    rebuild_generation: index.rebuild_generation || null,
+  };
 }
 
 function deriveStatus(setup = defaultSetup(), index = defaultIndex()) {
   const nextIndex = normalizeIndexStatus(index, setup);
   const needsSetup = !setup.completed;
-  const needsIndexing = !needsSetup && nextIndex.total > 0 && nextIndex.pending > 0;
+  const hasBackgroundIndexing = nextIndex.pending > 0 ||
+    Boolean(nextIndex.rebuild_generation && ['queued', 'building', 'catching_up', 'validated'].includes(nextIndex.rebuild_generation.state));
+  const needsIndexing = !needsSetup &&
+    nextIndex.total > 0 &&
+    !nextIndex.active_generation &&
+    nextIndex.indexed === 0 &&
+    hasBackgroundIndexing;
   return {
     setup,
     index: nextIndex,
     needsSetup,
     needsIndexing,
+    hasBackgroundIndexing,
     hasIndexIssues: nextIndex.failed > 0,
     readyForApp: !needsSetup && !needsIndexing,
   };
@@ -89,12 +117,12 @@ export function AppStatusProvider({ children }) {
   }, [refreshStatus]);
 
   useEffect(() => {
-    if (!status.needsIndexing) return undefined;
+    if (!status.hasBackgroundIndexing) return undefined;
     const timer = setInterval(() => {
       refreshStatus({ quiet: true }).catch(() => {});
     }, 3000);
     return () => clearInterval(timer);
-  }, [refreshStatus, status.needsIndexing]);
+  }, [refreshStatus, status.hasBackgroundIndexing]);
 
   const value = useMemo(() => ({
     status,

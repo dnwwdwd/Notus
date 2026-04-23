@@ -1,6 +1,6 @@
 const { ensureRuntime } = require('../../../lib/runtime');
 const { renameFile } = require('../../../lib/files');
-const { indexFileWithFallback } = require('../../../lib/fileIndexing');
+const { getIndexCoordinator } = require('../../../lib/indexCoordinator');
 const { createLogger, createRequestContext } = require('../../../lib/logger');
 
 export default async function handler(req, res) {
@@ -19,12 +19,11 @@ export default async function handler(req, res) {
   try {
     const { old_path: oldPath, new_path: newPath } = req.body || {};
     const file = renameFile(oldPath, newPath);
-    const indexState = await indexFileWithFallback(file.path, logger, { action: 'rename' });
+    const indexState = getIndexCoordinator().handleRename(oldPath, file.path);
     return res.status(200).json({
       ...file,
-      indexed: indexState.indexed,
-      warning: indexState.warning,
-      warning_code: indexState.warning_code,
+      index_state: indexState.index_state,
+      active_generation_id: indexState.active_generation_id,
       request_id: context.request_id,
     });
   } catch (error) {

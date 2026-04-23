@@ -49,6 +49,7 @@
     "rehype-highlight": "^7.0.1",
     "rehype-katex": "^7.0.1",
     "remark-gfm": "^4.0.0",
+    "remark-math": "^6.0.0",
     "remark-parse": "^11.0.0",
     "sqlite-vec": "^0.1.9",
     "tiptap-markdown": "^0.9.0",

@@ -13,8 +13,8 @@ export default async function handler(req, res) {
   if (!query) return res.status(400).json({ error: 'query is required', code: 'QUERY_REQUIRED' });
 
   try {
-    const chunks = await hybridSearch(query, { topK: topK || top_k, fileIds });
-    return res.status(200).json({ chunks });
+    const result = await hybridSearch(query, { topK: topK || top_k, fileIds });
+    return res.status(200).json(result);
   } catch (error) {
     return res.status(500).json({ error: error.message, code: 'SEARCH_FAILED' });
   }

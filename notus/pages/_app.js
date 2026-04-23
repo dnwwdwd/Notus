@@ -1,4 +1,5 @@
 // _app.js — global styles + theme + providers
+import 'katex/dist/katex.min.css';
 import '../styles/globals.css';
 import Head from 'next/head';
 import { AppStatusGate } from '../components/AppStatusGate';

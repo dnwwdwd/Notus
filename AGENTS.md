@@ -35,7 +35,7 @@ Notus 是一款运行在**懒猫微服（Lazycat MicroServer）**上的私人知
 - 样式：**CSS token 驱动**，不用 Tailwind，不用 shadcn-ui
 - UI 行为层：Radix Primitives（`@radix-ui/*`）
 - 编辑器：**Tiptap + Markdown 双向转换 + lowlight 代码块高亮**，SSR 不兼容，必须 `dynamic(..., { ssr: false })` 加载
-- Markdown 渲染：react-markdown + remark-gfm + rehype-highlight + rehype-katex
+- Markdown 渲染：react-markdown + remark-gfm + remark-math + rehype-highlight + rehype-katex
 - 拖拽：@dnd-kit/core + @dnd-kit/sortable
 - 数据库：better-sqlite3（WAL 模式）+ sqlite-vec（向量）+ FTS5（全文）
 - 文件监听：chokidar（`usePolling: true, interval: 3000`，适配 Lazycat NFS 挂载）
@@ -89,7 +89,7 @@ Notus/
     │   ├── index.js             # 重定向 → /files
     │   ├── login.js             # 登录页（当前为演示自动跳转）
     │   ├── setup.js             # 三步初始化引导
-    │   ├── files/index.js       # 主编辑器页：文件树 + WYSIWYG Markdown 编辑器 + 自动保存
+    │   ├── files/index.js       # 主编辑器页：文件树 + WYSIWYG Markdown 编辑器 + 手动保存
     │   ├── knowledge.js         # 知识库问答页：SSE 流式对话
     │   ├── canvas.js            # AI 创作画布：块编辑 + Agent 对话 + OperationPreview
     │   ├── settings/
@@ -124,7 +124,7 @@ Notus/
     │   ├── indexer.js           # 文件分块 → 向量化 → 写入 chunks/vec/fts
     │   ├── retrieval.js         # hybridSearch：向量 KNN + FTS5 BM25 + RRF 融合
     │   ├── prompt.js            # 所有 LLM Prompt 模板
-    │   ├── watcher.js           # chokidar 文件监听 → 增量索引
+    │   ├── watcher.js           # chokidar 文件监听 → 入队后台索引协调器
     │   ├── agent.js             # 9 个工具 schema + runAgent 循环
     │   └── diff.js              # str_replace 引擎（old 字段乐观锁校验）
     ├── styles/
@@ -155,7 +155,7 @@ Notus/
 7 步：① 嵌入 query → ② sqlite-vec KNN（2×topK）→ ③ FTS5 BM25（2×topK）→ ④ 向量分阈值过滤（distance ≤ 0.5）→ ⑤ RRF 融合（k=60）→ ⑥ 取 topK → ⑦ JOIN 文件元数据。
 
 ### DB schema 注意事项
-`chunks_vec` 的向量列维度通过 `EMBEDDING_DIM` 环境变量在初始化时动态拼接 DDL，切换模型（千问 1024 维 / 豆包 2048 维）需重建索引。`lib/db.js` 目前缺少 FTS5 同步触发器（`chunks_ai/ad/au`），实现后端时需补充。
+主库继续保存 `files/settings/conversations/messages`，索引产物改为 generation 独立库；`active_generation_id` 指向当前在线索引，检索只读 active generation。Embedding 配置分为当前在线和待生效两套，模型 / 维度 / 多模态变化会创建新的 rebuild generation，成功后再原子切换，不再先清空旧索引。
 
 ### Lazycat 部署约束
 - 单容器，Next.js standalone 模式

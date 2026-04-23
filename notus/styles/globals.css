@@ -448,3 +448,15 @@ a {
   border-radius: var(--radius-sm);
   animation: citationFlash 3s ease forwards;
 }
+
+.md-preview .katex-display,
+.streaming-markdown .katex-display {
+  margin: 1em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.md-preview .katex,
+.streaming-markdown .katex {
+  color: inherit;
+}

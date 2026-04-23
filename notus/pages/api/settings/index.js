@@ -1,30 +1,43 @@
 const { ensureRuntime } = require('../../../lib/runtime');
 const { getEffectiveConfig, applySettings, readEnvConfig } = require('../../../lib/config');
-const { getSettingsMap, resetVec, setSettings } = require('../../../lib/db');
+const { getSettingsMap, setSettings } = require('../../../lib/db');
+const {
+  buildEmbeddingConfig,
+  sanitizeEmbeddingConfig,
+  sameEmbeddingSignature,
+  sameEmbeddingConfig,
+  getActiveGeneration,
+  getLatestRebuildGeneration,
+  sanitizeGenerationForApi,
+  buildEmbeddingApplyState,
+  updateGenerationConfigSnapshot,
+} = require('../../../lib/indexGenerations');
+const { getIndexCoordinator } = require('../../../lib/indexCoordinator');
 const { createLogger, createRequestContext } = require('../../../lib/logger');
-const { clearIndex } = require('../../../lib/indexer');
 
 function publicSettings() {
   const stored = getSettingsMap();
   const config = getEffectiveConfig();
+  const desiredEmbedding = buildEmbeddingConfig(config);
+  const activeGeneration = getActiveGeneration();
+  const activeEmbedding = activeGeneration?.config_snapshot_object || desiredEmbedding;
+  const rebuildGeneration = getLatestRebuildGeneration();
+
   return {
     notes_dir: config.notesDir,
     assets_dir: config.assetsDir,
     setup_completed: stored.setup_completed === 'true',
-    embedding: {
-      provider: config.embeddingProvider,
-      model: config.embeddingModel,
-      dim: config.embeddingDim,
-      multimodal_enabled: Boolean(config.embeddingMultimodalEnabled),
-      base_url: config.embeddingBaseUrl,
-      api_key_set: Boolean(config.embeddingApiKey),
-    },
+    embedding: sanitizeEmbeddingConfig(desiredEmbedding),
+    active_embedding: sanitizeEmbeddingConfig(activeEmbedding),
+    desired_embedding: sanitizeEmbeddingConfig(desiredEmbedding),
+    embedding_apply_state: buildEmbeddingApplyState(),
     llm: {
       provider: config.llmProvider,
       model: config.llmModel,
       base_url: config.llmBaseUrl,
       api_key_set: Boolean(config.llmApiKey),
     },
+    rebuild_generation: rebuildGeneration ? sanitizeGenerationForApi(rebuildGeneration) : null,
   };
 }
 
@@ -75,22 +88,33 @@ export default function handler(req, res) {
     }
 
     setSettings(nextValues);
-    const embeddingChanged =
-      candidate.embeddingProvider !== previousConfig.embeddingProvider ||
-      candidate.embeddingModel !== previousConfig.embeddingModel ||
-      Number(candidate.embeddingDim) !== Number(previousConfig.embeddingDim) ||
-      Boolean(candidate.embeddingMultimodalEnabled) !== Boolean(previousConfig.embeddingMultimodalEnabled);
+    const activeGeneration = getActiveGeneration();
+    const previousDesiredEmbedding = buildEmbeddingConfig(previousConfig);
+    const nextDesiredEmbedding = buildEmbeddingConfig(candidate);
+    const activeEmbedding = activeGeneration?.config_snapshot_object || previousDesiredEmbedding;
 
-    if (embeddingChanged) {
-      clearIndex();
-      if (Number(candidate.embeddingDim) !== Number(previousConfig.embeddingDim)) {
-        resetVec(Number(candidate.embeddingDim));
-      }
-      logger.warn('settings.embedding_changed.reindex_required', {
+    const signatureChanged = !sameEmbeddingSignature(previousDesiredEmbedding, nextDesiredEmbedding);
+    const desiredDiffersFromActive = !sameEmbeddingConfig(activeEmbedding, nextDesiredEmbedding);
+
+    if (!signatureChanged && activeGeneration && activeEmbedding && activeEmbedding.embeddingApiKey !== nextDesiredEmbedding.embeddingApiKey) {
+      updateGenerationConfigSnapshot(activeGeneration.id, {
+        ...activeEmbedding,
+        embeddingApiKey: nextDesiredEmbedding.embeddingApiKey,
+      });
+    }
+
+    let rebuildGeneration = getLatestRebuildGeneration();
+    if (signatureChanged && desiredDiffersFromActive) {
+      rebuildGeneration = getIndexCoordinator().startRebuild({
+        kind: 'embedding_change',
+        configSnapshot: nextDesiredEmbedding,
+      });
+      logger.warn('settings.embedding_changed.rebuild_started', {
         previous_model: previousConfig.embeddingModel,
         next_model: candidate.embeddingModel,
         previous_dim: previousConfig.embeddingDim,
         next_dim: candidate.embeddingDim,
+        generation_id: rebuildGeneration.id,
       });
     }
 
@@ -99,7 +123,11 @@ export default function handler(req, res) {
       llm_provider: nextValues.llm_provider || null,
       notes_dir: nextValues.notes_dir || null,
     });
-    return res.status(200).json({ ...publicSettings(), request_id: context.request_id });
+    return res.status(200).json({
+      ...publicSettings(),
+      rebuild_generation: rebuildGeneration ? sanitizeGenerationForApi(rebuildGeneration) : null,
+      request_id: context.request_id,
+    });
   }
 
   return res.status(405).json({ error: 'Method not allowed', code: 'METHOD_NOT_ALLOWED', request_id: context.request_id });

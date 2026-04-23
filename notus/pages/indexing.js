@@ -69,6 +69,13 @@ export default function IndexingPage() {
     try {
       const response = await fetch('/api/index/rebuild', { method: 'POST' });
       await consumeSseResponse(response, (event) => {
+        if (event.type === 'queued') {
+          setProgress({
+            current: 0,
+            total: event.generation?.total_files || status.index.total || 0,
+            currentFile: '',
+          });
+        }
         if (event.type === 'progress') {
           setProgress({
             current: event.current || 0,
@@ -86,11 +93,31 @@ export default function IndexingPage() {
             ...prev.slice(0, 39),
           ]);
         }
+        if (event.type === 'catching_up') {
+          setCompleted((prev) => [
+            {
+              name: event.currentFile || '补差同步',
+              chunks: 0,
+              ok: true,
+              status: 'catching_up',
+              error: event.dirty_files ? `剩余 ${event.dirty_files} 个变更` : '',
+            },
+            ...prev.slice(0, 39),
+          ]);
+        }
+        if (event.type === 'activated') {
+          setSummary({
+            total: event.generation?.total_files || progress.total,
+            indexed: event.generation?.total_files || progress.total,
+            failed: 0,
+            skipped: 0,
+          });
+        }
         if (event.type === 'done') {
           setSummary(event);
           setProgress((prev) => ({ ...prev, current: event.total || prev.total, total: event.total || prev.total }));
         }
-        if (event.type === 'error') throw new Error(event.error || '索引重建失败');
+        if (event.type === 'failed') throw new Error(event.error || '索引重建失败');
       });
       await refreshStatus();
       toast('索引构建完成', 'success');
@@ -104,11 +131,9 @@ export default function IndexingPage() {
 
   useEffect(() => {
     if (started || running) return;
-    const shouldStart = status.index.total > 0 &&
-      status.index.pending > 0 &&
-      status.index.failed === 0;
+    const shouldStart = status.needsIndexing;
     if (shouldStart) startRebuild();
-  }, [started, running, status.index.total, status.index.pending, status.index.failed, status.index.indexed]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [started, running, status.needsIndexing]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <Shell active="" showIndex tocDisabled>
@@ -133,7 +158,7 @@ export default function IndexingPage() {
                 {progress.total ? `${Math.min(progress.current, progress.total)} / ${progress.total}` : `${status.index.indexed} / ${status.index.total}`} 篇
               </div>
               <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
-                {running ? '处理中' : `${status.index.pending} 待处理 · ${status.index.failed} 失败`}
+                {running ? '处理中' : `${status.index.queued + status.index.running} 待处理 · ${status.index.failed} 失败`}
               </div>
             </div>
             <ProgressBar value={percent} max={100} />

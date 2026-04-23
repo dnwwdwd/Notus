@@ -1,5 +1,5 @@
 const { ensureRuntime } = require('../../../lib/runtime');
-const { clearIndex } = require('../../../lib/indexer');
+const { getIndexCoordinator } = require('../../../lib/indexCoordinator');
 
 export default function handler(req, res) {
   if (req.method !== 'POST') {
@@ -10,7 +10,7 @@ export default function handler(req, res) {
   if (!runtime.ok) return res.status(500).json({ error: runtime.error.message, code: 'RUNTIME_ERROR' });
 
   try {
-    clearIndex();
+    getIndexCoordinator().clearActiveIndex();
     return res.status(200).json({ ok: true });
   } catch (error) {
     return res.status(500).json({ error: error.message, code: 'INDEX_CLEAR_FAILED' });

@@ -1,6 +1,6 @@
 const { ensureRuntime } = require('../../../lib/runtime');
 const { createFile, createFolder, getAllFiles } = require('../../../lib/files');
-const { indexFileWithFallback } = require('../../../lib/fileIndexing');
+const { queueFileIndexing } = require('../../../lib/fileIndexing');
 const { createLogger, createRequestContext } = require('../../../lib/logger');
 
 export const config = {
@@ -39,12 +39,11 @@ export default async function handler(req, res) {
       }
 
       const file = createFile(path, content);
-      const indexState = await indexFileWithFallback(file.path, logger, { action: 'create' });
+      const indexState = await queueFileIndexing(file.path, logger, { action: 'create' });
       return res.status(201).json({
         ...file,
-        indexed: indexState.indexed,
-        warning: indexState.warning,
-        warning_code: indexState.warning_code,
+        index_state: indexState.index_state,
+        active_generation_id: indexState.active_generation_id,
         request_id: context.request_id,
       });
     } catch (error) {

@@ -1,19 +1,17 @@
-const fs = require('fs');
-const path = require('path');
-const { getDb, isVecAvailable } = require('./db');
-const { getEmbeddings } = require('./embeddings');
-const { getEffectiveConfig } = require('./config');
+const { getEmbeddings, getImageEmbedding, supportsImageEmbedding } = require('./embeddings');
 const { ensureError } = require('./errors');
 const { createLogger } = require('./logger');
 const { buildSearchText } = require('./tokenizer');
-const { processImagesForFile, deleteImageVectorsByFileId } = require('./images');
+const { downloadImage } = require('./images');
 const {
   ensureMarkdownPath,
-  extractTitle,
-  syncFilesFromDisk,
   readMarkdownFile,
   sha256,
 } = require('./files');
+const {
+  getGenerationDb,
+  getGenerationHandle,
+} = require('./indexGenerationDb');
 
 const BLOCK_NODE_TYPES = new Set([
   'heading',
@@ -131,9 +129,7 @@ async function splitIntoChunks(content) {
     const lineStart = node.position?.start?.line || null;
     const lineEnd = node.position?.end?.line || null;
     const type = nodeToChunkType(node);
-    const headingPath = type === 'heading'
-      ? headingStack.filter(Boolean).join(' > ')
-      : headingStack.filter(Boolean).join(' > ');
+    const headingPath = headingStack.filter(Boolean).join(' > ');
     const textForSearch = `${headingPath}\n${chunkContent}`;
 
     chunks.push({
@@ -151,66 +147,189 @@ async function splitIntoChunks(content) {
   return chunks;
 }
 
-function deleteOldVectors(db, fileId) {
-  if (!isVecAvailable()) return;
-  const oldChunkIds = db.prepare('SELECT id FROM chunks WHERE file_id = ?').all(fileId);
-  const deleteVec = db.prepare('DELETE FROM chunks_vec WHERE chunk_id = ?');
-  oldChunkIds.forEach((row) => deleteVec.run(BigInt(row.id)));
-  deleteImageVectorsByFileId(fileId);
-}
+function deleteFileVectors(db, fileId, vecEnabled) {
+  const normalizedFileId = Number(fileId);
+  if (!Number.isFinite(normalizedFileId) || normalizedFileId <= 0) return;
 
-function resolveIndexPath(inputPath) {
-  const config = getEffectiveConfig();
-  if (path.isAbsolute(String(inputPath || ''))) {
-    const root = path.resolve(config.notesDir);
-    const absolute = path.resolve(inputPath);
-    if (absolute !== root && !absolute.startsWith(`${root}${path.sep}`)) {
-      throw new Error('file is outside notes directory');
+  const chunkIds = db.prepare('SELECT id FROM chunks WHERE file_id = ?').all(normalizedFileId);
+  const imageIds = db.prepare(`
+    SELECT i.id
+    FROM images i
+    JOIN chunks c ON c.id = i.chunk_id
+    WHERE c.file_id = ?
+  `).all(normalizedFileId);
+
+  db.transaction(() => {
+    if (vecEnabled) {
+      const deleteChunkVec = db.prepare('DELETE FROM chunks_vec WHERE chunk_id = ?');
+      const deleteImageVec = db.prepare('DELETE FROM images_vec WHERE image_id = ?');
+      chunkIds.forEach((row) => deleteChunkVec.run(BigInt(row.id)));
+      imageIds.forEach((row) => deleteImageVec.run(BigInt(row.id)));
     }
-    return path.relative(root, absolute).replace(/\\/g, '/');
-  }
-  return ensureMarkdownPath(inputPath);
+    db.prepare('DELETE FROM images WHERE chunk_id IN (SELECT id FROM chunks WHERE file_id = ?)').run(normalizedFileId);
+    db.prepare('DELETE FROM chunks WHERE file_id = ?').run(normalizedFileId);
+  })();
 }
 
-async function indexFile(inputPath) {
-  const db = getDb();
-  const relativePath = resolveIndexPath(inputPath);
-  const content = readMarkdownFile(relativePath);
-  const hash = sha256(content);
-  const title = extractTitle(relativePath, content);
+async function processGenerationImages({
+  generation,
+  imageRecords,
+  configSnapshot,
+}) {
+  const handle = getGenerationHandle(generation);
+  const { db, vecEnabled } = handle;
+  const canEmbedImages = vecEnabled &&
+    Boolean(configSnapshot?.embeddingMultimodalEnabled) &&
+    supportsImageEmbedding(configSnapshot || {});
 
-  const existing = db.prepare('SELECT id, hash, indexed FROM files WHERE path = ?').get(relativePath);
-  if (existing && existing.hash === hash && existing.indexed === 1) {
-    return { fileId: existing.id, chunksCount: 0, skipped: true };
+  if (!imageRecords.length) {
+    return {
+      imageVectorIndexed: 1,
+      imageError: null,
+    };
   }
 
-  const upsert = db.prepare(`
-    INSERT INTO files (path, title, hash, indexed, indexed_at, index_error, updated_at)
-    VALUES (?, ?, ?, 0, NULL, NULL, datetime('now'))
-    ON CONFLICT(path) DO UPDATE SET
-      title = excluded.title,
-      hash = excluded.hash,
-      indexed = 0,
-      indexed_at = NULL,
-      index_error = NULL,
-      updated_at = excluded.updated_at
-  `).run(relativePath, title, hash);
+  const updateImage = db.prepare(`
+    UPDATE images
+    SET status = ?,
+        local_path = ?,
+        processed_at = ?,
+        cache_status = ?,
+        cache_error = ?,
+        mime_type = ?,
+        content_length = ?,
+        cached_at = ?,
+        embedding_status = ?,
+        embedding_error = ?,
+        embedded_at = ?
+    WHERE id = ?
+  `);
+  const insertImageVec = canEmbedImages
+    ? db.prepare('INSERT INTO images_vec (image_id, embedding) VALUES (?, ?)')
+    : null;
 
-  const fileId = existing?.id || upsert.lastInsertRowid;
-  const chunks = await splitIntoChunks(content);
+  let failed = false;
+  let firstError = null;
+
+  for (const image of imageRecords) {
+    if (!canEmbedImages) {
+      updateImage.run(
+        'pending',
+        null,
+        null,
+        'pending',
+        null,
+        null,
+        null,
+        null,
+        'skipped',
+        null,
+        null,
+        image.id
+      );
+      continue;
+    }
+
+    if (!/^https?:\/\//i.test(String(image.url || ''))) {
+      updateImage.run(
+        'pending',
+        null,
+        null,
+        'skipped',
+        null,
+        null,
+        null,
+        null,
+        'skipped',
+        null,
+        null,
+        image.id
+      );
+      continue;
+    }
+
+    try {
+      const cached = await downloadImage(image.url);
+      const now = new Date().toISOString();
+      const embedding = await getImageEmbedding({
+        absolutePath: cached.absolutePath,
+        mimeType: cached.mimeType,
+        sourceUrl: image.url,
+      }, configSnapshot || {});
+
+      if (insertImageVec) {
+        insertImageVec.run(BigInt(image.id), JSON.stringify(embedding));
+      }
+      updateImage.run(
+        'done',
+        cached.relativePath,
+        now,
+        'done',
+        null,
+        cached.mimeType,
+        cached.contentLength,
+        now,
+        'done',
+        null,
+        now,
+        image.id
+      );
+    } catch (error) {
+      failed = true;
+      if (!firstError) firstError = error?.message || '图片向量化失败';
+      const message = error?.message || '图片向量化失败';
+      updateImage.run(
+        'failed',
+        null,
+        null,
+        'failed',
+        message,
+        null,
+        null,
+        null,
+        'failed',
+        message,
+        null,
+        image.id
+      );
+    }
+  }
+
+  return {
+    imageVectorIndexed: failed ? 0 : 1,
+    imageError: firstError,
+  };
+}
+
+async function indexFileToGeneration({
+  generation,
+  relativePath,
+  fileId,
+  content = null,
+} = {}) {
+  const normalizedPath = ensureMarkdownPath(relativePath);
+  const source = content === null ? readMarkdownFile(normalizedPath) : String(content || '');
+  const contentHash = sha256(source);
+  const handle = getGenerationHandle(generation);
+  const { db, vecEnabled } = handle;
+  const configSnapshot = generation?.config_snapshot_object || {};
+  const chunks = await splitIntoChunks(source);
+
   let embeddings = null;
   let embeddingError = null;
-
-  try {
-    const embeddingInputs = chunks.map((chunk) => `${chunk.heading_path || ''}\n${chunk.content}`);
-    embeddings = embeddingInputs.length > 0 ? await getEmbeddings(embeddingInputs) : [];
-  } catch (error) {
-    embeddingError = ensureError(error, 'INDEX_EMBEDDING_FAILED', '向量化失败');
-    logger.warn('index.file.embedding_failed', {
-      file_path: relativePath,
-      chunk_count: chunks.length,
-      error: embeddingError,
-    });
+  if (chunks.length > 0 && vecEnabled) {
+    try {
+      const inputs = chunks.map((chunk) => `${chunk.heading_path || ''}\n${chunk.content}`);
+      embeddings = await getEmbeddings(inputs, configSnapshot);
+    } catch (error) {
+      embeddingError = ensureError(error, 'INDEX_EMBEDDING_FAILED', '向量化失败');
+      logger.warn('indexer.embedding_failed', {
+        generation_id: generation?.id,
+        file_id: fileId,
+        file_path: normalizedPath,
+        error: embeddingError,
+      });
+    }
   }
 
   const insertChunk = db.prepare(`
@@ -223,17 +342,17 @@ async function indexFile(inputPath) {
       chunk_id, url, alt_text, status, cache_status, embedding_status
     ) VALUES (?, ?, ?, 'pending', 'pending', 'pending')
   `);
-  const insertVec = isVecAvailable()
+  const insertVec = vecEnabled
     ? db.prepare('INSERT INTO chunks_vec (chunk_id, embedding) VALUES (?, ?)')
     : null;
 
+  const imageRecords = [];
   db.transaction(() => {
-    deleteOldVectors(db, fileId);
-    db.prepare('DELETE FROM chunks WHERE file_id = ?').run(fileId);
+    deleteFileVectors(db, fileId, vecEnabled);
 
     chunks.forEach((chunk, index) => {
-      const result = insertChunk.run(
-        fileId,
+      const row = insertChunk.run(
+        Number(fileId),
         chunk.content,
         chunk.type,
         chunk.position,
@@ -243,177 +362,61 @@ async function indexFile(inputPath) {
         chunk.has_image,
         chunk.search_text
       );
-      const chunkId = result.lastInsertRowid;
+      const chunkId = row.lastInsertRowid;
 
       if (insertVec && embeddings?.[index]) {
         insertVec.run(BigInt(chunkId), JSON.stringify(embeddings[index]));
       }
 
       extractImages(chunk.content).forEach((image) => {
-        insertImage.run(chunkId, image.url, image.alt_text || '');
+        const imageRow = insertImage.run(chunkId, image.url, image.alt_text || '');
+        imageRecords.push({
+          id: Number(imageRow.lastInsertRowid),
+          chunk_id: Number(chunkId),
+          url: image.url,
+          alt_text: image.alt_text || '',
+        });
       });
     });
-
-    if (embeddingError) {
-      db.prepare(`
-        UPDATE files
-        SET indexed = 0,
-            index_error = ?,
-            retry_count = retry_count + 1,
-            updated_at = datetime('now')
-        WHERE id = ?
-      `).run(embeddingError.message, fileId);
-    } else {
-      db.prepare(`
-        UPDATE files
-        SET indexed = 1,
-            indexed_at = datetime('now'),
-            index_error = NULL,
-            retry_count = 0,
-            updated_at = datetime('now')
-        WHERE id = ?
-      `).run(fileId);
-    }
   })();
 
-  if (chunks.some((chunk) => chunk.has_image)) {
-    await processImagesForFile(fileId).catch((error) => {
-      logger.warn('index.file.image_processing_failed', {
-        file_id: Number(fileId),
-        file_path: relativePath,
-        error,
-      });
-    });
-  }
+  const imageOutcome = await processGenerationImages({
+    generation,
+    imageRecords,
+    configSnapshot,
+  });
+
+  const textIndexed = 1;
+  const vectorIndexed = chunks.length === 0 ? 1 : (embeddingError ? 0 : (vecEnabled ? 1 : 0));
+  const imageVectorIndexed = imageOutcome.imageVectorIndexed;
+  const vectorUnavailable = chunks.length > 0 && !vecEnabled;
+  const degraded = Boolean(embeddingError || imageOutcome.imageError || vectorUnavailable);
+  const status = textIndexed ? (degraded ? 'degraded' : 'ready') : 'failed';
+  const error = embeddingError?.message ||
+    imageOutcome.imageError ||
+    (vectorUnavailable ? '当前索引库未启用向量能力，已降级为文本检索' : null);
 
   return {
-    fileId,
+    fileId: Number(fileId),
+    path: normalizedPath,
+    contentHash,
     chunksCount: chunks.length,
-    skipped: false,
-    embeddingFailed: Boolean(embeddingError),
-    error: embeddingError?.message || null,
+    textIndexed,
+    vectorIndexed,
+    imageVectorIndexed,
+    status,
+    error,
   };
 }
 
-function markFileIndexFailed(inputPath, error) {
-  const db = getDb();
-  const relativePath = resolveIndexPath(inputPath);
-  const normalized = ensureError(error, 'INDEX_FAILED', '索引失败');
-  db.prepare(`
-    UPDATE files
-    SET indexed = 0,
-        indexed_at = NULL,
-        index_error = ?,
-        retry_count = retry_count + 1,
-        updated_at = datetime('now')
-    WHERE path = ?
-  `).run(normalized.message, relativePath);
-  logger.error('index.file.failed', {
-    file_path: relativePath,
-    error: normalized,
-  });
-}
-
-async function indexBatch(paths, onProgress) {
-  const results = { indexed: 0, skipped: 0, failed: 0, errors: [] };
-  for (let index = 0; index < paths.length; index += 1) {
-    const currentFile = paths[index];
-    let progressPayload = {
-      current: index + 1,
-      total: paths.length,
-      currentFile,
-      status: 'indexed',
-      skipped: false,
-      error: null,
-    };
-    try {
-      const result = await indexFile(currentFile);
-      progressPayload = {
-        ...progressPayload,
-        skipped: Boolean(result.skipped),
-        status: result.skipped ? 'skipped' : (result.embeddingFailed ? 'failed' : 'indexed'),
-        chunksCount: result.chunksCount || 0,
-        error: result.error || null,
-      };
-      if (result.skipped) results.skipped += 1;
-      else if (result.embeddingFailed) {
-        results.failed += 1;
-        results.errors.push({ path: currentFile, error: result.error });
-      } else results.indexed += 1;
-    } catch (error) {
-      markFileIndexFailed(currentFile, error);
-      results.failed += 1;
-      results.errors.push({ path: currentFile, error: error.message });
-      progressPayload = {
-        ...progressPayload,
-        status: 'failed',
-        skipped: false,
-        error: error.message,
-      };
-    }
-    if (onProgress) {
-      onProgress(progressPayload);
-    }
-  }
-  return results;
-}
-
-function clearIndex() {
-  syncFilesFromDisk();
-  const db = getDb();
-
-  if (isVecAvailable()) {
-    db.prepare('DELETE FROM images_vec').run();
-    db.prepare('DELETE FROM chunks_vec').run();
-  }
-
-  db.prepare('DELETE FROM images').run();
-  db.prepare('DELETE FROM chunks').run();
-  db.prepare(`
-    UPDATE files
-    SET indexed = 0,
-        indexed_at = NULL,
-        index_error = NULL,
-        retry_count = 0,
-        updated_at = datetime('now')
-  `).run();
-}
-
-function removeFile(relativePath) {
-  const db = getDb();
-  const normalized = ensureMarkdownPath(relativePath);
-  const row = db.prepare('SELECT id FROM files WHERE path = ?').get(normalized);
-  if (row) deleteOldVectors(db, row.id);
-  db.prepare('DELETE FROM files WHERE path = ?').run(normalized);
-}
-
-async function retryFailedIndexing(limit = 10) {
-  const db = getDb();
-  const rows = db.prepare(`
-    SELECT path FROM files
-    WHERE indexed = 0 AND retry_count < 5
-    ORDER BY updated_at ASC
-    LIMIT ?
-  `).all(limit);
-  return indexBatch(rows.map((row) => row.path));
-}
-
-async function rebuildIndex(onProgress, options = {}) {
-  const { listMarkdownFiles } = require('./files');
-  const config = getEffectiveConfig();
-  fs.mkdirSync(config.notesDir, { recursive: true });
-  if (options.clear !== false) clearIndex();
-  const paths = listMarkdownFiles();
-  return indexBatch(paths, onProgress);
+function removeFileFromGeneration(generation, { fileId } = {}) {
+  if (!fileId) return;
+  const handle = getGenerationHandle(generation);
+  deleteFileVectors(handle.db, fileId, handle.vecEnabled);
 }
 
 module.exports = {
   splitIntoChunks,
-  indexFile,
-  indexBatch,
-  clearIndex,
-  removeFile,
-  retryFailedIndexing,
-  rebuildIndex,
-  markFileIndexFailed,
+  indexFileToGeneration,
+  removeFileFromGeneration,
 };

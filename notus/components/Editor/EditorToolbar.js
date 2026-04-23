@@ -176,7 +176,13 @@ const ImageDialog = ({ onConfirm, onClose }) => {
   );
 };
 
-export const EditorToolbar = ({ editor, fileId, showAICreate = true }) => {
+export const EditorToolbar = ({
+  editor,
+  fileId,
+  showAICreate = true,
+  onSave = null,
+  saveDisabled = false,
+}) => {
   const router = useRouter();
   const [dialogMode, setDialogMode] = useState(null);
 
@@ -412,6 +418,22 @@ export const EditorToolbar = ({ editor, fileId, showAICreate = true }) => {
         </ToolbarButton>
 
         <div style={{ flex: 1 }} />
+
+        {onSave && (
+          <>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={onSave}
+              disabled={saveDisabled}
+              icon={<Icons.save size={14} />}
+              title="保存（⌘S）"
+            >
+              保存
+            </Button>
+            <Divider />
+          </>
+        )}
 
         {/* AI 创作 */}
         {showAICreate && (

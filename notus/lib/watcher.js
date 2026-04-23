@@ -21,7 +21,7 @@ async function startWatcher({ onAdd, onChange, onRemove } = {}) {
     persistent: true,
     usePolling: true,
     interval: 3000,
-    ignoreInitial: false,
+    ignoreInitial: true,
     awaitWriteFinish: {
       stabilityThreshold: 1500,
       pollInterval: 500,

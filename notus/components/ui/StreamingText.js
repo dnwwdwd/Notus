@@ -1,10 +1,12 @@
 // StreamingText — renders markdown with blinking cursor while streaming
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
 
 export const StreamingText = ({ text, streaming }) => (
-  <div style={{ fontSize: 'var(--text-sm)', lineHeight: 1.7, color: 'var(--text-primary)' }}>
-    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+  <div className="streaming-markdown" style={{ fontSize: 'var(--text-sm)', lineHeight: 1.7, color: 'var(--text-primary)' }}>
+    <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>
       {text || ''}
     </ReactMarkdown>
     {streaming && (

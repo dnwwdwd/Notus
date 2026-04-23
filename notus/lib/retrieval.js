@@ -1,8 +1,10 @@
-const { getDb, isVecAvailable } = require('./db');
+const { getDb } = require('./db');
 const { getEmbedding } = require('./embeddings');
 const { getEffectiveConfig } = require('./config');
 const { buildFtsQuery } = require('./tokenizer');
 const { buildImageProxyUrl } = require('./images');
+const { getGenerationDb, isGenerationVecEnabled } = require('./indexGenerationDb');
+const { ensureActiveGeneration, getActiveGeneration } = require('./indexGenerations');
 
 function rrfScore(rank, k) {
   return 1 / (k + rank);
@@ -30,14 +32,15 @@ function normalizeFileIds(value) {
 
 async function queryEmbedding(query) {
   try {
-    return await getEmbedding(query);
+    const activeGeneration = getActiveGeneration() || ensureActiveGeneration();
+    return await getEmbedding(query, activeGeneration?.config_snapshot_object || null);
   } catch {
     return null;
   }
 }
 
-function chunkVectorSearch(db, embedding, topK, threshold) {
-  if (!embedding || !isVecAvailable()) return [];
+function chunkVectorSearch(db, embedding, topK, threshold, vecEnabled) {
+  if (!embedding || !vecEnabled) return [];
   return db.prepare(`
     SELECT chunk_id, distance
     FROM chunks_vec
@@ -53,8 +56,8 @@ function chunkVectorSearch(db, embedding, topK, threshold) {
     .filter((row) => row.vec_score === null || row.vec_score >= threshold);
 }
 
-function imageVectorSearch(db, embedding, topK, threshold) {
-  if (!embedding || !isVecAvailable()) return [];
+function imageVectorSearch(db, embedding, topK, threshold, vecEnabled) {
+  if (!embedding || !vecEnabled) return [];
   return db.prepare(`
     SELECT image_id, distance
     FROM images_vec
@@ -139,6 +142,7 @@ function attachImageCandidates(byChunk, imageRows, imageMap, rrfK) {
 }
 
 async function hybridSearch(query, opts = {}) {
+  const activeGeneration = getActiveGeneration() || ensureActiveGeneration();
   const config = getEffectiveConfig();
   const topK = Number(opts.topK || opts.top_k || config.topK || 5);
   const vecThreshold = Number(opts.vecThreshold || config.vecScoreThreshold || 0.5);
@@ -147,17 +151,20 @@ async function hybridSearch(query, opts = {}) {
   const recencyBoost = Number(opts.recencyBoost || 0.05);
   const fileIds = normalizeFileIds(opts.fileIds || opts.file_ids);
   const hasFileFilter = fileIds.length > 0;
-  const db = getDb();
+  const metadataDb = getDb();
+  const generationDb = getGenerationDb(activeGeneration);
+  const vecEnabled = isGenerationVecEnabled(activeGeneration);
 
   const embedding = await queryEmbedding(query);
+  const retrievalMode = (!embedding || !vecEnabled) ? 'fts_fallback' : 'hybrid';
   const [vecRows, ftsRows, rawImageRows] = await Promise.all([
-    Promise.resolve(chunkVectorSearch(db, embedding, topK, vecThreshold)),
-    Promise.resolve(ftsSearch(db, query, topK)),
-    Promise.resolve(imageVectorSearch(db, embedding, topK, vecThreshold)),
+    Promise.resolve(chunkVectorSearch(generationDb, embedding, topK, vecThreshold, vecEnabled)),
+    Promise.resolve(ftsSearch(generationDb, query, topK)),
+    Promise.resolve(imageVectorSearch(generationDb, embedding, topK, vecThreshold, vecEnabled)),
   ]);
 
   const imageRows = rawImageRows.length > 0
-    ? db.prepare(`
+    ? generationDb.prepare(`
       SELECT
         i.id,
         i.chunk_id,
@@ -180,9 +187,15 @@ async function hybridSearch(query, opts = {}) {
   attachImageCandidates(byChunk, rawImageRows, imageMap, rrfK);
 
   const candidates = [...byChunk.values()];
-  if (candidates.length === 0) return [];
+  if (candidates.length === 0) {
+    return {
+      chunks: [],
+      retrieval_mode: retrievalMode,
+      active_generation_id: activeGeneration?.id || null,
+    };
+  }
 
-  const rows = db.prepare(`
+  const rows = generationDb.prepare(`
     SELECT
       c.id,
       c.content,
@@ -190,27 +203,31 @@ async function hybridSearch(query, opts = {}) {
       c.heading_path,
       c.line_start,
       c.line_end,
-      f.id AS file_id,
-      f.title AS file_title,
-      f.path AS file_path,
-      f.updated_at AS file_updated_at
+      c.file_id
     FROM chunks c
-    JOIN files f ON f.id = c.file_id
     WHERE c.id IN (${candidates.map(() => '?').join(',')})
-    ${hasFileFilter ? `AND f.id IN (${fileIds.map(() => '?').join(',')})` : ''}
+    ${hasFileFilter ? `AND c.file_id IN (${fileIds.map(() => '?').join(',')})` : ''}
   `).all(...candidates.map((candidate) => candidate.chunk_id), ...(hasFileFilter ? fileIds : []));
 
   const rowMap = new Map(rows.map((row) => [row.id, row]));
+  const metadataRows = metadataDb.prepare(`
+    SELECT id, title, path, updated_at
+    FROM files
+    WHERE id IN (${[...new Set(rows.map((row) => row.file_id))].map(() => '?').join(',') || 'NULL'})
+  `).all(...[...new Set(rows.map((row) => row.file_id))]);
+  const metadataMap = new Map(metadataRows.map((row) => [row.id, row]));
   const now = Date.now();
 
-  return candidates
+  const chunks = candidates
     .map((candidate) => {
       const row = rowMap.get(candidate.chunk_id);
       if (!row) return null;
+      const fileMeta = metadataMap.get(row.file_id);
+      if (!fileMeta) return null;
 
       let score = candidate.score;
       if (row.type === 'heading') score += headingBoost;
-      const updatedAt = row.file_updated_at ? new Date(row.file_updated_at).getTime() : 0;
+      const updatedAt = fileMeta.updated_at ? new Date(fileMeta.updated_at).getTime() : 0;
       if (updatedAt && now - updatedAt < 7 * 24 * 60 * 60 * 1000) score += recencyBoost;
 
       const imagePreview = candidate.image_alt_text || candidate.image_caption || candidate.image_url || '';
@@ -221,8 +238,8 @@ async function hybridSearch(query, opts = {}) {
       return {
         chunk_id: candidate.chunk_id,
         file_id: row.file_id,
-        file_title: row.file_title || row.file_path,
-        file_path: row.file_path,
+        file_title: fileMeta.title || fileMeta.path,
+        file_path: fileMeta.path,
         content: row.content,
         heading_path: row.heading_path || '',
         line_start: row.line_start,
@@ -242,6 +259,12 @@ async function hybridSearch(query, opts = {}) {
     .filter(Boolean)
     .sort((left, right) => right.score - left.score)
     .slice(0, topK);
+
+  return {
+    chunks,
+    retrieval_mode: retrievalMode,
+    active_generation_id: activeGeneration?.id || null,
+  };
 }
 
 module.exports = {

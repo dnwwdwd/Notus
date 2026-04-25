@@ -1,6 +1,7 @@
 const { ensureRuntime } = require('../../../../lib/runtime');
 const { createLlmConfig, listLlmConfigs } = require('../../../../lib/llmConfigs');
 const { createLogger, createRequestContext } = require('../../../../lib/logger');
+const { buildLlmFingerprint, consumeConnectivityVerificationToken } = require('../../../../lib/connectivityVerification');
 
 export default function handler(req, res) {
   const context = createRequestContext(req, res, '/api/settings/llm-configs');
@@ -20,7 +21,21 @@ export default function handler(req, res) {
 
   if (req.method === 'POST') {
     try {
-      const created = createLlmConfig(req.body || {});
+      const payload = req.body || {};
+      const verified = consumeConnectivityVerificationToken({
+        token: payload.verification_token,
+        kind: 'llm',
+        fingerprint: buildLlmFingerprint(payload),
+      });
+      if (!verified) {
+        return res.status(400).json({
+          error: 'LLM 配置必须先测试连通性并使用当前测试结果保存',
+          code: 'CONNECTIVITY_TEST_REQUIRED',
+          request_id: context.request_id,
+        });
+      }
+
+      const created = createLlmConfig(payload);
       logger.info('settings.llm_configs.created', {
         llm_config_id: created.id,
         provider: created.provider,

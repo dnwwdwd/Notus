@@ -119,6 +119,16 @@ const NoteBox = ({ tone = 'info', children }) => {
   );
 };
 
+function buildEmbeddingConnectivitySignature({ provider, model, baseUrl, apiKey, apiKeySet, multimodalEnabled }) {
+  return JSON.stringify({
+    provider: String(provider || '').trim(),
+    model: String(model || '').trim(),
+    baseUrl: String(baseUrl || '').trim().replace(/\/+$/, ''),
+    apiKey: String(apiKey || '').trim() || (apiKeySet ? '__stored__' : ''),
+    multimodalEnabled: Boolean(multimodalEnabled),
+  });
+}
+
 const ModelConfig = () => {
   const toast = useToast();
   const [embProvider, setEmbProvider] = useState('qwen');
@@ -130,6 +140,8 @@ const ModelConfig = () => {
   const [saving, setSaving] = useState(false);
   const [keyHints, setKeyHints] = useState({ embedding: false });
   const [detectedEmbDim, setDetectedEmbDim] = useState(null);
+  const [testedSignature, setTestedSignature] = useState('');
+  const [verificationToken, setVerificationToken] = useState('');
   const selectedEmbeddingModel = useMemo(
     () => findEmbeddingModelMeta({ provider: embProvider, baseUrl: embBaseUrl, model: embModel }),
     [embBaseUrl, embModel, embProvider]
@@ -138,6 +150,20 @@ const ModelConfig = () => {
     () => inferEmbeddingProvider({ provider: embProvider, baseUrl: embBaseUrl, model: embModel }),
     [embBaseUrl, embModel, embProvider]
   );
+  const embeddingConnectivitySignature = useMemo(
+    () => buildEmbeddingConnectivitySignature({
+      provider: resolvedEmbProvider,
+      model: embModel,
+      baseUrl: embBaseUrl,
+      apiKey: embApiKey,
+      apiKeySet: keyHints.embedding,
+      multimodalEnabled: embMultimodalEnabled,
+    }),
+    [embApiKey, embBaseUrl, embModel, embMultimodalEnabled, keyHints.embedding, resolvedEmbProvider]
+  );
+  const embeddingTestCurrent = testState === 'success'
+    && testedSignature === embeddingConnectivitySignature
+    && Boolean(verificationToken);
 
   useEffect(() => {
     let cancelled = false;
@@ -155,6 +181,8 @@ const ModelConfig = () => {
         setKeyHints({
           embedding: Boolean(settings.embedding?.api_key_set),
         });
+        setTestedSignature('');
+        setVerificationToken('');
       })
       .catch(() => toast('读取配置失败', 'error'));
     return () => {
@@ -189,12 +217,22 @@ const ModelConfig = () => {
       setEmbProvider(embeddingResult.provider || resolvedEmbProvider);
       setDetectedEmbDim(Number(embeddingResult.dimension || 0) || Number(selectedEmbeddingModel?.dimension || 0) || null);
       setTestState('success');
+      setTestedSignature(buildEmbeddingConnectivitySignature({
+        provider: embeddingResult.provider || resolvedEmbProvider,
+        model: embModel,
+        baseUrl: embBaseUrl,
+        apiKey: embApiKey,
+        apiKeySet: keyHints.embedding,
+        multimodalEnabled: embMultimodalEnabled,
+      }));
+      setVerificationToken(embeddingResult.verification_token || '');
       toast(`Embedding 连接测试成功${embeddingResult.dimension ? `，已识别 ${embeddingResult.dimension} 维` : ''}`, 'success');
     } catch (error) {
       setTestState('error');
+      setVerificationToken('');
+      setTestedSignature('');
       toast(error.message || '连接测试失败', 'error');
     }
-    setTimeout(() => setTestState('idle'), 2500);
   };
 
   const handleEmbeddingFieldChange = (patch) => {
@@ -204,6 +242,8 @@ const ModelConfig = () => {
     if (patch.embMultimodalEnabled !== undefined) setEmbMultimodalEnabled(patch.embMultimodalEnabled);
     if (patch.embProvider !== undefined) setEmbProvider(patch.embProvider);
     setTestState('idle');
+    setTestedSignature('');
+    setVerificationToken('');
     setDetectedEmbDim((current) => (
       patch.embModel !== undefined || patch.embBaseUrl !== undefined
         ? (Number(findEmbeddingModelMeta({
@@ -220,7 +260,11 @@ const ModelConfig = () => {
       toast('请填写 Embedding 模型名', 'warning');
       return;
     }
-    const resolvedDim = Number(selectedEmbeddingModel?.dimension || detectedEmbDim || 0) || null;
+    if (!embeddingTestCurrent) {
+      toast('请先测试当前 Embedding 配置，测试通过后才能保存', 'warning');
+      return;
+    }
+    const resolvedDim = Number(detectedEmbDim || 0) || null;
     if (!resolvedDim) {
       toast('请先测试 Embedding 连接，自动识别当前模型的向量维度', 'warning');
       return;
@@ -239,6 +283,7 @@ const ModelConfig = () => {
             multimodal_enabled: embMultimodalEnabled,
             base_url: embBaseUrl,
             api_key: embApiKey,
+            verification_token: verificationToken,
           },
         }),
       });
@@ -248,6 +293,9 @@ const ModelConfig = () => {
       setKeyHints({
         embedding: Boolean(payload.embedding?.api_key_set),
       });
+      setTestedSignature('');
+      setVerificationToken('');
+      setTestState('idle');
       toast('Embedding 配置已保存', 'success');
     } catch (error) {
       toast(error.message || '保存失败', 'error');
@@ -329,7 +377,7 @@ const ModelConfig = () => {
                 >
                   {testState === 'success' ? '✓ Embedding 正常' : testState === 'error' ? '✕ Embedding 失败' : '测试 Embedding'}
                 </Button>
-                <Button variant="primary" loading={saving} onClick={handleSave}>保存 Embedding</Button>
+                <Button variant="primary" loading={saving} disabled={!embeddingTestCurrent} onClick={handleSave}>保存 Embedding</Button>
               </div>
             </div>
           </div>

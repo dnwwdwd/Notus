@@ -4,6 +4,11 @@ const { getSettingsMap, resetVec, setSettings } = require('../../../lib/db');
 const { createLogger, createRequestContext } = require('../../../lib/logger');
 const { clearIndex } = require('../../../lib/indexer');
 const { getActiveLlmConfig, listLlmConfigs } = require('../../../lib/llmConfigs');
+const {
+  buildEmbeddingFingerprint,
+  buildLlmFingerprint,
+  consumeConnectivityVerificationToken,
+} = require('../../../lib/connectivityVerification');
 
 function publicSettings() {
   const stored = getSettingsMap();
@@ -56,6 +61,28 @@ export default function handler(req, res) {
     if (body.setup_completed !== undefined) nextValues.setup_completed = body.setup_completed ? 'true' : 'false';
 
     if (body.embedding) {
+      const embeddingFingerprint = buildEmbeddingFingerprint({
+        provider: body.embedding.provider || previousConfig.embeddingProvider,
+        model: body.embedding.model || previousConfig.embeddingModel,
+        base_url: body.embedding.base_url !== undefined ? body.embedding.base_url : previousConfig.embeddingBaseUrl,
+        api_key: body.embedding.api_key || previousConfig.embeddingApiKey,
+        multimodal_enabled: body.embedding.multimodal_enabled !== undefined
+          ? body.embedding.multimodal_enabled
+          : previousConfig.embeddingMultimodalEnabled,
+        dim: body.embedding.dim || previousConfig.embeddingDim,
+      });
+      const embeddingVerified = consumeConnectivityVerificationToken({
+        token: body.embedding.verification_token,
+        kind: 'embedding',
+        fingerprint: embeddingFingerprint,
+      });
+      if (!embeddingVerified) {
+        return res.status(400).json({
+          error: 'Embedding 配置必须先测试连通性并使用当前测试结果保存',
+          code: 'CONNECTIVITY_TEST_REQUIRED',
+          request_id: context.request_id,
+        });
+      }
       if (body.embedding.provider) nextValues.embedding_provider = body.embedding.provider;
       if (body.embedding.model) nextValues.embedding_model = body.embedding.model;
       if (body.embedding.dim) nextValues.embedding_dim = body.embedding.dim;
@@ -67,6 +94,24 @@ export default function handler(req, res) {
     }
 
     if (body.llm) {
+      const llmFingerprint = buildLlmFingerprint({
+        provider: body.llm.provider || previousConfig.llmProvider,
+        model: body.llm.model || previousConfig.llmModel,
+        base_url: body.llm.base_url !== undefined ? body.llm.base_url : previousConfig.llmBaseUrl,
+        api_key: body.llm.api_key || previousConfig.llmApiKey,
+      });
+      const llmVerified = consumeConnectivityVerificationToken({
+        token: body.llm.verification_token,
+        kind: 'llm',
+        fingerprint: llmFingerprint,
+      });
+      if (!llmVerified) {
+        return res.status(400).json({
+          error: 'LLM 配置必须先测试连通性并使用当前测试结果保存',
+          code: 'CONNECTIVITY_TEST_REQUIRED',
+          request_id: context.request_id,
+        });
+      }
       if (body.llm.provider) nextValues.llm_provider = body.llm.provider;
       if (body.llm.model) nextValues.llm_model = body.llm.model;
       if (body.llm.base_url !== undefined) nextValues.llm_base_url = body.llm.base_url;

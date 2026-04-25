@@ -15,6 +15,7 @@
 
 | ID | 状态 | 问题 | 根因 / 发现 | 修复情况 | 验证 |
 |----|------|------|-------------|----------|------|
+| BUG-20260425-001 | 已修复 | Embedding 设置页与 LLM 配置页未强制“先测试连通性再保存” | Embedding 保存条件只依赖已识别维度，命中已知模型时可绕过真实测试；LLM 主要依赖前端弹窗状态，服务端接口未校验测试结果，编辑既有配置时也可直接保存 | 新增测试凭证校验链路：`/api/settings/test` 成功后签发一次性 `verification_token`，Embedding 设置页、初始化引导页与 LLM 配置弹窗都必须在当前配置测试通过后才能提交；服务端保存接口同步校验，防止绕过前端直接保存；“设为默认”保留为无需重复测试的轻量操作 | `npm run lint` 通过；本地烟测确认未携带测试凭证时，`PUT /api/settings` 与 `POST /api/settings/llm-configs` 都返回 `CONNECTIVITY_TEST_REQUIRED`；完整正向保存仍需浏览器中使用真实 API Key 复测 |
 | BUG-20260420-001 | 已修复 | 引导页模型下拉只能选固定模型，不能手填，也没有远端模型获取 | UI 只接本地 `modelCatalog` 固定数组；没有统一 `/models` 接口 | 新增 `/api/models`，优先拉远端 `/models`，失败静默回退内置候选；引导页和设置页都支持候选选择 + 手动输入 | `npm run lint`、`npm run build` 通过；`/api/models` 烟测返回远端模型 |
 | BUG-20260420-002 | 已修复 | 引导页和侧边栏导入 Markdown 文件夹时失败，缺少可定位日志 | 同时存在 API body 默认 1MB 限制、索引阶段错误误报为导入失败、缺少结构化日志 | `/api/files/import` body 上限调到 50MB；导入拆分为保存/索引阶段；文件已保存但索引失败时返回告警而不是导入失败；新增日志追踪 | 导入 API 烟测不再返回 413 或 SQL logic error，能返回逐文件告警 |
 | BUG-20260420-003 | 已修复 | 新建文件报 `SQL logic error` | `chunks_fts` 是普通 FTS5 表，但删除触发器使用了 contentless/external content 的特殊 delete 写法 | 将 `chunks_ad/chunks_au` 改为 `DELETE FROM chunks_fts WHERE rowid = old.id`；新建/保存/导入与索引解耦 | 新建与导入烟测不再出现 `SQL logic error` |

@@ -579,7 +579,7 @@ async function refreshStyleContext(context, nextSamples = []) {
   }
 }
 
-async function generateOperation(article, blockId, instruction, styleContext = {}, mode = 'replace') {
+async function generateOperation(article, blockId, instruction, styleContext = {}, mode = 'replace', llmConfig = null) {
   const block = findBlock(article, blockId);
   if (!block && mode !== 'insert') throw new Error('BLOCK_NOT_FOUND');
 
@@ -610,6 +610,7 @@ async function generateOperation(article, blockId, instruction, styleContext = {
 
   const reply = await completeChat(messages, {
     responseFormat: { type: 'json_object' },
+    config: llmConfig || undefined,
   });
   const parsed = safeJsonParse(reply.content);
   if (!parsed?.op) throw new Error('操作结果解析失败');
@@ -647,7 +648,9 @@ async function executeTool(name, args, context) {
         context.article,
         args.block_id,
         args.instruction,
-        buildStylePromptContext(context)
+        buildStylePromptContext(context),
+        'replace',
+        context.llmConfig
       ),
     };
   }
@@ -658,7 +661,9 @@ async function executeTool(name, args, context) {
         context.article,
         args.block_id,
         '扩写这段内容，补足论证和细节。',
-        buildStylePromptContext(context)
+        buildStylePromptContext(context),
+        'replace',
+        context.llmConfig
       ),
     };
   }
@@ -669,7 +674,9 @@ async function executeTool(name, args, context) {
         context.article,
         args.block_id,
         '精简这段内容，保留核心信息。',
-        buildStylePromptContext(context)
+        buildStylePromptContext(context),
+        'replace',
+        context.llmConfig
       ),
     };
   }
@@ -680,7 +687,9 @@ async function executeTool(name, args, context) {
         context.article,
         args.block_id,
         args.instruction || '按当前风格要求润色这段内容。',
-        buildStylePromptContext(context)
+        buildStylePromptContext(context),
+        'replace',
+        context.llmConfig
       ),
     };
   }
@@ -726,12 +735,11 @@ async function prepareInitialStyleContext(context) {
   context.styleProfile = await analyzeStyleSamples(context.styleSamples, context.styleMode);
 }
 
-async function runAgent({ userInput, article, styleSource }, onStream) {
+async function runAgent({ userInput, article, styleSource, llmConfig = null }, onStream) {
   const normalizedStyleSource = normalizeStyleSource(styleSource);
   if (normalizedStyleSource.mode === 'manual' && normalizedStyleSource.fileIds.length === 0) {
     throw new Error('手动风格来源至少选择 1 篇文章');
   }
-
   const context = {
     article,
     userInput,
@@ -742,6 +750,7 @@ async function runAgent({ userInput, article, styleSource }, onStream) {
     styleProfile: '',
     citations: [],
     operations: [],
+    llmConfig,
   };
 
   if (onStream) onStream({ type: 'thinking', text: '正在整理风格样本并分析创作请求…' });
@@ -765,7 +774,7 @@ async function runAgent({ userInput, article, styleSource }, onStream) {
   updateSystemPrompt(history, context);
 
   for (let round = 0; round < 4; round += 1) {
-    const reply = await completeChat(history, { tools: TOOLS });
+    const reply = await completeChat(history, { tools: TOOLS, config: llmConfig || undefined });
 
     if (reply.tool_calls?.length) {
       history.push({

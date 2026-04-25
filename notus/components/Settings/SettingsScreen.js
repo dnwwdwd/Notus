@@ -5,29 +5,17 @@ import { NotusLogo, Icons } from '../ui/Icons';
 import { Button } from '../ui/Button';
 import { DropdownSelect } from '../ui/DropdownSelect';
 import { SearchInput, TextInput } from '../ui/Input';
-import { ProviderSelect } from '../ui/ProviderSelect';
 import { ConfirmDialog } from '../ui/Dialog';
 import { ProgressBar } from '../ui/ProgressBar';
 import { Badge } from '../ui/Badge';
 import { Toggle } from '../ui/Toggle';
 import { useToast } from '../ui/Toast';
+import { LlmConfigCardsSection } from './LlmConfigCardsSection';
 import {
   EMBEDDING_PROVIDERS,
   findProvider,
-  getEmbeddingModelMeta,
-  isEmbeddingModelMultimodal,
-  LLM_PROVIDERS,
 } from '../../lib/modelCatalog';
-
-const MODEL_PROFILES_KEY = 'notus-model-profiles';
-function loadProfiles() {
-  if (typeof window === 'undefined') return [];
-  try { return JSON.parse(localStorage.getItem(MODEL_PROFILES_KEY) || '[]'); } catch { return []; }
-}
-function saveProfilesToStorage(profiles) {
-  if (typeof window === 'undefined') return;
-  try { localStorage.setItem(MODEL_PROFILES_KEY, JSON.stringify(profiles)); } catch {}
-}
+import { findEmbeddingModelMeta, inferEmbeddingProvider } from '../../lib/embeddingForm';
 import { useShortcuts, normalizeShortcut, DEFAULT_SHORTCUTS } from '../../contexts/ShortcutsContext';
 
 export const SETTINGS_SECTIONS = [
@@ -131,89 +119,53 @@ const NoteBox = ({ tone = 'info', children }) => {
   );
 };
 
+function buildEmbeddingConnectivitySignature({ provider, model, baseUrl, apiKey, apiKeySet, multimodalEnabled }) {
+  return JSON.stringify({
+    provider: String(provider || '').trim(),
+    model: String(model || '').trim(),
+    baseUrl: String(baseUrl || '').trim().replace(/\/+$/, ''),
+    apiKey: String(apiKey || '').trim() || (apiKeySet ? '__stored__' : ''),
+    multimodalEnabled: Boolean(multimodalEnabled),
+  });
+}
+
 const ModelConfig = () => {
   const toast = useToast();
   const [embProvider, setEmbProvider] = useState('qwen');
   const [embModel, setEmbModel] = useState('text-embedding-v3');
   const [embApiKey, setEmbApiKey] = useState('');
   const [embBaseUrl, setEmbBaseUrl] = useState(findProvider(EMBEDDING_PROVIDERS, 'qwen').baseUrl);
-  const [embCustomDim, setEmbCustomDim] = useState('');
   const [embMultimodalEnabled, setEmbMultimodalEnabled] = useState(false);
-  const [llmProvider, setLlmProvider] = useState('qwen');
-  const [llmModel, setLlmModel] = useState('qwen-max');
-  const [llmApiKey, setLlmApiKey] = useState('');
-  const [llmBaseUrl, setLlmBaseUrl] = useState(findProvider(LLM_PROVIDERS, 'qwen').baseUrl);
   const [testState, setTestState] = useState('idle');
   const [saving, setSaving] = useState(false);
-  const [keyHints, setKeyHints] = useState({ embedding: false, llm: false });
-  const [profiles, setProfiles] = useState(() => loadProfiles());
-  const [profileName, setProfileName] = useState('');
-  const [showSaveBox, setShowSaveBox] = useState(false);
+  const [keyHints, setKeyHints] = useState({ embedding: false });
+  const [detectedEmbDim, setDetectedEmbDim] = useState(null);
+  const [testedSignature, setTestedSignature] = useState('');
+  const [verificationToken, setVerificationToken] = useState('');
   const [embeddingApplyState, setEmbeddingApplyState] = useState('active');
   const [activeEmbedding, setActiveEmbedding] = useState(null);
-
-  const isCustomEmb = embProvider === 'custom';
-  const isCustomLlm = llmProvider === 'custom';
   const selectedEmbeddingModel = useMemo(
-    () => getEmbeddingModelMeta(embProvider, embModel),
-    [embModel, embProvider]
+    () => findEmbeddingModelMeta({ provider: embProvider, baseUrl: embBaseUrl, model: embModel }),
+    [embBaseUrl, embModel, embProvider]
   );
-  const embeddingModelSupportsMultimodal = useMemo(
-    () => isEmbeddingModelMultimodal(embProvider, embModel),
-    [embModel, embProvider]
+  const resolvedEmbProvider = useMemo(
+    () => inferEmbeddingProvider({ provider: embProvider, baseUrl: embBaseUrl, model: embModel }),
+    [embBaseUrl, embModel, embProvider]
   );
-  const showMultimodalWarning = embMultimodalEnabled && !embeddingModelSupportsMultimodal;
-  const showMultimodalReady = embMultimodalEnabled && embeddingModelSupportsMultimodal;
-
-  const handleSelectEmbProvider = (providerId) => {
-    setEmbProvider(providerId);
-    const provider = findProvider(EMBEDDING_PROVIDERS, providerId);
-    setEmbBaseUrl(provider.baseUrl || '');
-    setEmbModel(provider.models[0]?.value || embModel);
-    setTestState('idle');
-  };
-
-  const handleSelectLlmProvider = (providerId) => {
-    setLlmProvider(providerId);
-    const provider = findProvider(LLM_PROVIDERS, providerId);
-    setLlmBaseUrl(provider.baseUrl || '');
-    setLlmModel(provider.models[0]?.value || llmModel);
-    setTestState('idle');
-  };
-
-  const handleLoadProfile = (profile) => {
-    setEmbProvider(profile.embProvider || 'qwen');
-    setEmbModel(profile.embModel || '');
-    setEmbBaseUrl(profile.embBaseUrl || '');
-    setEmbCustomDim(profile.embDim || '');
-    setLlmProvider(profile.llmProvider || 'qwen');
-    setLlmModel(profile.llmModel || '');
-    setLlmBaseUrl(profile.llmBaseUrl || '');
-    setTestState('idle');
-    toast(`已载入配置"${profile.name}"`, 'success');
-  };
-
-  const handleDeleteProfile = (id) => {
-    const next = profiles.filter((p) => p.id !== id);
-    setProfiles(next);
-    saveProfilesToStorage(next);
-  };
-
-  const handleSaveProfile = () => {
-    const name = profileName.trim() || `配置 ${profiles.length + 1}`;
-    const profile = {
-      id: Date.now().toString(),
-      name,
-      embProvider, embModel, embBaseUrl, embDim: embCustomDim,
-      llmProvider, llmModel, llmBaseUrl,
-    };
-    const next = [...profiles, profile];
-    setProfiles(next);
-    saveProfilesToStorage(next);
-    setProfileName('');
-    setShowSaveBox(false);
-    toast(`配置"${name}"已保存`, 'success');
-  };
+  const embeddingConnectivitySignature = useMemo(
+    () => buildEmbeddingConnectivitySignature({
+      provider: resolvedEmbProvider,
+      model: embModel,
+      baseUrl: embBaseUrl,
+      apiKey: embApiKey,
+      apiKeySet: keyHints.embedding,
+      multimodalEnabled: embMultimodalEnabled,
+    }),
+    [embApiKey, embBaseUrl, embModel, embMultimodalEnabled, keyHints.embedding, resolvedEmbProvider]
+  );
+  const embeddingTestCurrent = testState === 'success'
+    && testedSignature === embeddingConnectivitySignature
+    && Boolean(verificationToken);
 
   useEffect(() => {
     let cancelled = false;
@@ -225,20 +177,16 @@ const ModelConfig = () => {
           setEmbProvider(settings.embedding.provider || 'qwen');
           setEmbModel(settings.embedding.model || 'text-embedding-v3');
           setEmbBaseUrl(settings.embedding.base_url || '');
-          setEmbCustomDim(String(settings.embedding.dim || ''));
+          setDetectedEmbDim(Number(settings.embedding.dim || 0) || null);
           setEmbMultimodalEnabled(Boolean(settings.embedding.multimodal_enabled));
         }
         setActiveEmbedding(settings.active_embedding || null);
         setEmbeddingApplyState(settings.embedding_apply_state || 'active');
-        if (settings.llm) {
-          setLlmProvider(settings.llm.provider || 'qwen');
-          setLlmModel(settings.llm.model || 'qwen-max');
-          setLlmBaseUrl(settings.llm.base_url || '');
-        }
         setKeyHints({
           embedding: Boolean(settings.embedding?.api_key_set),
-          llm: Boolean(settings.llm?.api_key_set),
         });
+        setTestedSignature('');
+        setVerificationToken('');
       })
       .catch(() => toast('读取配置失败', 'error'));
     return () => {
@@ -251,71 +199,78 @@ const ModelConfig = () => {
       toast('请填写 Embedding 模型名', 'warning');
       return;
     }
-    if (!llmModel.trim()) {
-      toast('请填写 LLM 模型名', 'warning');
-      return;
-    }
-    if (!selectedEmbeddingModel?.dimension && !String(embCustomDim || '').trim()) {
-      toast('请填写 Embedding 向量维度', 'warning');
-      return;
-    }
 
     setTestState('loading');
     try {
-      const embeddingConfig = {
-        provider: embProvider,
-        model: embModel,
-        api_key: embApiKey,
-        base_url: embBaseUrl,
-        dim: selectedEmbeddingModel?.dimension || embCustomDim,
-        multimodal_enabled: embMultimodalEnabled,
-      };
-      const llmConfig = {
-        provider: llmProvider,
-        model: llmModel,
-        api_key: llmApiKey,
-        base_url: llmBaseUrl,
-      };
       const embeddingResponse = await fetch('/api/settings/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ kind: 'embedding', config: embeddingConfig }),
+        body: JSON.stringify({
+          kind: 'embedding',
+          config: {
+            model: embModel,
+            api_key: embApiKey,
+            base_url: embBaseUrl,
+            multimodal_enabled: embMultimodalEnabled,
+          },
+        }),
       });
       const embeddingResult = await embeddingResponse.json();
-      if (!embeddingResult.success) throw new Error(`Embedding：${embeddingResult.error}`);
+      if (!embeddingResult.success) throw new Error(embeddingResult.error || 'Embedding 连接失败');
 
-      const llmResponse = await fetch('/api/settings/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ kind: 'llm', config: llmConfig }),
-      });
-      const llmResult = await llmResponse.json();
-      if (!llmResult.success) throw new Error(`LLM：${llmResult.error}`);
-
+      setEmbProvider(embeddingResult.provider || resolvedEmbProvider);
+      setDetectedEmbDim(Number(embeddingResult.dimension || 0) || Number(selectedEmbeddingModel?.dimension || 0) || null);
       setTestState('success');
-      toast('连接测试成功', 'success');
+      setTestedSignature(buildEmbeddingConnectivitySignature({
+        provider: embeddingResult.provider || resolvedEmbProvider,
+        model: embModel,
+        baseUrl: embBaseUrl,
+        apiKey: embApiKey,
+        apiKeySet: keyHints.embedding,
+        multimodalEnabled: embMultimodalEnabled,
+      }));
+      setVerificationToken(embeddingResult.verification_token || '');
+      toast(`Embedding 连接测试成功${embeddingResult.dimension ? `，已识别 ${embeddingResult.dimension} 维` : ''}`, 'success');
     } catch (error) {
       setTestState('error');
+      setVerificationToken('');
+      setTestedSignature('');
       toast(error.message || '连接测试失败', 'error');
     }
-    setTimeout(() => setTestState('idle'), 2500);
   };
 
-  const embDim = selectedEmbeddingModel?.dimension || embCustomDim || '—';
-  const embModelChanged = () => setTestState('idle');
-  const llmModelChanged = () => setTestState('idle');
+  const handleEmbeddingFieldChange = (patch) => {
+    if (patch.embBaseUrl !== undefined) setEmbBaseUrl(patch.embBaseUrl);
+    if (patch.embModel !== undefined) setEmbModel(patch.embModel);
+    if (patch.embApiKey !== undefined) setEmbApiKey(patch.embApiKey);
+    if (patch.embMultimodalEnabled !== undefined) setEmbMultimodalEnabled(patch.embMultimodalEnabled);
+    if (patch.embProvider !== undefined) setEmbProvider(patch.embProvider);
+    setTestState('idle');
+    setTestedSignature('');
+    setVerificationToken('');
+    setDetectedEmbDim((current) => (
+      patch.embModel !== undefined || patch.embBaseUrl !== undefined
+        ? (Number(findEmbeddingModelMeta({
+          provider: patch.embProvider || embProvider,
+          baseUrl: patch.embBaseUrl ?? embBaseUrl,
+          model: patch.embModel ?? embModel,
+        })?.dimension || 0) || null)
+        : current
+    ));
+  };
 
   const handleSave = async () => {
     if (!embModel.trim()) {
       toast('请填写 Embedding 模型名', 'warning');
       return;
     }
-    if (!llmModel.trim()) {
-      toast('请填写 LLM 模型名', 'warning');
+    if (!embeddingTestCurrent) {
+      toast('请先测试当前 Embedding 配置，测试通过后才能保存', 'warning');
       return;
     }
-    if (!selectedEmbeddingModel?.dimension && !String(embCustomDim || '').trim()) {
-      toast('请填写 Embedding 向量维度', 'warning');
+    const resolvedDim = Number(detectedEmbDim || 0) || null;
+    if (!resolvedDim) {
+      toast('请先测试 Embedding 连接，自动识别当前模型的向量维度', 'warning');
       return;
     }
 
@@ -326,32 +281,28 @@ const ModelConfig = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           embedding: {
-            provider: embProvider,
+            provider: resolvedEmbProvider,
             model: embModel,
-            dim: selectedEmbeddingModel?.dimension || embCustomDim,
+            dim: resolvedDim,
             multimodal_enabled: embMultimodalEnabled,
             base_url: embBaseUrl,
             api_key: embApiKey,
-          },
-          llm: {
-            provider: llmProvider,
-            model: llmModel,
-            base_url: llmBaseUrl,
-            api_key: llmApiKey,
+            verification_token: verificationToken,
           },
         }),
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || '保存失败');
       setEmbApiKey('');
-      setLlmApiKey('');
       setKeyHints({
         embedding: Boolean(payload.embedding?.api_key_set),
-        llm: Boolean(payload.llm?.api_key_set),
       });
       setActiveEmbedding(payload.active_embedding || null);
       setEmbeddingApplyState(payload.embedding_apply_state || 'active');
-      toast(payload.embedding_apply_state === 'rebuilding' ? '配置已保存，新的向量配置正在后台重建' : '配置已保存', 'success');
+      setTestedSignature('');
+      setVerificationToken('');
+      setTestState('idle');
+      toast(payload.embedding_apply_state === 'rebuilding' ? '配置已保存，新的向量配置正在后台重建' : 'Embedding 配置已保存', 'success');
     } catch (error) {
       toast(error.message || '保存失败', 'error');
     } finally {
@@ -363,7 +314,7 @@ const ModelConfig = () => {
     <div>
       <div style={{ fontSize: 'var(--text-xl)', fontWeight: 600, marginBottom: 6 }}>模型配置</div>
       <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', marginBottom: 20 }}>
-        选择内置提供商，或填写兼容 OpenAI API 的自定义服务。API Key 仅保存在本地。
+        Embedding 继续单独配置；所有对话模型统一通过卡片管理，并保存在服务端。
       </div>
 
       <div style={{ marginBottom: 20 }}>
@@ -385,197 +336,84 @@ const ModelConfig = () => {
         </NoteBox>
       </div>
 
-      {/* Saved profiles */}
-      {profiles.length > 0 && (
-        <div style={{ marginBottom: 20 }}>
-          <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 8 }}>已保存配置</div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            {profiles.map((profile) => (
-              <div key={profile.id} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                <button
-                  type="button"
-                  onClick={() => handleLoadProfile(profile)}
-                  style={{
-                    height: 28, padding: '0 12px',
-                    background: 'var(--bg-elevated)',
-                    border: '1px solid var(--border-primary)',
-                    borderRadius: 'var(--radius-md)',
-                    fontSize: 12, color: 'var(--text-secondary)', cursor: 'pointer',
-                    transition: 'all var(--transition-fast)',
-                  }}
-                  onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)'; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--border-primary)'; e.currentTarget.style.color = 'var(--text-secondary)'; }}
-                >
-                  {profile.name}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleDeleteProfile(profile.id)}
-                  style={{ width: 20, height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)', cursor: 'pointer', borderRadius: 'var(--radius-sm)' }}
-                  title="删除此配置"
-                >
-                  <Icons.x size={10} />
-                </button>
-              </div>
-            ))}
-          </div>
+      <div style={{ marginBottom: 32 }}>
+        <div style={{ fontSize: 'var(--text-base)', fontWeight: 600, marginBottom: 16, paddingBottom: 8, borderBottom: '1px solid var(--border-subtle)' }}>
+          Embedding 模型
         </div>
-      )}
-
-      <Section title="Embedding 模型">
-        <Field label="提供商">
-          <ProviderSelect
-            value={embProvider}
-            catalog={EMBEDDING_PROVIDERS}
-            onChange={handleSelectEmbProvider}
-            style={{ maxWidth: 260 }}
-          />
-        </Field>
-        <Field label="Base URL" hint={isCustomEmb ? '填写兼容 OpenAI Embeddings API 的服务地址' : undefined}>
-          <TextInput
-            value={embBaseUrl}
-            onChange={(event) => { setEmbBaseUrl(event.target.value); embModelChanged(); }}
-            disabled={!isCustomEmb}
-            style={!isCustomEmb ? { opacity: 0.65 } : undefined}
-          />
-        </Field>
-        <Field label="模型名称">
-          <TextInput
-            value={embModel}
-            onChange={(event) => { setEmbModel(event.target.value); embModelChanged(); }}
-            placeholder="输入 Embedding 模型名称"
-          />
-        </Field>
-        <Field label="多模态向量">
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: 16,
-              padding: '12px 14px',
-              border: '1px solid var(--border-subtle)',
-              borderRadius: 'var(--radius-lg)',
-              background: 'var(--bg-elevated)',
-            }}
-          >
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 'var(--text-sm)', fontWeight: 500 }}>允许图片 / 视频向量化</div>
-              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)', marginTop: 4, lineHeight: 1.6 }}>
-                关闭时系统只建立文本向量；开启后会尝试为图片建立向量，不支持的模型会自动跳过。
+        <div style={{ border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-xl)', background: 'var(--bg-elevated)', padding: 18 }}>
+          <div style={{ display: 'grid', gap: 14 }}>
+            <Field label="Base URL">
+              <TextInput
+                value={embBaseUrl}
+                onChange={(event) => handleEmbeddingFieldChange({ embBaseUrl: event.target.value })}
+                placeholder="https://api.openai.com/v1"
+              />
+            </Field>
+            <Field label="模型名称">
+              <TextInput
+                value={embModel}
+                onChange={(event) => handleEmbeddingFieldChange({ embModel: event.target.value })}
+                placeholder="例如：text-embedding-3-small"
+              />
+            </Field>
+            <Field label="API Key">
+              <TextInput
+                value={embApiKey}
+                onChange={(event) => handleEmbeddingFieldChange({ embApiKey: event.target.value })}
+                placeholder={keyHints.embedding ? '已保存，留空不修改' : 'sk-...'}
+                masked
+              />
+            </Field>
+            <Field label="多模态向量">
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 16,
+                  padding: '10px 12px',
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: 'var(--radius-lg)',
+                  background: 'var(--bg-primary)',
+                }}
+              >
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 'var(--text-sm)', fontWeight: 500 }}>允许图片 / 视频向量化</div>
+                  <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)', marginTop: 4, lineHeight: 1.6 }}>
+                    关闭时只建立文本向量；开启后会尝试为图片建立向量。
+                  </div>
+                </div>
+                <Toggle on={embMultimodalEnabled} onChange={(value) => handleEmbeddingFieldChange({ embMultimodalEnabled: value })} />
+              </div>
+            </Field>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
+                系统会在测试连接时自动识别 Provider 和向量维度{detectedEmbDim ? `，当前识别为 ${detectedEmbDim} 维` : ''}。
+              </div>
+              <div style={{ display: 'flex', gap: 10 }}>
+                <Button
+                  variant="secondary"
+                  loading={testState === 'loading'}
+                  onClick={handleTest}
+                  style={{
+                    ...(testState === 'success' ? { borderColor: 'var(--success)', color: 'var(--success)' } : {}),
+                    ...(testState === 'error' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : {}),
+                  }}
+                >
+                  {testState === 'success' ? '✓ Embedding 正常' : testState === 'error' ? '✕ Embedding 失败' : '测试 Embedding'}
+                </Button>
+                <Button variant="primary" loading={saving} disabled={!embeddingTestCurrent} onClick={handleSave}>保存 Embedding</Button>
               </div>
             </div>
-            <Toggle on={embMultimodalEnabled} onChange={setEmbMultimodalEnabled} />
           </div>
-        </Field>
-        {showMultimodalReady && (
-          <div style={{ marginBottom: 16 }}>
-            <NoteBox tone="success">
-              当前模型支持多模态向量化。文本块和图片向量会共用同一维度，切换模型后需要重建索引。
-            </NoteBox>
-          </div>
-        )}
-        {showMultimodalWarning && (
-          <div style={{ marginBottom: 16 }}>
-            <NoteBox tone="warning">
-              当前选择的模型看起来是纯文本向量模型。保存后系统仍可正常工作，但图片和视频向量会跳过，不会影响文本检索。
-            </NoteBox>
-          </div>
-        )}
-        {!embMultimodalEnabled && (
-          <div style={{ marginBottom: 16 }}>
-            <NoteBox>
-              这是默认模式，只建立文本块向量。若后续需要图片检索，可再切换到支持多模态的向量模型。
-            </NoteBox>
-          </div>
-        )}
-        <Field label="API Key">
-          <TextInput
-            value={embApiKey}
-            onChange={(event) => setEmbApiKey(event.target.value)}
-            placeholder={keyHints.embedding ? '已保存，留空不修改' : 'sk-...'}
-            masked
-          />
-        </Field>
-        <Field
-          label="向量维度"
-          hint={embMultimodalEnabled ? '文本块和图片向量必须使用同一维度；切换模型时需重建索引' : '切换模型时需重建索引'}
-        >
-          <TextInput
-            value={selectedEmbeddingModel?.dimension || embCustomDim}
-            onChange={(event) => setEmbCustomDim(event.target.value)}
-            disabled={Boolean(selectedEmbeddingModel)}
-            style={{ opacity: selectedEmbeddingModel ? 0.65 : 1, maxWidth: 120 }}
-          />
-        </Field>
-      </Section>
-
-      <Section title="LLM 模型">
-        <Field label="提供商">
-          <ProviderSelect
-            value={llmProvider}
-            catalog={LLM_PROVIDERS}
-            onChange={handleSelectLlmProvider}
-            style={{ maxWidth: 260 }}
-          />
-        </Field>
-        <Field label="Base URL" hint={isCustomLlm ? '填写兼容 OpenAI Chat Completions API 的服务地址' : undefined}>
-          <TextInput
-            value={llmBaseUrl}
-            onChange={(event) => { setLlmBaseUrl(event.target.value); llmModelChanged(); }}
-            disabled={!isCustomLlm}
-            style={!isCustomLlm ? { opacity: 0.65 } : undefined}
-          />
-        </Field>
-        <Field label="模型名称">
-          <TextInput
-            value={llmModel}
-            onChange={(event) => { setLlmModel(event.target.value); llmModelChanged(); }}
-            placeholder="输入 LLM 模型名称"
-          />
-        </Field>
-        <Field label="API Key">
-          <TextInput
-            value={llmApiKey}
-            onChange={(event) => setLlmApiKey(event.target.value)}
-            placeholder={keyHints.llm ? '已保存，留空不修改' : 'sk-...'}
-            masked
-          />
-        </Field>
-      </Section>
-
-      <div style={{ display: 'flex', gap: 10, justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap' }}>
-        {/* Save as profile */}
-        {showSaveBox ? (
-          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-            <TextInput
-              value={profileName}
-              onChange={(e) => setProfileName(e.target.value)}
-              placeholder="配置名称"
-              style={{ width: 160 }}
-              onKeyDown={(e) => e.key === 'Enter' && handleSaveProfile()}
-            />
-            <Button variant="primary" size="sm" onClick={handleSaveProfile}>保存</Button>
-            <Button variant="ghost" size="sm" onClick={() => setShowSaveBox(false)}>取消</Button>
-          </div>
-        ) : (
-          <Button variant="ghost" onClick={() => setShowSaveBox(true)}>保存为配置…</Button>
-        )}
-
-        <div style={{ display: 'flex', gap: 10 }}>
-          <Button
-            variant="secondary"
-            loading={testState === 'loading'}
-            onClick={handleTest}
-            style={{
-              ...(testState === 'success' ? { borderColor: 'var(--success)', color: 'var(--success)' } : {}),
-              ...(testState === 'error' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : {}),
-            }}
-          >
-            {testState === 'success' ? '✓ 连接正常' : testState === 'error' ? '✕ 连接失败' : '测试连接'}
-          </Button>
-          <Button variant="primary" loading={saving} onClick={handleSave}>保存配置</Button>
         </div>
+      </div>
+
+      <div style={{ marginBottom: 32 }}>
+        <LlmConfigCardsSection
+          title="LLM 配置"
+          subtitle="知识库问答与 AI 创作会直接读取这里保存的已测试模型配置。"
+        />
       </div>
     </div>
   );

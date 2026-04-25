@@ -97,6 +97,7 @@ export function LlmConfigCardsSection({
   const [testState, setTestState] = useState('idle');
   const [testing, setTesting] = useState(false);
   const [testedSignature, setTestedSignature] = useState('');
+  const [verificationToken, setVerificationToken] = useState('');
   const [testError, setTestError] = useState('');
   const [pendingDelete, setPendingDelete] = useState(null);
   const [submitting, setSubmitting] = useState(false);
@@ -121,6 +122,7 @@ export function LlmConfigCardsSection({
     const currentSignature = buildConnectivitySignature(draft);
     if (testedSignature && currentSignature !== testedSignature) {
       setTestState('idle');
+      setVerificationToken('');
       setTestError('');
     }
   }, [dialogMode, draft, testedSignature]);
@@ -141,19 +143,19 @@ export function LlmConfigCardsSection({
     setDraft(nextDraft);
     setTestState('idle');
     setTesting(false);
+    setVerificationToken('');
     setTestError('');
     setTestedSignature('');
     setDialogMode('create');
   };
 
   const openEdit = (item) => {
-    const nextDraft = createDraft(item);
-    const signature = buildConnectivitySignature(nextDraft);
-    setDraft(nextDraft);
-    setTestState('success');
+    setDraft(createDraft(item));
+    setTestState('idle');
     setTesting(false);
+    setVerificationToken('');
     setTestError('');
-    setTestedSignature(signature);
+    setTestedSignature('');
     setDialogMode('edit');
   };
 
@@ -164,6 +166,7 @@ export function LlmConfigCardsSection({
     setTestState('idle');
     setTestError('');
     setTestedSignature('');
+    setVerificationToken('');
   };
 
   const handleProviderChange = (nextProvider) => {
@@ -181,7 +184,7 @@ export function LlmConfigCardsSection({
     () => buildConnectivitySignature(draft),
     [draft]
   );
-  const canSubmit = testState === 'success' && testedSignature === connectivitySignature && !testing && !submitting;
+  const canSubmit = testState === 'success' && testedSignature === connectivitySignature && Boolean(verificationToken) && !testing && !submitting;
 
   const handleTest = async () => {
     if (!String(draft.name || '').trim()) {
@@ -226,10 +229,12 @@ export function LlmConfigCardsSection({
       setDraft((prev) => ({ ...prev, lastTestLatencyMs: payload.latency_ms || null }));
       setTestState('success');
       setTestedSignature(connectivitySignature);
+      setVerificationToken(payload.verification_token || '');
       setTestError('');
       toast('LLM 连接测试成功', 'success');
     } catch (error) {
       setTestState('error');
+      setVerificationToken('');
       setTestError(error.message || 'LLM 连接测试失败');
       toast(error.message || 'LLM 连接测试失败', 'error');
     } finally {
@@ -253,6 +258,7 @@ export function LlmConfigCardsSection({
         api_key: String(draft.apiKey || '').trim(),
         set_default: draft.setDefault,
         last_test_latency_ms: draft.lastTestLatencyMs,
+        verification_token: verificationToken,
       };
 
       if (dialogMode === 'edit') {

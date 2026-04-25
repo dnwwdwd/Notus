@@ -131,6 +131,16 @@ async function consumeSseResponse(response, onPayload) {
   }
 }
 
+function buildEmbeddingConnectivitySignature({ provider, model, baseUrl, apiKey, apiKeySet, multimodalEnabled }) {
+  return JSON.stringify({
+    provider: String(provider || '').trim(),
+    model: String(model || '').trim(),
+    baseUrl: String(baseUrl || '').trim().replace(/\/+$/, ''),
+    apiKey: String(apiKey || '').trim() || (apiKeySet ? '__stored__' : ''),
+    multimodalEnabled: Boolean(multimodalEnabled),
+  });
+}
+
 // ── Step1 — model config (horizontal layout) ────────────────────
 const Step1 = ({
   form,
@@ -460,6 +470,8 @@ export default function SetupPage() {
   const [nextBlockedMsg, setNextBlockedMsg] = useState('');
   const [llmState, setLlmState] = useState({ configs: [], activeConfigId: null, loading: true });
   const [detectedEmbDim, setDetectedEmbDim] = useState(null);
+  const [testedEmbSignature, setTestedEmbSignature] = useState('');
+  const [embeddingVerificationToken, setEmbeddingVerificationToken] = useState('');
   const [selectedImportFiles, setSelectedImportFiles] = useState([]);
   const [step3Started, setStep3Started] = useState(false);
   const [step3Running, setStep3Running] = useState(false);
@@ -506,6 +518,8 @@ export default function SetupPage() {
         setKeyHints({
           embedding: Boolean(settings.embedding?.api_key_set),
         });
+        setTestedEmbSignature('');
+        setEmbeddingVerificationToken('');
       })
       .catch(() => {
         toast('读取当前配置失败', 'warning');
@@ -526,6 +540,8 @@ export default function SetupPage() {
       setTestState('idle');
       setTestErrorMsg('');
       setNextBlockedMsg('');
+      setTestedEmbSignature('');
+      setEmbeddingVerificationToken('');
       if (patch.embModel !== undefined || patch.embBaseUrl !== undefined || patch.embProvider !== undefined) {
         const knownDim = findEmbeddingModelMeta({
           provider: patch.embProvider || form.embProvider,
@@ -539,6 +555,7 @@ export default function SetupPage() {
 
   const handleTest = async () => {
     const embModel = form.embModel.trim();
+    const resolvedProvider = inferEmbeddingProvider({ provider: form.embProvider, baseUrl: form.embBaseUrl, model: embModel });
 
     if (!embModel) { toast('请填写 Embedding 模型名', 'warning'); return; }
 
@@ -564,9 +581,20 @@ export default function SetupPage() {
       setDetectedEmbDim(Number(embResult.dimension || 0) || null);
       setForm((prev) => ({ ...prev, embProvider: embResult.provider || inferEmbeddingProvider({ provider: prev.embProvider, baseUrl: prev.embBaseUrl, model: prev.embModel }) }));
       setTestState('success');
+      setTestedEmbSignature(buildEmbeddingConnectivitySignature({
+        provider: embResult.provider || resolvedProvider,
+        model: embModel,
+        baseUrl: form.embBaseUrl,
+        apiKey: form.embApiKey,
+        apiKeySet: keyHints.embedding,
+        multimodalEnabled: form.embMultimodalEnabled,
+      }));
+      setEmbeddingVerificationToken(embResult.verification_token || '');
       setNextBlockedMsg('');
     } catch (err) {
       setTestState('error');
+      setTestedEmbSignature('');
+      setEmbeddingVerificationToken('');
       setTestErrorMsg(err.message || '连接失败，请检查配置');
     }
   };
@@ -603,14 +631,29 @@ export default function SetupPage() {
   ];
   const meta = stepMeta[step];
   const labels = ['配置模型', '导入笔记', '建立索引'];
+  const currentEmbeddingSignature = buildEmbeddingConnectivitySignature({
+    provider: inferEmbeddingProvider({ provider: form.embProvider, baseUrl: form.embBaseUrl, model: form.embModel }),
+    model: form.embModel,
+    baseUrl: form.embBaseUrl,
+    apiKey: form.embApiKey,
+    apiKeySet: keyHints.embedding,
+    multimodalEnabled: form.embMultimodalEnabled,
+  });
+  const isEmbeddingTestCurrent = testState === 'success'
+    && testedEmbSignature === currentEmbeddingSignature
+    && Boolean(embeddingVerificationToken);
 
   const persistModelConfig = async () => {
     const effectiveEmbModel = form.embModel.trim();
     const resolvedProvider = inferEmbeddingProvider({ provider: form.embProvider, baseUrl: form.embBaseUrl, model: effectiveEmbModel });
-    const embDim = Number(findEmbeddingModelMeta({ provider: resolvedProvider, baseUrl: form.embBaseUrl, model: effectiveEmbModel })?.dimension || detectedEmbDim || 0) || null;
+    const embDim = Number(detectedEmbDim || 0) || null;
 
     if (!effectiveEmbModel) {
       toast('请填写 Embedding 模型名', 'warning');
+      return false;
+    }
+    if (!isEmbeddingTestCurrent) {
+      toast('请先测试当前 Embedding 配置，测试通过后才能保存', 'warning');
       return false;
     }
     if (!embDim) {
@@ -631,6 +674,7 @@ export default function SetupPage() {
             base_url: form.embBaseUrl,
             api_key: form.embApiKey,
             multimodal_enabled: form.embMultimodalEnabled,
+            verification_token: embeddingVerificationToken,
           },
         }),
       });
@@ -645,6 +689,9 @@ export default function SetupPage() {
       setKeyHints({
         embedding: Boolean(payload.embedding?.api_key_set),
       });
+      setTestState('idle');
+      setTestedEmbSignature('');
+      setEmbeddingVerificationToken('');
       toast('Embedding 配置已保存', 'success');
       return true;
     } catch (error) {
@@ -792,8 +839,8 @@ export default function SetupPage() {
 
   const handleNext = async () => {
     if (step === 0) {
-      if (testState !== 'success') {
-        setNextBlockedMsg('请先完成 Embedding 连接测试。');
+      if (!isEmbeddingTestCurrent) {
+        setNextBlockedMsg('请先完成当前 Embedding 配置的连通性测试。');
         return;
       }
       if (llmState.loading) {

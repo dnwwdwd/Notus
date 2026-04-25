@@ -4,6 +4,11 @@ const { getEmbedding } = require('../../../lib/embeddings');
 const { completeChat } = require('../../../lib/llm');
 const { createLogger, createRequestContext } = require('../../../lib/logger');
 const { getLlmConfigById } = require('../../../lib/llmConfigs');
+const {
+  buildEmbeddingFingerprint,
+  buildLlmFingerprint,
+  issueConnectivityVerificationToken,
+} = require('../../../lib/connectivityVerification');
 
 function cleanBaseUrl(value) {
   return String(value || '').trim().replace(/\/+$/, '').toLowerCase();
@@ -78,6 +83,7 @@ export default async function handler(req, res) {
   try {
     const base = getEffectiveConfig();
     let embeddingResultPayload = null;
+    let verificationToken = null;
     if (kind === 'embedding') {
       const resolvedProvider = inferEmbeddingProvider({
         provider: config.provider,
@@ -101,19 +107,40 @@ export default async function handler(req, res) {
         provider: resolvedProvider,
         dimension: Array.isArray(vector) ? vector.length : null,
       };
+      verificationToken = issueConnectivityVerificationToken({
+        kind: 'embedding',
+        fingerprint: buildEmbeddingFingerprint({
+          provider: resolvedProvider || base.embeddingProvider,
+          model: config.model || base.embeddingModel,
+          base_url: config.base_url || base.embeddingBaseUrl,
+          api_key: config.api_key || base.embeddingApiKey,
+          multimodal_enabled: config.multimodal_enabled,
+          dim: Array.isArray(vector) ? vector.length : null,
+        }),
+      });
     } else {
       const selectedLlmConfig = llmConfigId ? getLlmConfigById(llmConfigId, { includeSecret: true }) : null;
+      const resolvedConfig = {
+        provider: config.provider || selectedLlmConfig?.provider || base.llmProvider,
+        model: config.model || selectedLlmConfig?.model || base.llmModel,
+        api_key: config.api_key || selectedLlmConfig?.api_key || base.llmApiKey,
+        base_url: config.base_url || selectedLlmConfig?.base_url || base.llmBaseUrl,
+      };
       await completeChat([
         { role: 'system', content: '只回复 ok。' },
         { role: 'user', content: '测试连接' },
       ], {
         config: {
           ...base,
-          llmProvider: config.provider || selectedLlmConfig?.provider || base.llmProvider,
-          llmModel: config.model || selectedLlmConfig?.model || base.llmModel,
-          llmApiKey: config.api_key || selectedLlmConfig?.api_key || base.llmApiKey,
-          llmBaseUrl: config.base_url || selectedLlmConfig?.base_url || base.llmBaseUrl,
+          llmProvider: resolvedConfig.provider,
+          llmModel: resolvedConfig.model,
+          llmApiKey: resolvedConfig.api_key,
+          llmBaseUrl: resolvedConfig.base_url,
         },
+      });
+      verificationToken = issueConnectivityVerificationToken({
+        kind: 'llm',
+        fingerprint: buildLlmFingerprint(resolvedConfig),
       });
     }
 
@@ -126,6 +153,7 @@ export default async function handler(req, res) {
     return res.status(200).json({
       success: true,
       latency_ms: Date.now() - started,
+      verification_token: verificationToken,
       ...(embeddingResultPayload || {}),
       request_id: context.request_id,
     });

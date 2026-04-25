@@ -145,7 +145,7 @@ function safeJsonParse(content) {
   }
 }
 
-async function generateOperation(article, blockId, instruction, styleSamples = [], mode = 'replace') {
+async function generateOperation(article, blockId, instruction, styleSamples = [], mode = 'replace', llmConfig = null) {
   const block = findBlock(article, blockId);
   if (!block && mode !== 'insert') throw new Error('BLOCK_NOT_FOUND');
 
@@ -173,7 +173,7 @@ async function generateOperation(article, blockId, instruction, styleSamples = [
     },
   ];
 
-  const reply = await completeChat(messages);
+  const reply = await completeChat(messages, { config: llmConfig || undefined });
   const parsed = safeJsonParse(reply.content);
   if (!parsed?.op) throw new Error('操作结果解析失败');
   return parsed;
@@ -203,19 +203,19 @@ async function executeTool(name, args, context) {
   }
 
   if (name === 'draft_block') {
-    return { operation: await generateOperation(context.article, args.block_id, args.instruction, context.styleSamples) };
+    return { operation: await generateOperation(context.article, args.block_id, args.instruction, context.styleSamples, 'replace', context.llmConfig) };
   }
 
   if (name === 'expand_block') {
-    return { operation: await generateOperation(context.article, args.block_id, '扩写这段内容，补足论证和细节。', context.styleSamples) };
+    return { operation: await generateOperation(context.article, args.block_id, '扩写这段内容，补足论证和细节。', context.styleSamples, 'replace', context.llmConfig) };
   }
 
   if (name === 'shrink_block') {
-    return { operation: await generateOperation(context.article, args.block_id, '精简这段内容，保留核心信息。', context.styleSamples) };
+    return { operation: await generateOperation(context.article, args.block_id, '精简这段内容，保留核心信息。', context.styleSamples, 'replace', context.llmConfig) };
   }
 
   if (name === 'polish_style') {
-    return { operation: await generateOperation(context.article, args.block_id, args.instruction || '按已有风格润色这段内容。', context.styleSamples) };
+    return { operation: await generateOperation(context.article, args.block_id, args.instruction || '按已有风格润色这段内容。', context.styleSamples, 'replace', context.llmConfig) };
   }
 
   if (name === 'insert_block') {
@@ -244,7 +244,7 @@ async function executeTool(name, args, context) {
   throw new Error(`Unknown tool: ${name}`);
 }
 
-async function runAgent({ userInput, article, styleSource }, onStream) {
+async function runAgent({ userInput, article, styleSource, llmConfig = null }, onStream) {
   const context = {
     article,
     styleSamples: [],
@@ -253,6 +253,7 @@ async function runAgent({ userInput, article, styleSource }, onStream) {
       : [],
     citations: [],
     operations: [],
+    llmConfig,
   };
 
   const initialMessages = [
@@ -277,7 +278,7 @@ async function runAgent({ userInput, article, styleSource }, onStream) {
   if (onStream) onStream({ type: 'thinking', text: '正在分析你的创作请求…' });
 
   for (let round = 0; round < 4; round += 1) {
-    const reply = await completeChat(history, { tools: TOOLS });
+    const reply = await completeChat(history, { tools: TOOLS, config: llmConfig || undefined });
 
     if (reply.tool_calls?.length) {
       history.push({

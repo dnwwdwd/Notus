@@ -1,7 +1,7 @@
 // WysiwygEditor — Tiptap-based WYSIWYG markdown editor (Typora-like)
 // Loaded with ssr:false from files/index.js
 // Accepts `onEditorReady(editor)` to lift the editor instance to the parent
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight';
@@ -19,6 +19,8 @@ const lowlight = createLowlight(all);
 
 export const WysiwygEditor = ({ value, onChange, onSave, onEditorReady }) => {
   const { shortcuts, matchShortcut } = useShortcuts();
+  const isSyncingContentRef = useRef(false);
+  const syncFrameRef = useRef(null);
   const editor = useEditor({
     extensions: [
       StarterKit.configure({
@@ -46,6 +48,7 @@ export const WysiwygEditor = ({ value, onChange, onSave, onEditorReady }) => {
     content: '',
     immediatelyRender: false,
     onUpdate({ editor }) {
+      if (isSyncingContentRef.current) return;
       const md = editor.storage.markdown.getMarkdown();
       onChange?.(md);
     },
@@ -73,10 +76,20 @@ export const WysiwygEditor = ({ value, onChange, onSave, onEditorReady }) => {
     if (!editor || value === undefined) return;
     const current = editor.storage.markdown.getMarkdown();
     if (current !== value) {
+      isSyncingContentRef.current = true;
+      if (syncFrameRef.current) window.cancelAnimationFrame(syncFrameRef.current);
       // tiptap-markdown overrides setContent to parse markdown instead of treating it as HTML.
       editor.commands.setContent(value || '', false);
+      syncFrameRef.current = window.requestAnimationFrame(() => {
+        isSyncingContentRef.current = false;
+        syncFrameRef.current = null;
+      });
     }
   }, [editor, value]);
+
+  useEffect(() => () => {
+    if (syncFrameRef.current) window.cancelAnimationFrame(syncFrameRef.current);
+  }, []);
 
   return (
     <div

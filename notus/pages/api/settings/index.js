@@ -3,10 +3,12 @@ const { getEffectiveConfig, applySettings, readEnvConfig } = require('../../../l
 const { getSettingsMap, resetVec, setSettings } = require('../../../lib/db');
 const { createLogger, createRequestContext } = require('../../../lib/logger');
 const { clearIndex } = require('../../../lib/indexer');
+const { getActiveLlmConfig, listLlmConfigs } = require('../../../lib/llmConfigs');
 
 function publicSettings() {
   const stored = getSettingsMap();
   const config = getEffectiveConfig();
+  const activeLlmConfig = getActiveLlmConfig();
   return {
     notes_dir: config.notesDir,
     assets_dir: config.assetsDir,
@@ -25,6 +27,8 @@ function publicSettings() {
       base_url: config.llmBaseUrl,
       api_key_set: Boolean(config.llmApiKey),
     },
+    llm_configs: listLlmConfigs(),
+    active_llm_config_id: activeLlmConfig?.id || null,
   };
 }
 

@@ -3,6 +3,7 @@ const { getDb } = require('../../lib/db');
 const { hybridSearch } = require('../../lib/retrieval');
 const { buildKnowledgeQAPrompt } = require('../../lib/prompt');
 const { streamChat } = require('../../lib/llm');
+const { resolveLlmRuntimeConfig } = require('../../lib/llmConfigs');
 
 function send(res, payload) {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
@@ -51,6 +52,7 @@ export default async function handler(req, res) {
     conversation_id: conversationId,
     query,
     model,
+    llm_config_id: llmConfigId,
     reference_mode: referenceMode,
     reference_file_ids: referenceFileIds = [],
   } = req.body || {};
@@ -79,9 +81,14 @@ export default async function handler(req, res) {
       answer = '笔记中没有这方面的内容。';
       send(res, { type: 'token', text: answer });
     } else {
+      const llmConfig = llmConfigId ? resolveLlmRuntimeConfig({ llmConfigId, model }) : null;
+      if (llmConfigId && !llmConfig) {
+        throw new Error('所选 LLM 配置不存在');
+      }
       const messages = buildKnowledgeQAPrompt(query, chunks);
       answer = await streamChat(messages, {
         model,
+        config: llmConfig || undefined,
         onToken: (text) => send(res, { type: 'token', text }),
       });
     }

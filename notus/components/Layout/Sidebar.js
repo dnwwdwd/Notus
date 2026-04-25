@@ -170,7 +170,7 @@ const FileRow = ({ item, isActive, onSelect, onToggle }) => {
   );
 };
 
-export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, navigateOnFileSelect = true }) => {
+export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, beforeFileSelect, navigateOnFileSelect = true }) => {
   const router = useRouter();
   const toast = useToast();
   const importFileInputRef = useRef(null);
@@ -180,6 +180,7 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, navigateOnF
     allFiles,
     folderOptions,
     loadingFiles,
+    hasLoadedFilesOnce,
     openFolders,
     toggleFolder,
     activeFileId,
@@ -256,6 +257,7 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, navigateOnF
   }, [importFailedResults, selectedImportFiles]);
 
   const handleSelectFile = (file) => {
+    if (beforeFileSelect && beforeFileSelect(file) === false) return;
     selectFile(file);
     if (navigateOnFileSelect && router.pathname !== '/files') {
       router.push('/files');
@@ -1077,7 +1079,7 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, navigateOnF
               );
             })}
           </div>
-        ) : loadingFiles ? (
+        ) : loadingFiles && !hasLoadedFilesOnce && files.length === 0 ? (
           <div style={{ padding: '20px 16px', fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)' }}>
             正在读取文件树…
           </div>

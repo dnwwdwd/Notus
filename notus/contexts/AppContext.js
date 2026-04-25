@@ -2,6 +2,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 
 export const AppContext = createContext(null);
+const FILE_TREE_CACHE_KEY = 'notus-file-tree-cache';
 
 function flattenTree(nodes = []) {
   return nodes.flatMap((node) => {
@@ -23,20 +24,52 @@ function getAncestorPaths(targetPath) {
   return parts.slice(0, -1).map((_, index) => parts.slice(0, index + 1).join('/'));
 }
 
+function readCachedTree() {
+  if (typeof window === 'undefined') return [];
+  try {
+    const parsed = JSON.parse(window.sessionStorage.getItem(FILE_TREE_CACHE_KEY) || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeCachedTree(tree) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.setItem(FILE_TREE_CACHE_KEY, JSON.stringify(Array.isArray(tree) ? tree : []));
+  } catch {}
+}
+
 export function AppProvider({ children }) {
-  const [files, setFiles] = useState([]);
-  const [loadingFiles, setLoadingFiles] = useState(true);
+  const [files, setFiles] = useState(() => readCachedTree());
+  const [loadingFiles, setLoadingFiles] = useState(() => readCachedTree().length === 0);
+  const [hasLoadedFilesOnce, setHasLoadedFilesOnce] = useState(() => readCachedTree().length > 0);
 
   // In-memory file content cache (fileId → markdown string)
   const contentCache = useRef(new Map());
+  const filesRef = useRef(files);
+  const activeFileIdRef = useRef(null);
   const [openFolders, setOpenFolders] = useState(
     () => new Set(['技术文章', '技术文章/缓存系列', '随笔', '读书笔记'])
   );
   const [activeFileId, setActiveFileId] = useState(null);
   const [activeFile, setActiveFile] = useState(null);
 
-  const refreshFiles = useCallback(async () => {
-    setLoadingFiles(true);
+  useEffect(() => {
+    filesRef.current = files;
+  }, [files]);
+
+  useEffect(() => {
+    activeFileIdRef.current = activeFileId;
+  }, [activeFileId]);
+
+  const refreshFiles = useCallback(async (options = {}) => {
+    const hasExistingTree = filesRef.current.length > 0;
+    const background = options.background ?? hasExistingTree;
+    if (!background || !hasExistingTree) {
+      setLoadingFiles(true);
+    }
     try {
       const response = await fetch('/api/files/tree');
       const tree = await response.json();
@@ -45,10 +78,12 @@ export function AppProvider({ children }) {
       }
 
       setFiles(tree);
+      writeCachedTree(tree);
+      setHasLoadedFilesOnce(true);
 
       const flat = flattenTree(tree);
-      if (activeFileId) {
-        const nextActiveFile = flat.find((item) => item.type === 'file' && item.id === activeFileId) || null;
+      if (activeFileIdRef.current) {
+        const nextActiveFile = flat.find((item) => item.type === 'file' && item.id === activeFileIdRef.current) || null;
         setActiveFile(nextActiveFile);
         if (!nextActiveFile) setActiveFileId(null);
       }
@@ -60,7 +95,7 @@ export function AppProvider({ children }) {
   }, [activeFileId]);
 
   useEffect(() => {
-    refreshFiles();
+    refreshFiles({ background: filesRef.current.length > 0 }).catch(() => {});
   }, [refreshFiles]);
 
   const toggleFolder = useCallback((folderPath) => {
@@ -146,6 +181,7 @@ export function AppProvider({ children }) {
         allFiles,
         folderOptions,
         loadingFiles,
+        hasLoadedFilesOnce,
         openFolders,
         toggleFolder,
         activeFileId,

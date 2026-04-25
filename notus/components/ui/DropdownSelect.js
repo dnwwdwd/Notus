@@ -20,6 +20,8 @@ export const DropdownSelect = ({
   renderValue,
   renderOption,
   placement = 'auto',
+  isOptionSelected,
+  closeOnSelect = true,
 }) => {
   const triggerRef = useRef(null);
   const menuRef = useRef(null);
@@ -149,13 +151,15 @@ export const DropdownSelect = ({
             {emptyText}
           </div>
         ) : filteredOptions.map((option) => {
-          const active = String(option.value) === String(value);
+          const active = isOptionSelected
+            ? Boolean(isOptionSelected(option, value))
+            : String(option.value) === String(value);
           return (
             <button
               key={option.value}
               onClick={() => {
                 onChange?.(option.value, option);
-                setOpen(false);
+                if (closeOnSelect) setOpen(false);
               }}
               style={{
                 width: '100%',

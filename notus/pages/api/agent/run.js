@@ -2,6 +2,7 @@ const { ensureRuntime } = require('../../../lib/runtime');
 const { getDb } = require('../../../lib/db');
 const { runAgent } = require('../../../lib/agent');
 const { computeDiff } = require('../../../lib/diff');
+const { resolveLlmRuntimeConfig } = require('../../../lib/llmConfigs');
 
 function send(res, payload) {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
@@ -31,6 +32,7 @@ export default async function handler(req, res) {
     conversation_id: conversationId,
     user_input: userInput,
     article,
+    llm_config_id: llmConfigId,
     style_source: styleSource = 'auto',
   } = req.body || {};
 
@@ -54,10 +56,15 @@ export default async function handler(req, res) {
     .run(convId, 'user', userInput);
 
   try {
+    const llmConfig = llmConfigId ? resolveLlmRuntimeConfig({ llmConfigId }) : null;
+    if (llmConfigId && !llmConfig) {
+      throw new Error('所选 LLM 配置不存在');
+    }
     const result = await runAgent({
       userInput,
       article,
       styleSource,
+      llmConfig,
     }, (event) => send(res, event));
 
     const operations = result.operations || [];

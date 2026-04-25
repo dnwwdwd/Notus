@@ -4,11 +4,12 @@ import { useRouter } from 'next/router';
 import { useApp } from '../../contexts/AppContext';
 import { useShortcuts } from '../../contexts/ShortcutsContext';
 import { Dialog } from '../ui/Dialog';
+import { Button } from '../ui/Button';
 import { SearchInput } from '../ui/Input';
 import { NotusLogo, Icons } from '../ui/Icons';
 import { Spinner } from '../ui/Spinner';
 
-export const TopBar = ({ active, fileName, saveState, showIndex, showCmdK = true, onCmdK }) => {
+export const TopBar = ({ active, fileName, saveState, onSave, saveDisabled, showIndex, showCmdK = true, onCmdK, beforeFileSelect }) => {
   const router = useRouter();
   const { allFiles, selectFile } = useApp();
   const { shortcuts, matchShortcut } = useShortcuts();
@@ -41,6 +42,7 @@ export const TopBar = ({ active, fileName, saveState, showIndex, showCmdK = true
   }, []);
 
   const handlePickFile = (file) => {
+    if (beforeFileSelect && beforeFileSelect(file) === false) return;
     selectFile(file);
     closeSearch();
     if (router.pathname !== '/files') {
@@ -179,6 +181,20 @@ export const TopBar = ({ active, fileName, saveState, showIndex, showCmdK = true
             )}
             {saveState === 'saved' && <span style={{ color: 'var(--success)' }}>✓ 已保存</span>}
           </div>
+        )}
+
+        {fileName && onSave && (
+          <Button
+            variant={saveState === 'dirty' ? 'primary' : 'secondary'}
+            size="sm"
+            onClick={onSave}
+            disabled={saveDisabled}
+            loading={saveState === 'saving'}
+            icon={<Icons.check size={14} />}
+            title={`保存当前文档（${shortcuts.docSave.combo}）`}
+          >
+            保存
+          </Button>
         )}
 
         {/* ⌘K search */}

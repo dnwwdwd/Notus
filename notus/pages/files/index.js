@@ -107,6 +107,8 @@ export default function FilesPage() {
   const { activeFile, allFiles, selectFile, getCachedContent, setCachedContent } = useApp();
   const { refreshStatus } = useAppStatus();
   const activeFileId = activeFile?.id;
+  const contentRef = useRef('');
+  const persistedContentRef = useRef('');
 
   const [editor, setEditor] = useState(null);      // Tiptap editor instance
   const [content, setContent] = useState('');       // markdown string
@@ -138,12 +140,19 @@ export default function FilesPage() {
     const requestedFileId = Number(getQueryValue(router.query.fileId));
     if (!Number.isFinite(requestedFileId) || activeFile?.id === requestedFileId) return;
     const targetFile = allFiles.find((file) => file.id === requestedFileId);
-    if (targetFile) selectFile(targetFile);
-  }, [activeFile?.id, allFiles, router.isReady, router.query.fileId, selectFile]);
+    if (!targetFile) return;
+    if (saveState === 'dirty' && !window.confirm('当前文档有未保存修改，确定切换文件吗？')) {
+      router.replace('/files', undefined, { shallow: true });
+      return;
+    }
+    selectFile(targetFile);
+  }, [activeFile?.id, allFiles, router, router.isReady, router.query.fileId, saveState, selectFile]);
 
   useEffect(() => {
     if (!activeFileId) {
       setContent('');
+      contentRef.current = '';
+      persistedContentRef.current = '';
       return undefined;
     }
 
@@ -155,7 +164,10 @@ export default function FilesPage() {
     loadFile(activeFileId)
       .then((file) => {
         if (cancelled) return;
-        setContent(file.content || '');
+        const nextContent = file.content || '';
+        setContent(nextContent);
+        contentRef.current = nextContent;
+        persistedContentRef.current = nextContent;
         setLoading(false);
       })
       .catch((loadError) => {
@@ -168,6 +180,35 @@ export default function FilesPage() {
       cancelled = true;
     };
   }, [activeFileId, loadFile]);
+
+  const confirmDiscardChanges = useCallback((nextFile) => {
+    if (saveState !== 'dirty') return true;
+    if (nextFile?.id && nextFile.id === activeFileId) return true;
+    return window.confirm('当前文档有未保存修改，确定离开并丢弃这些内容吗？');
+  }, [activeFileId, saveState]);
+
+  useEffect(() => {
+    if (saveState !== 'dirty') return undefined;
+
+    const handleBeforeUnload = (event) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+
+    const handleRouteChangeStart = (url) => {
+      if (url === router.asPath) return;
+      if (window.confirm('当前文档有未保存修改，确定离开当前页面吗？')) return;
+      router.events.emit('routeChangeError');
+      throw new Error('Route change aborted by unsaved changes');
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    router.events.on('routeChangeStart', handleRouteChangeStart);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      router.events.off('routeChangeStart', handleRouteChangeStart);
+    };
+  }, [router, saveState]);
 
   const jumpToHeading = useCallback((index) => {
     if (!editor) return;
@@ -267,16 +308,15 @@ export default function FilesPage() {
     }
   }, [activeFile?.id, content, editor, router]);
 
-  const handleChange = useCallback((newContent) => {
-    setContent(newContent);
-    setSaveState('dirty');
-  }, []);
-
-  const handleSave = useCallback(async (nextContent = content) => {
-    if (!activeFile) return;
+  const handleSave = useCallback(async (nextContent = contentRef.current) => {
+    if (!activeFileId) return;
+    if (nextContent === persistedContentRef.current) {
+      setSaveState('saved');
+      return;
+    }
     setSaveState('saving');
     try {
-      const response = await fetch(`/api/files/${activeFile.id}`, {
+      const response = await fetch(`/api/files/${activeFileId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: nextContent }),
@@ -288,8 +328,10 @@ export default function FilesPage() {
       }
 
       const savedContent = payload.content || nextContent;
+      persistedContentRef.current = savedContent;
+      contentRef.current = savedContent;
       setContent(savedContent);
-      setCachedContent(activeFile.id, savedContent);
+      setCachedContent(activeFileId, savedContent);
       setSaveState('saved');
       refreshStatus({ quiet: true }).catch(() => {});
       setShowIndexToast(true);
@@ -298,7 +340,21 @@ export default function FilesPage() {
       setSaveState('dirty');
       toast(saveError.message || '保存失败', 'error');
     }
-  }, [activeFile, content, toast, setCachedContent, refreshStatus]);
+  }, [activeFileId, toast, setCachedContent, refreshStatus]);
+
+  const handleChange = useCallback((newContent) => {
+    if (newContent === contentRef.current) return;
+
+    contentRef.current = newContent;
+    setContent(newContent);
+
+    if (newContent === persistedContentRef.current) {
+      setSaveState('saved');
+      return;
+    }
+
+    setSaveState('dirty');
+  }, []);
 
   const tocItems = useMemo(
     () => extractToc(content).map((item, index) => ({
@@ -314,8 +370,11 @@ export default function FilesPage() {
       active="files"
       fileName={activeFile?.name || null}
       saveState={activeFile ? saveState : undefined}
+      onSave={activeFile ? handleSave : undefined}
+      saveDisabled={!activeFile || saveState !== 'dirty'}
       tocDisabled={!activeFile}
       tocItems={tocItems}
+      beforeFileSelect={confirmDiscardChanges}
     >
       <EditorToolbar
         editor={editor}

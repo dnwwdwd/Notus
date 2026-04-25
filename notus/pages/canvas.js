@@ -15,6 +15,7 @@ import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { useToast } from '../components/ui/Toast';
 import { useApp } from '../contexts/AppContext';
+import { useLlmConfigs } from '../hooks/useLlmConfigs';
 import { markdownToCanvasBlocks } from '../utils/markdownBlocks';
 import { buildLineHash, buildPathWithHash } from '../utils/lineHash';
 
@@ -193,7 +194,9 @@ export default function CanvasPage() {
   const router = useRouter();
   const toast = useToast();
   const { allFiles, activeFile, refreshFiles, selectFile } = useApp();
+  const { configs: llmConfigs, activeConfigId, loading: llmConfigsLoading } = useLlmConfigs();
   const chatEndRef = useRef(null);
+  const requestControllerRef = useRef(null);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
 
   const [article, setArticle] = useState(null);
@@ -204,6 +207,7 @@ export default function CanvasPage() {
   const [pendingOp, setPendingOp] = useState(null);
   const [styleSource, setStyleSource] = useState('auto');
   const [manualStyleFileIds, setManualStyleFileIds] = useState([]);
+  const [selectedLlmConfigId, setSelectedLlmConfigId] = useState(null);
   const [aiInjected, setAiInjected] = useState('');
   const [loadingSourceFile, setLoadingSourceFile] = useState(false);
   const [saveState, setSaveState] = useState('saved');
@@ -218,18 +222,69 @@ export default function CanvasPage() {
     .map((fileId) => allFiles.find((file) => file.id === fileId))
     .filter(Boolean);
 
+  useEffect(() => {
+    if (llmConfigs.length === 0) {
+      setSelectedLlmConfigId(null);
+      return;
+    }
+
+    setSelectedLlmConfigId((prev) => {
+      if (prev && llmConfigs.some((item) => String(item.id) === String(prev))) {
+        return prev;
+      }
+      if (activeConfigId && llmConfigs.some((item) => String(item.id) === String(activeConfigId))) {
+        return activeConfigId;
+      }
+      return llmConfigs[0]?.id || null;
+    });
+  }, [activeConfigId, llmConfigs]);
+
   // Scroll chat to bottom
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, streamText]);
+
+  useEffect(() => () => {
+    requestControllerRef.current?.abort();
+  }, []);
+
+  const confirmDiscardChanges = useCallback(() => {
+    if (saveState !== 'dirty') return true;
+    return window.confirm('当前创作有未保存修改，确定离开并丢弃这些内容吗？');
+  }, [saveState]);
+
+  useEffect(() => {
+    if (saveState !== 'dirty') return undefined;
+
+    const handleBeforeUnload = (event) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+
+    const handleRouteChangeStart = (url) => {
+      if (url === router.asPath) return;
+      if (window.confirm('当前创作有未保存修改，确定离开当前页面吗？')) return;
+      router.events.emit('routeChangeError');
+      throw new Error('Route change aborted by unsaved changes');
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    router.events.on('routeChangeStart', handleRouteChangeStart);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      router.events.off('routeChangeStart', handleRouteChangeStart);
+    };
+  }, [router, saveState]);
 
   // Support ?fileId=X coming from editor "AI 创作" button
   useEffect(() => {
     const queryFileId = Number(getQueryValue(router.query.fileId));
     if (!Number.isFinite(queryFileId) || activeFile?.id === queryFileId) return;
     const nextFile = allFiles.find((file) => file.id === queryFileId);
-    if (nextFile) selectFile(nextFile);
-  }, [activeFile?.id, allFiles, router.query.fileId, selectFile]);
+    if (!nextFile) return;
+    if (!confirmDiscardChanges()) return;
+    selectFile(nextFile);
+  }, [activeFile?.id, allFiles, confirmDiscardChanges, router.query.fileId, selectFile]);
 
   const loadArticleFromFile = useCallback(async (file) => {
     if (!file?.id) return;
@@ -298,12 +353,20 @@ export default function CanvasPage() {
     }
   }, [toast]);
 
-  const handleSend = useCallback(async (query) => {
+  const handleSend = useCallback(async (query, llmConfigId = selectedLlmConfigId) => {
+    if (!llmConfigId) {
+      toast('请先在模型配置中新增并测试至少一个 LLM 配置', 'warning');
+      return;
+    }
+
     if (styleSource === 'manual' && manualStyleFileIds.length === 0) {
       toast('手动风格来源至少选择 1 篇文章', 'error');
       return;
     }
 
+    requestControllerRef.current?.abort();
+    const controller = new AbortController();
+    requestControllerRef.current = controller;
     setLoading(true);
     setAiInjected('');
     setMessages((prev) => [...prev, { id: Date.now(), role: 'user', content: query }]);
@@ -316,8 +379,10 @@ export default function CanvasPage() {
       const response = await fetch('/api/agent/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
           user_input: query,
+          llm_config_id: llmConfigId,
           article: { ...article, blocks },
           style_source: styleSource === 'manual'
             ? { file_ids: manualStyleFileIds }
@@ -383,11 +448,17 @@ export default function CanvasPage() {
         }
       });
     } catch (error) {
-      toast(error.message || 'AI 请求失败', 'error');
+      if (error.name !== 'AbortError') {
+        toast(error.message || 'AI 请求失败', 'error');
+      }
       setStreamText('');
       setLoading(false);
+    } finally {
+      if (requestControllerRef.current === controller) {
+        requestControllerRef.current = null;
+      }
     }
-  }, [article, blocks, manualStyleFileIds, styleSource, toast]);
+  }, [article, blocks, manualStyleFileIds, selectedLlmConfigId, styleSource, toast]);
 
   const handleCitationClick = useCallback((citation) => {
     const fileId = Number(citation?.file_id);
@@ -506,7 +577,7 @@ export default function CanvasPage() {
       setArticle(nextArticle);
       setBlocks(payload.article?.blocks || blocks);
       setPendingOp(null);
-      setSaveState(nextArticle?.file_id || nextArticle?.fileId ? 'saved' : 'dirty');
+      setSaveState('dirty');
       toast('修改已应用', 'success');
     } catch (error) {
       toast(error.message || '应用修改失败', 'error');
@@ -529,7 +600,7 @@ export default function CanvasPage() {
   // ── Entry screen ──
   if (!article) {
     return (
-      <Shell active="canvas" tocDisabled navigateOnFileSelect={false}>
+      <Shell active="canvas" tocDisabled beforeFileSelect={confirmDiscardChanges} navigateOnFileSelect={false}>
         <CanvasEntry onStart={handleStart} />
       </Shell>
     );
@@ -541,7 +612,10 @@ export default function CanvasPage() {
       active="canvas"
       fileName={`${article.title} · 草稿`}
       saveState={saveState}
+      onSave={handleSaveArticle}
+      saveDisabled={saveState !== 'dirty'}
       tocDisabled
+      beforeFileSelect={confirmDiscardChanges}
       navigateOnFileSelect={false}
     >
       <ResizableLayout
@@ -566,7 +640,10 @@ export default function CanvasPage() {
                 保存文章
               </Button>
               <button
-                onClick={() => setArticle(null)}
+                onClick={() => {
+                  if (!confirmDiscardChanges()) return;
+                  setArticle(null);
+                }}
                 title="返回入口"
                 style={{ fontSize: 12, color: 'var(--text-tertiary)', cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0 }}
               >
@@ -641,15 +718,23 @@ export default function CanvasPage() {
               <>
                 <DropdownSelect
                   value=""
-                  options={styleFileOptions.filter((option) => !manualStyleFileIds.includes(option.value))}
+                  options={styleFileOptions}
                   onChange={(nextValue) => {
                     if (!nextValue) return;
-                    setManualStyleFileIds((prev) => prev.includes(nextValue) ? prev : [...prev, nextValue]);
+                    setManualStyleFileIds((prev) => (
+                      prev.includes(nextValue)
+                        ? prev.filter((fileId) => fileId !== nextValue)
+                        : [...prev, nextValue]
+                    ));
                   }}
+                  isOptionSelected={(option) => manualStyleFileIds.includes(option.value)}
+                  closeOnSelect={false}
+                  renderValue={() => (manualStyleFileIds.length > 0 ? `已选 ${manualStyleFileIds.length} 篇风格文章` : '添加风格参考文章')}
+                  renderOption={(option, active) => `${option.label}${active ? ' · 已选' : ''}`}
                   searchable
                   placeholder="添加风格参考文章"
                   searchPlaceholder="按标题或路径搜索文章"
-                  emptyText="没有更多可选文章"
+                  emptyText="没有可选文章"
                 />
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   {selectedStyleFiles.length > 0 ? selectedStyleFiles.map((file) => (
@@ -705,10 +790,16 @@ export default function CanvasPage() {
           </div>
 
           <InputBar
+            isEmpty={messages.length === 0 && !loading}
             placeholder="例如：让 @b2 更简洁，或为第 3 段加一个例子…"
             onSend={handleSend}
+            onStop={() => requestControllerRef.current?.abort()}
             loading={loading}
             injectedValue={aiInjected}
+            llmConfigs={llmConfigs}
+            selectedConfigId={selectedLlmConfigId}
+            onConfigChange={setSelectedLlmConfigId}
+            disabled={llmConfigs.length === 0 || llmConfigsLoading}
           />
         </div>
         }

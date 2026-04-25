@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Claude - Space to Think</title>
+    <script src="https://unpkg.com/vue@3.4.21/dist/vue.global.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 引入最新版 Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Noto+Serif+SC:wght@400;600;700&display=swap');
+
+        :root {
+            --bg-canvas: #FAF9F5;
+            --bg-sidebar: #F9F8F6;
+            --bg-user-bubble: #F3F2EA;
+            --text-primary: #141413;
+            --text-secondary: #6B6A65;
+            --accent-orange: #D97757;
+            --accent-blue: #0B57D0;
+            --border-light: #E8E6DC;
+            --border-input: #E5E3D9;
+        }
+
+        body {
+            background-color: var(--bg-canvas);
+            color: var(--text-primary);
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            -webkit-font-smoothing: antialiased;
+            text-rendering: optimizeLegibility;
+        }
+
+        .serif {
+            font-family: 'Noto Serif SC', 'Times New Roman', serif;
+        }
+
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+        .claude-shadow { box-shadow: 0 8px 32px rgba(0, 0, 0, 0.05); }
+        .dropdown-shadow { box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12); }
+        
+        textarea { transition: height 0.1s ease-in-out; }
+
+        .cursor-blink::after {
+            content: '▋';
+            animation: blink 1s step-end infinite;
+            color: var(--accent-orange);
+            margin-left: 4px;
+            font-size: 0.9em;
+        }
+
+        @keyframes blink {
+            from, to { opacity: 1; }
+            50% { opacity: 0; }
+        }
+    </style>
+</head>
+<body>
+    <div id="app" class="flex h-screen overflow-hidden" 
+         @click="handleGlobalClick"
+         @dragenter.prevent="showDragOverlay" 
+         @dragover.prevent 
+         @dragleave.prevent="hideDragOverlay" 
+         @drop.prevent="handleDrop">
+         
+        <!-- 全局拖拽遮罩 -->
+        <div v-if="isDragging" class="fixed inset-0 z-[100] bg-[#FAF9F5]/85 backdrop-blur-sm flex items-center justify-center pointer-events-none transition-all duration-300">
+            <div class="w-[600px] h-[400px] border-2 border-dashed border-[#D97757] rounded-3xl flex flex-col items-center justify-center bg-white/50">
+                <i data-lucide="upload-cloud" class="w-16 h-16 text-[#D97757] mb-6"></i>
+                <h2 class="serif text-3xl font-semibold text-[#141413] mb-2">{{ t.dropTitle }}</h2>
+                <p class="text-[#6B6A65]">{{ t.dropDesc }}</p>
+            </div>
+        </div>
+
+        <!-- 侧边栏 -->
+        <aside :class="['fixed inset-y-0 left-0 z-50 w-[260px] bg-[var(--bg-sidebar)] border-r border-[#E8E6DC] flex flex-col transition-transform duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]', 
+               isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0']">
+            <div class="flex flex-col h-full">
+                <!-- Logo & Sidebar Toggle -->
+                <div class="flex items-center justify-between px-4 py-4 mb-2">
+                    <span class="serif text-[20px] font-semibold tracking-tight">Claude</span>
+                    <button @click="isSidebarOpen = false" class="text-[#6B6A65] hover:text-[#141413] p-1 rounded hover:bg-[#E8E6DC] transition-colors lg:hidden">
+                        <i data-lucide="x" class="w-5 h-5"></i>
+                    </button>
+                    <button class="text-[#6B6A65] hover:text-[#141413] p-1 rounded hover:bg-[#E8E6DC] transition-colors hidden lg:block">
+                        <i data-lucide="panel-left-close" class="w-4 h-4"></i>
+                    </button>
+                </div>
+
+                <!-- 主导航菜单 -->
+                <nav class="px-2 space-y-0.5">
+                    <button @click="resetChat" class="flex items-center gap-3 w-full py-2 px-3 rounded-lg hover:bg-[#E8E6DC] transition-colors text-[14px] text-[#141413] mb-1">
+                        <i data-lucide="plus" class="w-4 h-4 text-[#6B6A65]"></i>
+                        {{ t.newChat }}
+                    </button>
+                    <button class="flex items-center gap-3 w-full py-2 px-3 rounded-lg hover:bg-[#E8E6DC] transition-colors text-[14px] text-[#141413]">
+                        <i data-lucide="search" class="w-4 h-4 text-[#6B6A65]"></i>
+                        {{ t.search }}
+                    </button>
+                    <button class="flex items-center gap-3 w-full py-2 px-3 rounded-lg hover:bg-[#E8E6DC] transition-colors text-[14px] text-[#141413]">
+                        <i data-lucide="settings-2" class="w-4 h-4 text-[#6B6A65]"></i>
+                        {{ t.customize }}
+                    </button>
+                    <div class="h-4"></div>
+                    <button class="flex items-center gap-3 w-full py-2 px-3 rounded-lg hover:bg-[#E8E6DC] transition-colors text-[14px] text-[#141413]">
+                        <i data-lucide="message-square" class="w-4 h-4 text-[#6B6A65]"></i>
+                        {{ t.chats }}
+                    </button>
+                    <button class="flex items-center gap-3 w-full py-2 px-3 rounded-lg hover:bg-[#E8E6DC] transition-colors text-[14px] text-[#141413]">
+                        <i data-lucide="folder" class="w-4 h-4 text-[#6B6A65]"></i>
+                        {{ t.projects }}
+                    </button>
+                    <button class="flex items-center gap-3 w-full py-2 px-3 rounded-lg hover:bg-[#E8E6DC] transition-colors text-[14px] text-[#141413]">
+                        <i data-lucide="layout-template" class="w-4 h-4 text-[#6B6A65]"></i>
+                        {{ t.artifacts }}
+                    </button>
+                    <button class="flex items-center gap-3 w-full py-2 px-3 rounded-lg hover:bg-[#E8E6DC] transition-colors text-[14px] text-[#141413]">
+                        <i data-lucide="code" class="w-4 h-4 text-[#6B6A65]"></i>
+                        {{ t.codeNav }}
+                    </button>
+                </nav>
+
+                <!-- 最近记录 -->
+                <div class="mt-8 px-2 flex-1 overflow-y-auto no-scrollbar pb-6">
+                    <h3 class="px-3 text-[12px] text-[#B0AEA5] mb-2">{{ t.recents }}</h3>
+                    <div v-for="item in history" :key="item.id" 
+                         class="group flex items-center justify-between px-3 py-1.5 rounded-lg hover:bg-[#E8E6DC] cursor-pointer transition-colors">
+                        <span class="text-[14px] text-[#4A4945] truncate pr-2 flex-1">{{ item.title }}</span>
+                    </div>
+                </div>
+
+                <!-- 底部账户区 -->
+                <div class="mt-auto border-t border-[#E8E6DC] bg-[#F9F8F6] p-3 flex justify-between items-center">
+                    <div class="flex items-center gap-3 cursor-pointer hover:bg-[#E8E6DC] p-1.5 rounded-lg flex-1">
+                        <div class="w-8 h-8 rounded-full bg-[#4A4945] flex items-center justify-center text-white text-[13px] font-medium">
+                            吃
+                        </div>
+                        <div class="flex-1 min-w-0">
+                            <p class="text-[14px] font-medium truncate text-[#141413]">吃遍全国汉堡</p>
+                            <p class="text-[12px] text-[#6B6A65] truncate">Free plan</p>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-1">
+                        <div class="relative">
+                            <button class="p-1.5 text-[#6B6A65] hover:text-[#141413] hover:bg-[#E8E6DC] rounded-md">
+                                <i data-lucide="download" class="w-4 h-4"></i>
+                            </button>
+                            <span class="absolute top-1 right-1 w-2 h-2 bg-[#0B57D0] rounded-full border-2 border-[#F9F8F6]"></span>
+                        </div>
+                        <button class="p-1.5 text-[#6B6A65] hover:text-[#141413] hover:bg-[#E8E6DC] rounded-md">
+                            <i data-lucide="more-vertical" class="w-4 h-4"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- 主操作区 -->
+        <main class="flex-1 flex flex-col relative lg:ml-[260px] bg-[#FAF9F5] transition-all duration-300">
+            <!-- Header -->
+            <header class="flex items-center justify-between px-4 h-14 sticky top-0 z-30 bg-[#FAF9F5]/90 backdrop-blur-md lg:justify-end">
+                <button @click="isSidebarOpen = true" class="lg:hidden p-2 text-[#6B6A65]">
+                    <i data-lucide="menu" class="w-5 h-5"></i>
+                </button>
+                <div class="flex items-center gap-3">
+                    <button @click="toggleLang" class="text-[13px] font-medium text-[#6B6A65] hover:text-[#141413] transition-colors border border-[#E8E6DC] px-2 py-1 rounded-md">
+                        {{ lang === 'en' ? '中' : 'EN' }}
+                    </button>
+                </div>
+            </header>
+
+            <div ref="chatContainer" class="flex-1 overflow-y-auto scroll-smooth flex flex-col">
+                <!-- 空状态与欢迎区 (居中优化，增大留白) -->
+                <div v-if="messages.length === 0" class="flex-1 flex flex-col items-center justify-center w-full max-w-[800px] mx-auto px-4 lg:px-6 pb-[15vh]">
+                    
+                    <!-- 招呼文本区 -->
+                    <div class="flex items-center justify-center gap-3 mb-10 w-full text-center">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#D97757" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="w-7 h-7">
+                            <path d="M12 2v20"></path><path d="m4.93 19.07 14.14-14.14"></path><path d="M2 12h20"></path><path d="m4.93 4.93 14.14 14.14"></path>
+                        </svg>
+                        <h1 class="serif text-4xl lg:text-[40px] tracking-tight text-[#141413] leading-none mt-1">
+                            {{ t.greeting }}, 吃遍全国汉堡
+                        </h1>
+                    </div>
+
+                    <!-- 统一输入框 -->
+                    <div class="w-full max-w-[720px] relative mt-2 group">
+                        <div class="claude-shadow bg-white rounded-[20px] border border-[var(--border-input)] transition-all flex flex-col focus-within:border-[#D6D3C8] focus-within:shadow-[0_8px_32px_rgba(0,0,0,0.08)]">
+                            
+                            <!-- 剪切板文件预览区 -->
+                            <div v-if="pendingFiles.length > 0" class="flex flex-wrap gap-2 px-4 pt-4 pb-0">
+                                <div v-for="(file, index) in pendingFiles" :key="index" 
+                                     class="group/file relative flex items-center gap-2 bg-[#F5F4EF] border border-[#E8E6DC] px-3 py-1.5 rounded-xl text-sm animate-[fadeIn_0.2s_ease-out]">
+                                    <img v-if="file.type.startsWith('image/')" :src="file.url" class="w-5 h-5 rounded object-cover" />
+                                    <i v-else data-lucide="file" class="w-4 h-4 text-[#D97757]"></i>
+                                    <span class="max-w-[120px] truncate text-[#141413]">{{ file.name }}</span>
+                                    <button @click="removePendingFile(index)" class="w-[18px] h-[18px] rounded-full bg-[#E8E6DC] flex items-center justify-center opacity-0 group-hover/file:opacity-100 transition-opacity hover:bg-[#D6D3C8] absolute -right-1 -top-1 shadow-sm">
+                                        <i data-lucide="x" class="w-2.5 h-2.5 text-[#141413]"></i>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- Textarea & 工具组 (修复水平对齐问题) -->
+                            <div class="relative flex items-end w-full px-2 pb-2 pt-2">
+                                
+                                <!-- 左侧 + 菜单 -->
+                                <div class="relative ml-1 mb-[5px]" v-click-outside="closePlusMenu">
+                                    <button @click.stop="togglePlusMenu" class="w-8 h-8 rounded-lg bg-[#F5F4EF] flex items-center justify-center hover:bg-[#E8E6DC] transition-colors flex-shrink-0">
+                                        <i data-lucide="plus" class="w-5 h-5 text-[#4A4945]"></i>
+                                    </button>
+                                    
+                                    <!-- 修复点：空对话状态下，菜单向下展开 (top-full mt-2)，并增加最大高度滚动保护 -->
+                                    <div v-if="isPlusMenuOpen" class="absolute top-full mt-2 left-0 w-64 bg-white border border-[#E8E6DC] rounded-xl dropdown-shadow py-2 z-50 animate-[fadeIn_0.1s_ease-out] max-h-[60vh] overflow-y-auto no-scrollbar">
+                                        <button @click="triggerFileInput" class="w-full text-left px-4 py-2.5 text-[15px] text-[#141413] hover:bg-[#F0EEE5] flex items-center gap-3 transition-colors">
+                                            <i data-lucide="paperclip" class="w-4 h-4 text-[#4A4945]"></i> {{ t.addFiles }}
+                                            <input type="file" ref="fileInput" @change="handleFileSelect" class="hidden" multiple>
+                                        </button>
+                                        <button class="w-full text-left px-4 py-2.5 text-[15px] text-[#141413] hover:bg-[#F0EEE5] flex items-center justify-between transition-colors">
+                                            <div class="flex items-center gap-3"><i data-lucide="inbox" class="w-4 h-4 text-[#4A4945]"></i> {{ t.addToProject }}</div>
+                                            <i data-lucide="chevron-right" class="w-4 h-4 text-[#B0AEA5]"></i>
+                                        </button>
+                                        
+                                        <div class="h-px bg-[#E8E6DC] my-1.5 mx-2"></div>
+                                        
+                                        <button class="w-full text-left px-4 py-2.5 text-[15px] text-[#141413] hover:bg-[#F0EEE5] flex items-center justify-between transition-colors">
+                                            <div class="flex items-center gap-3"><i data-lucide="terminal-square" class="w-4 h-4 text-[#4A4945]"></i> {{ t.skills }}</div>
+                                            <i data-lucide="chevron-right" class="w-4 h-4 text-[#B0AEA5]"></i>
+                                        </button>
+                                        <button class="w-full text-left px-4 py-2.5 text-[15px] text-[#141413] hover:bg-[#F0EEE5] flex items-center gap-3 transition-colors">
+                                            <i data-lucide="layout-grid" class="w-4 h-4 text-[#4A4945]"></i> {{ t.addConnectors }}
+                                        </button>
+                                        <button class="w-full text-left px-4 py-2.5 text-[15px] text-[#B0AEA5] flex items-center gap-3 cursor-not-allowed">
+                                            <i data-lucide="plug" class="w-4 h-4 text-[#B0AEA5]"></i> {{ t.plugins }}
+                                        </button>
+                                        
+                                        <div class="h-px bg-[#E8E6DC] my-1.5 mx-2"></div>
+                                        
+                                        <button @click="toggleWebSearch" class="w-full text-left px-4 py-2.5 text-[15px] flex items-center justify-between hover:bg-[#F0EEE5] transition-colors">
+                                            <div class="flex items-center gap-3">
+                                                <i data-lucide="globe" :class="['w-4 h-4', isWebSearchEnabled ? 'text-[var(--accent-blue)]' : 'text-[#4A4945]']"></i> 
+                                                <span :class="isWebSearchEnabled ? 'text-[var(--accent-blue)]' : 'text-[#141413]'">{{ t.webSearch }}</span>
+                                            </div>
+                                            <i v-if="isWebSearchEnabled" data-lucide="check" class="w-4 h-4 text-[var(--accent-blue)]"></i>
+                                        </button>
+                                        <button class="w-full text-left px-4 py-2.5 text-[15px] text-[#141413] hover:bg-[#F0EEE5] flex items-center justify-between transition-colors">
+                                            <div class="flex items-center gap-3"><i data-lucide="pen-tool" class="w-4 h-4 text-[#4A4945]"></i> {{ t.useStyle }}</div>
+                                            <i data-lucide="chevron-right" class="w-4 h-4 text-[#B0AEA5]"></i>
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <!-- Textarea (优化多行文本的自适应行为) -->
+                                <textarea 
+                                    ref="inputBox"
+                                    v-model="userInput"
+                                    @focus="isInputFocused = true"
+                                    @blur="isInputFocused = false"
+                                    @keydown.enter.prevent="handleEnter"
+                                    @input="autoResize"
+                                    @paste="handlePaste"
+                                    :placeholder="t.inputPlaceholder"
+                                    class="flex-1 px-3 py-[9px] bg-transparent outline-none resize-none text-[15px] text-[#141413] placeholder:text-[#6B6A65] min-h-[40px] max-h-[200px] leading-relaxed"
+                                    rows="1"
+                                ></textarea>
+                                
+                                <!-- 右下角：模型选择器 & 发送/打断按钮 -->
+                                <div class="relative flex items-center gap-1.5 ml-1 mb-[5px] mr-2" v-click-outside="closeModelMenu">
+                                    <!-- 模型选择器（常驻） -->
+                                    <button @click.stop="toggleModelMenu" class="flex items-center gap-1.5 px-2 py-1.5 h-8 rounded hover:bg-[#F0EEE5] transition-colors text-[13px] font-medium text-[#4A4945]">
+                                        {{ activeModelName }}
+                                        <i data-lucide="chevron-down" class="w-3.5 h-3.5 text-[#B0AEA5]"></i>
+                                    </button>
+                                    
+                                    <div v-if="isModelMenuOpen" class="absolute top-full mt-2 right-0 w-48 bg-white border border-[#E8E6DC] rounded-xl dropdown-shadow py-1.5 z-50 animate-[fadeIn_0.1s_ease-out] max-h-[60vh] overflow-y-auto">
+                                        <button v-for="model in models" :key="model.id" @click.stop="selectModel(model.id)" class="w-full text-left px-3 py-2 text-[14px] text-[#141413] hover:bg-[#F0EEE5] flex items-center justify-between transition-colors">
+                                            <span>{{ model.name }}</span>
+                                            <i v-if="activeModelId === model.id" data-lucide="check" class="w-4 h-4 text-[#141413]"></i>
+                                        </button>
+                                    </div>
+
+                                    <!-- 打断按钮 (生成时显示) -->
+                                    <button v-if="isTyping" @click="stopGeneration" class="w-8 h-8 rounded-lg bg-[#141413] flex items-center justify-center text-white hover:bg-gray-800 transition-colors shadow-sm">
+                                        <i data-lucide="square" class="w-3.5 h-3.5 fill-current"></i>
+                                    </button>
+                                    <!-- 发送按钮 (默认态与激活态) -->
+                                    <button v-else :disabled="!canSend" @click="sendMessage" :class="['w-8 h-8 rounded-lg flex items-center justify-center transition-colors', canSend ? 'bg-[#D97757] text-white hover:bg-[#C26547] shadow-sm' : 'bg-[#E5E3D9]/50 text-[#B0AEA5] cursor-not-allowed']">
+                                        <i data-lucide="arrow-up" class="w-4 h-4"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 已产生对话时的消息列表展示区 -->
+                <div v-else class="max-w-[800px] w-full mx-auto px-6 py-10 lg:py-16 space-y-12 flex-1">
+                     <div v-for="(msg, index) in messages" :key="index">
+                        <!-- User Message -->
+                        <div v-if="msg.role === 'user'" class="flex justify-end mb-8">
+                            <div class="max-w-[85%] bg-[#F3F2EA] rounded-3xl rounded-tr-sm px-5 py-4 text-[#141413] text-[15px] leading-[1.65]">
+                                <div v-if="msg.files && msg.files.length > 0" class="flex flex-wrap gap-2 mb-3">
+                                    <div v-for="(file, fIndex) in msg.files" :key="fIndex" 
+                                         class="flex items-center gap-2 bg-white/60 px-3 py-1.5 rounded-xl border border-[#E8E6DC] text-xs">
+                                        <img v-if="file.type.startsWith('image/')" :src="file.url" class="w-4 h-4 rounded object-cover" />
+                                        <i v-else data-lucide="file-text" class="w-3.5 h-3.5 text-[#D97757]"></i>
+                                        <span class="truncate max-w-[120px] font-medium">{{ file.name }}</span>
+                                    </div>
+                                </div>
+                                <div class="whitespace-pre-wrap">{{ msg.content }}</div>
+                            </div>
+                        </div>
+
+                        <!-- AI Message -->
+                        <div v-else class="flex gap-4 mb-8">
+                            <div class="flex-shrink-0 mt-1">
+                                <div class="w-7 h-7 rounded-lg bg-[#D97757] flex items-center justify-center">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M12 2v20"></path><path d="m4.93 19.07 14.14-14.14"></path><path d="M2 12h20"></path><path d="m4.93 4.93 14.14 14.14"></path>
+                                    </svg>
+                                </div>
+                            </div>
+                            <div class="flex-1 min-w-0 space-y-4">
+                                <div class="text-[#141413] text-[15.5px] leading-[1.7] whitespace-pre-wrap">{{ msg.content }}<span v-if="isTyping && index === messages.length - 1" class="cursor-blink"></span></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 如果已有对话，底部固定的精简版输入框 -->
+                <div v-if="messages.length > 0" class="sticky bottom-0 left-0 right-0 px-4 pb-6 pt-10 bg-gradient-to-t from-[#FAF9F5] via-[#FAF9F5] to-transparent z-20">
+                    <div class="max-w-[720px] mx-auto relative">
+                        <div class="claude-shadow bg-white rounded-[20px] border border-[var(--border-input)] transition-all flex flex-col focus-within:border-[#D6D3C8]">
+                            
+                            <div v-if="pendingFiles.length > 0" class="flex flex-wrap gap-2 px-4 pt-4 pb-0">
+                                <div v-for="(file, index) in pendingFiles" :key="index" class="group/file relative flex items-center gap-2 bg-[#F5F4EF] border border-[#E8E6DC] px-3 py-1.5 rounded-xl text-sm animate-[fadeIn_0.2s_ease-out]">
+                                    <img v-if="file.type.startsWith('image/')" :src="file.url" class="w-5 h-5 rounded object-cover" />
+                                    <i v-else data-lucide="file" class="w-4 h-4 text-[#D97757]"></i>
+                                    <span class="max-w-[120px] truncate">{{ file.name }}</span>
+                                    <button @click="removePendingFile(index)" class="w-[18px] h-[18px] rounded-full bg-[#E8E6DC] flex items-center justify-center opacity-0 group-hover/file:opacity-100 absolute -right-1 -top-1"><i data-lucide="x" class="w-2.5 h-2.5"></i></button>
+                                </div>
+                            </div>
+                            
+                            <div class="relative flex items-end w-full px-2 pb-2 pt-2">
+                                <div class="relative ml-1 mb-[5px]" v-click-outside="closePlusMenu">
+                                    <button @click.stop="togglePlusMenu" class="w-8 h-8 rounded-lg bg-[#F5F4EF] flex items-center justify-center hover:bg-[#E8E6DC]">
+                                        <i data-lucide="plus" class="w-5 h-5 text-[#4A4945]"></i>
+                                    </button>
+                                    
+                                    <!-- 修复点：底部吸底输入框的菜单保持向上展开 (bottom-full mb-2) 并增加高度保护 -->
+                                    <div v-if="isPlusMenuOpen" class="absolute bottom-full mb-2 left-0 w-64 bg-white border border-[#E8E6DC] rounded-xl dropdown-shadow py-2 z-50 animate-[fadeIn_0.1s_ease-out] max-h-[60vh] overflow-y-auto no-scrollbar">
+                                        <button @click="triggerFileInput" class="w-full text-left px-4 py-2 text-[15px] flex items-center gap-3 hover:bg-[#F0EEE5]"><i data-lucide="paperclip" class="w-4 h-4"></i> {{ t.addFiles }}</button>
+                                        <div class="h-px bg-[#E8E6DC] my-1 mx-2"></div>
+                                        <button @click="toggleWebSearch" class="w-full text-left px-4 py-2 text-[15px] flex items-center justify-between hover:bg-[#F0EEE5]">
+                                            <div class="flex items-center gap-3"><i data-lucide="globe" :class="isWebSearchEnabled ? 'text-[#0B57D0]' : ''"></i> <span :class="isWebSearchEnabled ? 'text-[#0B57D0]' : ''">{{ t.webSearch }}</span></div>
+                                            <i v-if="isWebSearchEnabled" data-lucide="check" class="w-4 h-4 text-[#0B57D0]"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                                
+                                <textarea v-model="userInput" @keydown.enter.prevent="handleEnter" @input="autoResize" @paste="handlePaste" :placeholder="t.inputPlaceholder" class="flex-1 px-3 py-[9px] bg-transparent outline-none resize-none min-h-[40px] max-h-[200px] text-[15px] leading-relaxed"></textarea>
+                                
+                                <div class="relative flex items-center gap-1.5 ml-1 mb-[5px] mr-2" v-click-outside="closeModelMenu">
+                                    <button @click.stop="toggleModelMenu" class="flex items-center gap-1.5 px-2 py-1.5 h-8 rounded hover:bg-[#F0EEE5] text-[13px] font-medium text-[#4A4945]">
+                                        {{ activeModelName }}
+                                        <i data-lucide="chevron-down" class="w-3.5 h-3.5 text-[#B0AEA5]"></i>
+                                    </button>
+                                    
+                                    <div v-if="isModelMenuOpen" class="absolute bottom-full mb-2 right-0 w-48 bg-white border border-[#E8E6DC] rounded-xl dropdown-shadow py-1.5 z-50 animate-[fadeIn_0.1s_ease-out] max-h-[60vh] overflow-y-auto">
+                                        <button v-for="model in models" :key="model.id" @click.stop="selectModel(model.id)" class="w-full text-left px-3 py-2 text-[14px] text-[#141413] hover:bg-[#F0EEE5] flex items-center justify-between transition-colors">
+                                            <span>{{ model.name }}</span>
+                                            <i v-if="activeModelId === model.id" data-lucide="check" class="w-4 h-4 text-[#141413]"></i>
+                                        </button>
+                                    </div>
+
+                                    <button v-if="isTyping" @click="stopGeneration" class="w-8 h-8 rounded-lg bg-[#141413] flex items-center justify-center text-white hover:bg-gray-800 transition-colors shadow-sm">
+                                        <i data-lucide="square" class="w-3.5 h-3.5 fill-current"></i>
+                                    </button>
+                                    <button v-else :disabled="!canSend" @click="sendMessage" :class="['w-8 h-8 rounded-lg flex items-center justify-center transition-colors', canSend ? 'bg-[#D97757] text-white hover:bg-[#C26547] shadow-sm' : 'bg-[#E5E3D9]/50 text-[#B0AEA5] cursor-not-allowed']">
+                                        <i data-lucide="arrow-up" class="w-4 h-4"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        const { createApp, ref, computed, onMounted, nextTick, watch } = Vue;
+
+        const clickOutside = {
+            beforeMount(el, binding) {
+                el.clickOutsideEvent = (event) => {
+                    if (!(el === event.target || el.contains(event.target))) binding.value(event);
+                };
+                document.body.addEventListener('click', el.clickOutsideEvent);
+            },
+            unmounted(el) { document.body.removeEventListener('click', el.clickOutsideEvent); }
+        };
+
+        createApp({
+            directives: { 'click-outside': clickOutside },
+            setup() {
+                const isSidebarOpen = ref(false);
+                const isInputFocused = ref(false);
+                const userInput = ref('');
+                const isTyping = ref(false);
+                const isDragging = ref(false);
+                let dragCounter = 0;
+
+                const lang = ref('zh');
+                const toggleLang = () => { lang.value = lang.value === 'en' ? 'zh' : 'en'; };
+                const translations = {
+                    en: {
+                        newChat: "New chat", search: "Search", customize: "Customize", chats: "Chats", projects: "Projects", artifacts: "Artifacts", codeNav: "Code",
+                        recents: "Recents", greeting: "Evening",
+                        dropTitle: "Drop any file here", dropDesc: "Supports PDF, TXT, images",
+                        inputPlaceholder: "How can I help you today?",
+                        addFiles: "Add files or photos", addToProject: "Add to project", skills: "Skills", addConnectors: "Add connectors", plugins: "Plugins", webSearch: "Web search", useStyle: "Use style",
+                    },
+                    zh: {
+                        newChat: "新对话", search: "搜索", customize: "自定义", chats: "对话库", projects: "项目", artifacts: "内容物", codeNav: "代码",
+                        recents: "最近记录", greeting: "晚上好",
+                        dropTitle: "拖拽文件至此", dropDesc: "支持 PDF, 图片及代码",
+                        inputPlaceholder: "今天需要什么帮助？",
+                        addFiles: "添加文件或照片", addToProject: "添加到项目", skills: "技能库", addConnectors: "连接器", plugins: "插件", webSearch: "网络搜索", useStyle: "使用特定风格",
+                    }
+                };
+                const t = computed(() => translations[lang.value]);
+                const history = ref([ { id: '1', title: "Greeting and introduction" } ]);
+
+                /* ================= 输入框与下拉菜单逻辑 ================= */
+                const isPlusMenuOpen = ref(false);
+                const togglePlusMenu = () => isPlusMenuOpen.value = !isPlusMenuOpen.value;
+                const closePlusMenu = () => isPlusMenuOpen.value = false;
+
+                const isWebSearchEnabled = ref(false);
+                const toggleWebSearch = () => { isWebSearchEnabled.value = !isWebSearchEnabled.value; closePlusMenu(); };
+
+                // 真实的 Model Selector 逻辑
+                const isModelMenuOpen = ref(false);
+                const toggleModelMenu = () => isModelMenuOpen.value = !isModelMenuOpen.value;
+                const closeModelMenu = () => isModelMenuOpen.value = false;
+                
+                const models = [
+                    { id: 'sonnet-4.6', name: 'Sonnet 4.6' },
+                    { id: 'opus-3', name: 'Opus 3' },
+                    { id: 'haiku-3.5', name: 'Haiku 3.5' }
+                ];
+                const activeModelId = ref('sonnet-4.6');
+                const activeModelName = computed(() => models.find(m => m.id === activeModelId.value)?.name);
+                const selectModel = (id) => { activeModelId.value = id; isModelMenuOpen.value = false; };
+
+                /* ================= 文件 & 剪切板拦截逻辑 ================= */
+                const fileInput = ref(null);
+                const pendingFiles = ref([]);
+                const triggerFileInput = () => { fileInput.value.click(); closePlusMenu(); };
+                
+                const addFiles = (files) => {
+                    files.forEach(f => {
+                        const url = f.type.startsWith('image/') ? URL.createObjectURL(f) : null;
+                        pendingFiles.value.push({ name: f.name, type: f.type, url: url, raw: f });
+                    });
+                };
+                const handleFileSelect = (e) => { addFiles(Array.from(e.target.files)); fileInput.value.value = ''; };
+                const removePendingFile = (index) => {
+                    if(pendingFiles.value[index].url) URL.revokeObjectURL(pendingFiles.value[index].url);
+                    pendingFiles.value.splice(index, 1); 
+                };
+
+                const handlePaste = (e) => {
+                    const items = (e.clipboardData || e.originalEvent.clipboardData).items;
+                    let hasFiles = false;
+                    const filesToPaste = [];
+                    for (let index in items) {
+                        const item = items[index];
+                        if (item.kind === 'file') {
+                            const blob = item.getAsFile();
+                            if (blob) {
+                                const name = blob.name === 'image.png' ? `Pasted_Image_${Date.now()}.png` : blob.name;
+                                const fileWithProperName = new File([blob], name, { type: blob.type });
+                                filesToPaste.push(fileWithProperName);
+                                hasFiles = true;
+                            }
+                        }
+                    }
+                    if (hasFiles) addFiles(filesToPaste);
+                };
+
+                const showDragOverlay = () => { dragCounter++; isDragging.value = true; };
+                const hideDragOverlay = () => { dragCounter--; if (dragCounter === 0) isDragging.value = false; };
+                const handleDrop = (e) => { dragCounter = 0; isDragging.value = false; addFiles(Array.from(e.dataTransfer.files)); };
+
+                /* ================= 发送逻辑 ================= */
+                const messages = ref([]);
+                const chatContainer = ref(null);
+                const inputBox = ref(null);
+                let typingTimer = null; // 新增：保存计时器引用以供中断
+
+                const canSend = computed(() => (userInput.value.trim().length > 0 || pendingFiles.value.length > 0) && !isTyping.value);
+                
+                // 优化后的 autoResize，解决内容删除时无法回缩的问题
+                const autoResize = (e) => { 
+                    const target = e ? e.target : inputBox.value;
+                    if (!target) return;
+                    target.style.height = '40px'; // 先重置回最低高度
+                    target.style.height = target.scrollHeight + 'px'; // 再根据实际内容扩充
+                };
+                
+                const scrollToBottom = async () => { await nextTick(); if (chatContainer.value) chatContainer.value.scrollTo({ top: chatContainer.value.scrollHeight, behavior: 'smooth' }); };
+                const handleEnter = (e) => { if (e.shiftKey) return; sendMessage(); };
+
+                const stopGeneration = () => {
+                    if (typingTimer) {
+                        clearInterval(typingTimer);
+                        typingTimer = null;
+                    }
+                    isTyping.value = false;
+                };
+
+                const sendMessage = () => {
+                    if (!canSend.value) return;
+                    messages.value.push({ role: 'user', content: userInput.value.trim(), files: [...pendingFiles.value] });
+                    userInput.value = ''; pendingFiles.value = [];
+                    nextTick(() => { if (inputBox.value) inputBox.value.style.height = '40px'; scrollToBottom(); });
+                    simulateResponse();
+                };
+
+                const simulateResponse = () => {
+                    isTyping.value = true;
+                    messages.value.push({ role: 'assistant', content: '' });
+                    const fullText = `您好！我已经根据您的要求移除了底部的 Connectors 栏和 Checklist 清单。此外，通过微调 Padding 解决了水平对齐问题，去掉了多余的语音图标，并且为您实现了 ${activeModelName.value} 的下拉选择器。您可以清晰地看到欢迎界面的留白变得更加优雅了。`;
+                    let i = 0;
+                    typingTimer = setInterval(() => {
+                        if (i < fullText.length) {
+                            messages.value[messages.value.length - 1].content += fullText.charAt(i);
+                            i++;
+                            if (i % 3 === 0) scrollToBottom();
+                        } else {
+                            clearInterval(typingTimer);
+                            typingTimer = null;
+                            isTyping.value = false;
+                        }
+                    }, 30);
+                };
+
+                const resetChat = () => { messages.value = []; pendingFiles.value = []; };
+
+                onMounted(() => { if (window.lucide) window.lucide.createIcons(); });
+                watch([messages, pendingFiles, isWebSearchEnabled, isPlusMenuOpen, isModelMenuOpen, lang], () => {
+                    nextTick(() => { if (window.lucide) window.lucide.createIcons(); });
+                }, { deep: true });
+
+                const handleGlobalClick = () => { closePlusMenu(); closeModelMenu(); };
+
+                return {
+                    isSidebarOpen, isInputFocused, userInput, isTyping, chatContainer, inputBox, fileInput,
+                    messages, history, pendingFiles, isDragging, canSend, lang, t, toggleLang,
+                    isPlusMenuOpen, togglePlusMenu, closePlusMenu,
+                    models, activeModelId, activeModelName, isModelMenuOpen, toggleModelMenu, selectModel,
+                    isWebSearchEnabled, toggleWebSearch, handlePaste,
+                    sendMessage, handleEnter, autoResize, resetChat,
+                    triggerFileInput, handleFileSelect, removePendingFile,
+                    showDragOverlay, hideDragOverlay, handleDrop, handleGlobalClick
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>

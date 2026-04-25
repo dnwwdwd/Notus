@@ -319,6 +319,22 @@ function initDb() {
         updated_at           TEXT DEFAULT (datetime('now'))
       );
       CREATE INDEX IF NOT EXISTS idx_file_index_status_state ON file_index_status(status, updated_at);
+
+      CREATE TABLE IF NOT EXISTS llm_configs (
+        id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+        name                 TEXT NOT NULL,
+        provider             TEXT NOT NULL,
+        model                TEXT NOT NULL,
+        base_url             TEXT NOT NULL,
+        api_key              TEXT NOT NULL,
+        is_active            INTEGER NOT NULL DEFAULT 0,
+        last_test_latency_ms INTEGER,
+        last_tested_at       TEXT,
+        created_at           TEXT DEFAULT (datetime('now')),
+        updated_at           TEXT DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_llm_configs_active ON llm_configs(is_active);
+      CREATE INDEX IF NOT EXISTS idx_llm_configs_updated_at ON llm_configs(updated_at DESC);
     `);
 
     migrateRegularTables(db);
@@ -399,6 +415,16 @@ function setSettings(values) {
   })();
 }
 
+function removeSettings(keys = []) {
+  const database = getDb();
+  const normalizedKeys = keys.filter(Boolean);
+  if (normalizedKeys.length === 0) return;
+  const stmt = database.prepare('DELETE FROM settings WHERE key = ?');
+  database.transaction(() => {
+    normalizedKeys.forEach((key) => stmt.run(key));
+  })();
+}
+
 module.exports = {
   getDb,
   initDb,
@@ -409,4 +435,5 @@ module.exports = {
   getSetting,
   setSetting,
   setSettings,
+  removeSettings,
 };

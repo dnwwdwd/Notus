@@ -18,6 +18,7 @@ import { useToast } from '../components/ui/Toast';
 import { useApp } from '../contexts/AppContext';
 import { useAppStatus } from '../contexts/AppStatusContext';
 import { buildLineHash, buildPathWithHash } from '../utils/lineHash';
+import { useLlmConfigs } from '../hooks/useLlmConfigs';
 
 const WysiwygEditor = dynamic(
   () => import('../components/Editor/WysiwygEditor').then((module) => module.WysiwygEditor),
@@ -36,6 +37,7 @@ export default function KnowledgePage() {
   const toast = useToast();
   const { activeFile, allFiles, selectFile, getCachedContent, setCachedContent } = useApp();
   const { refreshStatus } = useAppStatus();
+  const { configs: llmConfigs, activeConfigId, loading: llmConfigsLoading } = useLlmConfigs();
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
   const [streamText, setStreamText] = useState('');
@@ -50,7 +52,11 @@ export default function KnowledgePage() {
   const [editorOpen, setEditorOpen] = useState(true);
   const [referenceMode, setReferenceMode] = useState('auto');
   const [manualReferenceFileIds, setManualReferenceFileIds] = useState([]);
+  const [selectedLlmConfigId, setSelectedLlmConfigId] = useState(null);
+  const docContentRef = useRef('');
+  const persistedDocContentRef = useRef('');
   const chatEndRef = useRef(null);
+  const requestControllerRef = useRef(null);
 
   const referenceFileOptions = allFiles.map((file) => ({
     value: file.id,
@@ -62,8 +68,29 @@ export default function KnowledgePage() {
     .filter(Boolean);
 
   useEffect(() => {
+    if (llmConfigs.length === 0) {
+      setSelectedLlmConfigId(null);
+      return;
+    }
+
+    setSelectedLlmConfigId((prev) => {
+      if (prev && llmConfigs.some((item) => String(item.id) === String(prev))) {
+        return prev;
+      }
+      if (activeConfigId && llmConfigs.some((item) => String(item.id) === String(activeConfigId))) {
+        return activeConfigId;
+      }
+      return llmConfigs[0]?.id || null;
+    });
+  }, [activeConfigId, llmConfigs]);
+
+  useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, streamText]);
+
+  useEffect(() => () => {
+    requestControllerRef.current?.abort();
+  }, []);
 
   const loadFile = useCallback(async (fileId) => {
     const cached = getCachedContent(fileId);
@@ -80,6 +107,8 @@ export default function KnowledgePage() {
     if (!activeFile?.id) {
       setDocContent('');
       setDocError(null);
+      docContentRef.current = '';
+      persistedDocContentRef.current = '';
       return undefined;
     }
 
@@ -91,7 +120,10 @@ export default function KnowledgePage() {
     loadFile(activeFile.id)
       .then((file) => {
         if (cancelled) return;
-        setDocContent(file.content || '');
+        const nextContent = file.content || '';
+        setDocContent(nextContent);
+        docContentRef.current = nextContent;
+        persistedDocContentRef.current = nextContent;
         setDocLoading(false);
       })
       .catch((loadError) => {
@@ -105,6 +137,35 @@ export default function KnowledgePage() {
     };
   }, [activeFile?.id, loadFile]);
 
+  const confirmDiscardChanges = useCallback((nextFile) => {
+    if (docSaveState !== 'dirty') return true;
+    if (nextFile?.id && nextFile.id === activeFile?.id) return true;
+    return window.confirm('当前文档有未保存修改，确定离开并丢弃这些内容吗？');
+  }, [activeFile?.id, docSaveState]);
+
+  useEffect(() => {
+    if (docSaveState !== 'dirty') return undefined;
+
+    const handleBeforeUnload = (event) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+
+    const handleRouteChangeStart = (url) => {
+      if (url === router.asPath) return;
+      if (window.confirm('当前文档有未保存修改，确定离开当前页面吗？')) return;
+      router.events.emit('routeChangeError');
+      throw new Error('Route change aborted by unsaved changes');
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    router.events.on('routeChangeStart', handleRouteChangeStart);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      router.events.off('routeChangeStart', handleRouteChangeStart);
+    };
+  }, [docSaveState, router]);
+
   useEffect(() => {
     if (!activeFile?.id) {
       setEditor(null);
@@ -113,8 +174,12 @@ export default function KnowledgePage() {
     setEditorOpen(true);
   }, [activeFile?.id]);
 
-  const handleDocSave = useCallback(async (nextContent = docContent) => {
+  const handleDocSave = useCallback(async (nextContent = docContentRef.current) => {
     if (!activeFile?.id) return;
+    if (nextContent === persistedDocContentRef.current) {
+      setDocSaveState('saved');
+      return;
+    }
     setDocSaveState('saving');
 
     try {
@@ -127,6 +192,8 @@ export default function KnowledgePage() {
       if (!response.ok) throw new Error(payload.error || '保存失败');
 
       const savedContent = payload.content || nextContent;
+      persistedDocContentRef.current = savedContent;
+      docContentRef.current = savedContent;
       setDocContent(savedContent);
       setCachedContent(activeFile.id, savedContent);
       setDocSaveState('saved');
@@ -135,10 +202,19 @@ export default function KnowledgePage() {
       setDocSaveState('dirty');
       toast(saveError.message || '保存失败', 'error');
     }
-  }, [activeFile?.id, docContent, toast, setCachedContent, refreshStatus]);
+  }, [activeFile?.id, toast, setCachedContent, refreshStatus]);
 
   const handleDocChange = useCallback((nextContent) => {
+    if (nextContent === docContentRef.current) return;
+
+    docContentRef.current = nextContent;
     setDocContent(nextContent);
+
+    if (nextContent === persistedDocContentRef.current) {
+      setDocSaveState('saved');
+      return;
+    }
+
     setDocSaveState('dirty');
   }, []);
 
@@ -165,12 +241,21 @@ export default function KnowledgePage() {
     }
   };
 
-  const handleSend = async (query, model) => {
+  const handleSend = async (query, llmConfigId = selectedLlmConfigId) => {
     if (referenceMode === 'manual' && manualReferenceFileIds.length === 0) {
       setError('手动参考来源至少选择 1 篇文章');
       toast('手动参考来源至少选择 1 篇文章', 'error');
       return;
     }
+
+    if (!llmConfigId) {
+      toast('请先在模型配置中新增并测试至少一个 LLM 配置', 'warning');
+      return;
+    }
+
+    requestControllerRef.current?.abort();
+    const controller = new AbortController();
+    requestControllerRef.current = controller;
 
     setError(null);
     setLoading(true);
@@ -185,9 +270,10 @@ export default function KnowledgePage() {
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
           query,
-          model,
+          llm_config_id: llmConfigId,
           reference_mode: referenceMode,
           reference_file_ids: referenceMode === 'manual' ? manualReferenceFileIds : undefined,
         }),
@@ -220,10 +306,18 @@ export default function KnowledgePage() {
         }
       });
     } catch (err) {
-      setError(err.message || 'AI 请求失败，请检查网络或 API Key 设置');
+      if (err.name === 'AbortError') {
+        setError(null);
+      } else {
+        setError(err.message || 'AI 请求失败，请检查网络或 API Key 设置');
+      }
       setLoading(false);
       setRetrievalStage(null);
       setRetrievalSourcesCount(0);
+    } finally {
+      if (requestControllerRef.current === controller) {
+        requestControllerRef.current = null;
+      }
     }
   };
 
@@ -234,7 +328,10 @@ export default function KnowledgePage() {
     if (!Number.isFinite(fileId)) return;
 
     const targetFile = allFiles.find((file) => file.id === fileId);
-    if (targetFile) selectFile(targetFile);
+    if (targetFile) {
+      if (!confirmDiscardChanges(targetFile)) return;
+      selectFile(targetFile);
+    }
 
     const hash = buildLineHash(citation?.line_start, citation?.line_end);
     const query = {
@@ -249,14 +346,17 @@ export default function KnowledgePage() {
     }
 
     router.push(buildPathWithHash('/files', query, hash));
-  }, [allFiles, router, selectFile]);
+  }, [allFiles, confirmDiscardChanges, router, selectFile]);
 
   return (
     <Shell
       active="knowledge"
       fileName={activeFile?.name || null}
       saveState={activeFile ? docSaveState : undefined}
+      onSave={activeFile ? handleDocSave : undefined}
+      saveDisabled={!activeFile || docSaveState !== 'dirty'}
       tocDisabled
+      beforeFileSelect={confirmDiscardChanges}
       navigateOnFileSelect={false}
     >
       {/* Chat panel content — extracted so it can be used with or without ResizableLayout */}
@@ -362,16 +462,24 @@ export default function KnowledgePage() {
                   <div style={{ maxWidth: 320 }}>
                     <DropdownSelect
                       value=""
-                      options={referenceFileOptions.filter((option) => !manualReferenceFileIds.includes(option.value))}
+                      options={referenceFileOptions}
                       onChange={(nextValue) => {
                         if (!nextValue) return;
-                        setManualReferenceFileIds((prev) => prev.includes(nextValue) ? prev : [...prev, nextValue]);
+                        setManualReferenceFileIds((prev) => (
+                          prev.includes(nextValue)
+                            ? prev.filter((fileId) => fileId !== nextValue)
+                            : [...prev, nextValue]
+                        ));
                       }}
+                      isOptionSelected={(option) => manualReferenceFileIds.includes(option.value)}
+                      closeOnSelect={false}
+                      renderValue={() => (manualReferenceFileIds.length > 0 ? `已选 ${manualReferenceFileIds.length} 篇参考文章` : '添加参考文章')}
+                      renderOption={(option, active) => `${option.label}${active ? ' · 已选' : ''}`}
                       searchable
                       placement="top"
                       placeholder="添加参考文章"
                       searchPlaceholder="搜索文章标题或路径"
-                      emptyText="没有更多可选文章"
+                      emptyText="没有可选文章"
                     />
                   </div>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -407,7 +515,7 @@ export default function KnowledgePage() {
                     {SUGGESTIONS.map((s, i) => (
                       <button
                         key={i}
-                        onClick={() => handleSend(s)}
+                        onClick={() => handleSend(s, selectedLlmConfigId)}
                         style={{
                           height: 32, padding: '0 16px',
                           background: 'var(--bg-elevated)',
@@ -460,9 +568,15 @@ export default function KnowledgePage() {
           </div>
 
           <InputBar
+            isEmpty={isEmpty}
             placeholder="从你的知识库中查找答案…"
             onSend={handleSend}
+            onStop={() => requestControllerRef.current?.abort()}
             loading={loading}
+            llmConfigs={llmConfigs}
+            selectedConfigId={selectedLlmConfigId}
+            onConfigChange={setSelectedLlmConfigId}
+            disabled={llmConfigs.length === 0 || llmConfigsLoading}
           />
         </div>
         );

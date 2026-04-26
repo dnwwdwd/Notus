@@ -222,4 +222,4 @@ Notus/
 - 修改产品口径后，必须同步清理过时文档描述，不保留互相冲突的并列口径。
 - 新需求默认先进入 `Requirements/INDEX.md`，再决定是否需要更新 PDD、PRD、UI Guide、PROGRESS。
 - 修 bug 时默认不更新 `PROGRESS.md`，除非用户明确要求，或该修复改变了里程碑状态。
-
+- `CLAUDE.md` 的内容必须与 `AGENTS.md` 保持完全一致；只要 `AGENTS.md` 发生变更，必须同步更新 `CLAUDE.md`。

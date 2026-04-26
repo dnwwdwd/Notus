@@ -323,16 +323,17 @@ export default function KnowledgePage() {
       selectFile(targetFile);
     }
 
-    router.push({
-      pathname: '/files',
-      query: {
-        fileId,
-        lineStart: citation?.line_start || '',
-        lineEnd: citation?.line_end || '',
-        preview: citation?.preview || '',
-        headingPath: citation?.heading_path || '',
-      },
-    });
+    const params = new URLSearchParams({ fileId: String(fileId) });
+    if (citation?.preview) params.set('preview', citation.preview);
+    if (citation?.heading_path) params.set('headingPath', citation.heading_path);
+
+    const lineStart = Number(citation?.line_start);
+    const lineEnd = Number(citation?.line_end);
+    const hash = Number.isFinite(lineStart) && lineStart > 0
+      ? `#L${lineStart}${Number.isFinite(lineEnd) && lineEnd > lineStart ? `-L${lineEnd}` : ''}`
+      : '';
+
+    router.push(`/files?${params.toString()}${hash}`);
   }, [allFiles, confirmDiscardChanges, router, selectFile]);
 
   return (

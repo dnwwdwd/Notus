@@ -1,6 +1,6 @@
 # Notus 项目进度
 
-> 最后更新：2026-04-25
+> 最后更新：2026-04-26
 > 对应文档版本：PDD v2.0 / PRD v2.1 / UI Guide v1.0
 
 ---
@@ -13,7 +13,7 @@
 | 后端核心库 | 数据库、运行时、索引、检索、Agent、设置 | ✅ 核心链路完成 |
 | 真实后端接口 | 接入真实文件系统 + SQLite + SSE + LLM / Embedding | ✅ 已切到真实后端，批量导入/导出、图片代理与图片向量检索已补齐 |
 | 可观测性 | 结构化日志 + 请求 ID + 日志查询接口 + 设置页日志查看 | ✅ 已完成 |
-| 懒猫微服部署 | manifest / build / run 脚本 | ✅ 完成（未验证打包） |
+| 懒猫微服部署 | manifest / package / build / run 脚本 | ✅ 已按规范重构，待实机安装验证 |
 
 ---
 
@@ -88,7 +88,7 @@
 | M5-05 主题样式基础 | `styles/globals.css` | ✅ | 保留亮/暗色 token 结构，但当前设置页不再暴露外观配置 |
 | M5-06 `/setup` 三步引导 | `pages/setup.js` `contexts/AppStatusContext.js` | ✅ | Step 1 支持模型获取、内置回退与手动输入；Step 2 支持真实 Markdown 文件/目录导入；Step 3 已接真实导入、索引进度与告警展示；入口守卫已接入 |
 | M5-07 404 / 错误页 | `pages/404.js` `pages/error.js` | ✅ | |
-| M5-08 懒猫打包 | `lzc-manifest.yml` `lzc-build.yml` `lzc/` | ✅ | 脚本已写并修正运行目录，**实机打包未验证** |
+| M5-08 懒猫打包 | `lzc-manifest.yml` `package.yml` `lzc-build.yml` `lzc/` | ✅ | 已补齐 `package.yml`、`lzc-icon.png` 与标准 `lzc-build.yml`，构建脚本现在负责准备 `lzc-dist/`；本地 `lzc-cli project build` 已通过，待真实懒猫环境安装验证 |
 | M5-09 sqlite-vec 双平台预编译验证 | — | ❌ | x86_64 + aarch64 (Lazycat) 均需验证 |
 | M5-10 健康检查 + 启动延迟调优 | `pages/api/health.js` | ✅ | 已接运行时初始化、sqlite-vec 状态与目录检查 |
 | M5-11 可观测日志系统 | `lib/logger.js` `pages/api/logs.js` `components/Settings/SettingsScreen.js` | ✅ | JSONL 落盘、`x-request-id`、日志查询 API、设置页日志查看；核心导入/索引/模型/设置链路已接入 |
@@ -144,7 +144,7 @@
 
 - 完整 CommandPalette（cmdk 命令面板）仍未实现；当前是全局文章搜索弹层。
 - 登录页仍是演示跳转，尚未接真实 Lazycat/OIDC 认证。
-- sqlite-vec x86_64 / aarch64 与 `.lpk` 实机打包部署仍待验证。
+- sqlite-vec x86_64 / aarch64 与 `.lpk` 实机打包部署仍待验证；当前已切到 Linux amd64 + Node 20 的构建链路，仍需真实懒猫环境确认运行时兼容性。
 
 ---
 
@@ -174,7 +174,7 @@
 1. **完整 CommandPalette** — 从文章搜索弹层扩展为命令面板。
 2. **真实登录/OIDC** — 替换当前演示登录逻辑。
 3. **多模态向量实测** — 用真实阿里 / 豆包 / 自定义兼容接口验证图片向量请求体。
-4. **懒猫实机验证** — `sqlite-vec` aarch64 预编译、`.lpk` 打包与部署联调。
+4. **懒猫实机验证** — `sqlite-vec` aarch64 预编译、`lzc-cli project build`、`.lpk` 安装与部署联调。
 
 ---
 

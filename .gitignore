@@ -10,6 +10,7 @@ notus/node_modules/
 notus/.env.local
 npm-debug.log*
 lzc-dist/
+*.lpk
 notus/notus.db*
 notus/logs/
 notus/notes/

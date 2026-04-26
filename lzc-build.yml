@@ -1,13 +1,5 @@
-build:
-  steps:
-    - name: Install dependencies
-      run: cd notus && npm ci --omit=dev
-
-    - name: Build Next.js
-      run: cd notus && npm run build
-
-    - name: Package
-      run: bash lzc/build-package.sh
-
-artifacts:
-  - notus.lpk
+buildscript: sh lzc/build-package.sh
+manifest: ./lzc-manifest.yml
+contentdir: ./lzc-dist
+pkgout: ./
+icon: ./lzc-icon.png

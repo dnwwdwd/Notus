@@ -16,11 +16,11 @@
 
 1. `AGENTS.md`
 2. `Requirements/`
-3. `BUG_TRACKER.md`
-4. `PROGRESS.md`
-5. `Notus_PDD.md`
-6. `Notus_PRD.md`
-7. `Notus_UI_Guide.md`
+3. `docs/BUG_TRACKER.md`
+4. `docs/PROGRESS.md`
+5. `docs/Notus_PDD.md`
+6. `docs/Notus_PRD.md`
+7. `docs/Notus_UI_Guide.md`
 
 如果低优先级文档与高优先级规则冲突，以高优先级为准，并在回复中明确说明。
 
@@ -30,15 +30,15 @@
 
 ### 总原则
 
-- 根目录 `Requirements/` 是统一的需求入口，用于记录每次收到的需求、分类结果、状态和落地文档。
-- `BUG_TRACKER.md` 只记录 bug，不记录功能需求、功能优化、用户体验优化、视觉优化、文案优化或一般性能建议。
-- `PROGRESS.md` 只记录阶段性完成度、当前口径和里程碑，不承担逐条需求流水账职责。
+- 根目录 `Requirements/` 是统一的非 bug 需求入口，用于记录功能需求、功能优化、用户体验优化的分类结果、状态和落地文档。
+- `docs/BUG_TRACKER.md` 只记录 bug，不记录功能需求、功能优化、用户体验优化、视觉优化、文案优化或一般性能建议。
+- `docs/PROGRESS.md` 只记录阶段性完成度、当前口径和里程碑，不承担逐条需求流水账职责。
 
 ### 每次收到需求时的必做动作
 
 1. 先判断需求类型。
-2. 在 `Requirements/INDEX.md` 新增或更新一条记录。
-3. 如果判定为 bug，再同步更新 `BUG_TRACKER.md`。
+2. 如果判定为非 bug 需求，在 `Requirements/INDEX.md` 新增或更新一条记录。
+3. 如果判定为 bug，直接更新 `docs/BUG_TRACKER.md`，不要写入 `Requirements/`。
 4. 如果该需求改变了当前产品口径、范围或里程碑，再按需更新 `PROGRESS.md`、PDD、PRD 或 UI Guide。
 
 ### 需求分类标准
@@ -46,22 +46,22 @@
 - bug：
   - 现有承诺、既有设计、已实现逻辑或已上线行为没有按预期工作。
   - 出现报错、异常、回归、数据错误、状态错乱、兼容性失效、安全问题。
-  - 这类需求必须进入 `Requirements/INDEX.md`，同时必须进入 `BUG_TRACKER.md`。
+  - 这类问题只进入 `docs/BUG_TRACKER.md`，不进入 `Requirements/`。
 - 功能需求：
   - 新增此前不存在的能力、页面、接口、流程、配置项或业务规则。
-  - 这类需求进入 `Requirements/`，不进入 `BUG_TRACKER.md`。
+  - 这类需求进入 `Requirements/`，不进入 `docs/BUG_TRACKER.md`。
 - 功能优化：
   - 对已有能力做增强、扩展、限制收紧、流程调整、策略升级、能力补强。
   - 即使用户主观上认为“应该这样”，只要当前行为不是错误，就按功能优化处理。
-  - 这类需求进入 `Requirements/`，不进入 `BUG_TRACKER.md`。
+  - 这类需求进入 `Requirements/`，不进入 `docs/BUG_TRACKER.md`。
 - 用户体验优化：
   - 现有功能可用，但在交互效率、视觉层级、提示文案、反馈时机、默认值、易理解性等方面需要改进。
-  - 这类需求进入 `Requirements/`，不进入 `BUG_TRACKER.md`。
+  - 这类需求进入 `Requirements/`，不进入 `docs/BUG_TRACKER.md`。
 
 ### 混合需求处理
 
 - 如果一个请求同时包含 bug 和优化项，必须拆开记录。
-- bug 部分进入 `Requirements/INDEX.md` 与 `BUG_TRACKER.md`。
+- bug 部分只进入 `docs/BUG_TRACKER.md`。
 - 功能需求、功能优化、用户体验优化部分仅进入 `Requirements/`。
 - 不能把优化项混记为 bug。
 
@@ -69,21 +69,21 @@
 
 - 优先根据现有文档、当前实现和用户描述判断。
 - 如果仍然存在明显歧义，应在回复中明确说明当前按哪一类处理。
-- 在无法确认的情况下，默认按“非 bug”处理，并且不要写入 `BUG_TRACKER.md`。
+- 在无法确认的情况下，默认按“非 bug”处理，并且不要写入 `docs/BUG_TRACKER.md`。
 
 ### 回答要求
 
-- 回答 bug 相关问题时，必须明确说明是否已更新 `BUG_TRACKER.md`。
+- 回答 bug 相关问题时，必须明确说明是否已更新 `docs/BUG_TRACKER.md`。
 - 回答需求、优化、规划类问题时，必须明确说明是否已更新 `Requirements/INDEX.md`。
 
 ---
 
 ## Bug 台账流程
 
-- Bug 台账文件位于仓库根目录 `BUG_TRACKER.md`，用于记录每个 bug 的描述、影响范围、根因、修复方案、当前状态与验证结果。
-- 每次发现 bug、收到 bug 报告、开始修 bug 或完成 bug 修复时，必须新增或更新 `BUG_TRACKER.md` 中的对应条目。
+- Bug 台账文件位于 `docs/BUG_TRACKER.md`，用于记录每个 bug 的描述、影响范围、根因、修复方案、当前状态与验证结果。
+- 每次发现 bug、收到 bug 报告、开始修 bug 或完成 bug 修复时，必须新增或更新 `docs/BUG_TRACKER.md` 中的对应条目。
 - 修复过程中应同步更新状态与进度；修复完成后必须补充根因、修复情况和验证结果。
-- Bug 修复默认只记录到 `BUG_TRACKER.md`，不要同步更新 `PROGRESS.md`；除非用户明确要求，或该修复同时改变了产品里程碑或功能完成状态。
+- Bug 修复默认只记录到 `docs/BUG_TRACKER.md`，不要同步更新 `docs/PROGRESS.md`；除非用户明确要求，或该修复同时改变了产品里程碑或功能完成状态。
 
 ---
 
@@ -137,12 +137,13 @@ bash lzc/build-package.sh
 ```text
 Notus/
 ├── AGENTS.md
-├── Requirements/               # 需求总台账与逐条需求记录
-├── BUG_TRACKER.md              # 仅记录 bug
-├── PROGRESS.md                 # 当前里程碑与完成度
-├── Notus_PDD.md                # 产品设计文档
-├── Notus_PRD.md                # 技术实现规范
-├── Notus_UI_Guide.md           # UI 规范
+├── Requirements/               # 非 bug 需求总台账与逐条需求记录
+├── docs/
+│   ├── BUG_TRACKER.md          # 仅记录 bug
+│   ├── PROGRESS.md             # 当前里程碑与完成度
+│   ├── Notus_PDD.md            # 产品设计文档
+│   ├── Notus_PRD.md            # 技术实现规范
+│   └── Notus_UI_Guide.md       # UI 规范
 ├── Notus-design-draft/         # 原始设计稿
 ├── lzc-manifest.yml            # 懒猫应用声明
 ├── lzc-build.yml               # 懒猫构建步骤
@@ -220,6 +221,6 @@ Notus/
 ## 文档维护约束
 
 - 修改产品口径后，必须同步清理过时文档描述，不保留互相冲突的并列口径。
-- 新需求默认先进入 `Requirements/INDEX.md`，再决定是否需要更新 PDD、PRD、UI Guide、PROGRESS。
-- 修 bug 时默认不更新 `PROGRESS.md`，除非用户明确要求，或该修复改变了里程碑状态。
+- 新的功能需求、功能优化、用户体验优化默认先进入 `Requirements/INDEX.md`，再决定是否需要更新 `docs/PROGRESS.md`、PDD、PRD、UI Guide。
+- 修 bug 时默认更新 `docs/BUG_TRACKER.md`，不更新 `Requirements/`，也不更新 `docs/PROGRESS.md`；除非用户明确要求，或该修复改变了里程碑状态。
 - `CLAUDE.md` 的内容必须与 `AGENTS.md` 保持完全一致；只要 `AGENTS.md` 发生变更，必须同步更新 `CLAUDE.md`。

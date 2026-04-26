@@ -1,5 +1,6 @@
 // _app.js — global styles + theme + providers
 import '../styles/globals.css';
+import 'katex/dist/katex.min.css';
 import Head from 'next/head';
 import { AppStatusGate } from '../components/AppStatusGate';
 import { ToastProvider } from '../components/ui/Toast';

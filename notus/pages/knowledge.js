@@ -266,8 +266,13 @@ export default function KnowledgePage() {
         }),
       });
       if (!response.ok) {
-        const payload = await response.json();
-        throw new Error(payload.error || 'AI 请求失败');
+        const payload = await response.json().catch(() => ({}));
+        const statusMessages = {
+          401: 'API Key 无效，请前往设置检查密钥配置',
+          429: '请求过于频繁，请稍后再试',
+          503: '服务暂时不可用，请稍后再试',
+        };
+        throw new Error(payload.error || statusMessages[response.status] || 'AI 请求失败');
       }
 
       await readSse(response, (event) => {
@@ -282,7 +287,7 @@ export default function KnowledgePage() {
         } else if (event.type === 'done') {
           setMessages((prev) => [
             ...prev,
-            { id: event.message_id || Date.now(), role: 'assistant', content: answer, citations },
+            { id: event.message_id || Date.now(), role: 'assistant', content: answer, citations, noContext: citations.length === 0 },
           ]);
           setStreamText('');
           setLoading(false);
@@ -293,6 +298,7 @@ export default function KnowledgePage() {
     } catch (err) {
       if (err.name === 'AbortError') {
         setError(null);
+        toast('已停止生成', 'info');
       } else {
         setError(err.message || 'AI 请求失败，请检查网络或 API Key 设置');
       }
@@ -520,7 +526,16 @@ export default function KnowledgePage() {
                   {messages.map((msg) =>
                     msg.role === 'user'
                       ? <UserBubble key={msg.id}>{msg.content}</UserBubble>
-                      : <AiBubble key={msg.id} text={msg.content} citations={msg.citations} onCitationClick={handleCitationClick} />
+                      : (
+                        <div key={msg.id}>
+                          <AiBubble text={msg.content} citations={msg.citations} onCitationClick={handleCitationClick} />
+                          {msg.noContext && (
+                            <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: -4, marginBottom: 12, paddingLeft: 2 }}>
+                              未在知识库中找到相关文档，以上回答来自模型自身知识
+                            </div>
+                          )}
+                        </div>
+                      )
                   )}
 
                   {loading && (
@@ -542,6 +557,42 @@ export default function KnowledgePage() {
             </div>
           </div>
 
+          {!llmConfigsLoading && llmConfigs.length === 0 && (
+            <div style={{
+              margin: '0 16px 8px',
+              padding: '10px 14px',
+              borderRadius: 'var(--radius-md)',
+              background: 'var(--warning-subtle)',
+              border: '1px solid rgba(224, 154, 26, 0.3)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 12,
+              fontSize: 'var(--text-sm)',
+              color: 'var(--warning)',
+            }}>
+              <span>尚未配置 LLM 模型，无法发送消息</span>
+              <button
+                type="button"
+                onClick={() => router.push('/settings/model')}
+                style={{
+                  flexShrink: 0,
+                  height: 26,
+                  padding: '0 12px',
+                  borderRadius: 'var(--radius-md)',
+                  border: '1px solid var(--warning)',
+                  background: 'transparent',
+                  color: 'var(--warning)',
+                  fontSize: 11,
+                  fontWeight: 500,
+                  cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                前往设置
+              </button>
+            </div>
+          )}
           <InputBar
             isEmpty={isEmpty}
             placeholder="从你的知识库中查找答案…"

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useDeferredValue } from 'react';
 import { useRouter } from 'next/router';
 import { Icons } from '../ui/Icons';
 import { Button } from '../ui/Button';
@@ -118,13 +118,14 @@ function getImportStatusLabel(status) {
   }[status] || '处理中';
 }
 
-const FileRow = ({ item, isActive, onSelect, onToggle }) => {
+const FileRow = ({ item, isActive, onSelect, onToggle, onContextMenu }) => {
   const pad = 8 + item.depth * 16;
   const isFolder = item.type === 'folder';
 
   return (
     <div
       onClick={() => isFolder ? onToggle(item.path) : onSelect(item)}
+      onContextMenu={!isFolder && onContextMenu ? (e) => { e.preventDefault(); onContextMenu(item, e.clientX, e.clientY); } : undefined}
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -194,11 +195,19 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, beforeFileS
   const [activeTab, setActiveTab] = useState('tree');
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const deferredSearchQuery = useDeferredValue(searchQuery);
 
   const [createMode, setCreateMode] = useState(null);
   const [newName, setNewName] = useState('');
   const [parentPath, setParentPath] = useState('');
   const [submitting, setSubmitting] = useState(false);
+
+  const [contextMenu, setContextMenu] = useState(null); // { node, x, y }
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameNode, setRenameNode] = useState(null);
+  const [renameName, setRenameName] = useState('');
+  const [renameSubmitting, setRenameSubmitting] = useState(false);
+  const contextMenuRef = useRef(null);
 
   const [importOpen, setImportOpen] = useState(false);
   const [importResultOpen, setImportResultOpen] = useState(false);
@@ -220,10 +229,72 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, beforeFileS
     if (tocDisabled) setActiveTab('tree');
   }, [tocDisabled]);
 
-  const filteredTree = useMemo(() => filterTree(files, searchQuery), [files, searchQuery]);
+  // Close context menu on outside click
+  useEffect(() => {
+    if (!contextMenu) return undefined;
+    const handleClick = () => setContextMenu(null);
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [contextMenu]);
+
+  const handleContextMenu = useCallback((node, x, y) => {
+    setContextMenu({ node, x, y });
+  }, []);
+
+  const handleContextRename = useCallback(() => {
+    if (!contextMenu) return;
+    setRenameNode(contextMenu.node);
+    setRenameName(contextMenu.node.name.replace(/\.md$/i, ''));
+    setRenameOpen(true);
+    setContextMenu(null);
+  }, [contextMenu]);
+
+  const handleContextDelete = useCallback(async () => {
+    if (!contextMenu) return;
+    const { node } = contextMenu;
+    setContextMenu(null);
+    if (!window.confirm(`确定删除文件「${node.name}」吗？此操作不可撤销。`)) return;
+    try {
+      const response = await fetch(`/api/files/${node.id}`, { method: 'DELETE' });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || '删除失败');
+      }
+      await refreshFiles();
+      toast('文件已删除', 'success');
+    } catch (error) {
+      toast(error.message || '删除失败', 'error');
+    }
+  }, [contextMenu, refreshFiles, toast]);
+
+  const handleRenameSubmit = useCallback(async () => {
+    if (!renameNode || !renameName.trim()) return;
+    setRenameSubmitting(true);
+    try {
+      const response = await fetch('/api/files/rename', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: renameNode.id, name: renameName.trim() }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || '重命名失败');
+      }
+      await refreshFiles();
+      toast('文件已重命名', 'success');
+      setRenameOpen(false);
+      setRenameNode(null);
+    } catch (error) {
+      toast(error.message || '重命名失败', 'error');
+    } finally {
+      setRenameSubmitting(false);
+    }
+  }, [refreshFiles, renameName, renameNode, toast]);
+
+  const filteredTree = useMemo(() => filterTree(files, deferredSearchQuery), [files, deferredSearchQuery]);
   const flat = useMemo(
-    () => flatTree(filteredTree, openFolders, Boolean(searchQuery.trim())),
-    [filteredTree, openFolders, searchQuery]
+    () => flatTree(filteredTree, openFolders, Boolean(deferredSearchQuery.trim())),
+    [filteredTree, openFolders, deferredSearchQuery]
   );
 
   const exportCandidates = useMemo(() => {
@@ -1119,10 +1190,88 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, beforeFileS
               isActive={n.type === 'file' && n.id === activeFileId}
               onSelect={handleSelectFile}
               onToggle={toggleFolder}
+              onContextMenu={handleContextMenu}
             />
           ))
         )}
       </div>
+
+      {/* Right-click context menu */}
+      {contextMenu && (
+        <div
+          ref={contextMenuRef}
+          onMouseDown={(e) => e.stopPropagation()}
+          style={{
+            position: 'fixed',
+            left: Math.min(contextMenu.x, window.innerWidth - 160),
+            top: Math.min(contextMenu.y, window.innerHeight - 80),
+            zIndex: 9000,
+            background: 'var(--bg-elevated)',
+            border: '1px solid var(--border-primary)',
+            borderRadius: 'var(--radius-md)',
+            boxShadow: 'var(--shadow-lg)',
+            padding: 4,
+            minWidth: 140,
+          }}
+        >
+          {[
+            { label: '重命名', icon: <Icons.edit size={13} />, action: handleContextRename },
+            { label: '删除', icon: <Icons.x size={13} />, action: handleContextDelete, danger: true },
+          ].map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              onClick={item.action}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                width: '100%',
+                height: 32,
+                padding: '0 10px',
+                borderRadius: 'var(--radius-sm)',
+                background: 'transparent',
+                color: item.danger ? 'var(--danger)' : 'var(--text-primary)',
+                fontSize: 'var(--text-sm)',
+                cursor: 'pointer',
+                textAlign: 'left',
+                transition: 'background var(--transition-fast)',
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = item.danger ? 'var(--danger-subtle)' : 'var(--bg-hover)'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+            >
+              {item.icon}
+              {item.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Rename dialog */}
+      {renameOpen && renameNode && (
+        <Dialog
+          open
+          onClose={() => { setRenameOpen(false); setRenameNode(null); }}
+          title="重命名文件"
+          footer={
+            <>
+              <Button variant="ghost" onClick={() => { setRenameOpen(false); setRenameNode(null); }}>取消</Button>
+              <Button variant="primary" loading={renameSubmitting} disabled={!renameName.trim()} onClick={handleRenameSubmit}>确认</Button>
+            </>
+          }
+        >
+          <TextInput
+            autoFocus
+            value={renameName}
+            onChange={(e) => setRenameName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleRenameSubmit();
+              if (e.key === 'Escape') { setRenameOpen(false); setRenameNode(null); }
+            }}
+            placeholder="文件名（不含 .md 后缀）"
+          />
+        </Dialog>
+      )}
     </div>
   );
 };

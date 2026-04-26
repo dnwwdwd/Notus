@@ -275,6 +275,15 @@ export default function CanvasPage() {
     };
   }, [router, saveState]);
 
+  // Auto-save every 30s when there are unsaved changes
+  useEffect(() => {
+    if (saveState !== 'dirty' || savingArticle) return undefined;
+    const timer = setTimeout(() => {
+      handleSaveArticle();
+    }, 30000);
+    return () => clearTimeout(timer);
+  }, [saveState, savingArticle, handleSaveArticle]);
+
   // Support ?fileId=X coming from editor "AI 创作" button
   useEffect(() => {
     const queryFileId = Number(getQueryValue(router.query.fileId));

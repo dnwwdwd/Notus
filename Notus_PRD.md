@@ -18,7 +18,7 @@
 | 全文检索 | SQLite FTS5（应用层预分词写入 `search_text`） |
 | 中文分词 | jieba-wasm（应用层分词，失败时回退简化分词） |
 | 文件监听 | chokidar（usePolling:true, interval:3000ms, awaitWriteFinish） |
-| Embedding | 同一套配置下可选文本或多模态模型；文本向量与图片向量共用 `EMBEDDING_PROVIDER/MODEL/DIM/API_KEY/BASE_URL`，开启 `EMBEDDING_MULTIMODAL_ENABLED` 后为图片建立向量 |
+| Embedding | 用户在设置页选择厂商（阿里千问 / 豆包 / OpenAI / 自定义），系统自动填充 Base URL 并通过下拉列表选择模型；可选文本或多模态，开启 `EMBEDDING_MULTIMODAL_ENABLED` 后为图片建立向量 |
 | LLM | 通过 API Key 管理工具调用，多厂商可切换，流式输出 |
 | 运行平台 | 懒猫微服，**v1 单体模式** .lpk 打包（application + upstreams + backend_launch_command，单容器） |
 
@@ -274,7 +274,7 @@ async function getEmbedding(text)              // 返回 number[]（长度=EMBED
 async function getEmbeddings(texts)            // 批量
 ```
 
-从 `EMBEDDING_PROVIDER`/`EMBEDDING_MODEL`/`EMBEDDING_API_KEY` 读配置，支持 qwen/doubao，失败抛错不静默。
+从 `EMBEDDING_PROVIDER`/`EMBEDDING_MODEL`/`EMBEDDING_API_KEY` 读配置，支持 qwen/doubao/openai/custom（可选值）；Provider 由用户在设置页显式选择，向量维度在测试连接后自动确认；失败抛错不静默。
 
 ### 4.4 `lib/retrieval.js`
 
@@ -634,7 +634,7 @@ function applyOperation(article, op) {
 
 ```env
 # Embedding
-EMBEDDING_PROVIDER=qwen               # qwen | doubao
+EMBEDDING_PROVIDER=qwen               # qwen | doubao | openai | custom（设置页显式选择）
 EMBEDDING_MODEL=text-embedding-v3
 EMBEDDING_DIM=1024                    # 千问 1024，豆包 2048
 EMBEDDING_MULTIMODAL_ENABLED=false    # true 时尝试图片向量；需模型支持

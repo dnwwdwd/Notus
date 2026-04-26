@@ -28,6 +28,7 @@
 <script type="text/babel" src="pages-editor.jsx"></script>
 <script type="text/babel" src="pages-chat.jsx"></script>
 <script type="text/babel" src="pages-misc.jsx"></script>
+<script type="text/babel" src="pages-locked.jsx"></script>
 <script type="text/babel" src="pages-components.jsx"></script>
 
 <script type="text/babel">
@@ -207,6 +208,24 @@ const App = () => {
           </AB>
           <AB label="15 · 错误页（无 Shell）" w={900} h={720}>
             <PageError/>
+          </AB>
+        </DCSection>
+
+        <DCSection title="未配置锁定态 & 重建索引流" subtitle="未配置模型时锁住页面 · 更换 Embedding 后的重建确认 · 进行中 · 失败">
+          <AB label="L1 · /knowledge — 未配置 LLM（锁定）">
+            <PageKnowledgeLocked/>
+          </AB>
+          <AB label="L2 · /canvas — 未配置（锁定）" w={1440} h={840}>
+            <PageCanvasLocked/>
+          </AB>
+          <AB label="L3 · /settings — 更换 Embedding 确认 Dialog">
+            <PageSettingsConfirmRebuild/>
+          </AB>
+          <AB label="L4 · 重建索引中（全屏阻塞、不可中断）" w={1280} h={840}>
+            <PageReindexing/>
+          </AB>
+          <AB label="L5 · 重建索引失败（可重试或回滚）" w={1280} h={840}>
+            <PageReindexFailed/>
           </AB>
         </DCSection>
 

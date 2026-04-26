@@ -356,8 +356,6 @@ export function LlmConfigCardsSection({
               <TextInput
                 value={draft.baseUrl}
                 onChange={(event) => setDraft((prev) => ({ ...prev, baseUrl: event.target.value }))}
-                disabled={!isCustomProvider}
-                style={!isCustomProvider ? { opacity: 0.65 } : undefined}
                 placeholder="https://api.openai.com/v1"
               />
             </div>

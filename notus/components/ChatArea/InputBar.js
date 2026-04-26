@@ -319,8 +319,8 @@ export const InputBar = ({
             </div>
           )}
 
-          <div style={{ position: 'relative', display: 'flex', alignItems: 'flex-end', gap: 8, padding: '10px 10px 10px 10px' }}>
-            <div ref={plusMenuRef} style={{ position: 'relative', marginBottom: 6 }}>
+          <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 8, padding: '10px 10px 10px 10px' }}>
+            <div ref={plusMenuRef} style={{ position: 'relative' }}>
               <button
                 type="button"
                 onClick={() => {
@@ -417,7 +417,7 @@ export const InputBar = ({
                   width: '100%',
                   minHeight: isEmpty ? 54 : 40,
                   maxHeight: 200,
-                  padding: isEmpty ? '12px 8px 6px' : '8px 8px 6px',
+                  padding: isEmpty ? '14px 8px' : '7px 8px',
                   background: 'transparent',
                   border: 'none',
                   outline: 'none',
@@ -430,7 +430,7 @@ export const InputBar = ({
               />
             </div>
 
-            <div ref={modelMenuRef} style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+            <div ref={modelMenuRef} style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 6 }}>
               <button
                 type="button"
                 onClick={() => {

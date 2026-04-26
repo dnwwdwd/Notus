@@ -1,6 +1,6 @@
 # Notus 项目进度
 
-> 最后更新：2026-04-20
+> 最后更新：2026-04-25
 > 对应文档版本：PDD v2.0 / PRD v2.1 / UI Guide v1.0
 
 ---
@@ -24,7 +24,7 @@
 | M1-01 项目初始化 + CSS Token 系统 | `notus/package.json` `notus/next.config.js` `styles/globals.css` | ✅ | 含 light/dark 双主题，所有设计 token |
 | M1-02 `lib/db.js` SQLite + sqlite-vec 初始化 | `lib/db.js` | ✅ | 已补齐 `files/chunks/chunks_vec/chunks_fts/images/conversations/messages/settings`、FTS5 触发器与运行时设置读写 |
 | M1-03 `lib/indexer.js` 分块 + 索引 | `lib/indexer.js` | ✅ | 已改为 AST 分块；Embedding 失败时保留 FTS 检索并标记待重试 |
-| M1-04 `lib/embeddings.js` | `lib/embeddings.js` | ⚠️ 部分 | 已接真实文本 / 多模态 Embedding API；图片向量支持已补，仍需用真实 API Key 做多提供商实测 |
+| M1-04 `lib/embeddings.js` | `lib/embeddings.js` | ⚠️ 部分 | 已接真实文本 / 多模态 Embedding API；图片向量支持已补；设置页与引导页已添加厂商选择器（千问/豆包/OpenAI/自定义），选中厂商后自动填充默认 Base URL 与模型列表；仍需用真实 API Key 做多提供商实测 |
 | M1-05 `lib/watcher.js` chokidar | `lib/watcher.js` | ✅ | 已接入运行时初始化，监听 `add/change/unlink` 并触发索引 |
 | M1-06 env.local.example + _app.js + globals.css | `.env.local.example` `pages/_app.js` | ✅ | |
 
@@ -35,13 +35,13 @@
 | 子任务 | 文件 | 状态 | 备注 |
 |--------|------|------|------|
 | M2-01 App Shell（TopBar + Sidebar + Shell） | `components/Layout/` | ✅ | |
-| M2-02 FileTree 组件（前端交互） | `components/Layout/Sidebar.js` `contexts/AppContext.js` `pages/api/files/` | ✅ | 已接真实文件系统与 SQLite；新建文件无需输入 `.md` 后缀，索引告警不再阻断文件创建 |
-| M2-03 WYSIWYG Markdown 编辑器 | `components/Editor/WysiwygEditor.js` `components/Editor/EditorToolbar.js` | ✅ | Tiptap + Markdown 双向转换；支持标题、链接、加粗、斜体、下划线、列表、任务列表、引用、代码块、分隔线、图片；代码块已接入 lowlight 语法高亮与语言选择 |
+| M2-02 FileTree 组件（前端交互） | `components/Layout/Sidebar.js` `contexts/AppContext.js` `pages/api/files/` | ✅ | 已接真实文件系统与 SQLite；新建文件无需输入 `.md` 后缀，索引告警不再阻断文件创建；搜索已加 `useDeferredValue` 防抖；已添加右键上下文菜单（重命名/删除） |
+| M2-03 WYSIWYG Markdown 编辑器 | `components/Editor/WysiwygEditor.js` `components/Editor/EditorToolbar.js` | ✅ | Tiptap + Markdown 双向转换；支持标题、链接、加粗、斜体、下划线、列表、任务列表、引用、代码块、分隔线、图片；代码块已接入 lowlight 语法高亮与语言选择；工具栏底部添加橙色脉冲条以指示未保存状态 |
 | M2-04 MarkdownRenderer | `components/Editor/MarkdownPreview.js` | ✅ | remark-gfm，待接入 rehype-katex |
 | M2-05 TocTree | `components/Layout/Sidebar.js` `pages/files/index.js` | ✅ | TOC 从 markdown heading 提取并渲染；已支持点击跳转与滚动联动高亮 |
-| M2-06 URL hash 来源跳转 + 高亮淡出 | `pages/files/index.js` `components/ui/SourceCard.js` | ⚠️ 部分 | 来源卡片已支持按 fileId + lineStart/lineEnd 跳转并高亮淡出；`#L24-L28` hash 格式仍未补 |
+| M2-06 URL hash 来源跳转 + 高亮淡出 | `pages/files/index.js` `components/ui/SourceCard.js` | ✅ | 来源卡片已支持按 fileId + lineStart/lineEnd 跳转并高亮淡出；已补充 `#L24-L28` hash 格式解析（mount 时读 `window.location.hash`，清理后注入现有滚动流程）与 Tiptap 光标定位（`posAtDOM` + `setTextSelection`） |
 | M2-07 批量导入/导出 + SSE 进度 | `pages/api/files/` `components/Layout/Sidebar.js` | ✅ | 已完成 `/api/files/import` `/api/files/export`；导入支持 50MB 请求体、保存/索引阶段进度、逐文件告警与请求 ID |
-| M2-08 `/indexing` 页面 | `pages/indexing.js` | ✅ | 已接 `/api/index/status` 与 `/api/index/rebuild` SSE，支持真实进度、当前文件、失败项与重新构建 |
+| M2-08 `/indexing` 页面 | `pages/indexing.js` | ✅ | 已接 `/api/index/status` 与 `/api/index/rebuild` SSE，支持真实进度、当前文件、失败项与重新构建；顶部已常驻显示"已索引 N / 总数"统计与失败数警示 |
 
 ---
 
@@ -53,7 +53,7 @@
 | M3-02 jieba-wasm 集成 + FTS 分词 | `lib/tokenizer.js` | ✅ | 已改为应用层分词，不再依赖 SQLite 自定义 tokenizer |
 | M3-03 `lib/prompt.js` 知识库 Prompt | `lib/prompt.js` | ✅ | 含 RAG QA / Agent / Draft / Polish 四套模板 |
 | M3-04 `/api/chat` SSE 流式 | `pages/api/chat.js` | ✅ | 已接真实检索、对话存储与 LLM 流式输出 |
-| M3-05 ChatArea + SourceCard 组件 | `components/ChatArea/` `components/ui/SourceCard.js` | ✅ | 知识库页已支持“无文件时仅问答，选中文件后显示左侧编辑器”的分屏模式 |
+| M3-05 ChatArea + SourceCard 组件 | `components/ChatArea/` `components/ui/SourceCard.js` | ✅ | 知识库页已支持”无文件时仅问答，选中文件后显示左侧编辑器”的分屏模式；已添加无命中上下文提示（AI 气泡底部淡色注释）、停止生成 Toast 反馈、LLM 未配置内联 Banner（含”前往设置”跳转按钮） |
 | M3-06 多模型切换 Select | `components/ChatArea/InputBar.js` | ✅ | UI 与 `/api/chat` 的 `model` 参数已打通；模型选择框在底部输入栏改为上拉展开 |
 | M3-07 知识库参考来源手动指定 | `pages/knowledge.js` `pages/api/chat.js` `lib/retrieval.js` | ✅ | 前端选择与后端 file id 过滤已打通，来源卡片可跳转到文件页定位 |
 
@@ -69,7 +69,7 @@
 | M4-04 意图识别 `/api/agent/intent` | `pages/api/agent/intent.js` | ✅ | 已接真实 LLM，失败时回退到规则判断 |
 | M4-05 大纲生成 `/api/agent/outline` SSE | `pages/api/agent/outline.js` `lib/prompt.js` | ✅ | 已接 LLM 大纲生成，保留检索增强与固定模板降级 |
 | M4-06 Agent 运行 `/api/agent/run` SSE | `pages/api/agent/run.js` | ✅ | 已接真实 Agent，输出 `thinking/tool_call/tool_result/operation/done` |
-| M4-07 CanvasBlock 组件 | `components/Canvas/CanvasBlock.js` `pages/canvas.js` | ✅ | 6 状态完整；双击进入 textarea 内联编辑；已接 dnd-kit 拖拽排序；快捷键提示已从界面隐藏，配置移入设置页 |
+| M4-07 CanvasBlock 组件 | `components/Canvas/CanvasBlock.js` `pages/canvas.js` | ✅ | 6 状态完整；双击进入 textarea 内联编辑；已接 dnd-kit 拖拽排序；快捷键提示已从界面隐藏，配置移入设置页；已添加 30s 自动保存（dirty 状态下计时，保存中/保存成功时重置） |
 | M4-08 AIPanel + OperationPreview | `components/AIPanel/OperationPreview.js` `pages/canvas.js` | ✅ | diff 展示 + apply/cancel 逻辑 |
 | M4-09 新建创作入口页 | `pages/canvas.js` CanvasEntry | ✅ | 话题输入 + 最近列表全部可点击，"从空白开始"按钮可用；侧边栏选中文件后会在当前页基于该文章进入创作；新主题内容可保存为 Markdown 并索引 |
 | M4-10 编辑器"AI 创作"按钮 | `components/Editor/EditorToolbar.js` | ✅ | 点击跳转 /canvas |
@@ -81,10 +81,10 @@
 
 | 子任务 | 文件 | 状态 | 备注 |
 |--------|------|------|------|
-| M5-01 设置页（模型/存储/日志/关于） | `pages/settings/[section].js` `components/Settings/SettingsScreen.js` | ✅ | 模型配置支持远端 `/api/models` 获取、内置回退与手动输入；存储页已接真实重建/清除索引；日志页可查询服务端 JSONL 日志 |
+| M5-01 设置页（模型/存储/日志/关于） | `pages/settings/[section].js` `components/Settings/SettingsScreen.js` | ✅ | 模型配置支持远端 `/api/models` 获取、内置回退与手动输入；存储页已接真实重建/清除索引；日志页可查询服务端 JSONL 日志；Embedding 配置新增厂商 pill 选择器（千问/豆包/OpenAI/自定义），选中后自动填充 Base URL 与默认模型下拉 |
 | M5-02 CommandPalette（cmdk） | `components/Layout/TopBar.js` | ⚠️ 部分 | 已提供全局文章搜索弹层和 ⌘K 快捷键；空输入时不再展示文章；完整命令面板仍未实现 |
 | M5-03 快捷键绑定 | `contexts/ShortcutsContext.js` `components/Editor/WysiwygEditor.js` `components/Layout/TopBar.js` `components/ChatArea/InputBar.js` `components/Canvas/CanvasBlock.js` | ✅ | 常用快捷键已集中到 `/settings/shortcuts` 维护，并接入搜索、发送、保存文档、保存块编辑、取消块编辑 |
-| M5-04 Toast 全局错误降级 | `components/ui/Toast.js` | ✅ | |
+| M5-04 Toast 全局错误降级 | `components/ui/Toast.js` `lib/errors.js` | ✅ | `lib/errors.js` 已补充 `HTTP_ERROR_MESSAGES` 映射表（400/401/403/429/500/502/503）与 `httpErrorMessage()` 工具函数，供所有 API 路由与前端错误分支调用 |
 | M5-05 主题样式基础 | `styles/globals.css` | ✅ | 保留亮/暗色 token 结构，但当前设置页不再暴露外观配置 |
 | M5-06 `/setup` 三步引导 | `pages/setup.js` `contexts/AppStatusContext.js` | ✅ | Step 1 支持模型获取、内置回退与手动输入；Step 2 支持真实 Markdown 文件/目录导入；Step 3 已接真实导入、索引进度与告警展示；入口守卫已接入 |
 | M5-07 404 / 错误页 | `pages/404.js` `pages/error.js` | ✅ | |
@@ -142,7 +142,6 @@
 
 ### 尚未实现 / 待验证
 
-- `#L24-L28` 形式的 URL hash 精确定位仍未实现；当前已完成来源卡片 query 参数定位与高亮。
 - 完整 CommandPalette（cmdk 命令面板）仍未实现；当前是全局文章搜索弹层。
 - 登录页仍是演示跳转，尚未接真实 Lazycat/OIDC 认证。
 - sqlite-vec x86_64 / aarch64 与 `.lpk` 实机打包部署仍待验证。

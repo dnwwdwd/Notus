@@ -317,19 +317,56 @@ const ModelConfig = () => {
         </div>
         <div style={{ border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-xl)', background: 'var(--bg-elevated)', padding: 18 }}>
           <div style={{ display: 'grid', gap: 14 }}>
+            <Field label="向量化厂商">
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {EMBEDDING_PROVIDERS.map((p) => (
+                  <button
+                    key={p.value}
+                    type="button"
+                    onClick={() => handleEmbeddingFieldChange({
+                      embProvider: p.value,
+                      embBaseUrl: p.baseUrl,
+                      embModel: p.models?.[0]?.value || '',
+                    })}
+                    style={{
+                      height: 30, padding: '0 14px',
+                      borderRadius: 'var(--radius-md)',
+                      border: `1px solid ${embProvider === p.value ? 'var(--accent)' : 'var(--border-primary)'}`,
+                      background: embProvider === p.value ? 'var(--accent-subtle)' : 'var(--bg-primary)',
+                      color: embProvider === p.value ? 'var(--accent)' : 'var(--text-secondary)',
+                      fontSize: 'var(--text-sm)',
+                      fontWeight: embProvider === p.value ? 500 : 400,
+                      cursor: 'pointer',
+                      transition: 'all var(--transition-fast)',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </Field>
             <Field label="Base URL">
               <TextInput
                 value={embBaseUrl}
-                onChange={(event) => handleEmbeddingFieldChange({ embBaseUrl: event.target.value })}
+                onChange={(event) => handleEmbeddingFieldChange({ embBaseUrl: event.target.value, embProvider: 'custom' })}
                 placeholder="https://api.openai.com/v1"
               />
             </Field>
             <Field label="模型名称">
-              <TextInput
-                value={embModel}
-                onChange={(event) => handleEmbeddingFieldChange({ embModel: event.target.value })}
-                placeholder="例如：text-embedding-3-small"
-              />
+              {embProvider !== 'custom' && EMBEDDING_PROVIDERS.find((p) => p.value === embProvider)?.models?.length > 0 ? (
+                <DropdownSelect
+                  value={embModel}
+                  options={EMBEDDING_PROVIDERS.find((p) => p.value === embProvider).models.map((m) => ({ value: m.value, label: m.label }))}
+                  onChange={(value) => handleEmbeddingFieldChange({ embModel: value })}
+                />
+              ) : (
+                <TextInput
+                  value={embModel}
+                  onChange={(event) => handleEmbeddingFieldChange({ embModel: event.target.value })}
+                  placeholder="例如：text-embedding-3-small"
+                />
+              )}
             </Field>
             <Field label="API Key">
               <TextInput
@@ -363,7 +400,7 @@ const ModelConfig = () => {
             </Field>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
               <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
-                系统会在测试连接时自动识别 Provider 和向量维度{detectedEmbDim ? `，当前识别为 ${detectedEmbDim} 维` : ''}。
+                选择厂商后系统自动填充默认地址；向量维度在测试连接后自动确认{detectedEmbDim ? `，当前 ${detectedEmbDim} 维` : ''}。
               </div>
               <div style={{ display: 'flex', gap: 10 }}>
                 <Button

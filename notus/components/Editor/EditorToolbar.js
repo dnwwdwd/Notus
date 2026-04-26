@@ -176,7 +176,7 @@ const ImageDialog = ({ onConfirm, onClose }) => {
   );
 };
 
-export const EditorToolbar = ({ editor, fileId, showAICreate = true }) => {
+export const EditorToolbar = ({ editor, fileId, showAICreate = true, isDirty = false }) => {
   const router = useRouter();
   const [dialogMode, setDialogMode] = useState(null);
 
@@ -436,6 +436,15 @@ export const EditorToolbar = ({ editor, fileId, showAICreate = true }) => {
           </button>
         )}
       </div>
+      {isDirty && (
+        <div style={{
+          height: 2,
+          background: 'var(--warning)',
+          opacity: 0.75,
+          animation: 'pulse-border 2s ease infinite',
+          flexShrink: 0,
+        }} />
+      )}
     </>
   );
 };

@@ -114,8 +114,16 @@ export default function IndexingPage() {
     <Shell active="" showIndex tocDisabled>
       <div style={{ flex: 1, overflow: 'auto', background: 'var(--bg-primary)', padding: 32 }}>
         <div style={{ maxWidth: 640, margin: '0 auto' }}>
-          <div style={{ fontSize: 'var(--text-xl)', fontWeight: 600, marginBottom: 4 }}>
-            {running ? '正在建立索引' : '索引状态'}
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 4 }}>
+            <div style={{ fontSize: 'var(--text-xl)', fontWeight: 600 }}>
+              {running ? '正在建立索引' : '索引状态'}
+            </div>
+            {!running && status.index.total > 0 && (
+              <div style={{ fontSize: 'var(--text-sm)', color: status.index.indexed === status.index.total ? 'var(--success)' : 'var(--text-secondary)' }}>
+                已索引 {status.index.indexed} / {status.index.total} 个文件
+                {status.index.failed > 0 && <span style={{ color: 'var(--warning)', marginLeft: 8 }}>· {status.index.failed} 个失败</span>}
+              </div>
+            )}
           </div>
           <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', marginBottom: 24 }}>
             正在向量化你的笔记，这样你就能从任何一段话检索到它

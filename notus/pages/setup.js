@@ -3,6 +3,7 @@ import { useRouter } from 'next/router';
 import { NotusLogo, Icons } from '../components/ui/Icons';
 import { Button } from '../components/ui/Button';
 import { TextInput } from '../components/ui/Input';
+import { DropdownSelect } from '../components/ui/DropdownSelect';
 import { ProgressBar } from '../components/ui/ProgressBar';
 import { Spinner } from '../components/ui/Spinner';
 import { Toggle } from '../components/ui/Toggle';
@@ -174,21 +175,56 @@ const Step1 = ({
           <div style={{ fontSize: 'var(--text-sm)', fontWeight: 600, color: 'var(--text-primary)', marginBottom: 2 }}>Embedding 模型</div>
 
           <div>
+            <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 5 }}>向量化厂商</div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {EMBEDDING_PROVIDERS.map((p) => (
+                <button
+                  key={p.value}
+                  type="button"
+                  onClick={() => onChange({ embProvider: p.value, embBaseUrl: p.baseUrl, embModel: p.models?.[0]?.value || '' })}
+                  style={{
+                    height: 28, padding: '0 12px',
+                    borderRadius: 'var(--radius-md)',
+                    border: `1px solid ${form.embProvider === p.value ? 'var(--accent)' : 'var(--border-primary)'}`,
+                    background: form.embProvider === p.value ? 'var(--accent-subtle)' : 'var(--bg-primary)',
+                    color: form.embProvider === p.value ? 'var(--accent)' : 'var(--text-secondary)',
+                    fontSize: 11,
+                    fontWeight: form.embProvider === p.value ? 500 : 400,
+                    cursor: 'pointer',
+                    transition: 'all var(--transition-fast)',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
             <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 5 }}>Base URL</div>
             <TextInput
               value={form.embBaseUrl}
-              onChange={(e) => onChange({ embBaseUrl: e.target.value })}
+              onChange={(e) => onChange({ embBaseUrl: e.target.value, embProvider: 'custom' })}
               placeholder="https://api.openai.com/v1"
             />
           </div>
 
           <div>
             <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 5 }}>模型名称</div>
-            <TextInput
-              value={form.embModel}
-              onChange={(e) => onChange({ embModel: e.target.value })}
-              placeholder="text-embedding-3-small"
-            />
+            {form.embProvider !== 'custom' && EMBEDDING_PROVIDERS.find((p) => p.value === form.embProvider)?.models?.length > 0 ? (
+              <DropdownSelect
+                value={form.embModel}
+                options={EMBEDDING_PROVIDERS.find((p) => p.value === form.embProvider).models.map((m) => ({ value: m.value, label: m.label }))}
+                onChange={(value) => onChange({ embModel: value })}
+              />
+            ) : (
+              <TextInput
+                value={form.embModel}
+                onChange={(e) => onChange({ embModel: e.target.value })}
+                placeholder="text-embedding-3-small"
+              />
+            )}
           </div>
 
           <div>
@@ -213,7 +249,7 @@ const Step1 = ({
 
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', marginTop: 6 }}>
             <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
-              系统会在测试连接时自动识别 Provider 和向量维度{detectedEmbDim ? `，当前识别为 ${detectedEmbDim} 维` : ''}。
+              选择厂商后自动填充默认地址；向量维度在测试后自动确认{detectedEmbDim ? `，当前 ${detectedEmbDim} 维` : ''}。
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
               <Button

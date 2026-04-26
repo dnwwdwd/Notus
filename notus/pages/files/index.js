@@ -106,6 +106,7 @@ export default function FilesPage() {
   const activeFileId = activeFile?.id;
   const contentRef = useRef('');
   const persistedContentRef = useRef('');
+  const pendingNavRef = useRef(null);
 
   const [editor, setEditor] = useState(null);      // Tiptap editor instance
   const [content, setContent] = useState('');       // markdown string
@@ -206,6 +207,18 @@ export default function FilesPage() {
     };
   }, [router, saveState]);
 
+  // Parse #L24-L28 hash on mount and store as pending navigation
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const match = window.location.hash.match(/^#L(\d+)(?:-L?(\d+))?$/);
+    if (!match) return;
+    pendingNavRef.current = {
+      lineStart: parseInt(match[1], 10),
+      lineEnd: match[2] ? parseInt(match[2], 10) : parseInt(match[1], 10),
+    };
+    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+  }, []);
+
   const jumpToHeading = useCallback((index) => {
     if (!editor) return;
     const container = getEditorScrollContainer(editor);
@@ -251,28 +264,49 @@ export default function FilesPage() {
     if (!router.isReady || !editor || !activeFile?.id) return;
 
     const requestedFileId = Number(getQueryValue(router.query.fileId));
-    if (!Number.isFinite(requestedFileId) || requestedFileId !== activeFile.id) return;
+    const hasQueryNav = Number.isFinite(requestedFileId) && requestedFileId === activeFile.id;
+    const hasPendingHashNav = Boolean(pendingNavRef.current);
 
-    const lineStart = Number(getQueryValue(router.query.lineStart));
-    const lineEnd = Number(getQueryValue(router.query.lineEnd));
-    const preview = getQueryValue(router.query.preview) || previewFromLines(content, lineStart, lineEnd);
-    const headingPath = getQueryValue(router.query.headingPath) || '';
+    if (!hasQueryNav && !hasPendingHashNav) return;
+
+    let lineStart, lineEnd, preview, headingPath;
+
+    if (hasQueryNav) {
+      lineStart = Number(getQueryValue(router.query.lineStart));
+      lineEnd = Number(getQueryValue(router.query.lineEnd));
+      preview = getQueryValue(router.query.preview) || previewFromLines(content, lineStart, lineEnd);
+      headingPath = getQueryValue(router.query.headingPath) || '';
+    } else {
+      // Hash nav: #L24-L28 — apply to current active file
+      lineStart = pendingNavRef.current.lineStart;
+      lineEnd = pendingNavRef.current.lineEnd;
+      preview = previewFromLines(content, lineStart, lineEnd);
+      headingPath = '';
+    }
+
+    if (hasPendingHashNav) pendingNavRef.current = null;
 
     const container = getEditorScrollContainer(editor);
     const target = findBestMatchElement(editor, { preview, headingPath });
     if (container && target) {
       container.scrollTo({ top: Math.max(target.offsetTop - 56, 0), behavior: 'smooth' });
       target.classList.add('citation-highlight');
+      try {
+        const pos = editor.view.posAtDOM(target, 0);
+        editor.commands.setTextSelection(pos);
+      } catch { /* cursor positioning is best-effort */ }
       window.setTimeout(() => target.classList.remove('citation-highlight'), 3000);
     }
 
-    const nextQuery = { ...router.query };
-    delete nextQuery.fileId;
-    delete nextQuery.lineStart;
-    delete nextQuery.lineEnd;
-    delete nextQuery.preview;
-    delete nextQuery.headingPath;
-    router.replace({ pathname: '/files', query: nextQuery }, undefined, { shallow: true });
+    if (hasQueryNav) {
+      const nextQuery = { ...router.query };
+      delete nextQuery.fileId;
+      delete nextQuery.lineStart;
+      delete nextQuery.lineEnd;
+      delete nextQuery.preview;
+      delete nextQuery.headingPath;
+      router.replace({ pathname: '/files', query: nextQuery }, undefined, { shallow: true });
+    }
   }, [activeFile?.id, content, editor, router]);
 
   const handleSave = useCallback(async (nextContent = contentRef.current) => {
@@ -345,6 +379,7 @@ export default function FilesPage() {
       <EditorToolbar
         editor={editor}
         fileId={activeFile?.id}
+        isDirty={saveState === 'dirty'}
       />
 
       {/* Empty state */}

@@ -275,6 +275,48 @@ export default function CanvasPage() {
     };
   }, [router, saveState]);
 
+  const handleSaveArticle = useCallback(async () => {
+    if (!article) return;
+    setSavingArticle(true);
+    setSaveState('saving');
+
+    try {
+      const response = await fetch('/api/articles/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          article: {
+            ...article,
+            file_id: article.file_id || article.fileId,
+            blocks,
+          },
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error || '保存文章失败');
+      }
+
+      setArticle({
+        ...(payload.article || article),
+        file_id: payload.file_id,
+        fileId: payload.file_id,
+        sourcePath: payload.path,
+      });
+      setBlocks(payload.article?.blocks || blocks);
+      await refreshFiles();
+      const nextFile = allFiles.find((file) => file.id === payload.file_id) || { id: payload.file_id, path: payload.path, name: payload.title };
+      if (nextFile?.id) selectFile(nextFile);
+      setSaveState('saved');
+      toast('文章已保存并建立索引', 'success');
+    } catch (error) {
+      setSaveState('dirty');
+      toast(error.message || '保存文章失败', 'error');
+    } finally {
+      setSavingArticle(false);
+    }
+  }, [allFiles, article, blocks, refreshFiles, selectFile, toast]);
+
   // Auto-save every 30s when there are unsaved changes
   useEffect(() => {
     if (saveState !== 'dirty' || savingArticle) return undefined;
@@ -465,48 +507,6 @@ export default function CanvasPage() {
     setBlocks((prev) => [...prev, { id: newId, type: 'paragraph', content: '' }]);
     setSaveState('dirty');
   }, []);
-
-  const handleSaveArticle = useCallback(async () => {
-    if (!article) return;
-    setSavingArticle(true);
-    setSaveState('saving');
-
-    try {
-      const response = await fetch('/api/articles/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          article: {
-            ...article,
-            file_id: article.file_id || article.fileId,
-            blocks,
-          },
-        }),
-      });
-      const payload = await response.json();
-      if (!response.ok || !payload.ok) {
-        throw new Error(payload.error || '保存文章失败');
-      }
-
-      setArticle({
-        ...(payload.article || article),
-        file_id: payload.file_id,
-        fileId: payload.file_id,
-        sourcePath: payload.path,
-      });
-      setBlocks(payload.article?.blocks || blocks);
-      await refreshFiles();
-      const nextFile = allFiles.find((file) => file.id === payload.file_id) || { id: payload.file_id, path: payload.path, name: payload.title };
-      if (nextFile?.id) selectFile(nextFile);
-      setSaveState('saved');
-      toast('文章已保存并建立索引', 'success');
-    } catch (error) {
-      setSaveState('dirty');
-      toast(error.message || '保存文章失败', 'error');
-    } finally {
-      setSavingArticle(false);
-    }
-  }, [allFiles, article, blocks, refreshFiles, selectFile, toast]);
 
   const handleApplyOp = useCallback(async (op) => {
     if (!op?.operation) {

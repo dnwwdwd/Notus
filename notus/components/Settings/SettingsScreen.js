@@ -317,90 +317,51 @@ const ModelConfig = () => {
         </div>
         <div style={{ border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-xl)', background: 'var(--bg-elevated)', padding: 18 }}>
           <div style={{ display: 'grid', gap: 14 }}>
-            <Field label="向量化厂商">
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                {EMBEDDING_PROVIDERS.map((p) => (
-                  <button
-                    key={p.value}
-                    type="button"
-                    onClick={() => handleEmbeddingFieldChange({
-                      embProvider: p.value,
-                      embBaseUrl: p.baseUrl,
-                      embModel: p.models?.[0]?.value || '',
-                    })}
-                    style={{
-                      height: 30, padding: '0 14px',
-                      borderRadius: 'var(--radius-md)',
-                      border: `1px solid ${embProvider === p.value ? 'var(--accent)' : 'var(--border-primary)'}`,
-                      background: embProvider === p.value ? 'var(--accent-subtle)' : 'var(--bg-primary)',
-                      color: embProvider === p.value ? 'var(--accent)' : 'var(--text-secondary)',
-                      fontSize: 'var(--text-sm)',
-                      fontWeight: embProvider === p.value ? 500 : 400,
-                      cursor: 'pointer',
-                      transition: 'all var(--transition-fast)',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {p.label}
-                  </button>
-                ))}
-              </div>
-            </Field>
-            <Field label="Base URL">
-              <TextInput
-                value={embBaseUrl}
-                onChange={(event) => handleEmbeddingFieldChange({ embBaseUrl: event.target.value, embProvider: 'custom' })}
-                placeholder="https://api.openai.com/v1"
-              />
-            </Field>
-            <Field label="模型名称">
-              {embProvider !== 'custom' && EMBEDDING_PROVIDERS.find((p) => p.value === embProvider)?.models?.length > 0 ? (
-                <DropdownSelect
-                  value={embModel}
-                  options={EMBEDDING_PROVIDERS.find((p) => p.value === embProvider).models.map((m) => ({ value: m.value, label: m.label }))}
-                  onChange={(value) => handleEmbeddingFieldChange({ embModel: value })}
-                />
-              ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <Field label="Base URL">
                 <TextInput
-                  value={embModel}
-                  onChange={(event) => handleEmbeddingFieldChange({ embModel: event.target.value })}
-                  placeholder="例如：text-embedding-3-small"
+                  value={embBaseUrl}
+                  onChange={(event) => {
+                    const newUrl = event.target.value;
+                    const inferred = inferEmbeddingProvider({ baseUrl: newUrl, model: embModel });
+                    handleEmbeddingFieldChange({ embBaseUrl: newUrl, embProvider: inferred });
+                  }}
+                  placeholder="https://api.openai.com/v1"
                 />
-              )}
-            </Field>
-            <Field label="API Key">
-              <TextInput
-                value={embApiKey}
-                onChange={(event) => handleEmbeddingFieldChange({ embApiKey: event.target.value })}
-                placeholder={keyHints.embedding ? '已保存，留空不修改' : 'sk-...'}
-                masked
-              />
-            </Field>
-            <Field label="多模态向量">
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: 16,
-                  padding: '10px 12px',
-                  border: '1px solid var(--border-subtle)',
-                  borderRadius: 'var(--radius-lg)',
-                  background: 'var(--bg-primary)',
-                }}
-              >
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 'var(--text-sm)', fontWeight: 500 }}>允许图片 / 视频向量化</div>
-                  <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)', marginTop: 4, lineHeight: 1.6 }}>
-                    关闭时只建立文本向量；开启后会尝试为图片建立向量。
-                  </div>
-                </div>
+              </Field>
+              <Field label="模型名称">
+                {embProvider !== 'custom' && EMBEDDING_PROVIDERS.find((p) => p.value === embProvider)?.models?.length > 0 ? (
+                  <DropdownSelect
+                    value={embModel}
+                    options={EMBEDDING_PROVIDERS.find((p) => p.value === embProvider).models.map((m) => ({ value: m.value, label: m.label }))}
+                    onChange={(value) => handleEmbeddingFieldChange({ embModel: value })}
+                  />
+                ) : (
+                  <TextInput
+                    value={embModel}
+                    onChange={(event) => handleEmbeddingFieldChange({ embModel: event.target.value })}
+                    placeholder="例如：text-embedding-3-small"
+                  />
+                )}
+              </Field>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 12, alignItems: 'end' }}>
+              <Field label="API Key">
+                <TextInput
+                  value={embApiKey}
+                  onChange={(event) => handleEmbeddingFieldChange({ embApiKey: event.target.value })}
+                  placeholder={keyHints.embedding ? '已保存，留空不修改' : 'sk-...'}
+                  masked
+                />
+              </Field>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingBottom: 1 }}>
+                <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>多模态向量</span>
                 <Toggle on={embMultimodalEnabled} onChange={(value) => handleEmbeddingFieldChange({ embMultimodalEnabled: value })} />
               </div>
-            </Field>
+            </div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
               <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
-                选择厂商后系统自动填充默认地址；向量维度在测试连接后自动确认{detectedEmbDim ? `，当前 ${detectedEmbDim} 维` : ''}。
+                填写 Base URL 后系统自动推断厂商；向量维度在测试连接后自动确认{detectedEmbDim ? `，当前 ${detectedEmbDim} 维` : ''}。
               </div>
               <div style={{ display: 'flex', gap: 10 }}>
                 <Button

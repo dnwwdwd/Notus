@@ -10,12 +10,17 @@ import { InputBar } from '../components/ChatArea/InputBar';
 import { OperationPreview } from '../components/AIPanel/OperationPreview';
 import { ResizableLayout } from '../components/ui/ResizableLayout';
 import { DropdownSelect } from '../components/ui/DropdownSelect';
+import { DocumentFindBar } from '../components/ui/DocumentFindBar';
+import { AiLockedState } from '../components/ui/AiLockedState';
 import { Icons } from '../components/ui/Icons';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { useToast } from '../components/ui/Toast';
 import { useApp } from '../contexts/AppContext';
+import { useAppStatus } from '../contexts/AppStatusContext';
 import { useLlmConfigs } from '../hooks/useLlmConfigs';
+import { useDocumentFind } from '../hooks/useDocumentFind';
+import { useUnsavedChangesGuard } from '../hooks/useUnsavedChangesGuard';
 import { markdownToCanvasBlocks } from '../utils/markdownBlocks';
 
 const RECENT_ITEMS = [
@@ -89,7 +94,7 @@ async function readSse(response, onEvent) {
 }
 
 // ─── Entry screen ─────────────────────────────────────────────
-const CanvasEntry = ({ onStart }) => {
+const CanvasEntry = ({ onStart, locked, onOpenSettings }) => {
   const [topic, setTopic] = useState('');
 
   return (
@@ -118,13 +123,15 @@ const CanvasEntry = ({ onStart }) => {
             border: '1px solid var(--border-primary)',
             borderRadius: 'var(--radius-md)',
             display: 'flex', alignItems: 'center',
+            opacity: locked ? 0.62 : 1,
           }}>
             <input
               value={topic}
               onChange={(e) => setTopic(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && topic.trim() && onStart(topic.trim())}
+              onKeyDown={(e) => e.key === 'Enter' && topic.trim() && !locked && onStart(topic.trim())}
               placeholder="输入创作主题，如「缓存设计中的几个反直觉」"
               autoFocus
+              disabled={locked}
               style={{
                 flex: 1, border: 'none', outline: 'none',
                 background: 'transparent',
@@ -140,12 +147,23 @@ const CanvasEntry = ({ onStart }) => {
             variant="primary"
             size="lg"
             icon={<Icons.sparkles size={14} />}
-            disabled={!topic.trim()}
-            onClick={() => topic.trim() && onStart(topic.trim())}
+            disabled={!topic.trim() || locked}
+            onClick={() => topic.trim() && !locked && onStart(topic.trim())}
           >
             生成大纲
           </Button>
         </div>
+
+        {locked && (
+          <div style={{ marginBottom: 22 }}>
+            <AiLockedState
+              compact
+              title="创作功能暂未开放"
+              description="先完成 LLM 与 Embedding 配置后，才能生成大纲、调用 AI 改写，并让创作页真正可用。"
+              onAction={onOpenSettings}
+            />
+          </div>
+        )}
 
         {/* Recent items — all clickable */}
         <div style={{ fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: 0.5, padding: '0 4px', marginBottom: 6 }}>
@@ -155,16 +173,17 @@ const CanvasEntry = ({ onStart }) => {
           {RECENT_ITEMS.map((r) => (
             <div
               key={r.title}
-              onClick={() => onStart(r.title)}
+              onClick={() => !locked && onStart(r.title)}
               style={{
                 height: 40, display: 'flex', alignItems: 'center',
                 padding: '0 12px', gap: 10,
                 borderRadius: 'var(--radius-md)',
-                cursor: 'pointer',
+                cursor: locked ? 'not-allowed' : 'pointer',
                 transition: 'background var(--transition-fast)',
+                opacity: locked ? 0.55 : 1,
               }}
-              onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-hover)'}
-              onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+              onMouseEnter={(e) => { if (!locked) e.currentTarget.style.background = 'var(--bg-hover)'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
             >
               <Icons.file size={14} color="var(--text-tertiary)" />
               <span style={{ fontSize: 'var(--text-sm)' }}>{r.title}</span>
@@ -177,8 +196,8 @@ const CanvasEntry = ({ onStart }) => {
         <div style={{ height: 40 }} />
         <div style={{ textAlign: 'center' }}>
           <button
-            onClick={() => onStart('')}
-            style={{ fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)', cursor: 'pointer' }}
+            onClick={() => !locked && onStart('')}
+            style={{ fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)', cursor: locked ? 'not-allowed' : 'pointer', opacity: locked ? 0.55 : 1 }}
           >
             或者从空白开始 →
           </button>
@@ -192,10 +211,12 @@ const CanvasEntry = ({ onStart }) => {
 export default function CanvasPage() {
   const router = useRouter();
   const toast = useToast();
+  const { status: appStatus, loading: appStatusLoading } = useAppStatus();
   const { allFiles, activeFile, refreshFiles, selectFile } = useApp();
   const { configs: llmConfigs, activeConfigId, loading: llmConfigsLoading } = useLlmConfigs();
   const chatEndRef = useRef(null);
   const requestControllerRef = useRef(null);
+  const canvasContentRef = useRef(null);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
 
   const [article, setArticle] = useState(null);
@@ -247,36 +268,8 @@ export default function CanvasPage() {
     requestControllerRef.current?.abort();
   }, []);
 
-  const confirmDiscardChanges = useCallback(() => {
-    if (saveState !== 'dirty') return true;
-    return window.confirm('当前创作有未保存修改，确定离开并丢弃这些内容吗？');
-  }, [saveState]);
-
-  useEffect(() => {
-    if (saveState !== 'dirty') return undefined;
-
-    const handleBeforeUnload = (event) => {
-      event.preventDefault();
-      event.returnValue = '';
-    };
-
-    const handleRouteChangeStart = (url) => {
-      if (url === router.asPath) return;
-      if (window.confirm('当前创作有未保存修改，确定离开当前页面吗？')) return;
-      router.events.emit('routeChangeError');
-      throw new Error('Route change aborted by unsaved changes');
-    };
-
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    router.events.on('routeChangeStart', handleRouteChangeStart);
-    return () => {
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-      router.events.off('routeChangeStart', handleRouteChangeStart);
-    };
-  }, [router, saveState]);
-
   const handleSaveArticle = useCallback(async () => {
-    if (!article) return;
+    if (!article) return false;
     setSavingArticle(true);
     setSaveState('saving');
 
@@ -309,13 +302,35 @@ export default function CanvasPage() {
       if (nextFile?.id) selectFile(nextFile);
       setSaveState('saved');
       toast('文章已保存并建立索引', 'success');
+      return true;
     } catch (error) {
       setSaveState('dirty');
       toast(error.message || '保存文章失败', 'error');
+      return false;
     } finally {
       setSavingArticle(false);
     }
   }, [allFiles, article, blocks, refreshFiles, selectFile, toast]);
+
+  const llmReady = !llmConfigsLoading && llmConfigs.length > 0;
+  const aiReady = !appStatusLoading && llmReady && Boolean(appStatus.setup.model_configured);
+  const aiLockDescription = llmReady
+    ? '还需要先完成 Embedding 配置并建立索引，创作页的生成大纲、风格参考和 AI 改写能力才会开放。'
+    : '还需要至少一个已测试通过的 LLM 配置，同时完成 Embedding 配置后，创作页的 AI 能力才会开放。';
+
+  const unsavedGuard = useUnsavedChangesGuard({
+    isDirty: saveState === 'dirty',
+    onSave: handleSaveArticle,
+    title: '离开前保存当前创作？',
+    message: '当前创作还有未保存修改。你可以先保存再继续，也可以直接离开并丢弃这次编辑。',
+  });
+
+  const documentFind = useDocumentFind({
+    enabled: Boolean(article),
+    getRoot: () => canvasContentRef.current,
+    selector: '[data-canvas-title="true"], [data-canvas-searchable="true"]',
+    contentVersion: `${article?.fileId || article?.title || 'none'}:${blocks.map((block) => `${block.id}:${block.content}`).join('|')}`,
+  });
 
   // Auto-save every 30s when there are unsaved changes
   useEffect(() => {
@@ -332,9 +347,8 @@ export default function CanvasPage() {
     if (!Number.isFinite(queryFileId) || activeFile?.id === queryFileId) return;
     const nextFile = allFiles.find((file) => file.id === queryFileId);
     if (!nextFile) return;
-    if (!confirmDiscardChanges()) return;
     selectFile(nextFile);
-  }, [activeFile?.id, allFiles, confirmDiscardChanges, router.query.fileId, selectFile]);
+  }, [activeFile?.id, allFiles, router.query.fileId, selectFile]);
 
   const loadArticleFromFile = useCallback(async (file) => {
     if (!file?.id) return;
@@ -370,6 +384,7 @@ export default function CanvasPage() {
   }, [activeFile?.id, article?.fileId, loadArticleFromFile]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleStart = useCallback(async (topic) => {
+    if (!aiReady) return;
     const title = topic || '未命名创作';
     setArticle({ title });
     setBlocks([]);
@@ -401,7 +416,7 @@ export default function CanvasPage() {
       toast(error.message || '大纲生成失败', 'error');
       setBlocks(getInitialBlocks(topic));
     }
-  }, [toast]);
+  }, [aiReady, toast]);
 
   const handleSend = useCallback(async (query, llmConfigId = selectedLlmConfigId) => {
     if (!llmConfigId) {
@@ -565,8 +580,9 @@ export default function CanvasPage() {
   // ── Entry screen ──
   if (!article) {
     return (
-      <Shell active="canvas" tocDisabled beforeFileSelect={confirmDiscardChanges} navigateOnFileSelect={false}>
-        <CanvasEntry onStart={handleStart} />
+      <Shell active="canvas" tocDisabled requestAction={unsavedGuard.request} navigateOnFileSelect={false} showSaveButton={false}>
+        <CanvasEntry onStart={handleStart} locked={!aiReady} onOpenSettings={() => router.push('/settings/model')} />
+        {unsavedGuard.dialog}
       </Shell>
     );
   }
@@ -579,16 +595,28 @@ export default function CanvasPage() {
       saveState={saveState}
       onSave={handleSaveArticle}
       saveDisabled={saveState !== 'dirty'}
+      showSaveButton={false}
       tocDisabled
-      beforeFileSelect={confirmDiscardChanges}
+      requestAction={unsavedGuard.request}
       navigateOnFileSelect={false}
     >
-      <ResizableLayout
-        initialLeftPercent={62}
-        minLeftPercent={30}
-        maxLeftPercent={80}
-        left={
-        <div style={{ overflow: 'auto', background: 'var(--bg-primary)', height: '100%' }}>
+      <div style={{ position: 'relative', flex: 1 }}>
+        <ResizableLayout
+          initialLeftPercent={62}
+          minLeftPercent={30}
+          maxLeftPercent={80}
+          left={
+        <div style={{ overflow: 'auto', background: 'var(--bg-primary)', height: '100%', position: 'relative' }} ref={canvasContentRef}>
+          <DocumentFindBar
+            open={documentFind.open}
+            query={documentFind.query}
+            total={documentFind.total}
+            current={documentFind.currentIndex}
+            onChange={documentFind.setQuery}
+            onPrev={documentFind.prev}
+            onNext={documentFind.next}
+            onClose={documentFind.close}
+          />
           <div style={{ maxWidth: 720, margin: '0 auto', padding: '40px 32px 80px' }}>
             {/* Title bar */}
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 4 }}>
@@ -598,25 +626,12 @@ export default function CanvasPage() {
                 fontWeight: 700,
                 margin: 0,
                 flex: 1,
-              }}>
+              }} data-canvas-title="true">
                 {article.title}
               </h1>
-              <Button variant="secondary" size="sm" loading={savingArticle} onClick={handleSaveArticle}>
-                保存文章
-              </Button>
-              <button
-                onClick={() => {
-                  if (!confirmDiscardChanges()) return;
-                  setArticle(null);
-                }}
-                title="返回入口"
-                style={{ fontSize: 12, color: 'var(--text-tertiary)', cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0 }}
-              >
-                ← 返回
-              </button>
             </div>
             <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', marginBottom: 28 }}>
-              {loadingSourceFile ? '正在载入文章内容…' : `创作中 · ${blocks.length} 个块`}
+              {loadingSourceFile ? '正在载入文章内容…' : `${saveState === 'saving' ? '正在保存' : saveState === 'dirty' ? '尚未保存' : '已保存'} · ${blocks.length} 个块`}
             </div>
 
             {/* Blocks */}
@@ -759,11 +774,35 @@ export default function CanvasPage() {
             llmConfigs={llmConfigs}
             selectedConfigId={selectedLlmConfigId}
             onConfigChange={setSelectedLlmConfigId}
-            disabled={llmConfigs.length === 0 || llmConfigsLoading}
+            disabled={!aiReady}
+            showPlusMenu={false}
           />
         </div>
         }
-      />
+        />
+        {!aiReady && (
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              background: 'rgba(250, 249, 245, 0.72)',
+              backdropFilter: 'blur(6px)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: 24,
+              zIndex: 20,
+            }}
+          >
+            <AiLockedState
+              title="创作页暂未开放 AI 能力"
+              description={aiLockDescription}
+              onAction={() => router.push('/settings/model')}
+            />
+          </div>
+        )}
+      </div>
+      {unsavedGuard.dialog}
     </Shell>
   );
 }

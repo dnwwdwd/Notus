@@ -7,9 +7,12 @@ import { EditorToolbar } from '../../components/Editor/EditorToolbar';
 import { EmptyState } from '../../components/ui/EmptyState';
 import { SkeletonText } from '../../components/ui/Skeleton';
 import { InlineError } from '../../components/ui/InlineError';
+import { DocumentFindBar } from '../../components/ui/DocumentFindBar';
 import { Icons } from '../../components/ui/Icons';
 import { useToast } from '../../components/ui/Toast';
 import { useApp } from '../../contexts/AppContext';
+import { useDocumentFind } from '../../hooks/useDocumentFind';
+import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 
 // WysiwygEditor: SSR-incompatible (Tiptap uses DOM APIs)
 // onEditorReady lifts the editor instance up so the toolbar can use it
@@ -17,18 +20,6 @@ const WysiwygEditor = dynamic(
   () => import('../../components/Editor/WysiwygEditor').then((m) => m.WysiwygEditor),
   { ssr: false, loading: () => <SkeletonText lines={7} /> }
 );
-
-// Extract headings for TOC (from markdown string)
-function extractToc(markdown) {
-  if (!markdown) return [];
-  return markdown.split('\n')
-    .filter((line) => /^#{1,3}\s/.test(line))
-    .map((line) => {
-      const m = line.match(/^(#{1,3})\s+(.+)/);
-      return m ? { level: m[1].length - 1, text: m[2].trim() } : null;
-    })
-    .filter(Boolean);
-}
 
 function getQueryValue(value) {
   return Array.isArray(value) ? value[0] : value;
@@ -114,6 +105,7 @@ export default function FilesPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [showIndexToast, setShowIndexToast] = useState(false);
+  const [tocHeadings, setTocHeadings] = useState([]);
   const [activeHeadingIndex, setActiveHeadingIndex] = useState(-1);
 
   const loadFile = useCallback(async (fileId) => {
@@ -138,12 +130,8 @@ export default function FilesPage() {
     if (!Number.isFinite(requestedFileId) || activeFile?.id === requestedFileId) return;
     const targetFile = allFiles.find((file) => file.id === requestedFileId);
     if (!targetFile) return;
-    if (saveState === 'dirty' && !window.confirm('当前文档有未保存修改，确定切换文件吗？')) {
-      router.replace('/files', undefined, { shallow: true });
-      return;
-    }
     selectFile(targetFile);
-  }, [activeFile?.id, allFiles, router, router.isReady, router.query.fileId, saveState, selectFile]);
+  }, [activeFile?.id, allFiles, router, router.isReady, router.query.fileId, selectFile]);
 
   useEffect(() => {
     if (!activeFileId) {
@@ -178,35 +166,6 @@ export default function FilesPage() {
     };
   }, [activeFileId, loadFile]);
 
-  const confirmDiscardChanges = useCallback((nextFile) => {
-    if (saveState !== 'dirty') return true;
-    if (nextFile?.id && nextFile.id === activeFileId) return true;
-    return window.confirm('当前文档有未保存修改，确定离开并丢弃这些内容吗？');
-  }, [activeFileId, saveState]);
-
-  useEffect(() => {
-    if (saveState !== 'dirty') return undefined;
-
-    const handleBeforeUnload = (event) => {
-      event.preventDefault();
-      event.returnValue = '';
-    };
-
-    const handleRouteChangeStart = (url) => {
-      if (url === router.asPath) return;
-      if (window.confirm('当前文档有未保存修改，确定离开当前页面吗？')) return;
-      router.events.emit('routeChangeError');
-      throw new Error('Route change aborted by unsaved changes');
-    };
-
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    router.events.on('routeChangeStart', handleRouteChangeStart);
-    return () => {
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-      router.events.off('routeChangeStart', handleRouteChangeStart);
-    };
-  }, [router, saveState]);
-
   // Parse #L24-L28 hash on mount and store as pending navigation
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -228,6 +187,28 @@ export default function FilesPage() {
     if (!container || !target) return;
     container.scrollTo({ top: Math.max(target.offsetTop - 48, 0), behavior: 'smooth' });
   }, [editor]);
+
+  useEffect(() => {
+    if (!editor) {
+      setTocHeadings([]);
+      return undefined;
+    }
+
+    const frameId = window.requestAnimationFrame(() => {
+      const root = getEditorRoot(editor);
+      const headings = root
+        ? [...root.querySelectorAll('h1,h2,h3')]
+          .map((heading) => ({
+            level: Number(heading.tagName.slice(1)) - 1,
+            text: normalizeText(heading.textContent),
+          }))
+          .filter((item) => item.text)
+        : [];
+      setTocHeadings(headings);
+    });
+
+    return () => window.cancelAnimationFrame(frameId);
+  }, [content, editor]);
 
   useEffect(() => {
     if (!editor) return undefined;
@@ -258,7 +239,7 @@ export default function FilesPage() {
       container.removeEventListener('scroll', syncActiveHeading);
       window.removeEventListener('resize', syncActiveHeading);
     };
-  }, [content, editor]);
+  }, [editor, tocHeadings]);
 
   useEffect(() => {
     if (!router.isReady || !editor || !activeFile?.id) return;
@@ -310,10 +291,10 @@ export default function FilesPage() {
   }, [activeFile?.id, content, editor, router]);
 
   const handleSave = useCallback(async (nextContent = contentRef.current) => {
-    if (!activeFileId) return;
+    if (!activeFileId) return false;
     if (nextContent === persistedContentRef.current) {
       setSaveState('saved');
-      return;
+      return true;
     }
     setSaveState('saving');
     try {
@@ -336,9 +317,11 @@ export default function FilesPage() {
       setSaveState('saved');
       setShowIndexToast(true);
       setTimeout(() => setShowIndexToast(false), 4000);
+      return true;
     } catch (saveError) {
       setSaveState('dirty');
       toast(saveError.message || '保存失败', 'error');
+      return false;
     }
   }, [activeFileId, toast, setCachedContent]);
 
@@ -356,13 +339,27 @@ export default function FilesPage() {
     setSaveState('dirty');
   }, []);
 
+  const unsavedGuard = useUnsavedChangesGuard({
+    isDirty: saveState === 'dirty',
+    onSave: handleSave,
+    title: '离开前保存当前文档？',
+    message: '当前文档还有未保存修改。你可以先保存再切换页面或文件，也可以直接离开并丢弃这次编辑。',
+  });
+
+  const documentFind = useDocumentFind({
+    enabled: Boolean(activeFile && editor),
+    getRoot: () => getEditorRoot(editor),
+    selector: 'h1,h2,h3,h4,h5,h6,p,li,blockquote,pre,td,th',
+    contentVersion: `${activeFileId || 'none'}:${content}`,
+  });
+
   const tocItems = useMemo(
-    () => extractToc(content).map((item, index) => ({
+    () => tocHeadings.map((item, index) => ({
       ...item,
       active: index === activeHeadingIndex,
       onJump: () => jumpToHeading(index),
     })),
-    [activeHeadingIndex, content, jumpToHeading]
+    [activeHeadingIndex, jumpToHeading, tocHeadings]
   );
 
   return (
@@ -374,12 +371,13 @@ export default function FilesPage() {
       saveDisabled={!activeFile || saveState !== 'dirty'}
       tocDisabled={!activeFile}
       tocItems={tocItems}
-      beforeFileSelect={confirmDiscardChanges}
+      requestAction={unsavedGuard.request}
     >
       <EditorToolbar
         editor={editor}
         fileId={activeFile?.id}
         isDirty={saveState === 'dirty'}
+        requestAction={unsavedGuard.request}
       />
 
       {/* Empty state */}
@@ -425,6 +423,16 @@ export default function FilesPage() {
       {/* Editor area */}
       {activeFile && !loading && !error && (
         <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
+          <DocumentFindBar
+            open={documentFind.open}
+            query={documentFind.query}
+            total={documentFind.total}
+            current={documentFind.currentIndex}
+            onChange={documentFind.setQuery}
+            onPrev={documentFind.prev}
+            onNext={documentFind.next}
+            onClose={documentFind.close}
+          />
           <WysiwygEditor
             key={activeFile.id}
             value={content}
@@ -461,6 +469,7 @@ export default function FilesPage() {
           )}
         </div>
       )}
+      {unsavedGuard.dialog}
     </Shell>
   );
 }

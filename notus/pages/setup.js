@@ -169,7 +169,7 @@ const Step1 = ({
       )}
 
       {/* Two-column layout */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 0.92fr) minmax(0, 1.08fr)', gap: 20, marginBottom: 16 }}>
         {/* Left column: Embedding */}
         <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-xl)', padding: 18, display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{ fontSize: 'var(--text-sm)', fontWeight: 600, color: 'var(--text-primary)', marginBottom: 2 }}>Embedding 模型</div>
@@ -625,7 +625,7 @@ export default function SetupPage() {
   const stepMeta = [
     {
       title: '配置 AI 模型',
-      subtitle: '先测试并保存 Embedding；LLM 通过右侧卡片统一管理，问答与创作会直接读取这里保存的配置。',
+      subtitle: 'Embedding 和 LLM 都准备好后，知识库问答与 AI 创作才能正常使用；如果现在不想配置，也可以稍后跳过。',
       canSkip: true,
     },
     {
@@ -849,16 +849,16 @@ export default function SetupPage() {
 
   const handleNext = async () => {
     if (step === 0) {
-      if (!isEmbeddingTestCurrent) {
-        setNextBlockedMsg('请先完成当前 Embedding 配置的连通性测试。');
-        return;
-      }
       if (llmState.loading) {
         setNextBlockedMsg('正在读取 LLM 配置，请稍后再试。');
         return;
       }
-      if (llmState.configs.length === 0) {
-        setNextBlockedMsg('还没有可用的 LLM 配置，请先在右侧新增并完成测试。');
+
+      const missing = [];
+      if (!isEmbeddingTestCurrent) missing.push('Embedding 测试并保存');
+      if (llmState.configs.length === 0) missing.push('至少一个可用的 LLM 配置');
+      if (missing.length > 0) {
+        setNextBlockedMsg(`进入下一步前，需要先完成${missing.join('，并准备好')}；如果暂时不配置，可以点击“跳过，稍后配置”。`);
         return;
       }
       const saved = await persistModelConfig();
@@ -872,8 +872,14 @@ export default function SetupPage() {
     }
   };
 
-  const handleSkip = () => setStep((prev) => Math.min(prev + 1, 2));
-  const handlePrev = () => step > 0 && setStep(step - 1);
+  const handleSkip = () => {
+    setNextBlockedMsg('');
+    setStep((prev) => Math.min(prev + 1, 2));
+  };
+  const handlePrev = () => {
+    setNextBlockedMsg('');
+    if (step > 0) setStep(step - 1);
+  };
 
   if (!stepReady) {
     return (
@@ -902,7 +908,7 @@ export default function SetupPage() {
       background: 'var(--bg-primary)',
       overflow: 'auto',
     }}>
-      <div style={{ maxWidth: step === 0 ? 880 : 560, width: '100%', padding: 24 }}>
+      <div style={{ maxWidth: step === 0 ? 1180 : 760, width: '100%', padding: 24 }}>
         <div style={{ textAlign: 'center', marginBottom: 28 }}>
           <div style={{ display: 'inline-flex', marginBottom: 14 }}><NotusLogo size={40} /></div>
           <div style={{ fontSize: 'var(--text-xl)', fontWeight: 600, marginBottom: 6 }}>{meta.title}</div>

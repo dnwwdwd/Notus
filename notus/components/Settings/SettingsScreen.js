@@ -400,6 +400,22 @@ const Logs = () => {
   const [route, setRoute] = useState('');
   const [requestId, setRequestId] = useState('');
 
+  const formatLogTimestamp = (value) => {
+    if (!value) return '—';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return new Intl.DateTimeFormat('zh-CN', {
+      timeZone: 'Asia/Shanghai',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }).format(date).replace(/\//g, '-');
+  };
+
   const fetchLogs = async () => {
     setLoading(true);
     try {
@@ -506,7 +522,7 @@ const Logs = () => {
                     </div>
                   </div>
                   <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
-                    {item.timestamp}
+                    {formatLogTimestamp(item.timestamp)}
                   </div>
                 </div>
                 <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)', lineHeight: 1.7 }}>
@@ -793,7 +809,7 @@ export function SettingsScreen({ section }) {
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
         <SettingsNav active={section} />
         <div style={{ flex: 1, overflow: 'auto', background: 'var(--bg-primary)', padding: 32 }}>
-          <div style={{ maxWidth: 720, margin: '0 auto' }}>
+          <div style={{ maxWidth: 920, margin: '0 auto' }}>
             {content}
           </div>
         </div>

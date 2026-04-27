@@ -1,5 +1,5 @@
 // Input, TextInput, TextArea, Select
-import { useState } from 'react';
+import { forwardRef, useState } from 'react';
 import { Icons } from './Icons';
 import { DropdownSelect } from './DropdownSelect';
 
@@ -64,12 +64,13 @@ export const TextInput = ({ value, placeholder, masked, state, onChange, style, 
   );
 };
 
-export const SearchInput = ({ value, placeholder = '搜索…', onChange, style }) => (
+export const SearchInput = forwardRef(({ value, placeholder = '搜索…', onChange, style, ...rest }, ref) => (
   <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
     <span style={{ position: 'absolute', left: 10, color: 'var(--text-tertiary)' }}>
       <Icons.search size={13} />
     </span>
     <input
+      ref={ref}
       type="text"
       value={value || ''}
       placeholder={placeholder}
@@ -86,9 +87,12 @@ export const SearchInput = ({ value, placeholder = '搜索…', onChange, style 
         outline: 'none',
         ...style,
       }}
+      {...rest}
     />
   </div>
-);
+));
+
+SearchInput.displayName = 'SearchInput';
 
 export const SelectInput = ({ value, options = [], onChange, disabled, style }) => (
   <DropdownSelect

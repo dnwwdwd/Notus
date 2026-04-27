@@ -176,7 +176,7 @@ const ImageDialog = ({ onConfirm, onClose }) => {
   );
 };
 
-export const EditorToolbar = ({ editor, fileId, showAICreate = true, isDirty = false }) => {
+export const EditorToolbar = ({ editor, fileId, showAICreate = true, isDirty = false, requestAction }) => {
   const router = useRouter();
   const [dialogMode, setDialogMode] = useState(null);
 
@@ -213,7 +213,12 @@ export const EditorToolbar = ({ editor, fileId, showAICreate = true, isDirty = f
 
   const handleAICreate = () => {
     const params = fileId ? `?fileId=${fileId}` : '';
-    router.push(`/canvas${params}`);
+    const action = () => router.push(`/canvas${params}`);
+    if (requestAction) {
+      requestAction(action);
+      return;
+    }
+    action();
   };
 
   const headingOptions = useMemo(() => ([

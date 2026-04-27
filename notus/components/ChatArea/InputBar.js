@@ -111,6 +111,7 @@ export const InputBar = ({
   onConfigChange,
   isEmpty = false,
   disabled = false,
+  showPlusMenu = false,
 }) => {
   const [value, setValue] = useState('');
   const [attachments, setAttachments] = useState([]);
@@ -179,6 +180,7 @@ export const InputBar = ({
   }, []);
 
   const addFiles = (fileList) => {
+    if (!showPlusMenu) return;
     const nextItems = Array.from(fileList || []).map(toAttachment);
     if (nextItems.length === 0) return;
     setAttachments((prev) => [...prev, ...nextItems]);
@@ -234,18 +236,24 @@ export const InputBar = ({
   return (
     <div
       onDragEnter={(event) => {
+        if (!showPlusMenu) return;
         event.preventDefault();
         dragCounterRef.current += 1;
         setDragging(true);
       }}
-      onDragOver={(event) => event.preventDefault()}
+      onDragOver={(event) => {
+        if (!showPlusMenu) return;
+        event.preventDefault();
+      }}
       onDragLeave={(event) => {
+        if (!showPlusMenu) return;
         event.preventDefault();
         dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
         if (dragCounterRef.current === 0) setDragging(false);
       }}
       onDrop={(event) => {
         event.preventDefault();
+        if (!showPlusMenu) return;
         dragCounterRef.current = 0;
         setDragging(false);
         addFiles(event.dataTransfer.files);
@@ -281,7 +289,7 @@ export const InputBar = ({
       />
 
       <div style={{ maxWidth: shellStyle.maxWidth, margin: '0 auto', position: 'relative' }}>
-        {dragging && (
+        {dragging && showPlusMenu && (
           <div
             style={{
               position: 'absolute',
@@ -311,7 +319,7 @@ export const InputBar = ({
             transition: 'border-color var(--transition-fast), box-shadow var(--transition-fast)',
           }}
         >
-          {attachments.length > 0 && (
+          {showPlusMenu && attachments.length > 0 && (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, padding: '16px 16px 0' }}>
               {attachments.map((item) => (
                 <AttachmentChip key={item.id} item={item} onRemove={removeAttachment} />
@@ -320,78 +328,80 @@ export const InputBar = ({
           )}
 
           <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 8, padding: '10px 10px 10px 10px' }}>
-            <div ref={plusMenuRef} style={{ position: 'relative' }}>
-              <button
-                type="button"
-                onClick={() => {
-                  setPlusMenuOpen((prev) => !prev);
-                  setModelMenuOpen(false);
-                }}
-                style={{
-                  width: 34,
-                  height: 34,
-                  borderRadius: 10,
-                  background: '#F5F4EF',
-                  color: '#4A4945',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  cursor: 'pointer',
-                  flexShrink: 0,
-                }}
-              >
-                <Icons.plus size={18} />
-              </button>
-
-              {plusMenuOpen && (
-                <div
+            {showPlusMenu && (
+              <div ref={plusMenuRef} style={{ position: 'relative' }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPlusMenuOpen((prev) => !prev);
+                    setModelMenuOpen(false);
+                  }}
                   style={{
-                    position: 'absolute',
-                    left: 0,
-                    width: 260,
-                    padding: 8,
-                    background: '#fff',
-                    border: '1px solid #E8E6DC',
-                    borderRadius: 18,
-                    boxShadow: '0 10px 28px rgba(0, 0, 0, 0.12)',
-                    zIndex: 6,
-                    ...menuPlacementStyle,
+                    width: 34,
+                    height: 34,
+                    borderRadius: 10,
+                    background: '#F5F4EF',
+                    color: '#4A4945',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    cursor: 'pointer',
+                    flexShrink: 0,
                   }}
                 >
-                  <div style={{ display: 'grid', gap: 2 }}>
-                    <MenuItem
-                      icon={<Icons.paperclip size={15} />}
-                      label="添加文件"
-                      onClick={() => {
-                        fileInputRef.current?.click();
-                        setPlusMenuOpen(false);
-                      }}
-                    />
-                    <MenuItem
-                      icon={<Icons.image size={15} />}
-                      label="添加图片"
-                      onClick={() => {
-                        imageInputRef.current?.click();
-                        setPlusMenuOpen(false);
-                      }}
-                    />
-                    <div style={{ height: 1, background: '#E8E6DC', margin: '4px 8px' }} />
-                    <MenuItem
-                      icon={<Icons.globe size={15} />}
-                      label="网络搜索"
-                      hint="即将接入"
-                      muted
-                    />
-                    <MenuItem
-                      icon={<Icons.sparkles size={15} />}
-                      label="使用风格"
-                      hint="即将接入"
-                      muted
-                    />
+                  <Icons.plus size={18} />
+                </button>
+
+                {plusMenuOpen && (
+                  <div
+                    style={{
+                      position: 'absolute',
+                      left: 0,
+                      width: 260,
+                      padding: 8,
+                      background: '#fff',
+                      border: '1px solid #E8E6DC',
+                      borderRadius: 18,
+                      boxShadow: '0 10px 28px rgba(0, 0, 0, 0.12)',
+                      zIndex: 6,
+                      ...menuPlacementStyle,
+                    }}
+                  >
+                    <div style={{ display: 'grid', gap: 2 }}>
+                      <MenuItem
+                        icon={<Icons.paperclip size={15} />}
+                        label="添加文件"
+                        onClick={() => {
+                          fileInputRef.current?.click();
+                          setPlusMenuOpen(false);
+                        }}
+                      />
+                      <MenuItem
+                        icon={<Icons.image size={15} />}
+                        label="添加图片"
+                        onClick={() => {
+                          imageInputRef.current?.click();
+                          setPlusMenuOpen(false);
+                        }}
+                      />
+                      <div style={{ height: 1, background: '#E8E6DC', margin: '4px 8px' }} />
+                      <MenuItem
+                        icon={<Icons.globe size={15} />}
+                        label="网络搜索"
+                        hint="即将接入"
+                        muted
+                      />
+                      <MenuItem
+                        icon={<Icons.sparkles size={15} />}
+                        label="使用风格"
+                        hint="即将接入"
+                        muted
+                      />
+                    </div>
                   </div>
-                </div>
-              )}
-            </div>
+                )}
+              </div>
+            )}
 
             <div style={{ flex: 1, minWidth: 0 }}>
               <textarea
@@ -400,6 +410,7 @@ export const InputBar = ({
                 onChange={(event) => setValue(event.target.value)}
                 onKeyDown={handleKeyDown}
                 onPaste={(event) => {
+                  if (!showPlusMenu) return;
                   const files = [];
                   const items = event.clipboardData?.items || [];
                   Array.from(items).forEach((item) => {

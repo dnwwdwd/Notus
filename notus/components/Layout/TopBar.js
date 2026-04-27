@@ -9,7 +9,18 @@ import { SearchInput } from '../ui/Input';
 import { NotusLogo, Icons } from '../ui/Icons';
 import { Spinner } from '../ui/Spinner';
 
-export const TopBar = ({ active, fileName, saveState, onSave, saveDisabled, showIndex, showCmdK = true, onCmdK, beforeFileSelect }) => {
+export const TopBar = ({
+  active,
+  fileName,
+  saveState,
+  onSave,
+  saveDisabled,
+  showSaveButton = true,
+  showIndex,
+  showCmdK = true,
+  onCmdK,
+  requestAction,
+}) => {
   const router = useRouter();
   const { allFiles, selectFile } = useApp();
   const { shortcuts, matchShortcut } = useShortcuts();
@@ -41,13 +52,23 @@ export const TopBar = ({ active, fileName, saveState, onSave, saveDisabled, show
     setQuery('');
   }, []);
 
-  const handlePickFile = (file) => {
-    if (beforeFileSelect && beforeFileSelect(file) === false) return;
-    selectFile(file);
-    closeSearch();
-    if (router.pathname !== '/files') {
-      router.push('/files');
+  const runAction = useCallback((action) => {
+    if (typeof action !== 'function') return;
+    if (requestAction) {
+      requestAction(action);
+      return;
     }
+    action();
+  }, [requestAction]);
+
+  const handlePickFile = (file) => {
+    runAction(() => {
+      selectFile(file);
+      closeSearch();
+      if (router.pathname !== '/files') {
+        router.push('/files');
+      }
+    });
   };
 
   useEffect(() => {
@@ -120,7 +141,7 @@ export const TopBar = ({ active, fileName, saveState, onSave, saveDisabled, show
         {/* Logo */}
         <div
           style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 140, cursor: 'pointer' }}
-          onClick={() => router.push('/files')}
+          onClick={() => runAction(() => router.push('/files'))}
         >
           <NotusLogo size={22} />
           <span style={{ fontSize: 'var(--text-base)', fontWeight: 600, letterSpacing: -0.2 }}>Notus</span>
@@ -133,7 +154,7 @@ export const TopBar = ({ active, fileName, saveState, onSave, saveDisabled, show
             return (
               <button
                 key={t.id}
-                onClick={() => router.push(t.href)}
+                onClick={() => runAction(() => router.push(t.href))}
                 style={{
                   position: 'relative',
                   padding: '0 14px',
@@ -183,11 +204,11 @@ export const TopBar = ({ active, fileName, saveState, onSave, saveDisabled, show
           </div>
         )}
 
-        {fileName && onSave && (
+        {fileName && onSave && showSaveButton && (
           <Button
             variant={saveState === 'dirty' ? 'primary' : 'secondary'}
             size="sm"
-            onClick={onSave}
+            onClick={() => { void onSave?.(); }}
             disabled={saveDisabled}
             loading={saveState === 'saving'}
             icon={<Icons.check size={14} />}
@@ -221,7 +242,7 @@ export const TopBar = ({ active, fileName, saveState, onSave, saveDisabled, show
 
         {/* Settings button */}
         <button
-          onClick={() => router.push('/settings/model')}
+          onClick={() => runAction(() => router.push('/settings/model'))}
           style={{
             width: 32,
             height: 32,

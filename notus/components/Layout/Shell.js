@@ -8,11 +8,12 @@ export const Shell = ({
   saveState,
   onSave,
   saveDisabled,
+  showSaveButton = true,
   showIndex,
   tocDisabled,
   tocItems,
   onCmdK,
-  beforeFileSelect,
+  requestAction,
   navigateOnFileSelect = true,
   children,
 }) => (
@@ -23,15 +24,16 @@ export const Shell = ({
       saveState={saveState}
       onSave={onSave}
       saveDisabled={saveDisabled}
+      showSaveButton={showSaveButton}
       showIndex={showIndex}
       onCmdK={onCmdK}
-      beforeFileSelect={beforeFileSelect}
+      requestAction={requestAction}
     />
     <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
       <Sidebar
         tocDisabled={tocDisabled}
         tocItems={tocItems}
-        beforeFileSelect={beforeFileSelect}
+        requestAction={requestAction}
         navigateOnFileSelect={navigateOnFileSelect}
       />
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>

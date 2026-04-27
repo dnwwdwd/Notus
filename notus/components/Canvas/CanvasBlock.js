@@ -85,6 +85,7 @@ export const CanvasBlock = ({
 
   return (
     <div
+      data-canvas-searchable="true"
       style={{
         position: 'relative',
         padding: '10px 16px 10px 20px',

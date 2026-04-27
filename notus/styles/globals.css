@@ -448,3 +448,17 @@ a {
   border-radius: var(--radius-sm);
   animation: citationFlash 3s ease forwards;
 }
+
+.wysiwyg-content .ProseMirror [data-find-match="true"],
+[data-canvas-searchable="true"][data-find-match="true"],
+[data-canvas-title="true"][data-find-match="true"] {
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  border-radius: var(--radius-sm);
+}
+
+.wysiwyg-content .ProseMirror [data-find-current="true"],
+[data-canvas-searchable="true"][data-find-current="true"],
+[data-canvas-title="true"][data-find-current="true"] {
+  background: color-mix(in srgb, var(--warning) 20%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warning) 55%, transparent);
+}

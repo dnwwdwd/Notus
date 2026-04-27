@@ -8,6 +8,8 @@ import { UserBubble, AiBubble, RetrievalStatus } from '../components/ChatArea/Ch
 import { InputBar } from '../components/ChatArea/InputBar';
 import { ResizableLayout } from '../components/ui/ResizableLayout';
 import { DropdownSelect } from '../components/ui/DropdownSelect';
+import { DocumentFindBar } from '../components/ui/DocumentFindBar';
+import { AiLockedState } from '../components/ui/AiLockedState';
 import { EmptyState } from '../components/ui/EmptyState';
 import { InlineError } from '../components/ui/InlineError';
 import { Icons } from '../components/ui/Icons';
@@ -16,7 +18,10 @@ import { Badge } from '../components/ui/Badge';
 import { SkeletonText } from '../components/ui/Skeleton';
 import { useToast } from '../components/ui/Toast';
 import { useApp } from '../contexts/AppContext';
+import { useAppStatus } from '../contexts/AppStatusContext';
 import { useLlmConfigs } from '../hooks/useLlmConfigs';
+import { useDocumentFind } from '../hooks/useDocumentFind';
+import { useUnsavedChangesGuard } from '../hooks/useUnsavedChangesGuard';
 
 const WysiwygEditor = dynamic(
   () => import('../components/Editor/WysiwygEditor').then((module) => module.WysiwygEditor),
@@ -30,10 +35,19 @@ const SUGGESTIONS = [
   '读书笔记里提到过哪些决策模型？',
 ];
 
+function getEditorRoot(editor) {
+  try {
+    return editor?.view?.dom || null;
+  } catch {
+    return null;
+  }
+}
+
 export default function KnowledgePage() {
   const router = useRouter();
   const toast = useToast();
   const { activeFile, allFiles, selectFile, getCachedContent, setCachedContent } = useApp();
+  const { status: appStatus, loading: appStatusLoading } = useAppStatus();
   const { configs: llmConfigs, activeConfigId, loading: llmConfigsLoading } = useLlmConfigs();
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -133,35 +147,6 @@ export default function KnowledgePage() {
     };
   }, [activeFile?.id, loadFile]);
 
-  const confirmDiscardChanges = useCallback((nextFile) => {
-    if (docSaveState !== 'dirty') return true;
-    if (nextFile?.id && nextFile.id === activeFile?.id) return true;
-    return window.confirm('当前文档有未保存修改，确定离开并丢弃这些内容吗？');
-  }, [activeFile?.id, docSaveState]);
-
-  useEffect(() => {
-    if (docSaveState !== 'dirty') return undefined;
-
-    const handleBeforeUnload = (event) => {
-      event.preventDefault();
-      event.returnValue = '';
-    };
-
-    const handleRouteChangeStart = (url) => {
-      if (url === router.asPath) return;
-      if (window.confirm('当前文档有未保存修改，确定离开当前页面吗？')) return;
-      router.events.emit('routeChangeError');
-      throw new Error('Route change aborted by unsaved changes');
-    };
-
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    router.events.on('routeChangeStart', handleRouteChangeStart);
-    return () => {
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-      router.events.off('routeChangeStart', handleRouteChangeStart);
-    };
-  }, [docSaveState, router]);
-
   useEffect(() => {
     if (!activeFile?.id) {
       setEditor(null);
@@ -171,10 +156,10 @@ export default function KnowledgePage() {
   }, [activeFile?.id]);
 
   const handleDocSave = useCallback(async (nextContent = docContentRef.current) => {
-    if (!activeFile?.id) return;
+    if (!activeFile?.id) return false;
     if (nextContent === persistedDocContentRef.current) {
       setDocSaveState('saved');
-      return;
+      return true;
     }
     setDocSaveState('saving');
 
@@ -193,9 +178,11 @@ export default function KnowledgePage() {
       setDocContent(savedContent);
       setCachedContent(activeFile.id, savedContent);
       setDocSaveState('saved');
+      return true;
     } catch (saveError) {
       setDocSaveState('dirty');
       toast(saveError.message || '保存失败', 'error');
+      return false;
     }
   }, [activeFile?.id, toast, setCachedContent]);
 
@@ -312,17 +299,31 @@ export default function KnowledgePage() {
   };
 
   const isEmpty = messages.length === 0 && !loading;
+  const llmReady = !llmConfigsLoading && llmConfigs.length > 0;
+  const aiReady = !appStatusLoading && llmReady && Boolean(appStatus.setup.model_configured);
+  const aiLockDescription = llmReady
+    ? '还需要先完成 Embedding 配置并建立索引，知识库问答和检索结果才会开放。'
+    : '还需要至少一个已测试通过的 LLM 配置，同时完成 Embedding 配置后，知识库问答才会开放。';
+
+  const unsavedGuard = useUnsavedChangesGuard({
+    isDirty: docSaveState === 'dirty',
+    onSave: handleDocSave,
+    title: '离开前保存当前文档？',
+    message: '当前文章还有未保存修改。你可以先保存再继续跳转，也可以直接离开并丢弃这次编辑。',
+  });
+
+  const documentFind = useDocumentFind({
+    enabled: Boolean(activeFile && editor && editorOpen),
+    getRoot: () => getEditorRoot(editor),
+    selector: 'h1,h2,h3,h4,h5,h6,p,li,blockquote,pre,td,th',
+    contentVersion: `${activeFile?.id || 'none'}:${docContent}`,
+  });
 
   const handleCitationClick = useCallback((citation) => {
     const fileId = Number(citation?.file_id);
     if (!Number.isFinite(fileId)) return;
 
     const targetFile = allFiles.find((file) => file.id === fileId);
-    if (targetFile) {
-      if (!confirmDiscardChanges(targetFile)) return;
-      selectFile(targetFile);
-    }
-
     const params = new URLSearchParams({ fileId: String(fileId) });
     if (citation?.preview) params.set('preview', citation.preview);
     if (citation?.heading_path) params.set('headingPath', citation.heading_path);
@@ -333,8 +334,13 @@ export default function KnowledgePage() {
       ? `#L${lineStart}${Number.isFinite(lineEnd) && lineEnd > lineStart ? `-L${lineEnd}` : ''}`
       : '';
 
-    router.push(`/files?${params.toString()}${hash}`);
-  }, [allFiles, confirmDiscardChanges, router, selectFile]);
+    unsavedGuard.request(() => {
+      if (targetFile) {
+        selectFile(targetFile);
+      }
+      router.push(`/files?${params.toString()}${hash}`);
+    });
+  }, [allFiles, router, selectFile, unsavedGuard]);
 
   return (
     <Shell
@@ -344,13 +350,13 @@ export default function KnowledgePage() {
       onSave={activeFile ? handleDocSave : undefined}
       saveDisabled={!activeFile || docSaveState !== 'dirty'}
       tocDisabled
-      beforeFileSelect={confirmDiscardChanges}
+      requestAction={unsavedGuard.request}
       navigateOnFileSelect={false}
     >
       {/* Chat panel content — extracted so it can be used with or without ResizableLayout */}
       {(() => {
         const editorPanel = activeFile && editorOpen ? (
-          <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', height: '100%', borderRight: '1px solid var(--border-subtle)' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', height: '100%', borderRight: '1px solid var(--border-subtle)', position: 'relative' }}>
             <div style={{ height: 40, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 14px', borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)', flexShrink: 0 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                 <Icons.file size={14} />
@@ -366,6 +372,16 @@ export default function KnowledgePage() {
                 <Icons.x size={14} />
               </button>
             </div>
+            <DocumentFindBar
+              open={documentFind.open}
+              query={documentFind.query}
+              total={documentFind.total}
+              current={documentFind.currentIndex}
+              onChange={documentFind.setQuery}
+              onPrev={documentFind.prev}
+              onNext={documentFind.next}
+              onClose={documentFind.close}
+            />
             <EditorToolbar editor={editor} fileId={activeFile?.id} showAICreate={false} />
 
             {docLoading && (
@@ -486,7 +502,15 @@ export default function KnowledgePage() {
           </div>
           <div style={{ flex: 1, overflow: 'auto', padding: '24px 32px' }}>
             <div style={{ maxWidth: 680, margin: '0 auto' }}>
-              {isEmpty ? (
+              {!aiReady ? (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '55vh' }}>
+                  <AiLockedState
+                    title="知识库问答暂未开放"
+                    description={aiLockDescription}
+                    onAction={() => router.push('/settings/model')}
+                  />
+                </div>
+              ) : isEmpty ? (
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '55vh' }}>
                   <EmptyState
                     icon={<Icons.sparkles size={48} />}
@@ -558,42 +582,6 @@ export default function KnowledgePage() {
             </div>
           </div>
 
-          {!llmConfigsLoading && llmConfigs.length === 0 && (
-            <div style={{
-              margin: '0 16px 8px',
-              padding: '10px 14px',
-              borderRadius: 'var(--radius-md)',
-              background: 'var(--warning-subtle)',
-              border: '1px solid rgba(224, 154, 26, 0.3)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: 12,
-              fontSize: 'var(--text-sm)',
-              color: 'var(--warning)',
-            }}>
-              <span>尚未配置 LLM 模型，无法发送消息</span>
-              <button
-                type="button"
-                onClick={() => router.push('/settings/model')}
-                style={{
-                  flexShrink: 0,
-                  height: 26,
-                  padding: '0 12px',
-                  borderRadius: 'var(--radius-md)',
-                  border: '1px solid var(--warning)',
-                  background: 'transparent',
-                  color: 'var(--warning)',
-                  fontSize: 11,
-                  fontWeight: 500,
-                  cursor: 'pointer',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                前往设置
-              </button>
-            </div>
-          )}
           <InputBar
             isEmpty={isEmpty}
             placeholder="从你的知识库中查找答案…"
@@ -603,7 +591,8 @@ export default function KnowledgePage() {
             llmConfigs={llmConfigs}
             selectedConfigId={selectedLlmConfigId}
             onConfigChange={setSelectedLlmConfigId}
-            disabled={llmConfigs.length === 0 || llmConfigsLoading}
+            disabled={!aiReady}
+            showPlusMenu={false}
           />
         </div>
         );
@@ -621,6 +610,7 @@ export default function KnowledgePage() {
         }
         return <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>{chatPanel}</div>;
       })()}
+      {unsavedGuard.dialog}
     </Shell>
   );
 }

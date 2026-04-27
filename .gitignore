@@ -5,6 +5,7 @@
 notus/.next/
 node_modules/
 notus/node_modules/
+notus/.npm-cache/
 .env
 .env.local
 notus/.env.local

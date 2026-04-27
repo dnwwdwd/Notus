@@ -37,7 +37,7 @@
 ### 每次收到需求时的必做动作
 
 1. 先判断需求类型。
-2. 如果判定为非 bug 需求，在 `Requirements/INDEX.md` 新增或更新一条记录。
+2. 如果判定为非 bug 需求，在 `Requirements/LEDGER.md` 新增或更新一条记录。
 3. 如果判定为 bug，直接更新 `docs/BUG_TRACKER.md`，不要写入 `Requirements/`。
 4. 如果该需求改变了当前产品口径、范围或里程碑，再按需更新 `PROGRESS.md`、PDD、PRD 或 UI Guide。
 
@@ -74,7 +74,7 @@
 ### 回答要求
 
 - 回答 bug 相关问题时，必须明确说明是否已更新 `docs/BUG_TRACKER.md`。
-- 回答需求、优化、规划类问题时，必须明确说明是否已更新 `Requirements/INDEX.md`。
+- 回答需求、优化、规划类问题时，必须明确说明是否已更新 `Requirements/LEDGER.md`。
 
 ---
 
@@ -221,6 +221,6 @@ Notus/
 ## 文档维护约束
 
 - 修改产品口径后，必须同步清理过时文档描述，不保留互相冲突的并列口径。
-- 新的功能需求、功能优化、用户体验优化默认先进入 `Requirements/INDEX.md`，再决定是否需要更新 `docs/PROGRESS.md`、PDD、PRD、UI Guide。
+- 新的功能需求、功能优化、用户体验优化默认先进入 `Requirements/LEDGER.md`，再决定是否需要更新 `docs/PROGRESS.md`、PDD、PRD、UI Guide。
 - 修 bug 时默认更新 `docs/BUG_TRACKER.md`，不更新 `Requirements/`，也不更新 `docs/PROGRESS.md`；除非用户明确要求，或该修复改变了里程碑状态。
 - `CLAUDE.md` 的内容必须与 `AGENTS.md` 保持完全一致；只要 `AGENTS.md` 发生变更，必须同步更新 `CLAUDE.md`。

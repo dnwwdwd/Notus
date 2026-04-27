@@ -5,6 +5,7 @@ import { Button } from '../ui/Button';
 import { DropdownSelect } from '../ui/DropdownSelect';
 import { Dialog } from '../ui/Dialog';
 import { SearchInput, TextInput } from '../ui/Input';
+import { Tooltip } from '../ui/Tooltip';
 import { useToast } from '../ui/Toast';
 import { useApp } from '../../contexts/AppContext';
 
@@ -118,6 +119,49 @@ function getImportStatusLabel(status) {
   }[status] || '处理中';
 }
 
+function FileStatusIndicator({ status }) {
+  if (!status) return null;
+
+  const statusMap = {
+    indexing: {
+      label: '正在建立索引',
+      color: 'var(--warning)',
+      background: 'color-mix(in srgb, var(--warning) 18%, transparent)',
+      text: '·',
+    },
+    error: {
+      label: '索引需要处理',
+      color: 'var(--danger)',
+      background: 'color-mix(in srgb, var(--danger) 16%, transparent)',
+      text: '!',
+    },
+  };
+  const meta = statusMap[status];
+  if (!meta) return null;
+
+  return (
+    <Tooltip content={meta.label}>
+      <span
+        style={{
+          width: 16,
+          height: 16,
+          borderRadius: '50%',
+          background: meta.background,
+          color: meta.color,
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontSize: 11,
+          fontWeight: 600,
+          flexShrink: 0,
+        }}
+      >
+        {meta.text}
+      </span>
+    </Tooltip>
+  );
+}
+
 const FileRow = ({ item, isActive, onSelect, onToggle, onContextMenu }) => {
   const pad = 8 + item.depth * 16;
   const isFolder = item.type === 'folder';
@@ -161,21 +205,17 @@ const FileRow = ({ item, isActive, onSelect, onToggle, onContextMenu }) => {
       <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         {item.name}
       </span>
-      {item.status === 'indexing' && (
-        <span style={{ color: 'var(--warning)', fontSize: 10 }}>⏳</span>
-      )}
-      {item.status === 'error' && (
-        <span style={{ color: 'var(--danger)', fontSize: 10 }}>⚠</span>
-      )}
+      <FileStatusIndicator status={item.status} />
     </div>
   );
 };
 
-export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, beforeFileSelect, navigateOnFileSelect = true }) => {
+export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, requestAction, navigateOnFileSelect = true }) => {
   const router = useRouter();
   const toast = useToast();
   const importFileInputRef = useRef(null);
   const importDirectoryInputRef = useRef(null);
+  const searchInputRef = useRef(null);
   const {
     files,
     allFiles,
@@ -219,6 +259,7 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, beforeFileS
   const [importResults, setImportResults] = useState([]);
   const [importSummary, setImportSummary] = useState(null);
   const [importRunError, setImportRunError] = useState('');
+  const [importDragging, setImportDragging] = useState(false);
 
   const [exportOpen, setExportOpen] = useState(false);
   const [exportQuery, setExportQuery] = useState('');
@@ -328,11 +369,17 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, beforeFileS
   }, [importFailedResults, selectedImportFiles]);
 
   const handleSelectFile = (file) => {
-    if (beforeFileSelect && beforeFileSelect(file) === false) return;
-    selectFile(file);
-    if (navigateOnFileSelect && router.pathname !== '/files') {
-      router.push('/files');
+    const action = () => {
+      selectFile(file);
+      if (navigateOnFileSelect && router.pathname !== '/files') {
+        router.push('/files');
+      }
+    };
+    if (requestAction) {
+      requestAction(action);
+      return;
     }
+    action();
   };
 
   const resetCreateDialog = () => {
@@ -642,13 +689,7 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, beforeFileS
         footer={
           <>
             <Button variant="ghost" onClick={resetImportDialog} disabled={importing}>关闭</Button>
-            <Button variant="secondary" onClick={() => importFileInputRef.current?.click()} disabled={importing}>
-              选择文件
-            </Button>
-            <Button variant="secondary" onClick={() => importDirectoryInputRef.current?.click()} disabled={importing}>
-              选择目录
-            </Button>
-            <Button variant="primary" loading={importing} onClick={handleImport}>
+            <Button variant="primary" loading={importing} onClick={handleImport} disabled={selectedImportFiles.length === 0}>
               开始导入
             </Button>
           </>
@@ -676,6 +717,43 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, beforeFileS
               onChange={(nextValue) => setConflictPolicy(nextValue)}
             />
           </div>
+          <div
+            onDragOver={(event) => {
+              event.preventDefault();
+              if (importing) return;
+              setImportDragging(true);
+            }}
+            onDragLeave={() => setImportDragging(false)}
+            onDrop={(event) => {
+              event.preventDefault();
+              if (importing) return;
+              setImportDragging(false);
+              handleImportSelection(event.dataTransfer.files);
+            }}
+            style={{
+              padding: '22px 18px',
+              borderRadius: 'var(--radius-xl)',
+              background: importDragging ? 'var(--accent-subtle)' : 'var(--bg-elevated)',
+              border: `2px dashed ${importDragging ? 'var(--accent)' : 'var(--border-primary)'}`,
+              textAlign: 'center',
+              transition: 'all var(--transition-fast)',
+            }}
+          >
+            <div style={{ color: importDragging ? 'var(--accent)' : 'var(--text-secondary)', display: 'inline-flex', marginBottom: 10 }}>
+              <Icons.upload size={28} />
+            </div>
+            <div style={{ fontSize: 'var(--text-base)', fontWeight: 600, marginBottom: 6 }}>
+              拖拽 Markdown 文件或目录到这里
+            </div>
+            <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', marginBottom: 14, lineHeight: 1.7 }}>
+              也可以点击下面按钮，从本地选择文件或整个目录。
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <Button variant="secondary" onClick={() => importFileInputRef.current?.click()} disabled={importing}>选择文件</Button>
+              <Button variant="secondary" onClick={() => importDirectoryInputRef.current?.click()} disabled={importing}>选择目录</Button>
+            </div>
+          </div>
+
           <div style={{ padding: '12px 14px', borderRadius: 'var(--radius-lg)', background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 8 }}>
               <div style={{ fontSize: 'var(--text-sm)', fontWeight: 500 }}>待导入文件</div>
@@ -726,7 +804,6 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, beforeFileS
             <Button variant="ghost" disabled>处理中…</Button>
           ) : (
             <>
-              <Button variant="ghost" onClick={handleOpenImportDialog}>重新选择</Button>
               <Button
                 variant="secondary"
                 onClick={handleRetryFailedImports}
@@ -734,7 +811,7 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, beforeFileS
               >
                 重试失败项
               </Button>
-              <Button variant="primary" onClick={resetImportDialog}>关闭</Button>
+              <Button variant="primary" onClick={resetImportDialog}>确认</Button>
             </>
           )
         }
@@ -1047,12 +1124,25 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, beforeFileS
           title="搜索文件"
           onClick={() => {
             setActiveTab('tree');
-            setSearchOpen((prev) => !prev);
-            if (searchOpen) setSearchQuery('');
+            setSearchOpen((prev) => {
+              const next = !prev;
+              if (!next) setSearchQuery('');
+              return next;
+            });
+            window.setTimeout(() => searchInputRef.current?.focus(), 0);
           }}
-          style={{ width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', borderRadius: 'var(--radius-sm)' }}
+          style={{
+            width: 28,
+            height: 28,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: searchOpen ? 'var(--accent)' : 'var(--text-secondary)',
+            background: searchOpen ? 'var(--accent-subtle)' : 'transparent',
+            borderRadius: 'var(--radius-sm)',
+          }}
           onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-hover)'}
-          onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+          onMouseLeave={(e) => e.currentTarget.style.background = searchOpen ? 'var(--accent-subtle)' : 'transparent'}
         >
           <Icons.search size={14} />
         </button>
@@ -1103,12 +1193,34 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, beforeFileS
       </div>
 
       {activeTab === 'tree' && searchOpen && (
-        <div style={{ padding: '8px 10px 6px', borderBottom: '1px solid var(--border-subtle)' }}>
+        <div style={{ padding: '8px 10px 6px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', gap: 8 }}>
           <SearchInput
+            ref={searchInputRef}
+            autoFocus
             value={searchQuery}
-            placeholder="搜索标题或路径"
+            placeholder="搜索文件名或者路径"
             onChange={(event) => setSearchQuery(event.target.value)}
           />
+          <button
+            type="button"
+            title="关闭搜索"
+            onClick={() => {
+              setSearchOpen(false);
+              setSearchQuery('');
+            }}
+            style={{
+              width: 28,
+              height: 28,
+              borderRadius: 'var(--radius-sm)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: 'var(--text-secondary)',
+              flexShrink: 0,
+            }}
+          >
+            <Icons.x size={13} />
+          </button>
         </div>
       )}
 

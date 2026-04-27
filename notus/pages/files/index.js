@@ -373,12 +373,14 @@ export default function FilesPage() {
       tocItems={tocItems}
       requestAction={unsavedGuard.request}
     >
-      <EditorToolbar
-        editor={editor}
-        fileId={activeFile?.id}
-        isDirty={saveState === 'dirty'}
-        requestAction={unsavedGuard.request}
-      />
+      {activeFile && (
+        <EditorToolbar
+          editor={editor}
+          fileId={activeFile?.id}
+          isDirty={saveState === 'dirty'}
+          requestAction={unsavedGuard.request}
+        />
+      )}
 
       {/* Empty state */}
       {!activeFile && (

@@ -33,13 +33,16 @@
 - 根目录 `Requirements/` 是统一的非 bug 需求入口，用于记录功能需求、功能优化、用户体验优化的分类结果、状态和落地文档。
 - `docs/BUG_TRACKER.md` 只记录 bug，不记录功能需求、功能优化、用户体验优化、视觉优化、文案优化或一般性能建议。
 - `docs/PROGRESS.md` 只记录阶段性完成度、当前口径和里程碑，不承担逐条需求流水账职责。
+- 单纯的打包动作不计入需求文档。仅重新执行 `.lpk` 打包、重新生成安装包、更新校验值、替换同版本产物，这类事项默认不写入 `Requirements/`，也不写入 `docs/BUG_TRACKER.md`。
+- 如果一次打包同时包含代码、配置或产品行为变更，应记录这些变更本身；不要把“打包”这个动作单独记成一条需求。
 
 ### 每次收到需求时的必做动作
 
 1. 先判断需求类型。
-2. 如果判定为非 bug 需求，在 `Requirements/LEDGER.md` 新增或更新一条记录。
-3. 如果判定为 bug，直接更新 `docs/BUG_TRACKER.md`，不要写入 `Requirements/`。
-4. 如果该需求改变了当前产品口径、范围或里程碑，再按需更新 `PROGRESS.md`、PDD、PRD 或 UI Guide。
+2. 如果只是单纯重新打包 `.lpk` 或更新同版本安装包产物，不写入 `Requirements/`，也不写入 `docs/BUG_TRACKER.md`。
+3. 如果判定为非 bug 需求，在 `Requirements/LEDGER.md` 新增或更新一条记录。
+4. 如果判定为 bug，直接更新 `docs/BUG_TRACKER.md`，不要写入 `Requirements/`。
+5. 如果该需求改变了当前产品口径、范围或里程碑，再按需更新 `PROGRESS.md`、PDD、PRD 或 UI Guide。
 
 ### 需求分类标准
 
@@ -75,6 +78,7 @@
 
 - 回答 bug 相关问题时，必须明确说明是否已更新 `docs/BUG_TRACKER.md`。
 - 回答需求、优化、规划类问题时，必须明确说明是否已更新 `Requirements/LEDGER.md`。
+- 回答单纯打包相关问题时，必须明确说明这次事项不计入需求文档，因此未更新 `Requirements/LEDGER.md`。
 
 ---
 
@@ -222,5 +226,6 @@ Notus/
 
 - 修改产品口径后，必须同步清理过时文档描述，不保留互相冲突的并列口径。
 - 新的功能需求、功能优化、用户体验优化默认先进入 `Requirements/LEDGER.md`，再决定是否需要更新 `docs/PROGRESS.md`、PDD、PRD、UI Guide。
+- 单纯重新打包 `.lpk`、更新校验值或覆盖同版本安装包时，不新增 `Requirements/` 记录，也不新增 bug 记录。
 - 修 bug 时默认更新 `docs/BUG_TRACKER.md`，不更新 `Requirements/`，也不更新 `docs/PROGRESS.md`；除非用户明确要求，或该修复改变了里程碑状态。
 - `CLAUDE.md` 的内容必须与 `AGENTS.md` 保持完全一致；只要 `AGENTS.md` 发生变更，必须同步更新 `CLAUDE.md`。

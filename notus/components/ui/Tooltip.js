@@ -1,15 +1,66 @@
-import * as TooltipPrimitive from '@radix-ui/react-tooltip';
+import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
-export const Tooltip = ({ content, children }) => (
-  <TooltipPrimitive.Provider delayDuration={180}>
-    <TooltipPrimitive.Root>
-      <TooltipPrimitive.Trigger asChild>
+const GAP = 8;
+
+export const Tooltip = ({ content, children }) => {
+  const triggerRef = useRef(null);
+  const [open, setOpen] = useState(false);
+  const [mounted, setMounted] = useState(false);
+  const [position, setPosition] = useState(null);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (!open) return undefined;
+
+    const updatePosition = () => {
+      const trigger = triggerRef.current;
+      if (!trigger) return;
+
+      const rect = trigger.getBoundingClientRect();
+      const centerX = rect.left + rect.width / 2;
+      const top = Math.max(GAP, rect.top - GAP);
+      const left = Math.min(
+        Math.max(centerX, 12),
+        window.innerWidth - 12
+      );
+
+      setPosition({ top, left });
+    };
+
+    updatePosition();
+    window.addEventListener('scroll', updatePosition, true);
+    window.addEventListener('resize', updatePosition);
+
+    return () => {
+      window.removeEventListener('scroll', updatePosition, true);
+      window.removeEventListener('resize', updatePosition);
+    };
+  }, [open]);
+
+  return (
+    <>
+      <span
+        ref={triggerRef}
+        style={{ display: 'inline-flex' }}
+        onMouseEnter={() => setOpen(true)}
+        onMouseLeave={() => setOpen(false)}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setOpen(false)}
+      >
         {children}
-      </TooltipPrimitive.Trigger>
-      <TooltipPrimitive.Portal>
-        <TooltipPrimitive.Content
-          sideOffset={6}
+      </span>
+      {mounted && open && position && content ? createPortal(
+        <div
+          role="tooltip"
           style={{
+            position: 'fixed',
+            top: position.top,
+            left: position.left,
+            transform: 'translate(-50%, -100%)',
             zIndex: 1400,
             background: 'var(--text-primary)',
             color: 'var(--bg-elevated)',
@@ -19,16 +70,14 @@ export const Tooltip = ({ content, children }) => (
             lineHeight: 1.4,
             boxShadow: 'var(--shadow-md)',
             maxWidth: 220,
+            pointerEvents: 'none',
+            whiteSpace: 'nowrap',
           }}
         >
           {content}
-          <TooltipPrimitive.Arrow
-            width={8}
-            height={4}
-            style={{ fill: 'var(--text-primary)' }}
-          />
-        </TooltipPrimitive.Content>
-      </TooltipPrimitive.Portal>
-    </TooltipPrimitive.Root>
-  </TooltipPrimitive.Provider>
-);
+        </div>,
+        document.body
+      ) : null}
+    </>
+  );
+};

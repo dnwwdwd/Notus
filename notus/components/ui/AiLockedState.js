@@ -7,34 +7,70 @@ export function AiLockedState({
   actionLabel = '前往设置',
   onAction,
   compact = false,
+  variant = 'inline',
 }) {
-  return (
+  const card = (
     <div
       style={{
         width: '100%',
         maxWidth: compact ? 420 : 520,
-        padding: compact ? '22px 20px' : '28px 24px',
-        borderRadius: 'var(--radius-xl)',
-        border: '1px solid var(--border-subtle)',
-        background: 'color-mix(in srgb, var(--bg-elevated) 92%, var(--bg-primary))',
-        boxShadow: 'var(--shadow-md)',
+        padding: compact ? '24px 22px' : '34px 30px',
+        borderRadius: compact ? 'var(--radius-xl)' : '24px',
+        border: '1px solid color-mix(in srgb, var(--accent) 18%, var(--border-subtle))',
+        background: 'color-mix(in srgb, var(--bg-elevated) 96%, #fff 4%)',
+        boxShadow: compact ? 'var(--shadow-md)' : '0 18px 44px rgba(26, 23, 18, 0.12)',
         textAlign: 'center',
       }}
     >
-      <div style={{ width: 44, height: 44, borderRadius: 14, margin: '0 auto 14px', background: 'var(--accent-subtle)', color: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <Icons.lock size={20} />
+      <div
+        style={{
+          width: compact ? 48 : 58,
+          height: compact ? 48 : 58,
+          borderRadius: compact ? 16 : 18,
+          margin: '0 auto 16px',
+          background: 'color-mix(in srgb, var(--accent-subtle) 82%, #fff 18%)',
+          color: 'var(--accent)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          boxShadow: 'inset 0 0 0 1px color-mix(in srgb, var(--accent) 16%, transparent)',
+        }}
+      >
+        <Icons.lock size={compact ? 22 : 26} />
       </div>
-      <div style={{ fontSize: compact ? 'var(--text-base)' : 'var(--text-lg)', fontWeight: 600, marginBottom: 8 }}>
+      <div style={{ fontSize: compact ? 'var(--text-base)' : 'var(--text-xl)', fontWeight: 700, marginBottom: 10 }}>
         {title}
       </div>
-      <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', lineHeight: 1.7, marginBottom: 16 }}>
+      <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', lineHeight: 1.75, marginBottom: 18 }}>
         {description}
       </div>
       {onAction && (
-        <Button variant="primary" onClick={onAction}>
+        <Button variant="primary" onClick={onAction} size={compact ? 'md' : 'lg'}>
           {actionLabel}
         </Button>
       )}
     </div>
   );
+
+  if (variant === 'modal') {
+    return (
+      <div
+        style={{
+          position: 'absolute',
+          inset: 0,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: 24,
+          background: 'rgba(247, 244, 238, 0.76)',
+          backdropFilter: 'blur(8px)',
+          zIndex: 40,
+        }}
+      >
+        {card}
+      </div>
+    );
+  }
+
+  return card;
 }

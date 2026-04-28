@@ -417,7 +417,7 @@ export default function KnowledgePage() {
         ) : null;
 
         const chatPanel = (
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
           <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)', display: 'grid', gap: 10 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
               <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>
@@ -504,15 +504,7 @@ export default function KnowledgePage() {
           </div>
           <div style={{ flex: 1, overflow: 'auto', padding: '24px 32px' }}>
             <div style={{ maxWidth: 680, margin: '0 auto' }}>
-              {!aiReady ? (
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '55vh' }}>
-                  <AiLockedState
-                    title="知识库问答暂未开放"
-                    description={aiLockDescription}
-                    onAction={() => router.push('/settings/model')}
-                  />
-                </div>
-              ) : isEmpty ? (
+              {isEmpty ? (
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '55vh' }}>
                   <EmptyState
                     icon={<Icons.sparkles size={48} />}
@@ -596,6 +588,14 @@ export default function KnowledgePage() {
             disabled={!aiReady}
             showPlusMenu={false}
           />
+          {!aiReady && (
+            <AiLockedState
+              variant="modal"
+              title="知识库功能尚未解锁"
+              description={aiLockDescription}
+              onAction={() => router.push('/settings/model')}
+            />
+          )}
         </div>
         );
 

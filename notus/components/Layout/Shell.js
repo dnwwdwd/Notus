@@ -29,14 +29,14 @@ export const Shell = ({
       onCmdK={onCmdK}
       requestAction={requestAction}
     />
-    <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+    <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0, position: 'relative', isolation: 'isolate' }}>
       <Sidebar
         tocDisabled={tocDisabled}
         tocItems={tocItems}
         requestAction={requestAction}
         navigateOnFileSelect={navigateOnFileSelect}
       />
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
         {children}
       </div>
     </div>

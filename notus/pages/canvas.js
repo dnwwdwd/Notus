@@ -100,7 +100,7 @@ const CanvasEntry = ({ onStart, locked, onOpenSettings }) => {
   return (
     <div style={{
       flex: 1, display: 'flex', flexDirection: 'column',
-      background: 'var(--bg-primary)', overflow: 'auto',
+      background: 'var(--bg-primary)', overflow: 'auto', position: 'relative',
     }}>
       <div style={{ maxWidth: 480, margin: '16vh auto 0', padding: '0 24px', width: '100%' }}>
         <div style={{ textAlign: 'center', marginBottom: 32 }}>
@@ -154,17 +154,6 @@ const CanvasEntry = ({ onStart, locked, onOpenSettings }) => {
           </Button>
         </div>
 
-        {locked && (
-          <div style={{ marginBottom: 22 }}>
-            <AiLockedState
-              compact
-              title="创作功能暂未开放"
-              description="先完成 LLM 与 Embedding 配置后，才能生成大纲、调用 AI 改写，并让创作页真正可用。"
-              onAction={onOpenSettings}
-            />
-          </div>
-        )}
-
         {/* Recent items — all clickable */}
         <div style={{ fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: 0.5, padding: '0 4px', marginBottom: 6 }}>
           最近创作
@@ -203,6 +192,14 @@ const CanvasEntry = ({ onStart, locked, onOpenSettings }) => {
           </button>
         </div>
       </div>
+      {locked && (
+        <AiLockedState
+          variant="modal"
+          title="创作功能尚未解锁"
+          description="先完成 LLM 与 Embedding 配置后，才能生成大纲、调用 AI 改写，并继续完成整篇创作。"
+          onAction={onOpenSettings}
+        />
+      )}
     </div>
   );
 };
@@ -781,25 +778,12 @@ export default function CanvasPage() {
         }
         />
         {!aiReady && (
-          <div
-            style={{
-              position: 'absolute',
-              inset: 0,
-              background: 'rgba(250, 249, 245, 0.72)',
-              backdropFilter: 'blur(6px)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              padding: 24,
-              zIndex: 20,
-            }}
-          >
-            <AiLockedState
-              title="创作页暂未开放 AI 能力"
-              description={aiLockDescription}
-              onAction={() => router.push('/settings/model')}
-            />
-          </div>
+          <AiLockedState
+            variant="modal"
+            title="创作功能尚未解锁"
+            description={aiLockDescription}
+            onAction={() => router.push('/settings/model')}
+          />
         )}
       </div>
       {unsavedGuard.dialog}

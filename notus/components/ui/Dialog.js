@@ -1,18 +1,25 @@
 // Dialog and ConfirmDialog
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Button } from './Button';
 import { Icons } from './Icons';
 
 export const Dialog = ({ open, onClose, title, children, footer, maxWidth = 480 }) => {
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose?.(); };
     if (open) document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [open, onClose]);
 
-  if (!open) return null;
+  if (!open || !mounted) return null;
 
-  return (
+  return createPortal(
     <div
       onClick={onClose}
       style={{
@@ -20,7 +27,7 @@ export const Dialog = ({ open, onClose, title, children, footer, maxWidth = 480 
         background: 'rgba(0,0,0,0.4)',
         backdropFilter: 'blur(4px)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
-        zIndex: 1000,
+        zIndex: 2000,
         animation: 'fadeIn var(--transition-normal)',
       }}
     >
@@ -59,7 +66,8 @@ export const Dialog = ({ open, onClose, title, children, footer, maxWidth = 480 
           </div>
         )}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };
 

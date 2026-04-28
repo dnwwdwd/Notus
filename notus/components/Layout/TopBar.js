@@ -136,7 +136,7 @@ export const TopBar = ({
         padding: '0 16px',
         gap: 24,
         flexShrink: 0,
-        zIndex: 100,
+        zIndex: 20,
       }}>
         {/* Logo */}
         <div

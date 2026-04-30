@@ -234,7 +234,7 @@ export default function KnowledgePage() {
     return retryFocusCitationTarget(
       editor,
       target,
-      { persistent: true, markdown: docContent, maxAttempts: 12, retryDelay: 60 },
+      { persistent: true, markdown: docContent, maxAttempts: 20, retryDelay: 80 },
       {
         onResolved: (matched) => {
           if (!matched) {

@@ -221,7 +221,7 @@ export default function FilesPage() {
     return retryFocusCitationTarget(
       editor,
       { preview, headingPath, lineStart, lineEnd },
-      { persistent: false, duration: 3000, markdown: content, maxAttempts: 12, retryDelay: 60 },
+      { persistent: false, duration: 3000, markdown: content, maxAttempts: 20, retryDelay: 80 },
       {
         onResolved: () => {
           if (hasPendingCitationNav) {

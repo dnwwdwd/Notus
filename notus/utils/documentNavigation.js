@@ -59,9 +59,9 @@ function previewFromHeadingBody(markdown, lineStart, lineEnd) {
     const rawLine = String(lines[index] || '');
     const trimmed = rawLine.trim();
 
-    const headingMatch = trimmed.match(/^#{1,6}\s+/);
-    if (headingMatch && headingMatch[0].trim().length <= headingInfo.level) {
-      break;
+    if (trimmed.match(/^#{1,6}\s+/)) {
+      if (collected.length > 0) break;
+      continue;
     }
 
     if (!trimmed) {
@@ -372,8 +372,20 @@ function addHighlightClass(node, className, options = {}) {
   return node;
 }
 
+function findBodySibling(headingNode) {
+  if (!headingNode || !/^H[1-6]$/i.test(headingNode.tagName || '')) return null;
+  let sibling = headingNode.nextElementSibling;
+  while (sibling) {
+    if (/^H[1-6]$/i.test(sibling.tagName || '')) return null;
+    if (normalizeText(sibling.textContent)) return sibling;
+    sibling = sibling.nextElementSibling;
+  }
+  return null;
+}
+
 function attachCitationHighlight(editor, target = {}, options = {}) {
-  const match = resolveCitationMatch(editor, {
+  const resolvedNode = options.resolvedNode?.isConnected ? options.resolvedNode : null;
+  const match = resolvedNode || resolveCitationMatch(editor, {
     preview: target.preview,
     headingPath: target.headingPath,
     lineStart: target.lineStart,
@@ -388,7 +400,16 @@ function attachCitationHighlight(editor, target = {}, options = {}) {
 
   clearCitationHighlights(editor);
   const className = options.persistent ? 'citation-highlight-persistent' : 'citation-highlight';
-  return addHighlightClass(match, className, options);
+  addHighlightClass(match, className, options);
+
+  if (/^H[1-6]$/i.test(match.tagName || '')) {
+    const bodySibling = findBodySibling(match);
+    if (bodySibling) {
+      addHighlightClass(bodySibling, className, options);
+    }
+  }
+
+  return match;
 }
 
 function schedulePersistentReattach(editor, target = {}, options = {}) {
@@ -409,13 +430,16 @@ function observePersistentCitationHighlight(editor, target = {}, options = {}) {
   if (!root || typeof window.MutationObserver !== 'function') return () => {};
 
   let rafId = 0;
+  let reattaching = false;
   const ensureHighlight = () => {
-    if (rafId) return;
+    if (rafId || reattaching) return;
     rafId = window.requestAnimationFrame(() => {
       rafId = 0;
       if (!root.isConnected) return;
       if (!root.querySelector('.citation-highlight-persistent')) {
+        reattaching = true;
         attachCitationHighlight(editor, target, options);
+        reattaching = false;
       }
     });
   };
@@ -428,12 +452,22 @@ function observePersistentCitationHighlight(editor, target = {}, options = {}) {
     subtree: true,
     childList: true,
     characterData: true,
+    attributes: true,
+    attributeFilter: ['class', 'style', 'data-citation-highlight'],
   });
 
   return () => {
     observer.disconnect();
     if (rafId) window.cancelAnimationFrame(rafId);
   };
+}
+
+function scrollNodeIntoContainer(container, node, offset) {
+  if (!container || !node) return;
+  const containerRect = container.getBoundingClientRect();
+  const nodeRect = node.getBoundingClientRect();
+  const scrollTop = container.scrollTop + (nodeRect.top - containerRect.top) - offset;
+  container.scrollTo({ top: Math.max(scrollTop, 0), behavior: 'smooth' });
 }
 
 function focusCitationTarget(editor, target = {}, options = {}) {
@@ -455,7 +489,7 @@ function focusCitationTarget(editor, target = {}, options = {}) {
   clearCitationHighlights(editor);
 
   if (options.scroll !== false) {
-    container.scrollTo({ top: Math.max(match.offsetTop - 56, 0), behavior: options.behavior || 'smooth' });
+    scrollNodeIntoContainer(container, match, 56);
   }
 
   if (options.select !== false) {
@@ -467,7 +501,7 @@ function focusCitationTarget(editor, target = {}, options = {}) {
 
   const liveMatch = attachCitationHighlight(editor, target, {
     ...options,
-    preferredNode: match,
+    resolvedNode: match,
   });
   if (!liveMatch) return null;
   schedulePersistentReattach(editor, target, options);
@@ -476,8 +510,8 @@ function focusCitationTarget(editor, target = {}, options = {}) {
 
 function retryFocusCitationTarget(editor, target = {}, options = {}, callbacks = {}) {
   const onResolved = typeof callbacks.onResolved === 'function' ? callbacks.onResolved : () => {};
-  const maxAttempts = Math.max(0, Number(options.maxAttempts ?? 10));
-  const retryDelay = Math.max(16, Number(options.retryDelay ?? 60));
+  const maxAttempts = Math.max(0, Number(options.maxAttempts ?? 20));
+  const retryDelay = Math.max(16, Number(options.retryDelay ?? 80));
 
   if (typeof window === 'undefined') {
     onResolved(focusCitationTarget(editor, target, options), 0);

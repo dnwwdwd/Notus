@@ -4,6 +4,7 @@ const { getSettingsMap, resetVec, setSettings } = require('../../../lib/db');
 const { createLogger, createRequestContext } = require('../../../lib/logger');
 const { clearIndex } = require('../../../lib/indexer');
 const { getActiveLlmConfig, listLlmConfigs } = require('../../../lib/llmConfigs');
+const { deriveLlmConfigBudgetFields } = require('../../../lib/llmBudget');
 const {
   buildEmbeddingFingerprint,
   buildLlmFingerprint,
@@ -30,6 +31,8 @@ function publicSettings() {
       provider: config.llmProvider,
       model: config.llmModel,
       base_url: config.llmBaseUrl,
+      context_window_tokens: config.llmContextWindowTokens,
+      max_output_tokens: config.llmMaxOutputTokens,
       api_key_set: Boolean(config.llmApiKey),
     },
     llm_configs: listLlmConfigs(),
@@ -94,9 +97,13 @@ export default function handler(req, res) {
     }
 
     if (body.llm) {
+      const nextLlmModel = body.llm.model || previousConfig.llmModel;
+      const derivedBudget = deriveLlmConfigBudgetFields({
+        model: nextLlmModel,
+      });
       const llmFingerprint = buildLlmFingerprint({
         provider: body.llm.provider || previousConfig.llmProvider,
-        model: body.llm.model || previousConfig.llmModel,
+        model: nextLlmModel,
         base_url: body.llm.base_url !== undefined ? body.llm.base_url : previousConfig.llmBaseUrl,
         api_key: body.llm.api_key || previousConfig.llmApiKey,
       });
@@ -116,6 +123,8 @@ export default function handler(req, res) {
       if (body.llm.model) nextValues.llm_model = body.llm.model;
       if (body.llm.base_url !== undefined) nextValues.llm_base_url = body.llm.base_url;
       if (body.llm.api_key) nextValues.llm_api_key = body.llm.api_key;
+      nextValues.llm_context_window_tokens = String(derivedBudget.context_window_tokens);
+      nextValues.llm_max_output_tokens = String(derivedBudget.max_output_tokens);
     }
 
     const candidate = applySettings(readEnvConfig(), { ...current, ...nextValues });

@@ -8,6 +8,7 @@ import { Button } from '../ui/Button';
 import { SearchInput } from '../ui/Input';
 import { NotusLogo, Icons } from '../ui/Icons';
 import { Spinner } from '../ui/Spinner';
+import { navigateWithFallback } from '../../utils/navigation';
 
 export const TopBar = ({
   active,
@@ -22,7 +23,7 @@ export const TopBar = ({
   requestAction,
 }) => {
   const router = useRouter();
-  const { allFiles, selectFile } = useApp();
+  const { activePage, allFiles, selectFile } = useApp();
   const { shortcuts, matchShortcut } = useShortcuts();
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -52,6 +53,11 @@ export const TopBar = ({
     setQuery('');
   }, []);
 
+  const prefetchRoute = useCallback((href) => {
+    if (!href || typeof router.prefetch !== 'function') return;
+    router.prefetch(href).catch(() => {});
+  }, [router]);
+
   const runAction = useCallback((action) => {
     if (typeof action !== 'function') return;
     if (requestAction) {
@@ -61,15 +67,27 @@ export const TopBar = ({
     action();
   }, [requestAction]);
 
-  const handlePickFile = (file) => {
+  const resolveTargetPage = useCallback(() => {
+    if (['files', 'knowledge', 'canvas'].includes(active)) return active;
+    if (['files', 'knowledge', 'canvas'].includes(activePage)) return activePage;
+    return 'files';
+  }, [active, activePage]);
+
+  const handlePickFile = useCallback((file) => {
     runAction(() => {
-      selectFile(file);
       closeSearch();
-      if (router.pathname !== '/files') {
-        router.push('/files');
+      const targetPage = resolveTargetPage();
+      selectFile(file);
+      const href = `/${targetPage}?fileId=${encodeURIComponent(file.id)}`;
+      if (router.pathname !== `/${targetPage}`) {
+        navigateWithFallback(router, href);
+        return;
+      }
+      if (router.asPath !== href && targetPage === 'files') {
+        navigateWithFallback(router, href, { mode: 'router' });
       }
     });
-  };
+  }, [closeSearch, resolveTargetPage, router, runAction, selectFile]);
 
   useEffect(() => {
     const handleKeydown = (event) => {
@@ -127,7 +145,8 @@ export const TopBar = ({
       </Dialog>
 
       <div style={{
-        position: 'relative',
+        position: 'sticky',
+        top: 0,
         height: 48,
         background: 'var(--bg-elevated)',
         borderBottom: '1px solid var(--border-subtle)',
@@ -136,12 +155,14 @@ export const TopBar = ({
         padding: '0 16px',
         gap: 24,
         flexShrink: 0,
-        zIndex: 20,
+        isolation: 'isolate',
+        zIndex: 120,
       }}>
         {/* Logo */}
         <div
           style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 140, cursor: 'pointer' }}
-          onClick={() => runAction(() => router.push('/files'))}
+          onMouseEnter={() => prefetchRoute('/files')}
+          onClick={() => runAction(() => navigateWithFallback(router, '/files'))}
         >
           <NotusLogo size={22} />
           <span style={{ fontSize: 'var(--text-base)', fontWeight: 600, letterSpacing: -0.2 }}>Notus</span>
@@ -153,8 +174,11 @@ export const TopBar = ({
             const on = t.id === active;
             return (
               <button
+                type="button"
                 key={t.id}
-                onClick={() => runAction(() => router.push(t.href))}
+                onMouseEnter={() => prefetchRoute(t.href)}
+                onFocus={() => prefetchRoute(t.href)}
+                onClick={() => runAction(() => navigateWithFallback(router, t.href))}
                 style={{
                   position: 'relative',
                   padding: '0 14px',
@@ -221,6 +245,7 @@ export const TopBar = ({
         {/* ⌘K search */}
         {showCmdK && (
           <button
+            type="button"
             onClick={openSearch}
             style={{
               height: 28,
@@ -242,7 +267,10 @@ export const TopBar = ({
 
         {/* Settings button */}
         <button
-          onClick={() => runAction(() => router.push('/settings/model'))}
+          type="button"
+          onMouseEnter={() => prefetchRoute('/settings/model')}
+          onFocus={() => prefetchRoute('/settings/model')}
+          onClick={() => runAction(() => navigateWithFallback(router, '/settings/model'))}
           style={{
             width: 32,
             height: 32,
@@ -251,6 +279,7 @@ export const TopBar = ({
             alignItems: 'center',
             justifyContent: 'center',
             color: 'var(--text-secondary)',
+            cursor: 'pointer',
             transition: 'color var(--transition-fast)',
           }}
         >

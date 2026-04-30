@@ -16,6 +16,8 @@ const DEFAULTS = {
   llmModel: 'qwen-max',
   llmApiKey: '',
   llmBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+  llmContextWindowTokens: 800000,
+  llmMaxOutputTokens: 32768,
   vecScoreThreshold: 0.5,
   topK: 5,
 };
@@ -104,6 +106,14 @@ function readEnvConfig() {
       PROVIDER_BASE_URLS.llm[llmProvider] ||
       DEFAULTS.llmBaseUrl
     ),
+    llmContextWindowTokens: numberFromEnv(
+      process.env.LLM_CONTEXT_WINDOW_TOKENS,
+      DEFAULTS.llmContextWindowTokens
+    ),
+    llmMaxOutputTokens: numberFromEnv(
+      process.env.LLM_MAX_OUTPUT_TOKENS,
+      DEFAULTS.llmMaxOutputTokens
+    ),
 
     vecScoreThreshold: floatFromEnv(process.env.VEC_SCORE_THRESHOLD, DEFAULTS.vecScoreThreshold),
     topK: numberFromEnv(process.env.TOP_K, DEFAULTS.topK),
@@ -137,6 +147,12 @@ function applySettings(baseConfig, settings = {}) {
     next.llmBaseUrl = cleanBaseUrl(map.llm_base_url);
   } else if (!next.llmBaseUrl) {
     next.llmBaseUrl = cleanBaseUrl(PROVIDER_BASE_URLS.llm[next.llmProvider] || '');
+  }
+  if (map.llm_context_window_tokens) {
+    next.llmContextWindowTokens = numberFromEnv(map.llm_context_window_tokens, next.llmContextWindowTokens);
+  }
+  if (map.llm_max_output_tokens) {
+    next.llmMaxOutputTokens = numberFromEnv(map.llm_max_output_tokens, next.llmMaxOutputTokens);
   }
 
   return next;

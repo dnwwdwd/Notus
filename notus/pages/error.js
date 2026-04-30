@@ -2,6 +2,7 @@
 import { useRouter } from 'next/router';
 import { Icons } from '../components/ui/Icons';
 import { Button } from '../components/ui/Button';
+import { navigateWithFallback } from '../utils/navigation';
 
 export default function ErrorPage() {
   const router = useRouter();
@@ -41,7 +42,7 @@ export default function ErrorPage() {
           <Button variant="secondary" icon={<Icons.refresh size={14} />} onClick={() => window.location.reload()}>
             重新加载
           </Button>
-          <Button variant="primary" icon={<Icons.settings size={14} />} onClick={() => router.push('/settings')}>
+          <Button variant="primary" icon={<Icons.settings size={14} />} onClick={() => navigateWithFallback(router, '/settings/model')}>
             前往设置
           </Button>
         </div>

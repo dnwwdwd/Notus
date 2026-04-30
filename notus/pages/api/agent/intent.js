@@ -16,8 +16,9 @@ export default async function handler(req, res) {
     const article = articleId ? getFileById(articleId) : null;
     const reply = await completeChat(buildCanvasIntentPrompt(userInput, article), {
       responseFormat: { type: 'json_object' },
+      taskType: 'canvas_intent',
     });
-    const parsed = JSON.parse(reply.content);
+    const parsed = JSON.parse(reply.message?.content || '{}');
     return res.status(200).json({
       intent: parsed.intent === 'knowledge' ? 'knowledge' : 'canvas',
       confidence: Number(parsed.confidence || 0.6),

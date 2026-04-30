@@ -8,6 +8,7 @@ import { Icons } from '../ui/Icons';
 import { TextInput } from '../ui/Input';
 import { Button } from '../ui/Button';
 import { Tooltip } from '../ui/Tooltip';
+import { navigateWithFallback } from '../../utils/navigation';
 
 const Divider = () => (
   <div style={{ width: 1, height: 20, background: 'var(--border-subtle)', margin: '0 4px' }} />
@@ -213,7 +214,7 @@ export const EditorToolbar = ({ editor, fileId, showAICreate = true, isDirty = f
 
   const handleAICreate = () => {
     const params = fileId ? `?fileId=${fileId}` : '';
-    const action = () => router.push(`/canvas${params}`);
+    const action = () => navigateWithFallback(router, `/canvas${params}`);
     if (requestAction) {
       requestAction(action);
       return;

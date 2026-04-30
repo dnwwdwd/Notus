@@ -58,6 +58,7 @@ const FALLBACK_MODELS = {
       { value: 'deepseek-reasoner', label: 'deepseek-reasoner' },
     ],
     qwen: [
+      { value: 'qwen3-max', label: 'qwen3-max' },
       { value: 'qwen-max', label: 'qwen-max' },
       { value: 'qwen-plus', label: 'qwen-plus' },
       { value: 'qwq-32b', label: 'qwq-32b' },

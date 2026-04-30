@@ -3,6 +3,7 @@ import { useRouter } from 'next/router';
 import { Shell } from '../components/Layout/Shell';
 import { Button } from '../components/ui/Button';
 import { Icons } from '../components/ui/Icons';
+import { navigateWithFallback } from '../utils/navigation';
 
 export default function NotFoundPage() {
   const router = useRouter();
@@ -32,7 +33,7 @@ export default function NotFoundPage() {
           <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)', marginBottom: 20, maxWidth: 320 }}>
             你要找的页面可能被移动了，或者从来没有存在过
           </div>
-          <Button variant="secondary" icon={<Icons.home size={14} />} onClick={() => router.push('/files')}>
+          <Button variant="secondary" icon={<Icons.home size={14} />} onClick={() => navigateWithFallback(router, '/files')}>
             返回首页
           </Button>
         </div>

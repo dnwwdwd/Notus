@@ -209,6 +209,7 @@ async function qwenMultimodalEmbeddings(texts, config) {
 }
 
 async function doubaoMultimodalTextEmbeddings(texts, config) {
+  const dim = Number(config.embeddingDim);
   const response = await fetch(resolveDoubaoEmbeddingUrl(config.embeddingBaseUrl), {
     method: 'POST',
     headers: {
@@ -219,7 +220,7 @@ async function doubaoMultimodalTextEmbeddings(texts, config) {
       model: config.embeddingModel,
       dense_model: {
         name: config.embeddingModel,
-        dim: Number(config.embeddingDim),
+        ...(Number.isFinite(dim) && dim > 0 ? { dim } : {}),
       },
       data: texts.map((text) => ({ text })),
     }),
@@ -272,6 +273,7 @@ async function qwenImageEmbedding(image, config) {
 }
 
 async function doubaoImageEmbedding(image, config) {
+  const dim = Number(config.embeddingDim);
   const response = await fetch(resolveDoubaoEmbeddingUrl(config.embeddingBaseUrl), {
     method: 'POST',
     headers: {
@@ -282,7 +284,7 @@ async function doubaoImageEmbedding(image, config) {
       model: config.embeddingModel,
       dense_model: {
         name: config.embeddingModel,
-        dim: Number(config.embeddingDim),
+        ...(Number.isFinite(dim) && dim > 0 ? { dim } : {}),
       },
       data: [{
         image: readImageAsDataUrl(image.absolutePath, image.mimeType),

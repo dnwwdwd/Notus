@@ -3,11 +3,10 @@ import { useRouter } from 'next/router';
 import { Spinner } from './ui/Spinner';
 import { useAppStatus } from '../contexts/AppStatusContext';
 
-function isProtectedRoute(pathname = '') {
-  return pathname === '/files' ||
-    pathname === '/knowledge' ||
-    pathname === '/canvas' ||
-    pathname.startsWith('/settings');
+function isBootstrapRoute(pathname = '') {
+  return pathname === '/' ||
+    pathname === '/setup' ||
+    pathname === '/indexing';
 }
 
 function resolveTarget(pathname, status) {
@@ -29,11 +28,6 @@ function resolveTarget(pathname, status) {
     return null;
   }
 
-  if (isProtectedRoute(pathname)) {
-    if (status.needsSetup) return '/setup';
-    if (status.needsIndexing) return '/indexing';
-  }
-
   return null;
 }
 
@@ -42,10 +36,7 @@ export function AppStatusGate({ children }) {
   const { status, loading } = useAppStatus();
 
   const shouldGate = useMemo(() => (
-    router.pathname === '/' ||
-    router.pathname === '/setup' ||
-    router.pathname === '/indexing' ||
-    isProtectedRoute(router.pathname)
+    isBootstrapRoute(router.pathname)
   ), [router.pathname]);
 
   const redirectTarget = useMemo(

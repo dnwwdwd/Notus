@@ -3,32 +3,33 @@ import { useToast } from '../ui/Toast';
 import { Button } from '../ui/Button';
 import { Dialog, ConfirmDialog } from '../ui/Dialog';
 import { TextInput } from '../ui/Input';
-import { ProviderSelect } from '../ui/ProviderSelect';
 import { Badge } from '../ui/Badge';
 import { Icons } from '../ui/Icons';
-import { ModelSelectField } from '../ui/ModelSelectField';
-import { useDiscoveredModels } from '../../hooks/useDiscoveredModels';
 import { useLlmConfigs } from '../../hooks/useLlmConfigs';
-import { findProvider, LLM_PROVIDERS } from '../../lib/modelCatalog';
+import { inferLlmProvider, resolveLlmProviderLabel } from '../../lib/llmForm';
 
 function createDraft(config = null) {
-  const defaultProvider = findProvider(LLM_PROVIDERS, config?.provider || 'qwen');
+  const model = config?.model || '';
+  const baseUrl = config?.base_url || '';
   return {
     id: config?.id || null,
     name: config?.name || '',
-    provider: config?.provider || 'qwen',
-    model: config?.model || defaultProvider.models[0]?.value || 'qwen-max',
-    baseUrl: config?.base_url || defaultProvider.baseUrl || '',
+    provider: inferLlmProvider({ baseUrl, model }),
+    model,
+    baseUrl,
     apiKey: '',
     apiKeySet: Boolean(config?.api_key_set),
     setDefault: Boolean(config?.is_active),
     lastTestLatencyMs: config?.last_test_latency_ms || null,
+    contextWindowTokens: config?.context_window_tokens || null,
+    maxOutputTokens: config?.max_output_tokens || null,
   };
 }
 
 function buildConnectivitySignature(draft) {
+  const resolvedProvider = inferLlmProvider({ baseUrl: draft.baseUrl, model: draft.model });
   return JSON.stringify({
-    provider: String(draft.provider || '').trim(),
+    provider: String(resolvedProvider || '').trim(),
     model: String(draft.model || '').trim(),
     baseUrl: String(draft.baseUrl || '').trim().replace(/\/+$/, ''),
     apiKey: String(draft.apiKey || '').trim() || (draft.apiKeySet ? '__stored__' : ''),
@@ -36,6 +37,7 @@ function buildConnectivitySignature(draft) {
 }
 
 function ConfigCard({ item, onEdit, onDelete, onSetDefault }) {
+  const providerLabel = resolveLlmProviderLabel(item.provider);
   return (
     <div
       style={{
@@ -54,7 +56,7 @@ function ConfigCard({ item, onEdit, onDelete, onSetDefault }) {
             {item.is_active ? <Badge tone="accent">默认配置</Badge> : null}
           </div>
           <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>
-            {item.provider} · {item.model}
+            {item.model} · {providerLabel}
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
@@ -80,6 +82,21 @@ function ConfigCard({ item, onEdit, onDelete, onSetDefault }) {
           </div>
         </div>
       </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div style={{ padding: '10px 12px', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-lg)', background: 'var(--bg-primary)' }}>
+          <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 4 }}>上下文窗口</div>
+          <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-primary)' }}>
+            {item.context_window_tokens ? `${item.context_window_tokens.toLocaleString()} tokens` : '保存后自动识别'}
+          </div>
+        </div>
+        <div style={{ padding: '10px 12px', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-lg)', background: 'var(--bg-primary)' }}>
+          <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 4 }}>默认输出上限</div>
+          <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-primary)' }}>
+            {item.max_output_tokens ? `${item.max_output_tokens.toLocaleString()} tokens` : '保存后自动识别'}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -101,17 +118,14 @@ export function LlmConfigCardsSection({
   const [testError, setTestError] = useState('');
   const [pendingDelete, setPendingDelete] = useState(null);
   const [submitting, setSubmitting] = useState(false);
-
-  const provider = findProvider(LLM_PROVIDERS, draft.provider);
-  const isCustomProvider = draft.provider === 'custom';
-  const fallbackOptions = provider?.models || [];
-  const discovered = useDiscoveredModels({
-    kind: 'llm',
-    provider: draft.provider,
-    baseUrl: draft.baseUrl,
-    apiKey: draft.apiKey,
-    fallbackOptions,
-  });
+  const resolvedProvider = useMemo(
+    () => inferLlmProvider({ baseUrl: draft.baseUrl, model: draft.model }),
+    [draft.baseUrl, draft.model]
+  );
+  const resolvedProviderLabel = useMemo(
+    () => resolveLlmProviderLabel(resolvedProvider),
+    [resolvedProvider]
+  );
 
   useEffect(() => {
     onStateChange?.({ configs, activeConfigId, loading });
@@ -128,17 +142,18 @@ export function LlmConfigCardsSection({
   }, [dialogMode, draft, testedSignature]);
 
   const openCreate = () => {
-    const defaultProvider = findProvider(LLM_PROVIDERS, 'qwen');
     const nextDraft = {
       id: null,
       name: '',
-      provider: 'qwen',
-      model: defaultProvider.models[0]?.value || 'qwen-max',
-      baseUrl: defaultProvider.baseUrl || '',
+      provider: 'custom',
+      model: '',
+      baseUrl: '',
       apiKey: '',
       apiKeySet: false,
       setDefault: configs.length === 0,
       lastTestLatencyMs: null,
+      contextWindowTokens: null,
+      maxOutputTokens: null,
     };
     setDraft(nextDraft);
     setTestState('idle');
@@ -167,17 +182,6 @@ export function LlmConfigCardsSection({
     setTestError('');
     setTestedSignature('');
     setVerificationToken('');
-  };
-
-  const handleProviderChange = (nextProvider) => {
-    const selectedProvider = findProvider(LLM_PROVIDERS, nextProvider);
-    setDraft((prev) => ({
-      ...prev,
-      provider: nextProvider,
-      model: selectedProvider?.models[0]?.value || prev.model,
-      baseUrl: selectedProvider?.baseUrl || '',
-      apiKey: '',
-    }));
   };
 
   const connectivitySignature = useMemo(
@@ -215,7 +219,7 @@ export function LlmConfigCardsSection({
           kind: 'llm',
           llm_config_id: dialogMode === 'edit' ? draft.id : undefined,
           config: {
-            provider: draft.provider,
+            provider: resolvedProvider,
             model: String(draft.model || '').trim(),
             base_url: String(draft.baseUrl || '').trim(),
             api_key: String(draft.apiKey || '').trim(),
@@ -252,7 +256,7 @@ export function LlmConfigCardsSection({
     try {
       const payload = {
         name: String(draft.name || '').trim(),
-        provider: draft.provider,
+        provider: resolvedProvider,
         model: String(draft.model || '').trim(),
         base_url: String(draft.baseUrl || '').trim(),
         api_key: String(draft.apiKey || '').trim(),
@@ -346,11 +350,7 @@ export function LlmConfigCardsSection({
             />
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '180px 1fr', gap: 12 }}>
-            <div>
-              <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 6 }}>Provider</div>
-              <ProviderSelect value={draft.provider} catalog={LLM_PROVIDERS} onChange={handleProviderChange} />
-            </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <div>
               <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 6 }}>Base URL</div>
               <TextInput
@@ -359,18 +359,14 @@ export function LlmConfigCardsSection({
                 placeholder="https://api.openai.com/v1"
               />
             </div>
-          </div>
-
-          <div>
-            <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 6 }}>模型名称</div>
-            <ModelSelectField
-              value={draft.model}
-              options={discovered.models}
-              loading={discovered.loading}
-              onChange={(nextValue) => setDraft((prev) => ({ ...prev, model: nextValue }))}
-              selectPlaceholder="从候选模型中选择"
-              inputPlaceholder="也可以直接输入模型名"
-            />
+            <div>
+              <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 6 }}>模型名称</div>
+              <TextInput
+                value={draft.model}
+                onChange={(event) => setDraft((prev) => ({ ...prev, model: event.target.value }))}
+                placeholder="例如：gpt-4o、claude-sonnet-4、qwen-max"
+              />
+            </div>
           </div>
 
           <div>
@@ -381,6 +377,17 @@ export function LlmConfigCardsSection({
               masked
               placeholder={draft.apiKeySet ? '已保存，留空则继续使用当前密钥' : 'sk-...'}
             />
+          </div>
+
+          <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', lineHeight: 1.7 }}>
+            系统会根据 Base URL 和模型名自动识别兼容厂商，当前识别为：{resolvedProviderLabel}。
+          </div>
+
+          <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', lineHeight: 1.7 }}>
+            上下文窗口和默认输出上限会在保存时按模型自动填充并持久化；如果模型未命中已知映射，将采用系统默认预算。
+            {draft.contextWindowTokens || draft.maxOutputTokens
+              ? ` 当前记录：${draft.contextWindowTokens ? `${draft.contextWindowTokens.toLocaleString()} tokens` : '未识别'} / ${draft.maxOutputTokens ? `${draft.maxOutputTokens.toLocaleString()} tokens` : '未识别'}。`
+              : ''}
           </div>
 
           <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--text-sm)', color: 'var(--text-primary)' }}>

@@ -9,6 +9,7 @@ import { Button } from '../components/ui/Button';
 import { InlineError } from '../components/ui/InlineError';
 import { useToast } from '../components/ui/Toast';
 import { useAppStatus } from '../contexts/AppStatusContext';
+import { navigateWithFallback } from '../utils/navigation';
 
 async function consumeSseResponse(response, onPayload) {
   if (!response.ok) {
@@ -44,7 +45,7 @@ async function consumeSseResponse(response, onPayload) {
 export default function IndexingPage() {
   const router = useRouter();
   const toast = useToast();
-  const { status, refreshStatus } = useAppStatus();
+  const { status, loading: statusLoading, refreshStatus } = useAppStatus();
   const [started, setStarted] = useState(false);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState({ current: 0, total: 0, currentFile: '' });
@@ -57,6 +58,12 @@ export default function IndexingPage() {
     if (status.index.total) return Math.round((status.index.indexed / status.index.total) * 100);
     return 100;
   }, [progress, status.index.indexed, status.index.total]);
+
+  useEffect(() => {
+    if (!router.isReady || statusLoading) return;
+    if (!status.needsSetup) return;
+    router.replace('/setup');
+  }, [router, status.needsSetup, statusLoading]);
 
   const startRebuild = async () => {
     setStarted(true);
@@ -103,12 +110,12 @@ export default function IndexingPage() {
   };
 
   useEffect(() => {
-    if (started || running) return;
+    if (started || running || status.needsSetup) return;
     const shouldStart = status.index.total > 0 &&
       status.index.pending > 0 &&
       status.index.failed === 0;
     if (shouldStart) startRebuild();
-  }, [started, running, status.index.total, status.index.pending, status.index.failed, status.index.indexed]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [started, running, status.needsSetup, status.index.total, status.index.pending, status.index.failed, status.index.indexed]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <Shell active="" showIndex tocDisabled>
@@ -163,7 +170,7 @@ export default function IndexingPage() {
           )}
 
           <div style={{ display: 'flex', gap: 10, marginBottom: 24 }}>
-            <Button variant="primary" disabled={running} onClick={() => router.push('/files')}>进入 Notus</Button>
+            <Button variant="primary" disabled={running} onClick={() => navigateWithFallback(router, '/files')}>进入 Notus</Button>
             <Button variant="secondary" loading={running} onClick={startRebuild}>重新构建索引</Button>
           </div>
 

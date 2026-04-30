@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Icons } from '../ui/Icons';
+import { DropdownSelect } from '../ui/DropdownSelect';
 import { useShortcuts } from '../../contexts/ShortcutsContext';
 
 function toAttachment(file) {
@@ -112,17 +113,17 @@ export const InputBar = ({
   isEmpty = false,
   disabled = false,
   showPlusMenu = false,
+  mentionOptions = [],
 }) => {
   const [value, setValue] = useState('');
   const [attachments, setAttachments] = useState([]);
   const [plusMenuOpen, setPlusMenuOpen] = useState(false);
-  const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [cursorIndex, setCursorIndex] = useState(0);
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
   const imageInputRef = useRef(null);
   const plusMenuRef = useRef(null);
-  const modelMenuRef = useRef(null);
   const prevInjectedRef = useRef('');
   const attachmentsRef = useRef([]);
   const dragCounterRef = useRef(0);
@@ -144,6 +145,7 @@ export const InputBar = ({
     if (!injectedValue || injectedValue === prevInjectedRef.current) return;
     prevInjectedRef.current = injectedValue;
     setValue(injectedValue);
+    setCursorIndex(injectedValue.length);
     window.setTimeout(() => {
       const textarea = textareaRef.current;
       if (!textarea) return;
@@ -156,13 +158,11 @@ export const InputBar = ({
   useEffect(() => {
     const handlePointerDown = (event) => {
       if (
-        plusMenuRef.current?.contains(event.target) ||
-        modelMenuRef.current?.contains(event.target)
+        plusMenuRef.current?.contains(event.target)
       ) {
         return;
       }
       setPlusMenuOpen(false);
-      setModelMenuOpen(false);
     };
 
     document.addEventListener('mousedown', handlePointerDown);
@@ -201,10 +201,10 @@ export const InputBar = ({
       if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
     });
     setValue('');
+    setCursorIndex(0);
     setAttachments([]);
     prevInjectedRef.current = '';
     setPlusMenuOpen(false);
-    setModelMenuOpen(false);
   };
 
   const handleKeyDown = (event) => {
@@ -215,9 +215,53 @@ export const InputBar = ({
   };
 
   const canSend = Boolean(value.trim()) && !loading && !disabled && Boolean(selectedConfig);
-  const menuPlacementStyle = isEmpty
-    ? { top: 'calc(100% + 8px)' }
-    : { bottom: 'calc(100% + 8px)' };
+  const menuPlacementStyle = { top: 'calc(100% + 8px)' };
+
+  const activeMention = useMemo(() => {
+    if (!mentionOptions.length) return null;
+    const beforeCursor = value.slice(0, cursorIndex);
+    const match = beforeCursor.match(/(?:^|\s)@([^\s@]*)$/);
+    if (!match) return null;
+
+    const mentionStart = beforeCursor.lastIndexOf('@');
+    const query = String(match[1] || '').trim().toLowerCase();
+    const options = mentionOptions
+      .filter((option) => {
+        if (!query) return true;
+        const searchText = [
+          option.token,
+          option.label,
+          option.preview,
+          option.searchText,
+        ].filter(Boolean).join(' ').toLowerCase();
+        return searchText.includes(query);
+      })
+      .slice(0, 8);
+
+    return {
+      start: mentionStart,
+      end: cursorIndex,
+      options,
+    };
+  }, [cursorIndex, mentionOptions, value]);
+
+  const applyMention = (option) => {
+    if (!activeMention) return;
+    const token = option?.token || option?.value;
+    if (!token) return;
+
+    const nextValue = `${value.slice(0, activeMention.start)}${token} ${value.slice(activeMention.end)}`;
+    const nextCursor = activeMention.start + token.length + 1;
+    setValue(nextValue);
+    setCursorIndex(nextCursor);
+
+    window.requestAnimationFrame(() => {
+      const textarea = textareaRef.current;
+      if (!textarea) return;
+      textarea.focus();
+      textarea.setSelectionRange(nextCursor, nextCursor);
+    });
+  };
 
   const shellStyle = isEmpty
     ? {
@@ -334,7 +378,6 @@ export const InputBar = ({
                   type="button"
                   onClick={() => {
                     setPlusMenuOpen((prev) => !prev);
-                    setModelMenuOpen(false);
                   }}
                   style={{
                     width: 34,
@@ -403,12 +446,18 @@ export const InputBar = ({
               </div>
             )}
 
-            <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ flex: 1, minWidth: 0, position: 'relative' }}>
               <textarea
                 ref={textareaRef}
                 value={value}
-                onChange={(event) => setValue(event.target.value)}
+                onChange={(event) => {
+                  setValue(event.target.value);
+                  setCursorIndex(event.target.selectionStart || 0);
+                }}
                 onKeyDown={handleKeyDown}
+                onClick={(event) => setCursorIndex(event.currentTarget.selectionStart || 0)}
+                onKeyUp={(event) => setCursorIndex(event.currentTarget.selectionStart || 0)}
+                onSelect={(event) => setCursorIndex(event.currentTarget.selectionStart || 0)}
                 onPaste={(event) => {
                   if (!showPlusMenu) return;
                   const files = [];
@@ -439,87 +488,85 @@ export const InputBar = ({
                   lineHeight: 1.7,
                 }}
               />
-            </div>
 
-            <div ref={modelMenuRef} style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 6 }}>
-              <button
-                type="button"
-                onClick={() => {
-                  if (llmConfigs.length === 0) return;
-                  setModelMenuOpen((prev) => !prev);
-                  setPlusMenuOpen(false);
-                }}
-                style={{
-                  height: 34,
-                  maxWidth: isEmpty ? 180 : 150,
-                  padding: '0 10px',
-                  borderRadius: 10,
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  color: selectedConfig ? '#4A4945' : '#B0AEA5',
-                  cursor: llmConfigs.length === 0 ? 'not-allowed' : 'pointer',
-                  flexShrink: 0,
-                }}
-              >
-                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13, fontWeight: 500 }}>
-                  {selectedConfig?.name || '未配置模型'}
-                </span>
-                <Icons.chevronDown size={14} style={{ color: '#B0AEA5' }} />
-              </button>
-
-              {modelMenuOpen && llmConfigs.length > 0 && (
+              {activeMention && (
                 <div
                   style={{
                     position: 'absolute',
-                    right: 0,
-                    width: 260,
-                    maxHeight: 280,
-                    overflow: 'auto',
-                    padding: 8,
+                    left: 8,
+                    right: 8,
+                    bottom: 'calc(100% + 10px)',
                     background: '#fff',
                     border: '1px solid #E8E6DC',
-                    borderRadius: 18,
+                    borderRadius: 16,
                     boxShadow: '0 10px 28px rgba(0, 0, 0, 0.12)',
-                    zIndex: 6,
-                    ...menuPlacementStyle,
+                    padding: 8,
+                    zIndex: 7,
                   }}
                 >
-                  {llmConfigs.map((item) => {
-                    const active = String(item.id) === String(selectedConfig?.id);
-                    return (
-                      <button
-                        key={item.id}
-                        type="button"
-                        onClick={() => {
-                          onConfigChange?.(item.id);
-                          setModelMenuOpen(false);
-                        }}
-                        style={{
-                          width: '100%',
-                          padding: '10px 12px',
-                          borderRadius: 14,
-                          display: 'grid',
-                          gap: 4,
-                          textAlign: 'left',
-                          background: active ? '#F5E7E1' : 'transparent',
-                          color: active ? '#C15F3C' : '#141413',
-                          marginBottom: 4,
-                        }}
-                      >
-                        <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                          <span style={{ fontSize: 14, fontWeight: 600 }}>{item.name}</span>
-                          {active ? <Icons.check size={14} /> : null}
-                        </span>
-                        <span style={{ fontSize: 12, color: active ? '#C15F3C' : '#6B6A65' }}>
-                          {item.provider} · {item.model}
-                        </span>
-                      </button>
-                    );
-                  })}
+                  {activeMention.options.length > 0 ? activeMention.options.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => applyMention(option)}
+                      style={{
+                        width: '100%',
+                        padding: '10px 12px',
+                        borderRadius: 12,
+                        display: 'grid',
+                        gap: 4,
+                        textAlign: 'left',
+                        color: '#141413',
+                        marginBottom: 4,
+                      }}
+                    >
+                      <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                        <span style={{ fontSize: 13, fontWeight: 600, color: '#C15F3C' }}>{option.token}</span>
+                        <span style={{ fontSize: 12, color: '#6B6A65' }}>{option.label}</span>
+                      </span>
+                      <span style={{ fontSize: 12, color: '#6B6A65', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {option.preview}
+                      </span>
+                    </button>
+                  )) : (
+                    <div style={{ padding: '8px 10px', fontSize: 12, color: '#6B6A65' }}>
+                      当前文档中没有匹配的块
+                    </div>
+                  )}
                 </div>
               )}
+            </div>
 
+            <div style={{ width: isEmpty ? 180 : 150, flexShrink: 0 }}>
+              <DropdownSelect
+                value={selectedConfig?.id || ''}
+                options={llmConfigs.map((item) => ({
+                  value: item.id,
+                  label: item.model || item.name || `模型 ${item.id}`,
+                  searchText: [item.model, item.name].filter(Boolean).join(' '),
+                }))}
+                onChange={(nextValue) => {
+                  setPlusMenuOpen(false);
+                  onConfigChange?.(nextValue);
+                }}
+                disabled={llmConfigs.length === 0}
+                placeholder="未配置模型"
+                searchable={llmConfigs.length > 6}
+                placement="bottom"
+                buttonStyle={{
+                  minHeight: 34,
+                  height: 34,
+                  padding: '0 10px',
+                  borderRadius: 10,
+                  background: '#F5F4EF',
+                  border: '1px solid #E8E6DC',
+                  color: selectedConfig ? '#4A4945' : '#B0AEA5',
+                }}
+                menuStyle={{ borderRadius: 18 }}
+              />
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               {loading ? (
                 <button
                   type="button"

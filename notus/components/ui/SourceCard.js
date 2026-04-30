@@ -1,20 +1,34 @@
 // SourceCard — citation card from knowledge retrieval
 import { Icons } from './Icons';
 
-export const SourceCard = ({ file, path, quote, lines, imageProxyUrl, imageAltText, imageCaption, onClick }) => {
+export const SourceCard = ({ file, path, quote, lines, imageProxyUrl, imageAltText, imageCaption, selected = false, onClick }) => {
   const imageHit = Boolean(imageProxyUrl || imageAltText || imageCaption);
   const previewText = quote || imageCaption || imageAltText || '';
+  const baseBorderColor = selected ? 'var(--accent)' : 'var(--border-primary)';
+  const baseBackground = selected ? 'var(--accent-subtle)' : 'var(--bg-elevated)';
+  const baseBoxShadow = selected ? 'var(--shadow-sm)' : 'none';
 
   return (
     <div
       onClick={onClick}
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      aria-pressed={selected}
+      onKeyDown={(event) => {
+        if (!onClick) return;
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onClick();
+        }
+      }}
       style={{
-        background: 'var(--bg-elevated)',
-        border: '1px solid var(--border-primary)',
+        background: baseBackground,
+        border: `1px solid ${baseBorderColor}`,
         borderRadius: 'var(--radius-md)',
         padding: 'var(--space-3)',
         marginBottom: 8,
         cursor: onClick ? 'pointer' : 'default',
+        boxShadow: baseBoxShadow,
         transition: 'border-color var(--transition-fast), box-shadow var(--transition-fast)',
       }}
       onMouseEnter={(e) => {
@@ -24,8 +38,8 @@ export const SourceCard = ({ file, path, quote, lines, imageProxyUrl, imageAltTe
         }
       }}
       onMouseLeave={(e) => {
-        e.currentTarget.style.borderColor = 'var(--border-primary)';
-        e.currentTarget.style.boxShadow = 'none';
+        e.currentTarget.style.borderColor = baseBorderColor;
+        e.currentTarget.style.boxShadow = baseBoxShadow;
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>

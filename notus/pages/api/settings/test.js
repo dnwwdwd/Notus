@@ -33,33 +33,6 @@ function inferEmbeddingProvider({ provider, baseUrl, model }) {
   return 'custom';
 }
 
-function inferEmbeddingDim({ dim, model, provider }) {
-  if (dim !== undefined && dim !== null && dim !== '') return Number(dim);
-
-  const normalizedModel = String(model || '').trim().toLowerCase();
-  const normalizedProvider = String(provider || '').trim().toLowerCase();
-
-  const knownDimensions = {
-    'text-embedding-3-large': 3072,
-    'text-embedding-3-small': 1536,
-    'text-embedding-ada-002': 1536,
-    'text-embedding-v3': 1024,
-    'text-embedding-v2': 1536,
-    'qwen3-vl-embedding': 1024,
-    'qwen2.5-vl-embedding': 1024,
-    'tongyi-embedding-vision-plus': 1152,
-    'doubao-embedding-large': 2048,
-    'doubao-embedding': 1024,
-    'doubao-embedding-vision': 2048,
-    'embedding-3': 2048,
-    'embedding-2': 1024,
-  };
-
-  if (knownDimensions[normalizedModel]) return knownDimensions[normalizedModel];
-  if (normalizedProvider === 'qwen' && normalizedModel.includes('vision')) return 1152;
-  return null;
-}
-
 export default async function handler(req, res) {
   const context = createRequestContext(req, res, '/api/settings/test');
   const logger = createLogger(context);
@@ -90,18 +63,14 @@ export default async function handler(req, res) {
         baseUrl: config.base_url,
         model: config.model,
       });
-      const resolvedDim = inferEmbeddingDim({
-        dim: config.dim,
-        model: config.model || base.embeddingModel,
-        provider: resolvedProvider,
-      });
       const vector = await getEmbedding('Notus 连接测试', {
         ...base,
         embeddingProvider: resolvedProvider || base.embeddingProvider,
         embeddingModel: config.model || base.embeddingModel,
         embeddingApiKey: config.api_key || base.embeddingApiKey,
         embeddingBaseUrl: config.base_url || base.embeddingBaseUrl,
-        embeddingDim: resolvedDim || null,
+        // 测试连接阶段只探测真实返回维度，不能拿旧配置或推断值先验校验。
+        embeddingDim: null,
       });
       embeddingResultPayload = {
         provider: resolvedProvider,
@@ -137,6 +106,7 @@ export default async function handler(req, res) {
           llmApiKey: resolvedConfig.api_key,
           llmBaseUrl: resolvedConfig.base_url,
         },
+        taskType: 'settings_test',
       });
       verificationToken = issueConnectivityVerificationToken({
         kind: 'llm',

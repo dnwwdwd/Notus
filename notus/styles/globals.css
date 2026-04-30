@@ -35,6 +35,9 @@
   --accent-hover: #A8502F;
   --accent-subtle: #FBEEE8;
   --accent-muted: #D4896E;
+  --citation-highlight-bg: rgba(193, 95, 60, 0.20);
+  --citation-highlight-ring: rgba(193, 95, 60, 0.34);
+  --citation-highlight-bar: #C15F3C;
 
   /* Semantic */
   --danger: #D93025;
@@ -109,6 +112,9 @@
   --accent-hover: #C15F3C;
   --accent-subtle: #3D2E27;
   --accent-muted: #A8502F;
+  --citation-highlight-bg: rgba(212, 137, 110, 0.26);
+  --citation-highlight-ring: rgba(212, 137, 110, 0.42);
+  --citation-highlight-bar: #D4896E;
   --danger: #F87171;
   --danger-subtle: #3D2020;
   --warning: #FBBF24;
@@ -206,6 +212,11 @@ a {
 @keyframes slideUp {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes drawerIn {
+  from { opacity: 0; transform: translateX(18px); }
+  to { opacity: 1; transform: translateX(0); }
 }
 
 @keyframes flashSuccess {
@@ -449,9 +460,17 @@ a {
   animation: citationFlash 3s ease forwards;
 }
 
+.wysiwyg-content .ProseMirror .citation-highlight-persistent {
+  background: var(--accent-subtle);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: var(--radius-sm);
+}
+
 .wysiwyg-content .ProseMirror [data-find-match="true"],
 [data-canvas-searchable="true"][data-find-match="true"],
 [data-canvas-title="true"][data-find-match="true"] {
+  background: var(--warning-subtle);
   background: color-mix(in srgb, var(--warning) 12%, transparent);
   border-radius: var(--radius-sm);
 }
@@ -459,6 +478,8 @@ a {
 .wysiwyg-content .ProseMirror [data-find-current="true"],
 [data-canvas-searchable="true"][data-find-current="true"],
 [data-canvas-title="true"][data-find-current="true"] {
+  background: var(--warning-subtle);
+  box-shadow: inset 0 0 0 1px var(--warning);
   background: color-mix(in srgb, var(--warning) 20%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warning) 55%, transparent);
 }

@@ -3,6 +3,12 @@ const path = require('path');
 const Database = require('better-sqlite3');
 const sqliteVec = require('sqlite-vec');
 const { readEnvConfig } = require('./config');
+const {
+  DEFAULT_CONTEXT_WINDOW_TOKENS,
+  DEFAULT_MAX_OUTPUT_TOKENS,
+  deriveLlmConfigBudgetFields,
+  getKnownModelBudget,
+} = require('./llmBudget');
 
 let db = null;
 let vecAvailable = false;
@@ -38,6 +44,26 @@ function createImageVecTable(database, dim) {
 
 function hasColumn(database, table, column) {
   return database.prepare(`PRAGMA table_info(${table})`).all().some((row) => row.name === column);
+}
+
+function ensureConversationIndexes(database) {
+  if (!hasColumn(database, 'conversations', 'kind') || !hasColumn(database, 'conversations', 'updated_at')) {
+    return;
+  }
+
+  if (hasColumn(database, 'conversations', 'file_id')) {
+    database.exec(`
+      CREATE INDEX IF NOT EXISTS idx_conversations_kind_file_updated
+        ON conversations(kind, file_id, updated_at DESC);
+    `);
+  }
+
+  if (hasColumn(database, 'conversations', 'draft_key')) {
+    database.exec(`
+      CREATE INDEX IF NOT EXISTS idx_conversations_kind_draft_updated
+        ON conversations(kind, draft_key, updated_at DESC);
+    `);
+  }
 }
 
 function migrateRegularTables(database) {
@@ -82,6 +108,52 @@ function migrateRegularTables(database) {
       database.exec(`ALTER TABLE images ADD COLUMN ${column} ${definition};`);
     }
   });
+
+  const conversationColumns = [
+    ['draft_key', 'TEXT'],
+  ];
+
+  conversationColumns.forEach(([column, definition]) => {
+    if (!hasColumn(database, 'conversations', column)) {
+      database.exec(`ALTER TABLE conversations ADD COLUMN ${column} ${definition};`);
+    }
+  });
+
+  const llmConfigColumns = [
+    ['context_window_tokens', `INTEGER NOT NULL DEFAULT ${DEFAULT_CONTEXT_WINDOW_TOKENS}`],
+    ['max_output_tokens', `INTEGER NOT NULL DEFAULT ${DEFAULT_MAX_OUTPUT_TOKENS}`],
+  ];
+
+  llmConfigColumns.forEach(([column, definition]) => {
+    if (!hasColumn(database, 'llm_configs', column)) {
+      database.exec(`ALTER TABLE llm_configs ADD COLUMN ${column} ${definition};`);
+    }
+  });
+
+  const rows = database.prepare(`
+    SELECT id, model, context_window_tokens, max_output_tokens
+    FROM llm_configs
+  `).all();
+  const updateBudget = database.prepare(`
+    UPDATE llm_configs
+    SET context_window_tokens = ?, max_output_tokens = ?
+    WHERE id = ?
+  `);
+
+  rows.forEach((row) => {
+    const knownBudget = getKnownModelBudget(row.model);
+    const derived = deriveLlmConfigBudgetFields({
+      model: row.model,
+      context_window_tokens: knownBudget ? null : row.context_window_tokens,
+      max_output_tokens: knownBudget ? null : row.max_output_tokens,
+    });
+    if (
+      Number(row.context_window_tokens) !== Number(derived.context_window_tokens)
+      || Number(row.max_output_tokens) !== Number(derived.max_output_tokens)
+    ) {
+      updateBudget.run(derived.context_window_tokens, derived.max_output_tokens, row.id);
+    }
+  });
 }
 
 function migrateIncompatibleTables(database) {
@@ -122,6 +194,7 @@ function migrateIncompatibleTables(database) {
         kind       TEXT NOT NULL,
         title      TEXT,
         file_id    INTEGER REFERENCES files(id) ON DELETE SET NULL,
+        draft_key  TEXT,
         created_at TEXT DEFAULT (datetime('now')),
         updated_at TEXT DEFAULT (datetime('now'))
       );
@@ -244,6 +317,7 @@ function initDb() {
         kind       TEXT NOT NULL,
         title      TEXT,
         file_id    INTEGER REFERENCES files(id) ON DELETE SET NULL,
+        draft_key  TEXT,
         created_at TEXT DEFAULT (datetime('now')),
         updated_at TEXT DEFAULT (datetime('now'))
       );
@@ -271,6 +345,8 @@ function initDb() {
         model                TEXT NOT NULL,
         base_url             TEXT NOT NULL,
         api_key              TEXT NOT NULL,
+        context_window_tokens INTEGER NOT NULL DEFAULT ${DEFAULT_CONTEXT_WINDOW_TOKENS},
+        max_output_tokens     INTEGER NOT NULL DEFAULT ${DEFAULT_MAX_OUTPUT_TOKENS},
         is_active            INTEGER NOT NULL DEFAULT 0,
         last_test_latency_ms INTEGER,
         last_tested_at       TEXT,
@@ -283,6 +359,7 @@ function initDb() {
 
     migrateRegularTables(db);
     migrateIncompatibleTables(db);
+    ensureConversationIndexes(db);
     createVecTable(db, config.embeddingDim);
     createImageVecTable(db, config.embeddingDim);
     recreateFts(db);

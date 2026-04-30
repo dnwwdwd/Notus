@@ -3,7 +3,6 @@ import { useRouter } from 'next/router';
 import { NotusLogo, Icons } from '../components/ui/Icons';
 import { Button } from '../components/ui/Button';
 import { TextInput } from '../components/ui/Input';
-import { DropdownSelect } from '../components/ui/DropdownSelect';
 import { ProgressBar } from '../components/ui/ProgressBar';
 import { Spinner } from '../components/ui/Spinner';
 import { Toggle } from '../components/ui/Toggle';
@@ -179,29 +178,17 @@ const Step1 = ({
               <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 5 }}>Base URL</div>
               <TextInput
                 value={form.embBaseUrl}
-                onChange={(e) => {
-                  const newUrl = e.target.value;
-                  const inferred = inferEmbeddingProvider({ baseUrl: newUrl, model: form.embModel });
-                  onChange({ embBaseUrl: newUrl, embProvider: inferred });
-                }}
+                onChange={(e) => onChange({ embBaseUrl: e.target.value })}
                 placeholder="https://api.openai.com/v1"
               />
             </div>
             <div>
               <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 5 }}>模型名称</div>
-              {form.embProvider !== 'custom' && EMBEDDING_PROVIDERS.find((p) => p.value === form.embProvider)?.models?.length > 0 ? (
-                <DropdownSelect
-                  value={form.embModel}
-                  options={EMBEDDING_PROVIDERS.find((p) => p.value === form.embProvider).models.map((m) => ({ value: m.value, label: m.label }))}
-                  onChange={(value) => onChange({ embModel: value })}
-                />
-              ) : (
-                <TextInput
-                  value={form.embModel}
-                  onChange={(e) => onChange({ embModel: e.target.value })}
-                  placeholder="text-embedding-3-small"
-                />
-              )}
+              <TextInput
+                value={form.embModel}
+                onChange={(e) => onChange({ embModel: e.target.value })}
+                placeholder="text-embedding-3-small"
+              />
             </div>
           </div>
 
@@ -221,10 +208,7 @@ const Step1 = ({
             </div>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', marginTop: 6 }}>
-            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
-              填写 Base URL 后自动推断厂商；向量维度在测试后自动确认{detectedEmbDim ? `，当前 ${detectedEmbDim} 维` : ''}。
-            </div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 10, flexWrap: 'wrap', marginTop: 6 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
               <Button
                 variant="secondary"
@@ -490,6 +474,12 @@ export default function SetupPage() {
   const [step3Errors, setStep3Errors] = useState([]);
 
   useEffect(() => {
+    if (!router.isReady || statusLoading) return;
+    if (!appStatus?.setup?.completed) return;
+    router.replace(appStatus.needsIndexing ? '/indexing' : '/files');
+  }, [appStatus?.setup?.completed, appStatus.needsIndexing, router, statusLoading]);
+
+  useEffect(() => {
     if (statusLoading || stepReady) return;
 
     let restoredStep = null;
@@ -544,7 +534,11 @@ export default function SetupPage() {
   }, [toast]);
 
   const handleChange = (patch) => {
-    setForm((prev) => ({ ...prev, ...patch }));
+    const nextBaseUrl = patch.embBaseUrl ?? form.embBaseUrl;
+    const nextModel = patch.embModel ?? form.embModel;
+    const nextProvider = inferEmbeddingProvider({ baseUrl: nextBaseUrl, model: nextModel });
+
+    setForm((prev) => ({ ...prev, ...patch, embProvider: nextProvider }));
     const testFields = ['embModel', 'embApiKey', 'embBaseUrl', 'embProvider', 'embMultimodalEnabled'];
     if (testFields.some((field) => field in patch)) {
       setTestState('idle');
@@ -554,9 +548,8 @@ export default function SetupPage() {
       setEmbeddingVerificationToken('');
       if (patch.embModel !== undefined || patch.embBaseUrl !== undefined || patch.embProvider !== undefined) {
         const knownDim = findEmbeddingModelMeta({
-          provider: patch.embProvider || form.embProvider,
-          baseUrl: patch.embBaseUrl ?? form.embBaseUrl,
-          model: patch.embModel ?? form.embModel,
+          baseUrl: nextBaseUrl,
+          model: nextModel,
         })?.dimension;
         setDetectedEmbDim(Number(knownDim || 0) || null);
       }
@@ -625,7 +618,7 @@ export default function SetupPage() {
   const stepMeta = [
     {
       title: '配置 AI 模型',
-      subtitle: 'Embedding 和 LLM 都准备好后，知识库问答与 AI 创作才能正常使用；如果现在不想配置，也可以稍后跳过。',
+      subtitle: '配好 Embedding 和 LLM 后，就能使用知识库问答和 AI 创作；也可以先跳过，稍后再配。',
       canSkip: true,
     },
     {

@@ -11,12 +11,16 @@ import { Badge } from '../ui/Badge';
 import { Toggle } from '../ui/Toggle';
 import { useToast } from '../ui/Toast';
 import { LlmConfigCardsSection } from './LlmConfigCardsSection';
+import packageMeta from '../../package.json';
 import {
   EMBEDDING_PROVIDERS,
   findProvider,
 } from '../../lib/modelCatalog';
 import { findEmbeddingModelMeta, inferEmbeddingProvider } from '../../lib/embeddingForm';
 import { useShortcuts, normalizeShortcut, DEFAULT_SHORTCUTS } from '../../contexts/ShortcutsContext';
+import { navigateWithFallback } from '../../utils/navigation';
+
+const APP_VERSION = packageMeta.version || '0.1.2';
 
 export const SETTINGS_SECTIONS = [
   { id: 'model', label: '模型配置', icon: <Icons.robot size={14} />, href: '/settings/model' },
@@ -39,7 +43,7 @@ const SettingsNav = ({ active }) => {
         return (
           <div
             key={item.id}
-            onClick={() => router.push(item.href)}
+            onClick={() => navigateWithFallback(router, item.href)}
             style={{
               height: 32,
               padding: '0 10px',
@@ -236,23 +240,25 @@ const ModelConfig = () => {
   };
 
   const handleEmbeddingFieldChange = (patch) => {
-    if (patch.embBaseUrl !== undefined) setEmbBaseUrl(patch.embBaseUrl);
-    if (patch.embModel !== undefined) setEmbModel(patch.embModel);
+    const nextBaseUrl = patch.embBaseUrl ?? embBaseUrl;
+    const nextModel = patch.embModel ?? embModel;
+    const nextProvider = inferEmbeddingProvider({ baseUrl: nextBaseUrl, model: nextModel });
+
+    if (patch.embBaseUrl !== undefined) setEmbBaseUrl(nextBaseUrl);
+    if (patch.embModel !== undefined) setEmbModel(nextModel);
     if (patch.embApiKey !== undefined) setEmbApiKey(patch.embApiKey);
     if (patch.embMultimodalEnabled !== undefined) setEmbMultimodalEnabled(patch.embMultimodalEnabled);
-    if (patch.embProvider !== undefined) setEmbProvider(patch.embProvider);
+    setEmbProvider(nextProvider);
     setTestState('idle');
     setTestedSignature('');
     setVerificationToken('');
-    setDetectedEmbDim((current) => (
-      patch.embModel !== undefined || patch.embBaseUrl !== undefined
-        ? (Number(findEmbeddingModelMeta({
-          provider: patch.embProvider || embProvider,
-          baseUrl: patch.embBaseUrl ?? embBaseUrl,
-          model: patch.embModel ?? embModel,
-        })?.dimension || 0) || null)
-        : current
-    ));
+    setDetectedEmbDim((current) => {
+      if (patch.embModel === undefined && patch.embBaseUrl === undefined) return current;
+      return Number(findEmbeddingModelMeta({
+        baseUrl: nextBaseUrl,
+        model: nextModel,
+      })?.dimension || 0) || null;
+    });
   };
 
   const handleSave = async () => {
@@ -322,27 +328,17 @@ const ModelConfig = () => {
                 <TextInput
                   value={embBaseUrl}
                   onChange={(event) => {
-                    const newUrl = event.target.value;
-                    const inferred = inferEmbeddingProvider({ baseUrl: newUrl, model: embModel });
-                    handleEmbeddingFieldChange({ embBaseUrl: newUrl, embProvider: inferred });
+                    handleEmbeddingFieldChange({ embBaseUrl: event.target.value });
                   }}
                   placeholder="https://api.openai.com/v1"
                 />
               </Field>
               <Field label="模型名称">
-                {embProvider !== 'custom' && EMBEDDING_PROVIDERS.find((p) => p.value === embProvider)?.models?.length > 0 ? (
-                  <DropdownSelect
-                    value={embModel}
-                    options={EMBEDDING_PROVIDERS.find((p) => p.value === embProvider).models.map((m) => ({ value: m.value, label: m.label }))}
-                    onChange={(value) => handleEmbeddingFieldChange({ embModel: value })}
-                  />
-                ) : (
-                  <TextInput
-                    value={embModel}
-                    onChange={(event) => handleEmbeddingFieldChange({ embModel: event.target.value })}
-                    placeholder="例如：text-embedding-3-small"
-                  />
-                )}
+                <TextInput
+                  value={embModel}
+                  onChange={(event) => handleEmbeddingFieldChange({ embModel: event.target.value })}
+                  placeholder="例如：text-embedding-3-small"
+                />
               </Field>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 12, alignItems: 'end' }}>
@@ -359,10 +355,7 @@ const ModelConfig = () => {
                 <Toggle on={embMultimodalEnabled} onChange={(value) => handleEmbeddingFieldChange({ embMultimodalEnabled: value })} />
               </div>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
-                填写 Base URL 后系统自动推断厂商；向量维度在测试连接后自动确认{detectedEmbDim ? `，当前 ${detectedEmbDim} 维` : ''}。
-              </div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12, flexWrap: 'wrap' }}>
               <div style={{ display: 'flex', gap: 10 }}>
                 <Button
                   variant="secondary"
@@ -779,7 +772,7 @@ const About = () => (
       </div>
       <div>
         <div style={{ fontSize: 'var(--text-lg)', fontWeight: 600 }}>Notus</div>
-        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>版本 0.1.0</div>
+        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>版本 {APP_VERSION}</div>
         <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', marginTop: 4 }}>
           私有化个人知识库与 AI 写作协作工具
         </div>
@@ -806,9 +799,19 @@ export function SettingsScreen({ section }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
       <TopBar active="" />
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+      <div
+        style={{
+          flex: 1,
+          display: 'flex',
+          overflow: 'hidden',
+          minHeight: 0,
+          position: 'relative',
+          isolation: 'isolate',
+          zIndex: 0,
+        }}
+      >
         <SettingsNav active={section} />
-        <div style={{ flex: 1, overflow: 'auto', background: 'var(--bg-primary)', padding: 32 }}>
+        <div style={{ flex: 1, overflow: 'auto', background: 'var(--bg-primary)', padding: 32, minWidth: 0 }}>
           <div style={{ maxWidth: 920, margin: '0 auto' }}>
             {content}
           </div>

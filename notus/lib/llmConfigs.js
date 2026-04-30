@@ -1,11 +1,14 @@
 const { getDb, removeSettings, setSettings } = require('./db');
 const { readEnvConfig } = require('./config');
+const { deriveLlmConfigBudgetFields } = require('./llmBudget');
 
 const LLM_SETTING_KEYS = [
   'llm_provider',
   'llm_model',
   'llm_base_url',
   'llm_api_key',
+  'llm_context_window_tokens',
+  'llm_max_output_tokens',
 ];
 
 function normalizeBaseUrl(value) {
@@ -21,6 +24,8 @@ function mapRow(row, { includeSecret = false } = {}) {
     model: row.model,
     base_url: row.base_url,
     api_key: includeSecret ? row.api_key : undefined,
+    context_window_tokens: Number(row.context_window_tokens || 0) || null,
+    max_output_tokens: Number(row.max_output_tokens || 0) || null,
     api_key_set: Boolean(row.api_key),
     is_active: Boolean(row.is_active),
     last_test_latency_ms: row.last_test_latency_ms === null ? null : Number(row.last_test_latency_ms),
@@ -32,7 +37,8 @@ function mapRow(row, { includeSecret = false } = {}) {
 
 function listLlmConfigs(options = {}) {
   const rows = getDb().prepare(`
-    SELECT id, name, provider, model, base_url, api_key, is_active, last_test_latency_ms, last_tested_at, created_at, updated_at
+    SELECT id, name, provider, model, base_url, api_key, context_window_tokens, max_output_tokens,
+      is_active, last_test_latency_ms, last_tested_at, created_at, updated_at
     FROM llm_configs
     ORDER BY is_active DESC, updated_at DESC, id DESC
   `).all();
@@ -41,7 +47,8 @@ function listLlmConfigs(options = {}) {
 
 function getLlmConfigById(id, options = {}) {
   const row = getDb().prepare(`
-    SELECT id, name, provider, model, base_url, api_key, is_active, last_test_latency_ms, last_tested_at, created_at, updated_at
+    SELECT id, name, provider, model, base_url, api_key, context_window_tokens, max_output_tokens,
+      is_active, last_test_latency_ms, last_tested_at, created_at, updated_at
     FROM llm_configs
     WHERE id = ?
   `).get(Number(id));
@@ -50,7 +57,8 @@ function getLlmConfigById(id, options = {}) {
 
 function getActiveLlmConfig(options = {}) {
   const row = getDb().prepare(`
-    SELECT id, name, provider, model, base_url, api_key, is_active, last_test_latency_ms, last_tested_at, created_at, updated_at
+    SELECT id, name, provider, model, base_url, api_key, context_window_tokens, max_output_tokens,
+      is_active, last_test_latency_ms, last_tested_at, created_at, updated_at
     FROM llm_configs
     WHERE is_active = 1
     ORDER BY updated_at DESC, id DESC
@@ -70,6 +78,8 @@ function syncActiveConfigToSettings(config) {
     llm_model: config.model,
     llm_base_url: config.base_url,
     llm_api_key: config.api_key,
+    llm_context_window_tokens: String(config.context_window_tokens || ''),
+    llm_max_output_tokens: String(config.max_output_tokens || ''),
   });
 }
 
@@ -100,6 +110,11 @@ function createLlmConfig(input = {}) {
   const latency = input.last_test_latency_ms === undefined || input.last_test_latency_ms === null
     ? null
     : Number(input.last_test_latency_ms);
+  const derivedBudget = deriveLlmConfigBudgetFields({
+    model,
+    context_window_tokens: input.context_window_tokens,
+    max_output_tokens: input.max_output_tokens,
+  });
 
   if (!name) throw new Error('配置名称不能为空');
   if (!provider) throw new Error('LLM Provider 不能为空');
@@ -117,15 +132,18 @@ function createLlmConfig(input = {}) {
 
     return database.prepare(`
       INSERT INTO llm_configs (
-        name, provider, model, base_url, api_key, is_active, last_test_latency_ms, last_tested_at, updated_at
+        name, provider, model, base_url, api_key, context_window_tokens, max_output_tokens,
+        is_active, last_test_latency_ms, last_tested_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
     `).run(
       name,
       provider,
       model,
       baseUrl,
       apiKey,
+      derivedBudget.context_window_tokens,
+      derivedBudget.max_output_tokens,
       shouldActivate ? 1 : 0,
       Number.isFinite(latency) ? latency : null
     );
@@ -153,6 +171,11 @@ function updateLlmConfig(id, input = {}) {
       ? existing.last_test_latency_ms
       : Number(input.last_test_latency_ms),
   };
+  const derivedBudget = deriveLlmConfigBudgetFields({
+    model: next.model,
+    context_window_tokens: input.context_window_tokens ?? existing.context_window_tokens,
+    max_output_tokens: input.max_output_tokens ?? existing.max_output_tokens,
+  });
 
   if (!next.name) throw new Error('配置名称不能为空');
   if (!next.provider) throw new Error('LLM Provider 不能为空');
@@ -173,6 +196,8 @@ function updateLlmConfig(id, input = {}) {
         model = ?,
         base_url = ?,
         api_key = ?,
+        context_window_tokens = ?,
+        max_output_tokens = ?,
         is_active = ?,
         last_test_latency_ms = ?,
         last_tested_at = datetime('now'),
@@ -184,6 +209,8 @@ function updateLlmConfig(id, input = {}) {
       next.model,
       next.base_url,
       next.api_key,
+      derivedBudget.context_window_tokens,
+      derivedBudget.max_output_tokens,
       next.set_default ? 1 : 0,
       Number.isFinite(next.last_test_latency_ms) ? next.last_test_latency_ms : null,
       normalizedId
@@ -234,6 +261,12 @@ function resolveLlmRuntimeConfig({ llmConfigId, model } = {}) {
     llmModel: String(model || selected.model).trim() || selected.model,
     llmBaseUrl: selected.base_url,
     llmApiKey: selected.api_key,
+    llmContextWindowTokens: model && String(model).trim() !== String(selected.model).trim()
+      ? deriveLlmConfigBudgetFields({ model }).context_window_tokens
+      : selected.context_window_tokens,
+    llmMaxOutputTokens: model && String(model).trim() !== String(selected.model).trim()
+      ? deriveLlmConfigBudgetFields({ model }).max_output_tokens
+      : selected.max_output_tokens,
   };
 }
 

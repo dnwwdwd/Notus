@@ -8,6 +8,8 @@ import { SearchInput, TextInput } from '../ui/Input';
 import { Tooltip } from '../ui/Tooltip';
 import { useToast } from '../ui/Toast';
 import { useApp } from '../../contexts/AppContext';
+import { useShortcuts } from '../../contexts/ShortcutsContext';
+import { navigateWithFallback } from '../../utils/navigation';
 
 function flatTree(nodes, openFolders, searchMode = false, depth = 0) {
   const out = [];
@@ -210,13 +212,15 @@ const FileRow = ({ item, isActive, onSelect, onToggle, onContextMenu }) => {
   );
 };
 
-export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, requestAction, navigateOnFileSelect = true }) => {
+export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, requestAction, navigateOnFileSelect = true }) => {
   const router = useRouter();
   const toast = useToast();
+  const { shortcuts, matchShortcut } = useShortcuts();
   const importFileInputRef = useRef(null);
   const importDirectoryInputRef = useRef(null);
   const searchInputRef = useRef(null);
   const {
+    activePage,
     files,
     allFiles,
     folderOptions,
@@ -226,7 +230,9 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, requestActi
     toggleFolder,
     activeFileId,
     activeFile,
+    sidebarCollapsed,
     selectFile,
+    toggleSidebarCollapsed,
     createFile,
     createFolder,
     refreshFiles,
@@ -270,6 +276,24 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, requestActi
     if (tocDisabled) setActiveTab('tree');
   }, [tocDisabled]);
 
+  useEffect(() => {
+    if (!sidebarCollapsed) return undefined;
+    setSearchOpen(false);
+    setSearchQuery('');
+    return undefined;
+  }, [sidebarCollapsed]);
+
+  useEffect(() => {
+    const handleKeydown = (event) => {
+      if (matchShortcut(event, shortcuts.sidebarToggle.combo)) {
+        event.preventDefault();
+        toggleSidebarCollapsed();
+      }
+    };
+    document.addEventListener('keydown', handleKeydown);
+    return () => document.removeEventListener('keydown', handleKeydown);
+  }, [matchShortcut, shortcuts.sidebarToggle.combo, toggleSidebarCollapsed]);
+
   // Close context menu on outside click
   useEffect(() => {
     if (!contextMenu) return undefined;
@@ -278,9 +302,21 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, requestActi
     return () => document.removeEventListener('mousedown', handleClick);
   }, [contextMenu]);
 
+  useEffect(() => {
+    setContextMenu(null);
+  }, [router.asPath]);
+
   const handleContextMenu = useCallback((node, x, y) => {
     setContextMenu({ node, x, y });
   }, []);
+
+  const handleActivateTab = useCallback((nextTab) => {
+    if (nextTab === 'toc' && tocDisabled) return;
+    setActiveTab(nextTab);
+    if (sidebarCollapsed) {
+      toggleSidebarCollapsed();
+    }
+  }, [sidebarCollapsed, tocDisabled, toggleSidebarCollapsed]);
 
   const handleContextRename = useCallback(() => {
     if (!contextMenu) return;
@@ -368,11 +404,19 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, requestActi
     return selectedImportFiles.filter((file) => failedNames.has(getImportDisplayName(file)));
   }, [importFailedResults, selectedImportFiles]);
 
+  const currentPage = ['files', 'knowledge', 'canvas'].includes(active) ? active : (activePage || 'files');
+
   const handleSelectFile = (file) => {
     const action = () => {
       selectFile(file);
-      if (navigateOnFileSelect && router.pathname !== '/files') {
-        router.push('/files');
+      if (!navigateOnFileSelect) return;
+      const href = `/${currentPage}?fileId=${encodeURIComponent(file.id)}`;
+      if (router.pathname !== `/${currentPage}`) {
+        navigateWithFallback(router, href);
+        return;
+      }
+      if (currentPage === 'files') {
+        navigateWithFallback(router, href, { mode: 'router' });
       }
     };
     if (requestAction) {
@@ -444,8 +488,13 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, requestActi
       } else {
         const created = await createFile({ parentPath, name: newName.trim() });
         toast(created.warning ? `文件已创建，但索引告警：${created.warning}` : '文件已创建', created.warning ? 'warning' : 'success');
-        if (navigateOnFileSelect && router.pathname !== '/files') {
-          router.push('/files');
+        if (navigateOnFileSelect) {
+          const href = `/${currentPage}?fileId=${encodeURIComponent(created.id)}`;
+          if (router.pathname !== `/${currentPage}`) {
+            navigateWithFallback(router, href);
+          } else if (currentPage === 'files') {
+            navigateWithFallback(router, href, { mode: 'router' });
+          }
         }
       }
       resetCreateDialog();
@@ -607,7 +656,7 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, requestActi
 
   return (
     <div style={{
-      width,
+      width: sidebarCollapsed ? 56 : width,
       background: 'var(--bg-sidebar)',
       borderRight: '1px solid var(--border-subtle)',
       display: 'flex',
@@ -615,6 +664,7 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, requestActi
       flexShrink: 0,
       height: '100%',
       overflow: 'hidden',
+      transition: 'width var(--transition-slow)',
     }}>
       <input
         ref={importFileInputRef}
@@ -672,11 +722,6 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, requestActi
                 if (event.key === 'Enter') handleCreate();
               }}
             />
-            {createMode !== 'folder' && (
-              <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 6 }}>
-                无需输入 `.md` 后缀，系统会自动补齐。
-              </div>
-            )}
           </div>
         </div>
       </Dialog>
@@ -1072,54 +1117,80 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, requestActi
         height: 40,
         display: 'flex',
         alignItems: 'center',
-        padding: '0 6px',
+        padding: sidebarCollapsed ? '0 10px' : '0 6px',
         borderBottom: '1px solid var(--border-subtle)',
         gap: 2,
       }}>
-        <button
-          onClick={() => setActiveTab('tree')}
-          title="文件树"
-          style={{
-            width: 32,
-            height: 28,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            color: activeTab === 'tree' ? 'var(--text-primary)' : 'var(--text-tertiary)',
-            position: 'relative',
-            borderRadius: 'var(--radius-sm)',
-          }}
-        >
-          <Icons.folder size={16} />
-          {activeTab === 'tree' && (
-            <div style={{ position: 'absolute', left: 6, right: 6, bottom: -2, height: 2, background: 'var(--accent)' }} />
-          )}
-        </button>
+        {!sidebarCollapsed && (
+          <>
+            <button
+              onClick={() => handleActivateTab('tree')}
+              title="文件树"
+              style={{
+                width: 32,
+                height: 28,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: activeTab === 'tree' ? 'var(--text-primary)' : 'var(--text-tertiary)',
+                position: 'relative',
+                borderRadius: 'var(--radius-sm)',
+              }}
+            >
+              <Icons.folder size={16} />
+              {activeTab === 'tree' && (
+                <div style={{ position: 'absolute', left: 6, right: 6, bottom: -2, height: 2, background: 'var(--accent)' }} />
+              )}
+            </button>
 
-        <button
-          onClick={() => !tocDisabled && setActiveTab('toc')}
-          title={tocDisabled ? '选择文件后可查看大纲' : '文档大纲'}
-          style={{
-            width: 32,
-            height: 28,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            color: tocDisabled ? 'var(--text-tertiary)' : (activeTab === 'toc' ? 'var(--text-primary)' : 'var(--text-secondary)'),
-            opacity: tocDisabled ? 0.4 : 1,
-            position: 'relative',
-            borderRadius: 'var(--radius-sm)',
-            cursor: tocDisabled ? 'not-allowed' : 'pointer',
-          }}
-        >
-          <Icons.list size={16} />
-          {activeTab === 'toc' && !tocDisabled && (
-            <div style={{ position: 'absolute', left: 6, right: 6, bottom: -2, height: 2, background: 'var(--accent)' }} />
-          )}
-        </button>
+            <button
+              onClick={() => handleActivateTab('toc')}
+              title={tocDisabled ? '选择文件后可查看大纲' : '文档大纲'}
+              style={{
+                width: 32,
+                height: 28,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: tocDisabled ? 'var(--text-tertiary)' : (activeTab === 'toc' ? 'var(--text-primary)' : 'var(--text-secondary)'),
+                opacity: tocDisabled ? 0.4 : 1,
+                position: 'relative',
+                borderRadius: 'var(--radius-sm)',
+                cursor: tocDisabled ? 'not-allowed' : 'pointer',
+              }}
+            >
+              <Icons.list size={16} />
+              {activeTab === 'toc' && !tocDisabled && (
+                <div style={{ position: 'absolute', left: 6, right: 6, bottom: -2, height: 2, background: 'var(--accent)' }} />
+              )}
+            </button>
+          </>
+        )}
 
         <div style={{ flex: 1 }} />
 
+        <Tooltip content={sidebarCollapsed ? '展开侧边栏' : `收起侧边栏（${shortcuts.sidebarToggle.combo}）`}>
+          <button
+            type="button"
+            title={sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}
+            onClick={toggleSidebarCollapsed}
+            style={{
+              width: 28,
+              height: 28,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: 'var(--text-secondary)',
+              borderRadius: 'var(--radius-sm)',
+            }}
+            onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-hover)'}
+            onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+          >
+            {sidebarCollapsed ? <Icons.chevronRight size={14} /> : <Icons.chevronLeft size={14} />}
+          </button>
+        </Tooltip>
+
+        {!sidebarCollapsed && (
         <button
           title="搜索文件"
           onClick={() => {
@@ -1146,6 +1217,8 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, requestActi
         >
           <Icons.search size={14} />
         </button>
+        )}
+        {!sidebarCollapsed && (
         <button
           title="导入 Markdown"
           onClick={handleOpenImportDialog}
@@ -1155,6 +1228,8 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, requestActi
         >
           <Icons.upload size={14} />
         </button>
+        )}
+        {!sidebarCollapsed && (
         <button
           title="导出 Markdown"
           onClick={handleOpenExportDialog}
@@ -1164,6 +1239,8 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, requestActi
         >
           <Icons.download size={14} />
         </button>
+        )}
+        {!sidebarCollapsed && (
         <button
           title="新建文件"
           onClick={() => {
@@ -1177,6 +1254,8 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, requestActi
         >
           <Icons.filePlus size={14} />
         </button>
+        )}
+        {!sidebarCollapsed && (
         <button
           title="新建文件夹"
           onClick={() => {
@@ -1190,9 +1269,10 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, requestActi
         >
           <Icons.folderPlus size={14} />
         </button>
+        )}
       </div>
 
-      {activeTab === 'tree' && searchOpen && (
+      {!sidebarCollapsed && activeTab === 'tree' && searchOpen && (
         <div style={{ padding: '8px 10px 6px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', gap: 8 }}>
           <SearchInput
             ref={searchInputRef}
@@ -1224,6 +1304,7 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, requestActi
         </div>
       )}
 
+      {!sidebarCollapsed && (
       <div style={{ flex: 1, overflow: 'auto', paddingTop: 6 }}>
         {activeTab === 'toc' ? (
           <div style={{ padding: '4px 0' }}>
@@ -1307,6 +1388,7 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, requestActi
           ))
         )}
       </div>
+      )}
 
       {/* Right-click context menu */}
       {contextMenu && (
@@ -1317,7 +1399,7 @@ export const Sidebar = ({ tocDisabled = true, tocItems, width = 240, requestActi
             position: 'fixed',
             left: Math.min(contextMenu.x, window.innerWidth - 160),
             top: Math.min(contextMenu.y, window.innerHeight - 80),
-            zIndex: 9000,
+            zIndex: 60,
             background: 'var(--bg-elevated)',
             border: '1px solid var(--border-primary)',
             borderRadius: 'var(--radius-md)',

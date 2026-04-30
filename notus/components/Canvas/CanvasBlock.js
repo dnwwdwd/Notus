@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useShortcuts } from '../../contexts/ShortcutsContext';
 import { Icons } from '../ui/Icons';
 import { Badge } from '../ui/Badge';
+import { Tooltip } from '../ui/Tooltip';
 
 export const CanvasBlock = ({
   idx,
@@ -11,6 +12,7 @@ export const CanvasBlock = ({
   content,
   state: externalState = 'default',
   onAI,
+  onDelete,
   onContentChange,
   dragHandleProps,
 }) => {
@@ -115,33 +117,50 @@ export const CanvasBlock = ({
           zIndex: 2,
           animation: 'fadeIn var(--transition-fast)',
         }}>
-          <button
-            title="拖拽排序"
-            style={{ width: 26, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)', cursor: 'grab', borderRadius: 'var(--radius-sm)' }}
-            onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-hover)'}
-            onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-            {...dragHandleProps}
-          >
-            <Icons.drag size={12} />
-          </button>
-          <button
-            title="编辑 (双击)"
-            onClick={() => setState('editing')}
-            style={{ width: 26, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', borderRadius: 'var(--radius-sm)' }}
-            onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-hover)'}
-            onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-          >
-            <Icons.edit size={12} />
-          </button>
-          <button
-            title="AI 优化"
-            onClick={() => onAI?.(blockId)}
-            style={{ width: 26, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--accent)', borderRadius: 'var(--radius-sm)' }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--accent-subtle)'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-          >
-            <Icons.sparkles size={12} />
-          </button>
+          <Tooltip content="拖拽排序">
+            <button
+              type="button"
+              style={{ width: 26, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)', cursor: 'grab', borderRadius: 'var(--radius-sm)' }}
+              onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-hover)'}
+              onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+              {...dragHandleProps}
+            >
+              <Icons.drag size={12} />
+            </button>
+          </Tooltip>
+          <Tooltip content="编辑块">
+            <button
+              type="button"
+              onClick={() => setState('editing')}
+              style={{ width: 26, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', borderRadius: 'var(--radius-sm)' }}
+              onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-hover)'}
+              onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+            >
+              <Icons.edit size={12} />
+            </button>
+          </Tooltip>
+          <Tooltip content="删除块">
+            <button
+              type="button"
+              onClick={() => onDelete?.(blockId)}
+              style={{ width: 26, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--danger)', borderRadius: 'var(--radius-sm)' }}
+              onMouseEnter={(e) => e.currentTarget.style.background = 'var(--danger-subtle)'}
+              onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+            >
+              <Icons.trash size={12} />
+            </button>
+          </Tooltip>
+          <Tooltip content="AI 改写这块">
+            <button
+              type="button"
+              onClick={() => onAI?.(blockId)}
+              style={{ width: 26, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--accent)', borderRadius: 'var(--radius-sm)' }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--accent-subtle)'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+            >
+              <Icons.refresh size={12} />
+            </button>
+          </Tooltip>
         </div>
       )}
 

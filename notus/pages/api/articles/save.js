@@ -3,6 +3,7 @@ const { blocksToMarkdown } = require('../../../utils/markdownBlocks');
 const { createFile, getFileById, updateFile } = require('../../../lib/files');
 const { indexFileWithFallback } = require('../../../lib/fileIndexing');
 const { createLogger, createRequestContext } = require('../../../lib/logger');
+const { rebindDraftConversations } = require('../../../lib/conversations');
 
 export const config = {
   api: {
@@ -26,6 +27,7 @@ export default async function handler(req, res) {
   }
 
   const markdown = blocksToMarkdown(article.blocks);
+  const draftKey = article.draft_key || article.draftKey || null;
 
   try {
     let file;
@@ -38,6 +40,9 @@ export default async function handler(req, res) {
 
     const indexState = await indexFileWithFallback(file.path, logger, { action: 'article-save' });
     const latest = getFileById(file.id);
+    if (draftKey && latest?.id) {
+      rebindDraftConversations({ kind: 'canvas', draftKey, fileId: latest.id });
+    }
     return res.status(200).json({
       ok: true,
       file_id: latest.id,
@@ -50,6 +55,7 @@ export default async function handler(req, res) {
       article: {
         id: article.id || `article_${latest.id}`,
         file_id: latest.id,
+        draft_key: null,
         title: latest.title,
         blocks: article.blocks,
       },

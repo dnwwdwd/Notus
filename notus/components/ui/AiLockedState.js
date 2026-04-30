@@ -56,18 +56,33 @@ export function AiLockedState({
     return (
       <div
         style={{
-          position: 'absolute',
-          inset: 0,
+          position: 'fixed',
+          top: 48,
+          left: 0,
+          right: 0,
+          bottom: 0,
           display: 'flex',
+          flexDirection: 'column',
           alignItems: 'center',
           justifyContent: 'center',
-          padding: 24,
-          background: 'rgba(247, 244, 238, 0.76)',
-          backdropFilter: 'blur(8px)',
+          gap: 14,
+          background: 'var(--bg-overlay, rgba(247, 244, 238, 0.88))',
+          backdropFilter: 'blur(6px)',
           zIndex: 40,
+          pointerEvents: 'auto',
         }}
       >
-        {card}
+        <div style={{ color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <Icons.lock size={32} />
+        </div>
+        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', textAlign: 'center', maxWidth: 280, lineHeight: 1.6 }}>
+          {description}
+        </div>
+        {onAction && (
+          <Button variant="primary" size="sm" onClick={onAction}>
+            {actionLabel}
+          </Button>
+        )}
       </div>
     );
   }

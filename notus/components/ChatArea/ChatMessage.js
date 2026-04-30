@@ -37,10 +37,13 @@ export const RetrievalStatus = ({ stage, sources = 3 }) => (
     {stage === 'found' && (
       <><Icons.check size={13} /><span>找到 {sources} 篇相关笔记 · 正在组织答案</span></>
     )}
+    {stage === 'insufficient' && (
+      <><Icons.warn size={13} /><span>找到少量相关内容，但证据不足 · 只会给出保守结论</span></>
+    )}
   </div>
 );
 
-export const AiBubble = ({ text, streaming, citations, onCitationClick, children }) => (
+export const AiBubble = ({ text, streaming, citations, onCitationClick, citationSelection, messageId, children }) => (
   <div style={{ margin: '16px 0' }}>
     <div style={{
       display: 'flex',
@@ -72,7 +75,8 @@ export const AiBubble = ({ text, streaming, citations, onCitationClick, children
             imageProxyUrl={c.image_proxy_url}
             imageAltText={c.image_alt_text}
             imageCaption={c.image_caption}
-            onClick={() => onCitationClick?.(c)}
+            selected={citationSelection?.messageId === messageId && citationSelection?.citationIndex === i}
+            onClick={() => onCitationClick?.(c, { messageId, citationIndex: i })}
           />
         ))}
       </div>

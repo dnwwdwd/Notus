@@ -1,12 +1,53 @@
 // _app.js — global styles + theme + providers
+import { useEffect } from 'react';
 import '../styles/globals.css';
 import 'katex/dist/katex.min.css';
 import Head from 'next/head';
-import { AppStatusGate } from '../components/AppStatusGate';
+import { useRouter } from 'next/router';
 import { ToastProvider } from '../components/ui/Toast';
+import { PageTransitionOverlay } from '../components/ui/PageTransitionOverlay';
 import { AppProvider } from '../contexts/AppContext';
 import { AppStatusProvider } from '../contexts/AppStatusContext';
 import { ShortcutsProvider } from '../contexts/ShortcutsContext';
+
+const CORE_ROUTES = ['/files', '/knowledge', '/canvas', '/settings/model'];
+
+function CoreRoutePrefetcher() {
+  const router = useRouter();
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof router.prefetch !== 'function') return undefined;
+
+    let cancelled = false;
+    let timeoutId = null;
+    let idleId = null;
+
+    const prefetchAll = () => {
+      if (cancelled) return;
+      CORE_ROUTES.forEach((target) => {
+        router.prefetch(target).catch(() => {});
+      });
+    };
+
+    if (typeof window.requestIdleCallback === 'function') {
+      idleId = window.requestIdleCallback(prefetchAll, { timeout: 1500 });
+    } else {
+      timeoutId = window.setTimeout(prefetchAll, 300);
+    }
+
+    return () => {
+      cancelled = true;
+      if (timeoutId) {
+        window.clearTimeout(timeoutId);
+      }
+      if (idleId && typeof window.cancelIdleCallback === 'function') {
+        window.cancelIdleCallback(idleId);
+      }
+    };
+  }, [router]);
+
+  return null;
+}
 
 export default function App({ Component, pageProps }) {
   return (
@@ -22,9 +63,9 @@ export default function App({ Component, pageProps }) {
         <AppStatusProvider>
           <AppProvider>
             <ToastProvider>
-              <AppStatusGate>
-                <Component {...pageProps} />
-              </AppStatusGate>
+              <CoreRoutePrefetcher />
+              <PageTransitionOverlay />
+              <Component {...pageProps} />
             </ToastProvider>
           </AppProvider>
         </AppStatusProvider>

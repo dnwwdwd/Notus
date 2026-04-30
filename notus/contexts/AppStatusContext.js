@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 
 const AppStatusContext = createContext(null);
+const APP_STATUS_CACHE_KEY = 'notus-app-status-cache';
 
 function defaultSetup() {
   return {
@@ -10,6 +11,8 @@ function defaultSetup() {
     total_files: 0,
     notes_dir: '',
     model_configured: false,
+    embedding_configured: false,
+    llm_configured: false,
     indexed: false,
     embedding_provider: '',
     embedding_multimodal_enabled: false,
@@ -48,13 +51,37 @@ function deriveStatus(setup = defaultSetup(), index = defaultIndex()) {
   };
 }
 
+function readCachedStatus() {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.sessionStorage.getItem(APP_STATUS_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed?.setup || !parsed?.index) return null;
+    return deriveStatus(parsed.setup, parsed.index);
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedStatus(status) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.setItem(APP_STATUS_CACHE_KEY, JSON.stringify({
+      setup: status?.setup || defaultSetup(),
+      index: status?.index || defaultIndex(),
+    }));
+  } catch {}
+}
+
 export function AppStatusProvider({ children }) {
-  const [status, setStatus] = useState(() => deriveStatus());
-  const [loading, setLoading] = useState(true);
+  const [status, setStatus] = useState(() => readCachedStatus() || deriveStatus());
+  const [loading, setLoading] = useState(() => !readCachedStatus());
   const [error, setError] = useState(null);
 
   const refreshStatus = useCallback(async ({ quiet = false } = {}) => {
-    if (!quiet) setLoading(true);
+    const hasCachedStatus = typeof window !== 'undefined' && Boolean(window.sessionStorage.getItem(APP_STATUS_CACHE_KEY));
+    if (!quiet && !hasCachedStatus) setLoading(true);
 
     try {
       const [setupResponse, indexResponse] = await Promise.all([
@@ -74,6 +101,7 @@ export function AppStatusProvider({ children }) {
 
       const next = deriveStatus(setupPayload, indexPayload);
       setStatus(next);
+      writeCachedStatus(next);
       setError(null);
       return next;
     } catch (refreshError) {

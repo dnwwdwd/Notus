@@ -44,9 +44,9 @@ export const ResizableLayout = ({
   }, [minLeftPercent, maxLeftPercent]);
 
   return (
-    <div ref={containerRef} style={{ flex: 1, display: 'flex', overflow: 'hidden', ...style }}>
+    <div ref={containerRef} style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0, ...style }}>
       {/* Left panel */}
-      <div style={{ width: `${leftPercent}%`, display: 'flex', flexDirection: 'column', overflow: 'hidden', flexShrink: 0 }}>
+      <div style={{ width: `${leftPercent}%`, display: 'flex', flexDirection: 'column', overflow: 'hidden', flexShrink: 0, minHeight: 0 }}>
         {left}
       </div>
 
@@ -68,7 +68,7 @@ export const ResizableLayout = ({
       />
 
       {/* Right panel */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0, minHeight: 0 }}>
         {right}
       </div>
     </div>

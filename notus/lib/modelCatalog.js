@@ -92,6 +92,7 @@ export const LLM_PROVIDERS = [
     label: '阿里（通义千问）',
     baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     models: [
+      { value: 'qwen3-max', label: 'qwen3-max' },
       { value: 'qwen-max', label: 'qwen-max' },
       { value: 'qwen-plus', label: 'qwen-plus' },
       { value: 'qwq-32b', label: 'qwq-32b' },

@@ -10,6 +10,13 @@ export const DEFAULT_SHORTCUTS = {
     description: '打开文章搜索弹窗',
     combo: 'Mod+K',
   },
+  sidebarToggle: {
+    id: 'sidebarToggle',
+    label: '收起侧栏',
+    scope: '全局',
+    description: '收起或展开左侧文件树',
+    combo: 'Mod+\\',
+  },
   chatSend: {
     id: 'chatSend',
     label: '发送消息',

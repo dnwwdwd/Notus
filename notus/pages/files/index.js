@@ -13,6 +13,14 @@ import { useToast } from '../../components/ui/Toast';
 import { useApp } from '../../contexts/AppContext';
 import { useDocumentFind } from '../../hooks/useDocumentFind';
 import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
+import {
+  getEditorRoot,
+  getEditorScrollContainer,
+  getQueryValue,
+  normalizeText,
+  previewFromLines,
+  retryFocusCitationTarget,
+} from '../../utils/documentNavigation';
 
 // WysiwygEditor: SSR-incompatible (Tiptap uses DOM APIs)
 // onEditorReady lifts the editor instance up so the toolbar can use it
@@ -21,79 +29,10 @@ const WysiwygEditor = dynamic(
   { ssr: false, loading: () => <SkeletonText lines={7} /> }
 );
 
-function getQueryValue(value) {
-  return Array.isArray(value) ? value[0] : value;
-}
-
-function normalizeText(value = '') {
-  return String(value).replace(/\s+/g, ' ').trim();
-}
-
-function previewFromLines(markdown, lineStart, lineEnd) {
-  const start = Number(lineStart);
-  const end = Number(lineEnd);
-  if (!Number.isFinite(start) || !Number.isFinite(end) || start <= 0 || end < start) return '';
-  const lines = String(markdown || '').split('\n');
-  return normalizeText(lines.slice(start - 1, end).join(' '));
-}
-
-function getEditorRoot(editor) {
-  try {
-    return editor?.view?.dom || null;
-  } catch {
-    return null;
-  }
-}
-
-function getEditorScrollContainer(editor) {
-  return getEditorRoot(editor)?.closest('.wysiwyg-root') || null;
-}
-
-function findBestMatchElement(editor, options = {}) {
-  const root = getEditorRoot(editor);
-  if (!root) return null;
-
-  const preview = normalizeText(options.preview);
-  const headingPath = normalizeText(options.headingPath);
-
-  if (headingPath) {
-    const headingParts = headingPath.split('>').map((item) => normalizeText(item)).filter(Boolean);
-    const lastHeading = headingParts[headingParts.length - 1];
-    if (lastHeading) {
-      const headingNodes = [...root.querySelectorAll('h1,h2,h3,h4,h5,h6')];
-      const headingMatch = headingNodes.find((node) => normalizeText(node.textContent).includes(lastHeading));
-      if (headingMatch) return headingMatch;
-    }
-  }
-
-  if (!preview) return null;
-  const candidates = [...root.querySelectorAll('h1,h2,h3,h4,h5,h6,p,blockquote,li,pre')];
-  let bestNode = null;
-  let bestScore = -1;
-
-  candidates.forEach((node) => {
-    const text = normalizeText(node.textContent);
-    if (!text) return;
-    let score = 0;
-    if (text.includes(preview)) score = preview.length;
-    else if (preview.includes(text)) score = text.length;
-    else {
-      const previewWords = preview.split(' ').filter(Boolean);
-      score = previewWords.reduce((count, word) => (text.includes(word) ? count + word.length : count), 0);
-    }
-    if (score > bestScore) {
-      bestScore = score;
-      bestNode = node;
-    }
-  });
-
-  return bestScore > 0 ? bestNode : null;
-}
-
 export default function FilesPage() {
   const router = useRouter();
   const toast = useToast();
-  const { activeFile, allFiles, selectFile, getCachedContent, setCachedContent } = useApp();
+  const { activeFile, allFiles, pendingCitation, clearPendingCitation, selectFile, getCachedContent, setCachedContent } = useApp();
   const activeFileId = activeFile?.id;
   const contentRef = useRef('');
   const persistedContentRef = useRef('');
@@ -114,12 +53,18 @@ export default function FilesPage() {
     if (cached !== undefined) return { content: cached };
 
     const response = await fetch(`/api/files/${fileId}`);
-    const payload = await response.json();
 
     if (!response.ok) {
-      throw new Error(payload.error || '文件加载失败');
+      let errMsg = '文件加载失败';
+      const ct = response.headers.get('content-type') || '';
+      if (ct.includes('application/json')) {
+        const payload = await response.json();
+        errMsg = payload.error || errMsg;
+      }
+      throw new Error(errMsg);
     }
 
+    const payload = await response.json();
     setCachedContent(fileId, payload.content || '');
     return payload;
   }, [getCachedContent, setCachedContent]);
@@ -247,12 +192,18 @@ export default function FilesPage() {
     const requestedFileId = Number(getQueryValue(router.query.fileId));
     const hasQueryNav = Number.isFinite(requestedFileId) && requestedFileId === activeFile.id;
     const hasPendingHashNav = Boolean(pendingNavRef.current);
+    const hasPendingCitationNav = Number(pendingCitation?.fileId) === activeFile.id;
 
-    if (!hasQueryNav && !hasPendingHashNav) return;
+    if (!hasQueryNav && !hasPendingHashNav && !hasPendingCitationNav) return;
 
     let lineStart, lineEnd, preview, headingPath;
 
-    if (hasQueryNav) {
+    if (hasPendingCitationNav) {
+      lineStart = Number(pendingCitation?.lineStart);
+      lineEnd = Number(pendingCitation?.lineEnd);
+      preview = previewFromLines(content, lineStart, lineEnd) || pendingCitation?.preview || '';
+      headingPath = pendingCitation?.headingPath || '';
+    } else if (hasQueryNav) {
       lineStart = Number(getQueryValue(router.query.lineStart));
       lineEnd = Number(getQueryValue(router.query.lineEnd));
       preview = getQueryValue(router.query.preview) || previewFromLines(content, lineStart, lineEnd);
@@ -267,28 +218,29 @@ export default function FilesPage() {
 
     if (hasPendingHashNav) pendingNavRef.current = null;
 
-    const container = getEditorScrollContainer(editor);
-    const target = findBestMatchElement(editor, { preview, headingPath });
-    if (container && target) {
-      container.scrollTo({ top: Math.max(target.offsetTop - 56, 0), behavior: 'smooth' });
-      target.classList.add('citation-highlight');
-      try {
-        const pos = editor.view.posAtDOM(target, 0);
-        editor.commands.setTextSelection(pos);
-      } catch { /* cursor positioning is best-effort */ }
-      window.setTimeout(() => target.classList.remove('citation-highlight'), 3000);
-    }
+    return retryFocusCitationTarget(
+      editor,
+      { preview, headingPath, lineStart, lineEnd },
+      { persistent: false, duration: 3000, markdown: content, maxAttempts: 12, retryDelay: 60 },
+      {
+        onResolved: () => {
+          if (hasPendingCitationNav) {
+            clearPendingCitation();
+          }
 
-    if (hasQueryNav) {
-      const nextQuery = { ...router.query };
-      delete nextQuery.fileId;
-      delete nextQuery.lineStart;
-      delete nextQuery.lineEnd;
-      delete nextQuery.preview;
-      delete nextQuery.headingPath;
-      router.replace({ pathname: '/files', query: nextQuery }, undefined, { shallow: true });
-    }
-  }, [activeFile?.id, content, editor, router]);
+          if (hasQueryNav) {
+            const nextQuery = { ...router.query };
+            delete nextQuery.fileId;
+            delete nextQuery.lineStart;
+            delete nextQuery.lineEnd;
+            delete nextQuery.preview;
+            delete nextQuery.headingPath;
+            router.replace({ pathname: '/files', query: nextQuery }, undefined, { shallow: true });
+          }
+        },
+      }
+    );
+  }, [activeFile?.id, clearPendingCitation, content, editor, pendingCitation, router]);
 
   const handleSave = useCallback(async (nextContent = contentRef.current) => {
     if (!activeFileId) return false;
@@ -345,6 +297,7 @@ export default function FilesPage() {
     title: '离开前保存当前文档？',
     message: '当前文档还有未保存修改。你可以先保存再切换页面或文件，也可以直接离开并丢弃这次编辑。',
   });
+  const navigationGuard = activeFile && saveState === 'dirty' ? unsavedGuard.request : undefined;
 
   const documentFind = useDocumentFind({
     enabled: Boolean(activeFile && editor),
@@ -371,14 +324,14 @@ export default function FilesPage() {
       saveDisabled={!activeFile || saveState !== 'dirty'}
       tocDisabled={!activeFile}
       tocItems={tocItems}
-      requestAction={unsavedGuard.request}
+      requestAction={navigationGuard}
     >
       {activeFile && (
         <EditorToolbar
           editor={editor}
           fileId={activeFile?.id}
           isDirty={saveState === 'dirty'}
-          requestAction={unsavedGuard.request}
+          requestAction={navigationGuard}
         />
       )}
 

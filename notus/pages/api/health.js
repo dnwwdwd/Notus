@@ -2,6 +2,7 @@ const fs = require('fs');
 const { getRuntimeStatus } = require('../../lib/runtime');
 const { readEnvConfig } = require('../../lib/config');
 const { getTokenizerStatus } = require('../../lib/tokenizer');
+const { version: appVersion } = require('../../package.json');
 
 export default function handler(req, res) {
   if (req.method !== 'GET') {
@@ -15,7 +16,7 @@ export default function handler(req, res) {
 
   return res.status(ok ? 200 : 503).json({
     status: ok ? 'ok' : 'error',
-    version: '0.1.0',
+    version: appVersion,
     runtime: {
       ok: runtime.ok,
       vec_available: runtime.vecAvailable,

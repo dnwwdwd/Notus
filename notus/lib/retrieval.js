@@ -28,6 +28,11 @@ function normalizeFileIds(value) {
   return normalized;
 }
 
+function normalizePositiveId(value) {
+  const next = Number(value);
+  return Number.isFinite(next) && next > 0 ? next : null;
+}
+
 async function queryEmbedding(query) {
   try {
     return await getEmbedding(query);
@@ -112,6 +117,57 @@ function mergeTextCandidates(byChunk, vecRows, ftsRows, rrfK) {
   });
 }
 
+function isHeadingChunk(chunk) {
+  return chunk?.type === 'heading';
+}
+
+function findSectionBodyChunk(db, chunk) {
+  if (!chunk?.file_id || !chunk?.heading_path || !Number.isFinite(Number(chunk.position))) return null;
+
+  return db.prepare(`
+    SELECT id, content, type, position, line_start, line_end, heading_path
+    FROM chunks
+    WHERE file_id = ?
+      AND heading_path = ?
+      AND position > ?
+      AND type != 'heading'
+    ORDER BY position ASC
+    LIMIT 1
+  `).get(chunk.file_id, chunk.heading_path, Number(chunk.position));
+}
+
+function promoteHeadingMatches(db, chunks = []) {
+  return (Array.isArray(chunks) ? chunks : [])
+    .map((chunk) => {
+      if (!isHeadingChunk(chunk)) return chunk;
+
+      const sectionBody = findSectionBodyChunk(db, chunk);
+      if (sectionBody) {
+        return {
+          ...chunk,
+          chunk_id: sectionBody.id,
+          content: sectionBody.content,
+          preview: sectionBody.content.slice(0, 80),
+          type: sectionBody.type,
+          position: sectionBody.position,
+          line_start: sectionBody.line_start,
+          line_end: sectionBody.line_end,
+          promoted_from_heading: true,
+          original_chunk_id: chunk.chunk_id,
+          original_line_start: chunk.line_start,
+          original_line_end: chunk.line_end,
+        };
+      }
+
+      return {
+        ...chunk,
+        weak_heading_match: true,
+        score: Math.max(0, Number(chunk.score || 0) - 0.12),
+      };
+    })
+    .filter((chunk) => !(chunk?.weak_heading_match && Number(chunk.score || 0) <= 0));
+}
+
 function attachImageCandidates(byChunk, imageRows, imageMap, rrfK) {
   imageRows.forEach((row) => {
     const image = imageMap.get(row.image_id);
@@ -187,6 +243,7 @@ async function hybridSearch(query, opts = {}) {
       c.id,
       c.content,
       c.type,
+      c.position,
       c.heading_path,
       c.line_start,
       c.line_end,
@@ -224,6 +281,8 @@ async function hybridSearch(query, opts = {}) {
         file_title: row.file_title || row.file_path,
         file_path: row.file_path,
         content: row.content,
+        type: row.type,
+        position: row.position,
         heading_path: row.heading_path || '',
         line_start: row.line_start,
         line_end: row.line_end,
@@ -244,6 +303,163 @@ async function hybridSearch(query, opts = {}) {
     .slice(0, topK);
 }
 
+function dedupeChunks(chunks = []) {
+  const byId = new Map();
+  chunks.forEach((chunk) => {
+    if (!chunk?.chunk_id) return;
+    const existing = byId.get(chunk.chunk_id);
+    if (!existing || Number(chunk.score || 0) > Number(existing.score || 0)) {
+      byId.set(chunk.chunk_id, chunk);
+    }
+  });
+  return [...byId.values()];
+}
+
+function boostCurrentFileChunks(chunks = [], activeFileId) {
+  if (!activeFileId) return chunks;
+  return chunks.map((chunk) => (
+    Number(chunk.file_id) === Number(activeFileId)
+      ? { ...chunk, score: Number(chunk.score || 0) + 0.25, current_file_priority: true }
+      : chunk
+  ));
+}
+
+function sortChunks(chunks = []) {
+  return [...chunks].sort((left, right) => {
+    if (Boolean(right.current_file_priority) !== Boolean(left.current_file_priority)) {
+      return Number(right.current_file_priority) - Number(left.current_file_priority);
+    }
+    return Number(right.score || 0) - Number(left.score || 0);
+  });
+}
+
+function quoteFromChunk(chunk) {
+  return {
+    chunk_id: chunk.chunk_id,
+    preview: chunk.preview,
+    content: chunk.content,
+    line_start: chunk.line_start,
+    line_end: chunk.line_end,
+    score: Number(chunk.score || 0),
+    source: chunk.source,
+  };
+}
+
+function buildSectionGroups(chunks = [], options = {}) {
+  const maxSections = Number(options.maxSections || 6);
+  const maxQuotesPerSection = Number(options.maxQuotesPerSection || 2);
+  const groups = new Map();
+
+  chunks.forEach((chunk) => {
+    const key = `${chunk.file_id}::${chunk.heading_path || '正文'}`;
+    const current = groups.get(key) || {
+      key,
+      file_id: chunk.file_id,
+      file_title: chunk.file_title,
+      file_path: chunk.file_path,
+      heading_path: chunk.heading_path || '',
+      line_start: chunk.line_start,
+      line_end: chunk.line_end,
+      score: Number(chunk.score || 0),
+      current_file_priority: Boolean(chunk.current_file_priority),
+      quotes: [],
+    };
+
+    current.score = Math.max(current.score, Number(chunk.score || 0));
+    current.current_file_priority = current.current_file_priority || Boolean(chunk.current_file_priority);
+    current.line_start = current.line_start && chunk.line_start
+      ? Math.min(current.line_start, chunk.line_start)
+      : (current.line_start || chunk.line_start || null);
+    current.line_end = current.line_end && chunk.line_end
+      ? Math.max(current.line_end, chunk.line_end)
+      : (current.line_end || chunk.line_end || null);
+
+    if (!current.quotes.some((item) => item.chunk_id === chunk.chunk_id)) {
+      current.quotes.push(quoteFromChunk(chunk));
+    }
+
+    groups.set(key, current);
+  });
+
+  return [...groups.values()]
+    .map((section) => ({
+      ...section,
+      quotes: section.quotes
+        .sort((left, right) => Number(right.score || 0) - Number(left.score || 0))
+        .slice(0, maxQuotesPerSection),
+    }))
+    .sort((left, right) => {
+      if (Boolean(right.current_file_priority) !== Boolean(left.current_file_priority)) {
+        return Number(right.current_file_priority) - Number(left.current_file_priority);
+      }
+      return Number(right.score || 0) - Number(left.score || 0);
+    })
+    .slice(0, maxSections);
+}
+
+function buildRetrievalStats(chunks = [], sections = []) {
+  const bestScore = chunks.reduce((max, chunk) => Math.max(max, Number(chunk.score || 0)), 0);
+  return {
+    chunk_count: chunks.length,
+    section_count: sections.length,
+    file_count: new Set(chunks.map((chunk) => chunk.file_id)).size,
+    best_score: bestScore,
+  };
+}
+
+function hasSufficientEvidence(chunks = [], sections = [], stats = {}) {
+  if (sections.length === 0) return false;
+  if (chunks.length < 2 && sections.length < 1) return false;
+  if (Number(stats.best_score || 0) < 0.015) return false;
+  return true;
+}
+
+async function retrieveKnowledgeContext(query, opts = {}) {
+  const activeFileId = normalizePositiveId(opts.activeFileId || opts.active_file_id);
+  const requestedFileIds = normalizeFileIds(opts.fileIds || opts.file_ids);
+  const restrictToFileIds = Boolean(opts.restrictToFileIds || opts.restrict_to_file_ids);
+  const topK = Number(opts.topK || opts.top_k || 5);
+  const db = getDb();
+
+  const preferredChunks = activeFileId
+    ? await hybridSearch(query, {
+      ...opts,
+      topK: Math.max(3, Math.min(topK, 5)),
+      vecThreshold: Math.min(Number(opts.vecThreshold || opts.vec_threshold || 0.5), 0.25),
+      fileIds: [activeFileId],
+    })
+    : [];
+
+  const supplementalFileIds = activeFileId
+    ? requestedFileIds.filter((fileId) => fileId !== activeFileId)
+    : requestedFileIds;
+  const shouldSearchSupplement = !restrictToFileIds || supplementalFileIds.length > 0;
+  const supplementalChunks = shouldSearchSupplement
+    ? await hybridSearch(query, {
+      ...opts,
+      topK: activeFileId ? topK + 2 : topK,
+      fileIds: supplementalFileIds.length > 0 ? supplementalFileIds : (restrictToFileIds ? [] : undefined),
+    })
+    : [];
+
+  const rankedChunks = sortChunks(dedupeChunks([
+    ...boostCurrentFileChunks(preferredChunks, activeFileId),
+    ...supplementalChunks,
+  ]));
+  const chunks = sortChunks(dedupeChunks(promoteHeadingMatches(db, rankedChunks))).slice(0, topK);
+  const sections = buildSectionGroups(chunks, opts);
+  const stats = buildRetrievalStats(chunks, sections);
+  const sufficiency = hasSufficientEvidence(chunks, sections, stats);
+
+  return {
+    chunks,
+    sections,
+    stats,
+    sufficiency,
+  };
+}
+
 module.exports = {
   hybridSearch,
+  retrieveKnowledgeContext,
 };

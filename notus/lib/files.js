@@ -336,7 +336,7 @@ function renameFile(oldPath, newPath) {
   const newTarget = resolveInside(config.notesDir, ensureMarkdownPath(newPath));
   fs.mkdirSync(path.dirname(newTarget.absolutePath), { recursive: true });
   fs.renameSync(oldTarget.absolutePath, newTarget.absolutePath);
-  getDb().prepare('UPDATE files SET path = ?, title = ?, updated_at = datetime("now") WHERE path = ?')
+  getDb().prepare("UPDATE files SET path = ?, title = ?, updated_at = datetime('now') WHERE path = ?")
     .run(newTarget.relativePath, getBaseName(newTarget.relativePath).replace(/\.md$/i, ''), oldTarget.relativePath);
   return upsertFileRecord(newTarget.relativePath, readMarkdownFile(newTarget.relativePath), 0);
 }

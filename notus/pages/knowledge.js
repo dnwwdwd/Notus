@@ -239,6 +239,8 @@ export default function KnowledgePage() {
         onResolved: (matched) => {
           if (!matched) {
             setActiveCitationSelection(null);
+            clearPendingCitation();
+            toast('无法定位到来源段落，文档内容可能已变更', 'warning');
             return;
           }
           setActiveCitationTarget(target);
@@ -246,7 +248,7 @@ export default function KnowledgePage() {
         },
       }
     );
-  }, [activeFile?.id, clearPendingCitation, docContent, docError, docLoading, editor, editorReadyFileId, pendingCitation]);
+  }, [activeFile?.id, clearPendingCitation, docContent, docError, docLoading, editor, editorReadyFileId, pendingCitation, toast]);
 
   useEffect(() => {
     if (!editor || !activeFile?.id) return;

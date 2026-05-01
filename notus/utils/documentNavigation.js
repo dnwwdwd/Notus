@@ -23,7 +23,7 @@ function previewFromLines(markdown, lineStart, lineEnd) {
   const end = Number(lineEnd);
   if (!Number.isFinite(start) || !Number.isFinite(end) || start <= 0 || end < start) return '';
   const lines = String(markdown || '').split('\n');
-  return normalizeText(lines.slice(start - 1, end).join(' '));
+  return normalizeText(lines.slice(start - 1, end).join('\n'));
 }
 
 function getMarkdownLines(markdown) {
@@ -230,12 +230,12 @@ function scoreCandidateNode(node, previews = [], options = {}) {
 function collectScopedCandidates(root, headingMatch) {
   if (!root) return [];
   if (!headingMatch) {
-    return [...root.querySelectorAll('h1,h2,h3,h4,h5,h6,p,blockquote,li,pre,td,th')];
+    return [...root.querySelectorAll('h1,h2,h3,h4,h5,h6,p,blockquote,ul,ol,li,pre,td,th')];
   }
 
   const level = getHeadingLevel(headingMatch);
   if (!level) {
-    return [headingMatch, ...headingMatch.querySelectorAll('h1,h2,h3,h4,h5,h6,p,blockquote,li,pre,td,th')];
+    return [headingMatch, ...headingMatch.querySelectorAll('h1,h2,h3,h4,h5,h6,p,blockquote,ul,ol,li,pre,td,th')];
   }
 
   const candidates = [];
@@ -247,12 +247,12 @@ function collectScopedCandidates(root, headingMatch) {
       if (currentLevel && currentLevel <= level) break;
     }
 
-    if (current.matches?.('h1,h2,h3,h4,h5,h6,p,blockquote,li,pre,td,th')) {
+    if (current.matches?.('h1,h2,h3,h4,h5,h6,p,blockquote,ul,ol,li,pre,td,th')) {
       candidates.push(current);
     }
 
     if (current.querySelectorAll) {
-      candidates.push(...current.querySelectorAll('h1,h2,h3,h4,h5,h6,p,blockquote,li,pre,td,th'));
+      candidates.push(...current.querySelectorAll('h1,h2,h3,h4,h5,h6,p,blockquote,ul,ol,li,pre,td,th'));
     }
 
     current = current.nextElementSibling;
@@ -266,6 +266,23 @@ function findFallbackBodyCandidate(candidates = []) {
     if (!node || /^H[1-6]$/i.test(node.tagName || '')) return false;
     return Boolean(normalizeText(node.textContent));
   }) || null;
+}
+
+function naiveSubstringSearch(root, previews = []) {
+  if (!root || previews.length === 0) return null;
+  const candidates = [...root.querySelectorAll('h1,h2,h3,h4,h5,h6,p,blockquote,ul,ol,li,pre,td,th')];
+
+  for (const preview of previews) {
+    if (!preview || preview.length < 4) continue;
+    const shortPreview = preview.length > 30 ? preview.slice(0, 30) : preview;
+
+    for (const node of candidates) {
+      const text = normalizeText(node?.textContent);
+      if (text && text.includes(shortPreview)) return node;
+    }
+  }
+
+  return null;
 }
 
 function findBestMatchElement(editor, options = {}) {
@@ -314,7 +331,9 @@ function findBestMatchElement(editor, options = {}) {
 
   if (bestScore > 0 && bestNode) return bestNode;
   if (preferBodyCandidate && bestBodyFallback) return bestBodyFallback;
-  return bestHeadingMatch;
+  if (bestHeadingMatch) return bestHeadingMatch;
+
+  return naiveSubstringSearch(root, previews);
 }
 
 function resolveCitationMatch(editor, options = {}) {

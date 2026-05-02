@@ -3,6 +3,29 @@ import { Icons } from '../ui/Icons';
 import { StreamingText } from '../ui/StreamingText';
 import { SourceCard } from '../ui/SourceCard';
 
+const ANSWER_MODE_META = {
+  clarify_needed: { label: '需澄清', tone: 'muted' },
+  weak_evidence: { label: '证据偏弱', tone: 'warn' },
+  conflicting_evidence: { label: '证据冲突', tone: 'warn' },
+  no_evidence: { label: '未找到证据', tone: 'muted' },
+};
+
+function answerModeBadgeStyle(tone = 'muted') {
+  if (tone === 'warn') {
+    return {
+      background: 'rgba(196, 120, 26, 0.12)',
+      color: 'var(--warning, #a65d00)',
+      border: '1px solid rgba(196, 120, 26, 0.18)',
+    };
+  }
+
+  return {
+    background: 'var(--bg-elevated)',
+    color: 'var(--text-tertiary)',
+    border: '1px solid var(--border-subtle)',
+  };
+}
+
 export const UserBubble = ({ children }) => (
   <div style={{ display: 'flex', justifyContent: 'flex-end', margin: '16px 0' }}>
     <div style={{
@@ -18,7 +41,7 @@ export const UserBubble = ({ children }) => (
   </div>
 );
 
-export const RetrievalStatus = ({ stage, sources = 3 }) => (
+export const RetrievalStatus = ({ stage, sources = 0 }) => (
   <div style={{
     display: 'flex',
     alignItems: 'center',
@@ -35,15 +58,27 @@ export const RetrievalStatus = ({ stage, sources = 3 }) => (
       <><Icons.search size={13} /><span>正在从笔记中检索相关段落…</span></>
     )}
     {stage === 'found' && (
-      <><Icons.check size={13} /><span>找到 {sources} 篇相关笔记 · 正在组织答案</span></>
+      <><Icons.check size={13} /><span>找到 {sources} 组相关证据 · 正在组织答案</span></>
     )}
     {stage === 'insufficient' && (
-      <><Icons.warn size={13} /><span>找到少量相关内容，但证据不足 · 只会给出保守结论</span></>
+      <><Icons.warn size={13} /><span>找到 {sources} 组相关证据，但证据还不够强 · 只会给出保守结论</span></>
     )}
   </div>
 );
 
-export const AiBubble = ({ text, streaming, citations, onCitationClick, citationSelection, messageId, children }) => (
+export const AiBubble = ({
+  text,
+  streaming,
+  citations,
+  onCitationClick,
+  citationSelection,
+  messageId,
+  answerMode,
+  children,
+}) => {
+  const modeMeta = ANSWER_MODE_META[answerMode] || null;
+
+  return (
   <div style={{ margin: '16px 0' }}>
     <div style={{
       display: 'flex',
@@ -55,6 +90,19 @@ export const AiBubble = ({ text, streaming, citations, onCitationClick, citation
     }}>
       <span style={{ color: 'var(--accent)' }}><Icons.sparkles size={13} /></span>
       <span>Notus</span>
+      {modeMeta && (
+        <span style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          padding: '2px 8px',
+          borderRadius: 999,
+          fontSize: 11,
+          lineHeight: 1.2,
+          ...answerModeBadgeStyle(modeMeta.tone),
+        }}>
+          {modeMeta.label}
+        </span>
+      )}
     </div>
     {text !== undefined
       ? <StreamingText text={text} streaming={streaming} />
@@ -82,4 +130,5 @@ export const AiBubble = ({ text, streaming, citations, onCitationClick, citation
       </div>
     )}
   </div>
-);
+  );
+};

@@ -24,12 +24,19 @@ export function mapConversationMessages(messages = [], kind = 'knowledge') {
     .filter((message) => message?.role === 'user' || message?.role === 'assistant')
     .map((message) => {
       const citations = Array.isArray(message.citations) ? message.citations : [];
+      const meta = message?.meta && typeof message.meta === 'object' ? message.meta : null;
+      const answerMode = kind === 'knowledge'
+        ? (meta?.answer_mode || (message.role === 'assistant'
+          ? (citations.length > 0 ? 'grounded' : 'no_evidence')
+          : null))
+        : null;
       return {
         id: message.id || `${message.role}-${Math.random().toString(16).slice(2)}`,
         role: message.role,
         content: String(message.content || ''),
         citations,
-        noContext: kind === 'knowledge' && message.role === 'assistant' && citations.length === 0,
+        meta,
+        answerMode,
       };
     });
 }

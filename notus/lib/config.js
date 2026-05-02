@@ -1,9 +1,6 @@
-const path = require('path');
+const { getPlatformProfile } = require('./platform/profile');
 
 const DEFAULTS = {
-  notesDir: './notes',
-  assetsDir: './notes/.assets',
-  dbPath: './notus.db',
   logLevel: 'info',
   embeddingBatchSize: 20,
   embeddingProvider: 'qwen',
@@ -20,6 +17,15 @@ const DEFAULTS = {
   llmMaxOutputTokens: 32768,
   vecScoreThreshold: 0.5,
   topK: 5,
+  knowledgeEnableClarify: true,
+  knowledgeEnableConditionalRerank: true,
+  knowledgeEnableWeakEvidenceSupplement: true,
+  knowledgeEnableConflictMode: true,
+  canvasEnableStyleExtraction: true,
+  canvasEnableArticleAnalysis: false,
+  canvasGlobalEditSoftMaxBlocks: 12,
+  canvasGlobalEditHardMaxBlocks: 20,
+  styleExtractionModel: '',
 };
 
 const PROVIDER_BASE_URLS = {
@@ -64,23 +70,25 @@ function cleanBaseUrl(value) {
   return String(value || '').replace(/\/+$/, '');
 }
 
-function absolutePath(value, fallback) {
-  const resolved = value || fallback;
-  return path.resolve(resolved);
-}
-
 function readEnvConfig() {
-  const notesDir = absolutePath(process.env.NOTES_DIR, DEFAULTS.notesDir);
-  const assetsDir = absolutePath(process.env.ASSETS_DIR, DEFAULTS.assetsDir);
-  const dbPath = absolutePath(process.env.DB_PATH, DEFAULTS.dbPath);
+  const platform = getPlatformProfile();
+  const notesDir = platform.paths.notesDir;
+  const assetsDir = platform.paths.assetsDir;
+  const dbPath = platform.paths.dbPath;
   const embeddingProvider = process.env.EMBEDDING_PROVIDER || DEFAULTS.embeddingProvider;
   const llmProvider = process.env.LLM_PROVIDER || DEFAULTS.llmProvider;
 
   return {
+    runtimeTarget: platform.runtimeTarget,
+    dataRoot: platform.dataRoot,
+    storageMode: platform.storageMode,
+    canAutoPurgeOnUninstall: platform.canAutoPurgeOnUninstall,
+    capabilities: platform.capabilities,
     notesDir,
     assetsDir,
     dbPath,
-    logDir: absolutePath(process.env.LOG_DIR, path.join(path.dirname(dbPath), 'logs')),
+    logDir: platform.paths.logDir,
+    sessionDir: platform.paths.sessionDir,
     logLevel: String(process.env.LOG_LEVEL || DEFAULTS.logLevel).trim().toLowerCase(),
     embeddingBatchSize: numberFromEnv(process.env.EMBEDDING_BATCH_SIZE, DEFAULTS.embeddingBatchSize),
 
@@ -117,6 +125,39 @@ function readEnvConfig() {
 
     vecScoreThreshold: floatFromEnv(process.env.VEC_SCORE_THRESHOLD, DEFAULTS.vecScoreThreshold),
     topK: numberFromEnv(process.env.TOP_K, DEFAULTS.topK),
+    knowledgeEnableClarify: booleanFromEnv(
+      process.env.KNOWLEDGE_ENABLE_CLARIFY,
+      DEFAULTS.knowledgeEnableClarify
+    ),
+    knowledgeEnableConditionalRerank: booleanFromEnv(
+      process.env.KNOWLEDGE_ENABLE_CONDITIONAL_RERANK,
+      DEFAULTS.knowledgeEnableConditionalRerank
+    ),
+    knowledgeEnableWeakEvidenceSupplement: booleanFromEnv(
+      process.env.KNOWLEDGE_ENABLE_WEAK_EVIDENCE_SUPPLEMENT,
+      DEFAULTS.knowledgeEnableWeakEvidenceSupplement
+    ),
+    knowledgeEnableConflictMode: booleanFromEnv(
+      process.env.KNOWLEDGE_ENABLE_CONFLICT_MODE,
+      DEFAULTS.knowledgeEnableConflictMode
+    ),
+    canvasEnableStyleExtraction: booleanFromEnv(
+      process.env.CANVAS_ENABLE_STYLE_EXTRACTION,
+      DEFAULTS.canvasEnableStyleExtraction
+    ),
+    canvasEnableArticleAnalysis: booleanFromEnv(
+      process.env.CANVAS_ENABLE_ARTICLE_ANALYSIS,
+      DEFAULTS.canvasEnableArticleAnalysis
+    ),
+    canvasGlobalEditSoftMaxBlocks: numberFromEnv(
+      process.env.CANVAS_GLOBAL_EDIT_SOFT_MAX_BLOCKS,
+      DEFAULTS.canvasGlobalEditSoftMaxBlocks
+    ),
+    canvasGlobalEditHardMaxBlocks: numberFromEnv(
+      process.env.CANVAS_GLOBAL_EDIT_HARD_MAX_BLOCKS,
+      DEFAULTS.canvasGlobalEditHardMaxBlocks
+    ),
+    styleExtractionModel: String(process.env.STYLE_EXTRACTION_MODEL || DEFAULTS.styleExtractionModel).trim(),
   };
 }
 
@@ -124,8 +165,8 @@ function applySettings(baseConfig, settings = {}) {
   const next = { ...baseConfig };
   const map = settings || {};
 
-  if (map.notes_dir) next.notesDir = absolutePath(map.notes_dir, next.notesDir);
-  if (map.assets_dir) next.assetsDir = absolutePath(map.assets_dir, next.assetsDir);
+  if (map.notes_dir) next.notesDir = map.notes_dir;
+  if (map.assets_dir) next.assetsDir = map.assets_dir;
 
   if (map.embedding_provider) next.embeddingProvider = map.embedding_provider;
   if (map.embedding_model) next.embeddingModel = map.embedding_model;
@@ -153,6 +194,56 @@ function applySettings(baseConfig, settings = {}) {
   }
   if (map.llm_max_output_tokens) {
     next.llmMaxOutputTokens = numberFromEnv(map.llm_max_output_tokens, next.llmMaxOutputTokens);
+  }
+
+  if (map.knowledge_enable_clarify !== undefined) {
+    next.knowledgeEnableClarify = booleanFromEnv(map.knowledge_enable_clarify, next.knowledgeEnableClarify);
+  }
+  if (map.knowledge_enable_conditional_rerank !== undefined) {
+    next.knowledgeEnableConditionalRerank = booleanFromEnv(
+      map.knowledge_enable_conditional_rerank,
+      next.knowledgeEnableConditionalRerank
+    );
+  }
+  if (map.knowledge_enable_weak_evidence_supplement !== undefined) {
+    next.knowledgeEnableWeakEvidenceSupplement = booleanFromEnv(
+      map.knowledge_enable_weak_evidence_supplement,
+      next.knowledgeEnableWeakEvidenceSupplement
+    );
+  }
+  if (map.knowledge_enable_conflict_mode !== undefined) {
+    next.knowledgeEnableConflictMode = booleanFromEnv(
+      map.knowledge_enable_conflict_mode,
+      next.knowledgeEnableConflictMode
+    );
+  }
+
+  if (map.canvas_enable_style_extraction !== undefined) {
+    next.canvasEnableStyleExtraction = booleanFromEnv(
+      map.canvas_enable_style_extraction,
+      next.canvasEnableStyleExtraction
+    );
+  }
+  if (map.canvas_enable_article_analysis !== undefined) {
+    next.canvasEnableArticleAnalysis = booleanFromEnv(
+      map.canvas_enable_article_analysis,
+      next.canvasEnableArticleAnalysis
+    );
+  }
+  if (map.canvas_global_edit_soft_max_blocks !== undefined) {
+    next.canvasGlobalEditSoftMaxBlocks = numberFromEnv(
+      map.canvas_global_edit_soft_max_blocks,
+      next.canvasGlobalEditSoftMaxBlocks
+    );
+  }
+  if (map.canvas_global_edit_hard_max_blocks !== undefined) {
+    next.canvasGlobalEditHardMaxBlocks = numberFromEnv(
+      map.canvas_global_edit_hard_max_blocks,
+      next.canvasGlobalEditHardMaxBlocks
+    );
+  }
+  if (map.style_extraction_model !== undefined) {
+    next.styleExtractionModel = String(map.style_extraction_model || '').trim();
   }
 
   return next;

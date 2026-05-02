@@ -130,6 +130,20 @@ function migrateRegularTables(database) {
     }
   });
 
+  const messageColumns = [
+    ['meta', 'TEXT'],
+  ];
+
+  messageColumns.forEach(([column, definition]) => {
+    if (!hasColumn(database, 'messages', column)) {
+      database.exec(`ALTER TABLE messages ADD COLUMN ${column} ${definition};`);
+    }
+  });
+
+  if (!hasColumn(database, 'files', 'hash')) {
+    database.exec("ALTER TABLE files ADD COLUMN hash TEXT;");
+  }
+
   const rows = database.prepare(`
     SELECT id, model, context_window_tokens, max_output_tokens
     FROM llm_configs
@@ -205,6 +219,7 @@ function migrateIncompatibleTables(database) {
         role            TEXT NOT NULL CHECK(role IN ('user','assistant','tool')),
         content         TEXT NOT NULL,
         citations       TEXT,
+        meta            TEXT,
         created_at      TEXT DEFAULT (datetime('now'))
       );
       CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, created_at);
@@ -242,6 +257,43 @@ function recreateFts(database) {
 
     INSERT INTO chunks_fts(rowid, content, search_text)
     SELECT id, content, search_text FROM chunks;
+  `);
+}
+
+function recreateFilesFts(database) {
+  database.exec(`
+    DROP TRIGGER IF EXISTS files_ai;
+    DROP TRIGGER IF EXISTS files_ad;
+    DROP TRIGGER IF EXISTS files_au;
+    DROP TABLE IF EXISTS files_fts;
+
+    CREATE VIRTUAL TABLE files_fts USING fts5(
+      title,
+      path,
+      tokenize='unicode61'
+    );
+
+    CREATE TRIGGER files_ai AFTER INSERT ON files BEGIN
+      INSERT INTO files_fts(rowid, title, path)
+      VALUES (new.id, new.title, new.path);
+    END;
+
+    CREATE TRIGGER files_ad AFTER DELETE ON files BEGIN
+      DELETE FROM files_fts WHERE rowid = old.id;
+    END;
+
+    CREATE TRIGGER files_au AFTER UPDATE ON files BEGIN
+      DELETE FROM files_fts WHERE rowid = old.id;
+      INSERT INTO files_fts(rowid, title, path)
+      VALUES (new.id, new.title, new.path);
+    END;
+
+    INSERT INTO files_fts(rowid, title, path)
+    SELECT
+      id,
+      title,
+      path
+    FROM files;
   `);
 }
 
@@ -328,6 +380,7 @@ function initDb() {
         role            TEXT NOT NULL CHECK(role IN ('user','assistant','tool')),
         content         TEXT NOT NULL,
         citations       TEXT,
+        meta            TEXT,
         created_at      TEXT DEFAULT (datetime('now'))
       );
       CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, created_at);
@@ -355,6 +408,73 @@ function initDb() {
       );
       CREATE INDEX IF NOT EXISTS idx_llm_configs_active ON llm_configs(is_active);
       CREATE INDEX IF NOT EXISTS idx_llm_configs_updated_at ON llm_configs(updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS style_fingerprints (
+        id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+        file_id                INTEGER UNIQUE NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+        file_hash              TEXT,
+        sentence_style         TEXT,
+        tone                   TEXT,
+        structure              TEXT,
+        vocabulary             TEXT,
+        rhetoric               TEXT,
+        signature_phrases_json TEXT,
+        raw_response           TEXT,
+        status                 TEXT NOT NULL DEFAULT 'pending',
+        retry_count            INTEGER NOT NULL DEFAULT 0,
+        last_error             TEXT,
+        model_used             TEXT,
+        created_at             TEXT DEFAULT (datetime('now')),
+        updated_at             TEXT DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_style_fingerprints_status ON style_fingerprints(status, updated_at ASC);
+
+      CREATE TABLE IF NOT EXISTS style_profile (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        summary_json  TEXT NOT NULL,
+        source_count  INTEGER NOT NULL DEFAULT 0,
+        updated_at    TEXT DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_style_profile_updated_at ON style_profile(updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS canvas_operation_sets (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        file_id         INTEGER REFERENCES files(id) ON DELETE SET NULL,
+        message_id      INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+        article_hash    TEXT NOT NULL,
+        mode            TEXT NOT NULL,
+        operations_json TEXT NOT NULL,
+        status          TEXT NOT NULL DEFAULT 'pending',
+        expires_at      TEXT,
+        created_at      TEXT DEFAULT (datetime('now')),
+        updated_at      TEXT DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_canvas_operation_sets_conversation_status
+        ON canvas_operation_sets(conversation_id, status, updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS conversation_interactions (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        conversation_id   INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        message_id        INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+        kind              TEXT NOT NULL,
+        source            TEXT NOT NULL,
+        status            TEXT NOT NULL DEFAULT 'pending',
+        schema_version    INTEGER NOT NULL DEFAULT 1,
+        reason_code       TEXT NOT NULL,
+        article_hash      TEXT NOT NULL,
+        payload_json      TEXT NOT NULL,
+        response_json     TEXT,
+        answer_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+        expires_at        TEXT,
+        created_at        TEXT DEFAULT (datetime('now')),
+        updated_at        TEXT DEFAULT (datetime('now')),
+        answered_at       TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_conversation_interactions_conversation_status
+        ON conversation_interactions(conversation_id, status, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_conversation_interactions_message
+        ON conversation_interactions(message_id);
     `);
 
     migrateRegularTables(db);
@@ -363,6 +483,7 @@ function initDb() {
     createVecTable(db, config.embeddingDim);
     createImageVecTable(db, config.embeddingDim);
     recreateFts(db);
+    recreateFilesFts(db);
 
     initError = null;
     return db;

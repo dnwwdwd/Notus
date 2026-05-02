@@ -32,6 +32,37 @@ function getAncestorPaths(targetPath) {
   return parts.slice(0, -1).map((_, index) => parts.slice(0, index + 1).join('/'));
 }
 
+function getTopLevelFolderPath(targetPath) {
+  const parts = String(targetPath || '').split('/').filter(Boolean);
+  if (parts.length <= 1) return '';
+  return parts[0];
+}
+
+function normalizeImportedPaths(paths = []) {
+  return [...new Set(
+    (Array.isArray(paths) ? paths : [])
+      .map((item) => String(item || '').replace(/\\/g, '/').trim().replace(/^\/+|\/+$/g, ''))
+      .filter(Boolean)
+  )];
+}
+
+function collectImportedFolderPaths(paths = [], options = {}) {
+  const normalizedPaths = normalizeImportedPaths(paths);
+  const folders = new Set();
+
+  normalizedPaths.forEach((targetPath) => {
+    if (options.rootsOnly) {
+      const rootFolder = getTopLevelFolderPath(targetPath);
+      if (rootFolder) folders.add(rootFolder);
+      return;
+    }
+
+    getAncestorPaths(targetPath).forEach((folderPath) => folders.add(folderPath));
+  });
+
+  return [...folders];
+}
+
 function readCachedTree() {
   if (typeof window === 'undefined') return [];
   try {
@@ -326,6 +357,38 @@ export function AppProvider({ children }) {
     return payload;
   }, [refreshFiles, selectFile]);
 
+  const syncImportedPaths = useCallback(async (paths = [], options = {}) => {
+    const normalizedPaths = normalizeImportedPaths(paths);
+    const nextTree = await refreshFiles({ background: false });
+
+    if (normalizedPaths.length === 0) {
+      return nextTree;
+    }
+
+    const folderPaths = collectImportedFolderPaths(normalizedPaths, {
+      rootsOnly: Boolean(options.rootsOnly),
+    });
+
+    if (folderPaths.length > 0) {
+      setOpenFolders((prev) => {
+        const next = new Set(prev);
+        folderPaths.forEach((folderPath) => next.add(folderPath));
+        persistWorkspaceState({ openFolders: [...next] });
+        return next;
+      });
+    }
+
+    if (options.selectPath) {
+      const targetPath = String(options.selectPath || '');
+      const nextActiveFile = flattenTree(nextTree).find((item) => item.type === 'file' && item.path === targetPath);
+      if (nextActiveFile) {
+        selectFile(nextActiveFile);
+      }
+    }
+
+    return nextTree;
+  }, [persistWorkspaceState, refreshFiles, selectFile]);
+
   return (
     <AppContext.Provider
       value={{
@@ -357,6 +420,7 @@ export function AppProvider({ children }) {
         setPendingCitation: setPendingCitationState,
         createFile,
         createFolder,
+        syncImportedPaths,
         getCachedContent,
         setCachedContent,
         clearCachedContent,

@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 
 const GAP = 8;
 
-export const Tooltip = ({ content, children }) => {
+export const Tooltip = ({ content, children, placement = 'top', gap = GAP }) => {
   const triggerRef = useRef(null);
   const [open, setOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
@@ -22,13 +22,15 @@ export const Tooltip = ({ content, children }) => {
 
       const rect = trigger.getBoundingClientRect();
       const centerX = rect.left + rect.width / 2;
-      const top = Math.max(GAP, rect.top - GAP);
+      const top = placement === 'bottom'
+        ? Math.min(window.innerHeight - gap, rect.bottom + gap)
+        : Math.max(gap, rect.top - gap);
       const left = Math.min(
         Math.max(centerX, 12),
         window.innerWidth - 12
       );
 
-      setPosition({ top, left });
+      setPosition({ top, left, placement });
     };
 
     updatePosition();
@@ -39,7 +41,7 @@ export const Tooltip = ({ content, children }) => {
       window.removeEventListener('scroll', updatePosition, true);
       window.removeEventListener('resize', updatePosition);
     };
-  }, [open]);
+  }, [gap, open, placement]);
 
   return (
     <>
@@ -60,7 +62,7 @@ export const Tooltip = ({ content, children }) => {
             position: 'fixed',
             top: position.top,
             left: position.left,
-            transform: 'translate(-50%, -100%)',
+            transform: position.placement === 'bottom' ? 'translate(-50%, 0)' : 'translate(-50%, -100%)',
             zIndex: 1400,
             background: 'var(--text-primary)',
             color: 'var(--bg-elevated)',

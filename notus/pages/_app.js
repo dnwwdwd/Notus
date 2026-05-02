@@ -8,6 +8,7 @@ import { ToastProvider } from '../components/ui/Toast';
 import { PageTransitionOverlay } from '../components/ui/PageTransitionOverlay';
 import { AppProvider } from '../contexts/AppContext';
 import { AppStatusProvider } from '../contexts/AppStatusContext';
+import { PlatformProvider } from '../contexts/PlatformContext';
 import { ShortcutsProvider } from '../contexts/ShortcutsContext';
 
 const CORE_ROUTES = ['/files', '/knowledge', '/canvas', '/settings/model'];
@@ -57,18 +58,21 @@ export default function App({ Component, pageProps }) {
         <meta name="application-name" content="Notus" />
         <meta name="description" content="私有化个人知识库与 AI 写作协作工具" />
         <meta name="theme-color" content="#C15F3C" />
-        <link rel="icon" href="/notus-logo.svg" type="image/svg+xml" />
+        <link rel="icon" href="/logo.png" type="image/png" />
+        <link rel="apple-touch-icon" href="/logo.png" />
       </Head>
       <ShortcutsProvider>
-        <AppStatusProvider>
-          <AppProvider>
-            <ToastProvider>
-              <CoreRoutePrefetcher />
-              <PageTransitionOverlay />
-              <Component {...pageProps} />
-            </ToastProvider>
-          </AppProvider>
-        </AppStatusProvider>
+        <PlatformProvider>
+          <AppStatusProvider>
+            <AppProvider>
+              <ToastProvider>
+                <CoreRoutePrefetcher />
+                <PageTransitionOverlay />
+                <Component {...pageProps} />
+              </ToastProvider>
+            </AppProvider>
+          </AppStatusProvider>
+        </PlatformProvider>
       </ShortcutsProvider>
     </>
   );

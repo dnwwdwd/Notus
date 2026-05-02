@@ -1,12 +1,10 @@
 const { ensureRuntime } = require('../../../lib/runtime');
 const { getFileById } = require('../../../lib/files');
-const { hybridSearch, retrieveKnowledgeContext } = require('../../../lib/retrieval');
+const { retrieveKnowledgeContext } = require('../../../lib/retrieval');
 const { completeChat } = require('../../../lib/llm');
 const { buildOutlinePrompt } = require('../../../lib/prompt');
-const {
-  sanitizeKnowledgeSections,
-  sanitizeStyleSamples,
-} = require('../../../lib/contextCompaction');
+const { sanitizeKnowledgeSections } = require('../../../lib/contextCompaction');
+const { getStyleContext } = require('../../../lib/style');
 
 function send(res, payload) {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
@@ -53,28 +51,6 @@ function summarizeCurrentDocument(file) {
   };
 }
 
-async function loadStyleSamples(topic, options = {}) {
-  const activeFileId = Number(options.activeFileId) || null;
-  const styleMode = options.styleMode || 'auto';
-  const manualStyleFileIds = Array.isArray(options.styleFileIds) ? options.styleFileIds : [];
-
-  if (styleMode === 'manual') {
-    if (manualStyleFileIds.length === 0) return [];
-    return hybridSearch(topic, { topK: 6, fileIds: manualStyleFileIds });
-  }
-
-  const preferred = activeFileId
-    ? await hybridSearch(topic, { topK: 3, fileIds: [activeFileId], vecThreshold: 0.2 })
-    : [];
-  const supplemental = await hybridSearch(topic, { topK: 4 });
-  const byChunk = new Map();
-  [...preferred, ...supplemental].forEach((chunk) => {
-    if (!chunk?.chunk_id || byChunk.has(chunk.chunk_id)) return;
-    byChunk.set(chunk.chunk_id, chunk);
-  });
-  return [...byChunk.values()].slice(0, 6);
-}
-
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).end();
 
@@ -103,25 +79,21 @@ export default async function handler(req, res) {
       fileIds: referenceMode === 'manual' ? referenceFileIds : [],
       restrictToFileIds: referenceMode === 'manual',
     });
-    const styleSamples = await loadStyleSamples(topic, {
+    const styleContext = await getStyleContext(topic, {
+      articleTitle: currentDocument?.title || topic,
       activeFileId,
-      styleMode,
-      styleFileIds,
+      styleFileIds: styleMode === 'manual' ? styleFileIds : [],
     });
     const compactSections = sanitizeKnowledgeSections(factContext.sections, {
       sectionLimit: 3,
       quoteLimit: 2,
       quoteTokenBudget: 110,
     });
-    const compactStyleSamples = sanitizeStyleSamples(styleSamples, {
-      limit: 4,
-      contentTokenBudget: 150,
-    });
     const reply = await completeChat(
       buildOutlinePrompt(topic, {
         currentDocument,
         sections: compactSections,
-        styleSamples: compactStyleSamples,
+        styleContext,
       }),
       {
         temperature: 0.3,

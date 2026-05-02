@@ -9,7 +9,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test:platform": "node tests/platform.test.js",
+    "test:knowledge-routing": "node tests/knowledge-routing.test.js",
+    "test:knowledge-retrieval": "node tests/knowledge-retrieval.test.js"
   },
   "dependencies": {
     "@codemirror/commands": "^6.7.1",

@@ -36,30 +36,51 @@ function buildConnectivitySignature(draft) {
   });
 }
 
-function ConfigCard({ item, onEdit, onDelete, onSetDefault }) {
+function ConfigCard({ item, onEdit, onDelete, onSetDefault, compact = false }) {
   const providerLabel = resolveLlmProviderLabel(item.provider);
+  const shellTint = item.is_active ? 'rgba(193,95,60,0.08)' : 'rgba(255,255,255,0.72)';
   return (
     <div
       style={{
-        border: `1px solid ${item.is_active ? 'rgba(193,95,60,0.32)' : 'var(--border-subtle)'}`,
-        borderRadius: 'var(--radius-xl)',
-        background: item.is_active ? 'rgba(193,95,60,0.04)' : 'var(--bg-elevated)',
-        padding: 18,
+        border: `1px solid ${item.is_active ? 'rgba(193,95,60,0.26)' : 'var(--border-subtle)'}`,
+        borderRadius: 18,
+        background: `linear-gradient(180deg, ${shellTint} 0%, var(--bg-elevated) 100%)`,
+        boxShadow: item.is_active ? '0 10px 24px rgba(193,95,60,0.08)' : '0 8px 18px rgba(26,19,17,0.05)',
+        padding: compact ? 16 : 18,
         display: 'grid',
-        gap: 12,
+        gap: compact ? 10 : 12,
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
-        <div style={{ minWidth: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
-            <div style={{ fontSize: 'var(--text-base)', fontWeight: 600 }}>{item.name}</div>
-            {item.is_active ? <Badge tone="accent">默认配置</Badge> : null}
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: compact ? 'wrap' : 'nowrap' }}>
+        <div style={{ minWidth: 0, display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+          <div
+            style={{
+              width: compact ? 38 : 42,
+              height: compact ? 38 : 42,
+              borderRadius: 14,
+              background: item.is_active ? 'var(--accent-subtle)' : 'rgba(193,95,60,0.08)',
+              color: 'var(--accent)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0,
+            }}
+          >
+            <Icons.robot size={compact ? 18 : 20} />
           </div>
-          <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>
-            {item.model} · {providerLabel}
+          <div style={{ minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+              <div style={{ fontSize: compact ? 'var(--text-sm)' : 'var(--text-base)', fontWeight: 600 }}>{item.name}</div>
+              <Badge tone="default">{providerLabel}</Badge>
+            {item.is_active ? <Badge tone="accent">默认配置</Badge> : null}
+            {item.api_key_set ? <Badge tone="success">已保存密钥</Badge> : <Badge tone="warning">待补密钥</Badge>}
+          </div>
+            <div style={{ fontSize: compact ? 12 : 'var(--text-sm)', color: 'var(--text-secondary)', lineHeight: 1.65 }}>
+              直接连接你自己的模型服务，不经过中间代理。
+            </div>
           </div>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0, flexWrap: 'wrap' }}>
           {!item.is_active ? (
             <Button variant="ghost" size="sm" onClick={() => onSetDefault(item)}>
               设为默认
@@ -70,32 +91,39 @@ function ConfigCard({ item, onEdit, onDelete, onSetDefault }) {
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-        <div style={{ padding: '10px 12px', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-lg)', background: 'var(--bg-primary)' }}>
-          <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 4 }}>Base URL</div>
-          <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-primary)', wordBreak: 'break-all' }}>{item.base_url}</div>
+      <div style={{ display: 'grid', gridTemplateColumns: compact ? '1fr' : 'minmax(0, 0.95fr) minmax(0, 1.05fr)', gap: 10 }}>
+        <div style={{ padding: compact ? '11px 12px' : '12px 13px', border: '1px solid var(--border-subtle)', borderRadius: 14, background: 'var(--bg-primary)' }}>
+          <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 5 }}>模型名称</div>
+          <div style={{ fontSize: compact ? 12 : 'var(--text-sm)', color: 'var(--text-primary)', fontWeight: 600, wordBreak: 'break-all' }}>{item.model}</div>
         </div>
-        <div style={{ padding: '10px 12px', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-lg)', background: 'var(--bg-primary)' }}>
-          <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 4 }}>最近测试</div>
-          <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-primary)' }}>
-            {item.last_test_latency_ms ? `${item.last_test_latency_ms} ms` : '尚无记录'}
-          </div>
+        <div style={{ padding: compact ? '11px 12px' : '12px 13px', border: '1px solid var(--border-subtle)', borderRadius: 14, background: 'var(--bg-primary)' }}>
+          <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 5 }}>Base URL</div>
+          <div style={{ fontSize: compact ? 12 : 'var(--text-sm)', color: 'var(--text-primary)', wordBreak: 'break-all' }}>{item.base_url}</div>
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-        <div style={{ padding: '10px 12px', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-lg)', background: 'var(--bg-primary)' }}>
-          <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 4 }}>上下文窗口</div>
-          <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-primary)' }}>
-            {item.context_window_tokens ? `${item.context_window_tokens.toLocaleString()} tokens` : '保存后自动识别'}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 10,
+          flexWrap: 'wrap',
+          padding: compact ? '10px 12px' : '11px 13px',
+          borderRadius: 14,
+          background: item.is_active ? 'rgba(193,95,60,0.06)' : 'rgba(26,19,17,0.03)',
+          border: '1px solid var(--border-subtle)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+          <span style={{ color: item.is_active ? 'var(--accent)' : 'var(--text-tertiary)', display: 'inline-flex' }}>
+            <Icons.sparkles size={14} />
+          </span>
+          <div style={{ fontSize: compact ? 12 : 'var(--text-sm)', color: 'var(--text-secondary)', minWidth: 0 }}>
+            {item.is_active ? '当前知识库和创作页默认使用这套模型配置。' : '可切换为默认配置，供知识库和创作页直接调用。'}
           </div>
         </div>
-        <div style={{ padding: '10px 12px', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-lg)', background: 'var(--bg-primary)' }}>
-          <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 4 }}>默认输出上限</div>
-          <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-primary)' }}>
-            {item.max_output_tokens ? `${item.max_output_tokens.toLocaleString()} tokens` : '保存后自动识别'}
-          </div>
-        </div>
+        <Badge tone={item.api_key_set ? 'success' : 'warning'}>{item.api_key_set ? '配置完整' : '需补充 Key'}</Badge>
       </div>
     </div>
   );
@@ -308,6 +336,7 @@ export function LlmConfigCardsSection({
             <ConfigCard
               key={item.id}
               item={item}
+              compact={compact}
               onEdit={openEdit}
               onDelete={setPendingDelete}
               onSetDefault={async (target) => {
@@ -383,13 +412,6 @@ export function LlmConfigCardsSection({
             系统会根据 Base URL 和模型名自动识别兼容厂商，当前识别为：{resolvedProviderLabel}。
           </div>
 
-          <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', lineHeight: 1.7 }}>
-            上下文窗口和默认输出上限会在保存时按模型自动填充并持久化；如果模型未命中已知映射，将采用系统默认预算。
-            {draft.contextWindowTokens || draft.maxOutputTokens
-              ? ` 当前记录：${draft.contextWindowTokens ? `${draft.contextWindowTokens.toLocaleString()} tokens` : '未识别'} / ${draft.maxOutputTokens ? `${draft.maxOutputTokens.toLocaleString()} tokens` : '未识别'}。`
-              : ''}
-          </div>
-
           <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--text-sm)', color: 'var(--text-primary)' }}>
             <input
               type="checkbox"
@@ -421,7 +443,7 @@ export function LlmConfigCardsSection({
             {testState === 'loading'
               ? '正在测试当前 LLM 配置…'
               : testState === 'success' && testedSignature === connectivitySignature
-                ? `测试通过${draft.lastTestLatencyMs ? `，耗时 ${draft.lastTestLatencyMs} ms` : ''}。`
+                ? '测试通过，可以保存当前配置。'
                 : testError || '新增或修改配置后必须先测试通过，才能保存。'}
           </div>
         </div>

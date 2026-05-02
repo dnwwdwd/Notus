@@ -215,7 +215,7 @@ const FileRow = ({ item, isActive, onSelect, onToggle, onContextMenu }) => {
 export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, requestAction, navigateOnFileSelect = true }) => {
   const router = useRouter();
   const toast = useToast();
-  const { shortcuts, matchShortcut } = useShortcuts();
+  const { shortcuts, matchShortcut, displayShortcut } = useShortcuts();
   const importFileInputRef = useRef(null);
   const importDirectoryInputRef = useRef(null);
   const searchInputRef = useRef(null);
@@ -656,7 +656,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
 
   return (
     <div style={{
-      width: sidebarCollapsed ? 56 : width,
+      width: sidebarCollapsed ? 40 : width,
       background: 'var(--bg-sidebar)',
       borderRight: '1px solid var(--border-subtle)',
       display: 'flex',
@@ -1117,7 +1117,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
         height: 40,
         display: 'flex',
         alignItems: 'center',
-        padding: sidebarCollapsed ? '0 10px' : '0 6px',
+        padding: sidebarCollapsed ? '0 5px' : '0 6px',
         borderBottom: '1px solid var(--border-subtle)',
         gap: 2,
       }}>
@@ -1169,7 +1169,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
 
         <div style={{ flex: 1 }} />
 
-        <Tooltip content={sidebarCollapsed ? '展开侧边栏' : `收起侧边栏（${shortcuts.sidebarToggle.combo}）`}>
+        <Tooltip content={sidebarCollapsed ? '展开侧边栏' : `收起侧边栏（${displayShortcut(shortcuts.sidebarToggle.combo)}）`}>
           <button
             type="button"
             title={sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}

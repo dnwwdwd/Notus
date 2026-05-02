@@ -8,7 +8,9 @@ import { CanvasBlock, AddBlockButton } from '../components/Canvas/CanvasBlock';
 import { UserBubble, AiBubble } from '../components/ChatArea/ChatMessage';
 import { ConversationDrawer } from '../components/ChatArea/ConversationDrawer';
 import { InputBar } from '../components/ChatArea/InputBar';
-import { OperationPreview } from '../components/AIPanel/OperationPreview';
+import { BatchOperationCard } from '../components/AIPanel/BatchOperationCard';
+import { ClarifyInteractionCard } from '../components/AIPanel/ClarifyInteractionCard';
+import { RetryPreviewCard } from '../components/AIPanel/RetryPreviewCard';
 import { ResizableLayout } from '../components/ui/ResizableLayout';
 import { DropdownSelect } from '../components/ui/DropdownSelect';
 import { DocumentFindBar } from '../components/ui/DocumentFindBar';
@@ -100,6 +102,151 @@ function buildCanvasFallbackBlocks(markdown = '') {
       lineEnd: null,
       semanticGroup: 'fallback',
     }));
+}
+
+async function computeClientArticleHash(article) {
+  if (typeof window === 'undefined' || !window.crypto?.subtle || typeof window.TextEncoder === 'undefined') {
+    return '';
+  }
+  const payload = JSON.stringify({
+    title: article?.title || '',
+    file_id: article?.file_id || article?.fileId || null,
+    blocks: Array.isArray(article?.blocks)
+      ? article.blocks.map((block) => ({
+        id: block.id,
+        type: block.type,
+        content: block.content || '',
+      }))
+      : [],
+  });
+  const digest = await window.crypto.subtle.digest('SHA-256', new window.TextEncoder().encode(payload));
+  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function upsertOperationSet(list = [], operationSet = null) {
+  if (!operationSet?.id) return list;
+  const next = Array.isArray(list) ? [...list] : [];
+  const index = next.findIndex((item) => Number(item.id) === Number(operationSet.id));
+  if (index >= 0) next[index] = operationSet;
+  else next.push(operationSet);
+  return next.sort((left, right) => Number(left.id || 0) - Number(right.id || 0));
+}
+
+function upsertInteraction(list = [], interaction = null) {
+  if (!interaction?.id) return list;
+  const next = Array.isArray(list) ? [...list] : [];
+  const index = next.findIndex((item) => Number(item.id) === Number(interaction.id));
+  if (interaction.status === 'answered' || interaction.status === 'cancelled') {
+    if (index >= 0) next.splice(index, 1);
+    return next.sort((left, right) => Number(left.id || 0) - Number(right.id || 0));
+  }
+  if (index >= 0) next[index] = interaction;
+  else next.push(interaction);
+  return next.sort((left, right) => Number(left.id || 0) - Number(right.id || 0));
+}
+
+function upsertMessage(list = [], message = null) {
+  if (!message?.id) return list;
+  const next = Array.isArray(list) ? [...list] : [];
+  const index = next.findIndex((item) => String(item.id) === String(message.id));
+  if (index >= 0) next[index] = message;
+  else next.push(message);
+  return next;
+}
+
+function mapSingleConversationMessage(message, kind = 'canvas') {
+  return mapConversationMessages([message], kind)[0] || null;
+}
+
+const DECISION_CORRECTION_ACTIONS = {
+  continue_discussion: {
+    label: '继续讨论',
+    prompt: '继续讨论，不要直接改文档。',
+    correctionState: {
+      wrong_intent: 'edit',
+      preferred_primary_intent: 'text',
+    },
+  },
+  direct_edit: {
+    label: '直接改文档',
+    prompt: '直接改文档，继续生成预览。',
+    correctionState: {
+      wrong_intent: 'text',
+      preferred_primary_intent: 'edit',
+    },
+  },
+  wrong_target: {
+    label: '目标不对',
+    prompt: '目标不对，请重新确认要修改的段落。',
+    correctionState: {
+      wrong_target: true,
+    },
+  },
+  wrong_source: {
+    label: '来源不对',
+    prompt: '来源不对，不要用刚才识别的那段内容。',
+    correctionState: {
+      wrong_source: true,
+    },
+  },
+  wrong_write_action: {
+    label: '写入方式不对',
+    prompt: '写入方式不对，请重新确认是追加、替换还是写到前面。',
+    correctionState: {
+      wrong_write_action: true,
+    },
+  },
+};
+
+function DecisionSummaryCard({ summary = '' }) {
+  if (!summary) return null;
+  return (
+    <div style={{
+      marginTop: 12,
+      padding: '10px 12px',
+      borderRadius: 12,
+      border: '1px solid color-mix(in srgb, var(--accent) 18%, var(--border-primary))',
+      background: 'color-mix(in srgb, var(--accent-subtle) 62%, var(--bg-primary))',
+      display: 'grid',
+      gap: 4,
+    }}>
+      <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>当前理解</div>
+      <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-primary)', lineHeight: 1.7 }}>
+        {summary}
+      </div>
+    </div>
+  );
+}
+
+function CorrectionChipBar({ onSelect, disabled = false }) {
+  return (
+    <div style={{ marginTop: 12, display: 'grid', gap: 8 }}>
+      <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>如果这次理解不对，可以直接纠正</div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {Object.entries(DECISION_CORRECTION_ACTIONS).map(([id, item]) => (
+          <button
+            key={id}
+            type="button"
+            disabled={disabled}
+            onClick={() => onSelect?.(id)}
+            style={{
+              minHeight: 32,
+              padding: '0 12px',
+              borderRadius: 999,
+              border: '1px solid var(--border-primary)',
+              background: disabled ? 'var(--bg-muted)' : 'var(--bg-primary)',
+              color: disabled ? 'var(--text-tertiary)' : 'var(--text-secondary)',
+              fontSize: 12,
+              cursor: disabled ? 'not-allowed' : 'pointer',
+              transition: 'background var(--transition-fast), border-color var(--transition-fast), transform var(--transition-fast)',
+            }}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function SortableCanvasItem({ block, index, state, onAI, onDelete, onContentChange }) {
@@ -279,7 +426,10 @@ export default function CanvasPage() {
   const [conversationListLoading, setConversationListLoading] = useState(false);
   const [, setConversationDraft] = useState(true);
   const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
-  const [pendingOp, setPendingOp] = useState(null);
+  const [pendingOperationSets, setPendingOperationSets] = useState([]);
+  const [pendingInteractions, setPendingInteractions] = useState([]);
+  const [interactionSubmittingId, setInteractionSubmittingId] = useState(null);
+  const [retryingInteractionId, setRetryingInteractionId] = useState(null);
   const [styleSource, setStyleSource] = useState('auto');
   const [manualStyleFileIds, setManualStyleFileIds] = useState([]);
   const [selectedLlmConfigId, setSelectedLlmConfigId] = useState(null);
@@ -460,7 +610,8 @@ export default function CanvasPage() {
     setActiveConversationId(null);
     setConversationDraft(true);
     setMessages([]);
-    setPendingOp(null);
+    setPendingOperationSets([]);
+    setPendingInteractions([]);
     setAiInjected('');
     setSaveState('saved');
     setHistoryDrawerOpen(false);
@@ -506,7 +657,8 @@ export default function CanvasPage() {
     setConversationDraft(true);
     setConversationList([]);
     setMessages([]);
-    setPendingOp(null);
+    setPendingOperationSets([]);
+    setPendingInteractions([]);
     setSaveState('dirty');
     setHistoryDrawerOpen(false);
     if (!topic) {
@@ -554,8 +706,10 @@ export default function CanvasPage() {
     return Array.isArray(payload) ? payload : [];
   }, [article?.draft_key, articleFileId]);
 
-  const fetchConversationDetail = useCallback(async (conversationId) => {
-    const response = await fetch(`/api/conversations/${conversationId}`);
+  const fetchConversationDetail = useCallback(async (conversationId, articleSnapshot = null) => {
+    const articleHash = await computeClientArticleHash(articleSnapshot);
+    const suffix = articleHash ? `?article_hash=${encodeURIComponent(articleHash)}` : '';
+    const response = await fetch(`/api/conversations/${conversationId}${suffix}`);
     const payload = await readApiResponse(response, '读取对话详情失败');
     return payload;
   }, []);
@@ -575,11 +729,12 @@ export default function CanvasPage() {
     setConversationListLoading(true);
     requestControllerRef.current?.abort();
     try {
-      const payload = await fetchConversationDetail(conversationId);
+      const payload = await fetchConversationDetail(conversationId, { ...article, blocks });
       setMessages(mapConversationMessages(payload.messages, 'canvas'));
+      setPendingOperationSets(Array.isArray(payload.pending_operation_sets) ? payload.pending_operation_sets : []);
+      setPendingInteractions(Array.isArray(payload.pending_interactions) ? payload.pending_interactions : []);
       setActiveConversationId(Number(conversationId));
       setConversationDraft(false);
-      setPendingOp(null);
       setStreamText('');
       setLoading(false);
       setHistoryDrawerOpen(false);
@@ -588,7 +743,7 @@ export default function CanvasPage() {
     } finally {
       setConversationListLoading(false);
     }
-  }, [fetchConversationDetail, loading, toast]);
+  }, [article, blocks, fetchConversationDetail, loading, toast]);
 
   const handleNewConversation = useCallback(() => {
     if (!articleFileId) return;
@@ -596,7 +751,8 @@ export default function CanvasPage() {
     setActiveConversationId(null);
     setConversationDraft(true);
     setMessages([]);
-    setPendingOp(null);
+    setPendingOperationSets([]);
+    setPendingInteractions([]);
     setAiInjected('');
     setStreamText('');
     setLoading(false);
@@ -609,7 +765,8 @@ export default function CanvasPage() {
       setActiveConversationId(null);
       setConversationDraft(true);
       setMessages([]);
-      setPendingOp(null);
+      setPendingOperationSets([]);
+      setPendingInteractions([]);
       setStreamText('');
       setLoading(false);
       setConversationListLoading(false);
@@ -629,16 +786,19 @@ export default function CanvasPage() {
           setActiveConversationId(null);
           setConversationDraft(true);
           setMessages([]);
+          setPendingOperationSets([]);
+          setPendingInteractions([]);
           return;
         }
 
         const initialConversationId = Number(rows[0].id);
-        const payload = await fetchConversationDetail(initialConversationId);
+        const payload = await fetchConversationDetail(initialConversationId, { ...article, blocks });
         if (cancelled) return;
         setActiveConversationId(initialConversationId);
         setConversationDraft(false);
         setMessages(mapConversationMessages(payload.messages, 'canvas'));
-        setPendingOp(null);
+        setPendingOperationSets(Array.isArray(payload.pending_operation_sets) ? payload.pending_operation_sets : []);
+        setPendingInteractions(Array.isArray(payload.pending_interactions) ? payload.pending_interactions : []);
         setStreamText('');
         setLoading(false);
       } catch (loadError) {
@@ -647,7 +807,8 @@ export default function CanvasPage() {
         setActiveConversationId(null);
         setConversationDraft(true);
         setMessages([]);
-        setPendingOp(null);
+        setPendingOperationSets([]);
+        setPendingInteractions([]);
         toast(loadError.message || '读取对话历史失败', 'error');
       } finally {
         if (!cancelled) {
@@ -659,47 +820,66 @@ export default function CanvasPage() {
     return () => {
       cancelled = true;
     };
-  }, [article, articleFileId, conversationScopeKey, fetchConversationDetail, fetchConversationList, toast]);
+  }, [article, articleFileId, conversationScopeKey, fetchConversationDetail, fetchConversationList, toast]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleSend = useCallback(async (query, llmConfigId = selectedLlmConfigId) => {
-    if (!articleFileId) {
-      toast('先保存当前大纲为文档，再继续 AI 改写和历史对话', 'info');
-      return;
-    }
+  useEffect(() => {
+    if (!article || pendingOperationSets.length === 0) return;
+    let cancelled = false;
+    computeClientArticleHash({ ...article, blocks }).then((hash) => {
+      if (cancelled || !hash) return;
+      setPendingOperationSets((prev) => prev.map((item) => (
+        item.article_hash && item.article_hash !== hash && item.status === 'pending'
+          ? { ...item, status: 'stale' }
+          : item
+      )));
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [article, blocks, pendingOperationSets.length]);
 
-    if (!llmConfigId) {
-      toast('请先在模型配置中新增并测试至少一个 LLM 配置', 'warning');
-      return;
-    }
+  useEffect(() => {
+    if (!article || pendingInteractions.length === 0) return;
+    let cancelled = false;
+    computeClientArticleHash({ ...article, blocks }).then((hash) => {
+      if (cancelled || !hash) return;
+      setPendingInteractions((prev) => prev.map((item) => (
+        item.article_hash && item.article_hash !== hash && (item.status === 'pending' || item.status === 'failed')
+          ? { ...item, status: 'stale' }
+          : item
+      )));
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [article, blocks, pendingInteractions.length]);
 
+  const executeAgentRun = useCallback(async (requestBody, options = {}) => {
     requestControllerRef.current?.abort();
     const controller = new AbortController();
     requestControllerRef.current = controller;
     setLoading(true);
     setAiInjected('');
-    setMessages((prev) => [...prev, { id: Date.now(), role: 'user', content: query }]);
+    if (options.optimisticUserMessage) {
+      setMessages((prev) => [...prev, { id: Date.now(), role: 'user', content: options.optimisticUserMessage }]);
+    }
 
     try {
       let assistantText = '';
-      let receivedOperation = false;
+      let assistantMeta = null;
+      let hasTokenStream = false;
       let resolvedConversationId = activeConversationId;
       const response = await fetch('/api/agent/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: controller.signal,
-        body: JSON.stringify({
-          conversation_id: activeConversationId || undefined,
-          user_input: query,
-          llm_config_id: llmConfigId,
-          active_file_id: activeFile?.id || null,
-          article: { ...article, blocks },
-          style_mode: styleSource,
-          style_file_ids: styleSource === 'manual' ? manualStyleFileIds : undefined,
-        }),
+        body: JSON.stringify(requestBody),
       });
       if (!response.ok) {
         const payload = await response.json();
-        throw new Error(payload.error || 'AI 请求失败');
+        const error = new Error(payload.error || 'AI 请求失败');
+        error.conversationId = payload.interaction?.conversation_id || activeConversationId || null;
+        throw error;
       }
 
       await readSse(response, (event) => {
@@ -709,35 +889,46 @@ export default function CanvasPage() {
         if (event.type === 'thinking') {
           assistantText = event.text || '正在处理…';
           setStreamText(assistantText);
-        } else if (event.type === 'tool_call') {
-          assistantText = `正在调用工具：${event.name}`;
-          setStreamText(assistantText);
-        } else if (event.type === 'tool_result') {
-          assistantText = '工具执行完成，正在生成修改…';
-          setStreamText(assistantText);
-        } else if (event.type === 'operation') {
-          receivedOperation = true;
-          const operation = event.operation || event.op;
-          const targetIndex = blocks.findIndex((block) => block.id === operation.block_id);
-          const targetBlock = targetIndex >= 0 ? blocks[targetIndex] : null;
-          const pending = {
-            blockIdx: targetIndex >= 0 ? targetIndex + 1 : blocks.length + 1,
-            oldContent: operation.old || targetBlock?.content || '',
-            newContent: operation.new || '',
-            operation,
-          };
-          setPendingOp(pending);
-          setMessages((prev) => [
-            ...prev,
-            { id: Date.now(), role: 'assistant', content: '已生成可应用的修改。', operation: pending },
-          ]);
-        } else if (event.type === 'done') {
-          if (!receivedOperation) {
-            setMessages((prev) => [
-              ...prev,
-              { id: event.message_id || Date.now(), role: 'assistant', content: assistantText || '处理完成。' },
-            ]);
+        } else if (event.type === 'token') {
+          if (!hasTokenStream) {
+            assistantText = '';
+            hasTokenStream = true;
           }
+          assistantText += event.text || '';
+          setStreamText(assistantText);
+        } else if (event.type === 'batch_start') {
+          setStreamText(`正在准备批量修改，预计 ${event.total_batches || 1} 批…`);
+        } else if (event.type === 'batch_progress') {
+          setStreamText(event.text || `正在处理第 ${event.current_batch}/${event.total_batches} 批…`);
+        } else if (event.type === 'batch_done') {
+          setStreamText(`已生成 ${event.total_operations || 0} 项修改，正在整理预览…`);
+        } else if (event.type === 'assistant_meta') {
+          assistantMeta = event.assistant_meta || null;
+          if (event.operation_set) {
+            setPendingOperationSets((prev) => upsertOperationSet(prev, event.operation_set));
+          }
+          if (event.interaction) {
+            setPendingInteractions((prev) => upsertInteraction(prev, event.interaction));
+          }
+        } else if (event.type === 'interaction_request') {
+          if (event.interaction) {
+            setPendingInteractions((prev) => upsertInteraction(prev, event.interaction));
+          }
+        } else if (event.type === 'done') {
+          assistantMeta = event.assistant_meta || assistantMeta;
+          if (event.operation_set) {
+            setPendingOperationSets((prev) => upsertOperationSet(prev, event.operation_set));
+          }
+          if (event.interaction) {
+            setPendingInteractions((prev) => upsertInteraction(prev, event.interaction));
+          }
+          setMessages((prev) => upsertMessage(prev, {
+            id: event.message_id || Date.now(),
+            role: 'assistant',
+            content: event.assistant_message || assistantText || '处理完成。',
+            citations: event.citations || [],
+            meta: assistantMeta,
+          }));
           if (resolvedConversationId) {
             setActiveConversationId(resolvedConversationId);
             setConversationDraft(false);
@@ -762,12 +953,210 @@ export default function CanvasPage() {
       }
       setStreamText('');
       setLoading(false);
+      throw error;
     } finally {
       if (requestControllerRef.current === controller) {
         requestControllerRef.current = null;
       }
     }
-  }, [activeConversationId, activeFile?.id, article, articleFileId, blocks, manualStyleFileIds, refreshConversationListOnly, selectedLlmConfigId, styleSource, toast]);
+  }, [activeConversationId, refreshConversationListOnly, toast]);
+
+  const respondToInteraction = useCallback(async (interaction, body, options = {}) => {
+    if (!interaction?.id) return null;
+    if (options.setSubmitting !== false) setInteractionSubmittingId(interaction.id);
+    try {
+      const response = await fetch(`/api/interactions/${interaction.id}/respond`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...body,
+          article: { ...article, blocks },
+          schema_version: interaction.schema_version,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        if (payload.interaction) {
+          setPendingInteractions((prev) => upsertInteraction(prev, payload.interaction));
+        }
+        throw new Error(payload.error || '回答提问卡片失败');
+      }
+
+      if (payload.interaction) {
+        setPendingInteractions((prev) => upsertInteraction(prev, payload.interaction));
+      }
+      if (payload.answer_message) {
+        const mappedMessage = mapSingleConversationMessage(payload.answer_message, 'canvas');
+        if (mappedMessage) {
+          setMessages((prev) => upsertMessage(prev, mappedMessage));
+        }
+      }
+      if (payload.interaction?.conversation_id) {
+        setActiveConversationId(Number(payload.interaction.conversation_id));
+        setConversationDraft(false);
+        refreshConversationListOnly(Number(payload.interaction.conversation_id));
+      }
+      return payload;
+    } finally {
+      if (options.setSubmitting !== false) setInteractionSubmittingId(null);
+    }
+  }, [article, blocks, refreshConversationListOnly]);
+
+  const runInteractionResume = useCallback(async (interaction, llmConfigId = selectedLlmConfigId) => {
+    if (!interaction?.id) return;
+    if (!llmConfigId) {
+      toast('请先在模型配置中新增并测试至少一个 LLM 配置', 'warning');
+      return;
+    }
+    setRetryingInteractionId(interaction.id);
+    try {
+      await executeAgentRun({
+        interaction_id: interaction.id,
+        interaction_response: interaction.response || null,
+        llm_config_id: llmConfigId,
+        active_file_id: activeFile?.id || null,
+        article: { ...article, blocks },
+        style_mode: styleSource,
+        style_file_ids: styleSource === 'manual' ? manualStyleFileIds : undefined,
+      });
+    } finally {
+      setRetryingInteractionId(null);
+    }
+  }, [activeFile?.id, article, blocks, executeAgentRun, manualStyleFileIds, selectedLlmConfigId, styleSource, toast]);
+
+  const handleInteractionCardSubmit = useCallback(async (interaction, answers) => {
+    try {
+      const payload = await respondToInteraction(interaction, { response: { answers } });
+      if (!payload) return;
+      if (payload.should_continue && payload.resume_payload) {
+        await runInteractionResume(payload.interaction || interaction, selectedLlmConfigId);
+      }
+    } catch (error) {
+      toast(error.message || '回答提问卡片失败', 'error');
+    }
+  }, [respondToInteraction, runInteractionResume, selectedLlmConfigId, toast]);
+
+  const handleDecisionCorrection = useCallback(async (signalId) => {
+    const action = DECISION_CORRECTION_ACTIONS[signalId];
+    if (!action || loading) return;
+    if (!articleFileId) {
+      toast('先保存当前大纲为文档，再继续 AI 改写和历史对话', 'info');
+      return;
+    }
+    if (!selectedLlmConfigId) {
+      toast('请先在模型配置中新增并测试至少一个 LLM 配置', 'warning');
+      return;
+    }
+
+    try {
+      await executeAgentRun({
+        conversation_id: activeConversationId || undefined,
+        user_input: action.prompt,
+        user_meta: {
+          source: 'decision_correction',
+          correction_state: action.correctionState,
+        },
+        llm_config_id: selectedLlmConfigId,
+        active_file_id: activeFile?.id || null,
+        article: { ...article, blocks },
+        style_mode: styleSource,
+        style_file_ids: styleSource === 'manual' ? manualStyleFileIds : undefined,
+      }, {
+        optimisticUserMessage: action.prompt,
+      });
+    } catch {}
+  }, [
+    activeConversationId,
+    activeFile?.id,
+    article,
+    articleFileId,
+    blocks,
+    executeAgentRun,
+    loading,
+    manualStyleFileIds,
+    selectedLlmConfigId,
+    styleSource,
+    toast,
+  ]);
+
+  const handleSend = useCallback(async (query, llmConfigId = selectedLlmConfigId) => {
+    if (!articleFileId) {
+      toast('先保存当前大纲为文档，再继续 AI 改写和历史对话', 'info');
+      return;
+    }
+
+    if (!llmConfigId) {
+      toast('请先在模型配置中新增并测试至少一个 LLM 配置', 'warning');
+      return;
+    }
+
+    const activePendingInteraction = [...pendingInteractions].reverse().find((item) => item.status === 'pending') || null;
+    if (activePendingInteraction) {
+      try {
+        const payload = await respondToInteraction(activePendingInteraction, { raw_text: query });
+        if (payload?.resolution_status === 'failed') {
+          await executeAgentRun({
+            conversation_id: activeConversationId || undefined,
+            user_input: query,
+            llm_config_id: llmConfigId,
+            active_file_id: activeFile?.id || null,
+            article: { ...article, blocks },
+            style_mode: styleSource,
+            style_file_ids: styleSource === 'manual' ? manualStyleFileIds : undefined,
+          }, {
+            optimisticUserMessage: query,
+          });
+          return;
+        }
+        if (payload?.resolution_status === 'partial') {
+          toast('已记录这次回答，还缺少剩余信息。', 'info');
+          return;
+        }
+        if (payload?.should_continue && payload.resume_payload) {
+          await runInteractionResume(payload.interaction || activePendingInteraction, llmConfigId);
+        }
+        return;
+      } catch (error) {
+        toast(error.message || '回答提问卡片失败', 'error');
+        return;
+      }
+    }
+
+    try {
+      await executeAgentRun({
+        conversation_id: activeConversationId || undefined,
+        user_input: query,
+        llm_config_id: llmConfigId,
+        active_file_id: activeFile?.id || null,
+        article: { ...article, blocks },
+        style_mode: styleSource,
+        style_file_ids: styleSource === 'manual' ? manualStyleFileIds : undefined,
+      }, {
+        optimisticUserMessage: query,
+      });
+    } catch {}
+  }, [
+    activeConversationId,
+    activeFile?.id,
+    article,
+    articleFileId,
+    blocks,
+    executeAgentRun,
+    manualStyleFileIds,
+    pendingInteractions,
+    respondToInteraction,
+    runInteractionResume,
+    selectedLlmConfigId,
+    styleSource,
+    toast,
+  ]);
+
+  const handleRetryInteraction = useCallback(async (interaction) => {
+    if (!interaction?.id) return;
+    try {
+      await runInteractionResume(interaction, selectedLlmConfigId);
+    } catch {}
+  }, [runInteractionResume, selectedLlmConfigId]);
 
   // Canvas block AI button → populate InputBar
   const handleBlockAI = useCallback((blockId) => {
@@ -782,19 +1171,9 @@ export default function CanvasPage() {
   }, []);
 
   const handleDeleteBlock = useCallback((blockId) => {
-    const deletedIndex = blocks.findIndex((block) => block.id === blockId);
     setBlocks((prev) => prev.filter((block) => block.id !== blockId));
-    setPendingOp((prev) => (
-      !prev
-        ? null
-        : prev?.operation?.block_id === blockId || prev.blockIdx === deletedIndex + 1
-          ? null
-          : prev.blockIdx > deletedIndex + 1
-            ? { ...prev, blockIdx: prev.blockIdx - 1 }
-            : prev
-    ));
     setSaveState('dirty');
-  }, [blocks]);
+  }, []);
 
   // Add new empty block
   const handleAddBlock = useCallback(() => {
@@ -803,23 +1182,15 @@ export default function CanvasPage() {
     setSaveState('dirty');
   }, []);
 
-  const handleApplyOp = useCallback(async (op) => {
-    if (!op?.operation) {
-      setBlocks((prev) =>
-        prev.map((b, i) => i === op.blockIdx - 1 ? { ...b, content: op.newContent } : b)
-      );
-      setPendingOp(null);
-      setSaveState('dirty');
-      return;
-    }
-
+  const handleApplyOperationSet = useCallback(async (operationSet) => {
     try {
       const response = await fetch('/api/agent/apply', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           article: { ...article, blocks },
-          operation: op.operation,
+          operations: operationSet?.operations || [],
+          operation_set_id: operationSet?.id || null,
         }),
       });
       const payload = await response.json();
@@ -836,7 +1207,7 @@ export default function CanvasPage() {
         : article;
       setArticle(nextArticle);
       setBlocks(payload.article?.blocks || blocks);
-      setPendingOp(null);
+      setPendingOperationSets((prev) => prev.filter((item) => Number(item.id) !== Number(operationSet?.id)));
       setSaveState('dirty');
       toast('修改已应用', 'success');
     } catch (error) {
@@ -844,7 +1215,19 @@ export default function CanvasPage() {
     }
   }, [article, blocks, toast]);
 
-  const handleCancelOp = useCallback(() => setPendingOp(null), []);
+  const handleCancelOperationSet = useCallback(async (operationSet) => {
+    try {
+      await fetch('/api/agent/apply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'cancel',
+          operation_set_id: operationSet?.id || null,
+        }),
+      });
+    } catch {}
+    setPendingOperationSets((prev) => prev.filter((item) => Number(item.id) !== Number(operationSet?.id)));
+  }, []);
 
   const handleDragEnd = useCallback(({ active, over }) => {
     if (!over || active.id === over.id) return;
@@ -856,6 +1239,25 @@ export default function CanvasPage() {
     });
     setSaveState('dirty');
   }, []);
+
+  const pendingOperationSetById = pendingOperationSets.reduce((acc, item) => {
+    acc[String(item.id)] = item;
+    return acc;
+  }, {});
+  const pendingInteractionById = pendingInteractions.reduce((acc, item) => {
+    acc[String(item.id)] = item;
+    return acc;
+  }, {});
+  const pendingInteractionByMessageId = pendingInteractions.reduce((acc, item) => {
+    if (item?.message_id) acc[String(item.message_id)] = item;
+    return acc;
+  }, {});
+  const currentPendingInteraction = [...pendingInteractions].reverse().find((item) => item.status === 'pending') || null;
+  const highlightedBlockIds = new Set(
+    pendingOperationSets
+      .filter((item) => item.status === 'pending')
+      .flatMap((item) => Array.isArray(item.operations) ? item.operations.map((operation) => operation.block_id).filter(Boolean) : [])
+  );
 
   // ── Entry screen ──
   if (!article) {
@@ -927,7 +1329,7 @@ export default function CanvasPage() {
                       key={block.id}
                       block={block}
                       index={i}
-                      state={pendingOp?.blockIdx === i + 1 ? 'modified' : 'default'}
+                      state={highlightedBlockIds.has(block.id) ? 'modified' : 'default'}
                       onAI={handleBlockAI}
                       onDelete={handleDeleteBlock}
                       onContentChange={handleContentChange}
@@ -950,36 +1352,10 @@ export default function CanvasPage() {
           minWidth: 0,
           position: 'relative',
         }}>
-          <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-subtle)', flexShrink: 0, display: 'grid', gap: 10 }}>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-              <Tooltip content="查看历史对话">
-                <span style={{ display: 'inline-flex' }}>
-                  <IconButton
-                    label="查看历史对话"
-                    active={historyDrawerOpen}
-                    disabled={!canvasConversationEnabled || loading || conversationListLoading}
-                    onClick={() => setHistoryDrawerOpen(true)}
-                  >
-                    {conversationListLoading ? <Spinner size={14} /> : <Icons.list size={15} />}
-                  </IconButton>
-                </span>
-              </Tooltip>
-              <Tooltip content="新建对话">
-                <span style={{ display: 'inline-flex' }}>
-                  <IconButton
-                    label="新建对话"
-                    disabled={!canvasConversationEnabled || loading}
-                    onClick={handleNewConversation}
-                  >
-                    <Icons.plus size={15} />
-                  </IconButton>
-                </span>
-              </Tooltip>
-            </div>
-
-            <div>
-              <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 6 }}>风格来源</div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+          <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-subtle)', flexShrink: 0, display: 'grid', gap: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap', minWidth: 0 }}>
+                <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>风格来源</div>
                 {[
                   { value: 'auto', label: '自动匹配' },
                   { value: 'manual', label: '手动指定' },
@@ -988,10 +1364,10 @@ export default function CanvasPage() {
                     key={mode.value}
                     onClick={() => setStyleSource(mode.value)}
                     style={{
-                      height: 28,
-                      padding: '0 12px',
-                      background: styleSource === mode.value ? 'var(--accent-subtle)' : 'var(--bg-elevated)',
-                      border: `1px solid ${styleSource === mode.value ? 'var(--accent)' : 'var(--border-primary)'}`,
+                      height: 26,
+                      padding: '0 10px',
+                      background: styleSource === mode.value ? 'var(--accent-subtle)' : 'transparent',
+                      border: `1px solid ${styleSource === mode.value ? 'color-mix(in srgb, var(--accent) 35%, var(--border-primary))' : 'var(--border-subtle)'}`,
                       borderRadius: 'var(--radius-md)',
                       fontSize: 11,
                       color: styleSource === mode.value ? 'var(--accent)' : 'var(--text-secondary)',
@@ -1005,6 +1381,33 @@ export default function CanvasPage() {
                     {mode.label}
                   </button>
                 ))}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6, marginLeft: 'auto', flexShrink: 0 }}>
+                <Tooltip content="查看历史对话">
+                  <span style={{ display: 'inline-flex' }}>
+                    <IconButton
+                      label="查看历史对话"
+                      size={30}
+                      active={historyDrawerOpen}
+                      disabled={!canvasConversationEnabled || loading || conversationListLoading}
+                      onClick={() => setHistoryDrawerOpen(true)}
+                    >
+                      {conversationListLoading ? <Spinner size={13} /> : <Icons.clock size={14} />}
+                    </IconButton>
+                  </span>
+                </Tooltip>
+                <Tooltip content="新建对话">
+                  <span style={{ display: 'inline-flex' }}>
+                    <IconButton
+                      label="新建对话"
+                      size={30}
+                      disabled={!canvasConversationEnabled || loading}
+                      onClick={handleNewConversation}
+                    >
+                      <Icons.plus size={14} />
+                    </IconButton>
+                  </span>
+                </Tooltip>
               </div>
             </div>
 
@@ -1092,15 +1495,35 @@ export default function CanvasPage() {
                 ? <UserBubble key={msg.id}>{msg.content}</UserBubble>
                 : (
                   <AiBubble key={msg.id} text={msg.content}>
-                    {msg.operation && (
-                      <OperationPreview
-                        blockIdx={msg.operation.blockIdx}
-                        oldContent={msg.operation.oldContent}
-                        newContent={msg.operation.newContent}
-                        onApply={() => handleApplyOp(msg.operation)}
-                        onCancel={handleCancelOp}
+                    {msg.meta?.show_decision_summary && msg.meta?.decision_summary ? (
+                      <DecisionSummaryCard summary={msg.meta.decision_summary} />
+                    ) : null}
+                    {msg.meta?.show_decision_summary && msg.meta?.canvas_mode === 'edit' ? (
+                      <CorrectionChipBar
+                        onSelect={handleDecisionCorrection}
+                        disabled={loading}
                       />
-                    )}
+                    ) : null}
+                    {pendingInteractionByMessageId[String(msg.id)] ? (
+                      <ClarifyInteractionCard
+                        interaction={pendingInteractionByMessageId[String(msg.id)]}
+                        onSubmit={handleInteractionCardSubmit}
+                        onRetry={handleRetryInteraction}
+                        submitting={interactionSubmittingId === Number(pendingInteractionByMessageId[String(msg.id)]?.id)}
+                      />
+                    ) : msg.meta?.operation_set_id && pendingOperationSetById[String(msg.meta.operation_set_id)] ? (
+                      <BatchOperationCard
+                        operationSet={pendingOperationSetById[String(msg.meta.operation_set_id)]}
+                        blocks={blocks}
+                        onApply={handleApplyOperationSet}
+                        onCancel={handleCancelOperationSet}
+                      />
+                    ) : msg.meta?.retry_available && pendingInteractionById[String(msg.meta.retry_interaction_id)] ? (
+                      <RetryPreviewCard
+                        onRetry={() => handleRetryInteraction(pendingInteractionById[String(msg.meta.retry_interaction_id)])}
+                        loading={retryingInteractionId === Number(msg.meta.retry_interaction_id)}
+                      />
+                    ) : null}
                   </AiBubble>
                 )
             ))}
@@ -1120,7 +1543,13 @@ export default function CanvasPage() {
             onConfigChange={setSelectedLlmConfigId}
             disabled={canvasInputDisabled}
             showPlusMenu={false}
-            mentionOptions={mentionOptions}
+            mentionOptions={[{ value: '__all__', token: '@全文', label: '全文', preview: '对整篇文章生效', searchText: '全文 整篇 整文' }, ...mentionOptions]}
+            notice={currentPendingInteraction
+              ? {
+                tone: 'accent',
+                text: '上方还有一张待确认卡片。你可以直接回答那张卡片，也可以在这里补充说明，系统会优先尝试把这条输入解析为卡片回答。',
+              }
+              : null}
           />
           <ConversationDrawer
             open={historyDrawerOpen}

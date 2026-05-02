@@ -1,0 +1,63 @@
+{
+  "name": "notus",
+  "version": "0.1.2",
+  "private": true,
+  "main": "desktop/main/index.js",
+  "scripts": {
+    "dev:web": "npm --prefix notus run dev",
+    "build:web": "npm --prefix notus run build",
+    "dist:web": "node desktop/scripts/build-web-dist.js",
+    "lint:web": "npm --prefix notus run lint",
+    "test:platform": "npm --prefix notus run test:platform",
+    "test:knowledge-routing": "npm --prefix notus run test:knowledge-routing",
+    "test:knowledge-retrieval": "npm --prefix notus run test:knowledge-retrieval",
+    "dev:desktop": "node desktop/scripts/dev-electron.js",
+    "dev:desktop:all": "node desktop/scripts/dev-all.js",
+    "build:desktop": "node desktop/scripts/build-desktop.js",
+    "dist:desktop": "npm run build:desktop && electron-builder",
+    "dist:desktop:mac:x64": "npm run build:desktop && electron-builder --mac dmg --x64",
+    "dist:desktop:mac:arm64": "npm run build:desktop && electron-builder --mac dmg --arm64",
+    "dist:desktop:win:x64": "npm run build:desktop && electron-builder --win nsis --x64",
+    "dist:lpk": "node desktop/scripts/build-lpk.js"
+  },
+  "devDependencies": {
+    "electron": "^36.2.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.notus.app",
+    "productName": "Notus",
+    "directories": {
+      "output": "desktop/dist"
+    },
+    "files": [
+      "desktop/main/**/*",
+      "desktop/preload/**/*",
+      "desktop/shared/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "desktop/resources/notus",
+        "to": "notus",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": true,
+      "deleteAppDataOnUninstall": true,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false
+    }
+  }
+}

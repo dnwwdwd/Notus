@@ -7,9 +7,17 @@ function defaultSetup() {
   return {
     configured: false,
     completed: false,
+    runtime_target: 'web',
+    storage_mode: 'external',
+    data_root: '',
+    capabilities: {},
+    can_auto_purge_on_uninstall: false,
     indexed_files: 0,
     total_files: 0,
     notes_dir: '',
+    assets_dir: '',
+    db_path: '',
+    log_dir: '',
     model_configured: false,
     embedding_configured: false,
     llm_configured: false,
@@ -75,8 +83,8 @@ function writeCachedStatus(status) {
 }
 
 export function AppStatusProvider({ children }) {
-  const [status, setStatus] = useState(() => readCachedStatus() || deriveStatus());
-  const [loading, setLoading] = useState(() => !readCachedStatus());
+  const [status, setStatus] = useState(() => deriveStatus());
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
   const refreshStatus = useCallback(async ({ quiet = false } = {}) => {
@@ -113,6 +121,13 @@ export function AppStatusProvider({ children }) {
   }, []);
 
   useEffect(() => {
+    const cached = readCachedStatus();
+    if (cached) {
+      setStatus(cached);
+      setLoading(false);
+      refreshStatus({ quiet: true }).catch(() => {});
+      return;
+    }
     refreshStatus().catch(() => {});
   }, [refreshStatus]);
 

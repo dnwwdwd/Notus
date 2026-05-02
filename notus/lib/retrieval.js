@@ -1,7 +1,7 @@
 const { getDb, isVecAvailable } = require('./db');
 const { getEmbedding } = require('./embeddings');
 const { getEffectiveConfig } = require('./config');
-const { buildFtsQuery } = require('./tokenizer');
+const { buildFtsQuery, segmentText } = require('./tokenizer');
 const { buildImageProxyUrl } = require('./images');
 
 function rrfScore(rank, k) {
@@ -33,6 +33,119 @@ function normalizePositiveId(value) {
   return Number.isFinite(next) && next > 0 ? next : null;
 }
 
+function uniqueStrings(values = [], limit = 8) {
+  const seen = new Set();
+  const items = [];
+  (Array.isArray(values) ? values : []).forEach((value) => {
+    const normalized = String(value || '').trim();
+    if (!normalized) return;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    items.push(normalized);
+  });
+  return items.slice(0, Math.max(0, limit));
+}
+
+function splitIntoSentenceCandidates(content = '') {
+  return String(content || '')
+    .split(/\n{2,}|(?<=[。！？!?])\s*|(?<=\.)\s+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function selectEvidenceSentences(content = '', query = '', keywords = [], limit = 3) {
+  const queryTokens = new Set(segmentText([query, ...(Array.isArray(keywords) ? keywords : [])].join(' '), 24));
+  const scored = splitIntoSentenceCandidates(content)
+    .map((sentence) => {
+      const tokens = segmentText(sentence, 32);
+      const overlap = tokens.filter((token) => queryTokens.has(token)).length;
+      const tokenScore = queryTokens.size > 0 ? overlap / queryTokens.size : 0;
+      const length = sentence.length;
+      const lengthPenalty = length < 12 ? 0.12 : length > 180 ? 0.08 : 0;
+      return {
+        sentence,
+        score: tokenScore - lengthPenalty,
+      };
+    })
+    .sort((left, right) => right.score - left.score);
+
+  const selected = [];
+  scored.forEach((item) => {
+    if (selected.length >= limit) return;
+    if (item.score <= 0 && selected.length > 0) return;
+    if (selected.some((sentence) => sentence === item.sentence)) return;
+    selected.push(item.sentence);
+  });
+
+  if (selected.length > 0) return selected;
+  return splitIntoSentenceCandidates(content).slice(0, limit);
+}
+
+function normalizeQueryPlanInput(input) {
+  if (typeof input === 'string') {
+    const query = String(input || '').trim();
+    return {
+      query,
+      intent: 'fact',
+      standalone_query: query,
+      expanded_query: query,
+      keywords: [],
+      title_hints: [],
+      is_follow_up: false,
+    };
+  }
+
+  const query = String(input?.query || input?.original_query || input?.standalone_query || '').trim();
+  return {
+    query,
+    intent: String(input?.intent || 'fact').trim() || 'fact',
+    standalone_query: String(input?.standalone_query || query).trim() || query,
+    expanded_query: String(input?.expanded_query || input?.standalone_query || query).trim() || query,
+    keywords: uniqueStrings(input?.keywords, 8),
+    title_hints: uniqueStrings(input?.title_hints, 4),
+    is_follow_up: Boolean(input?.is_follow_up),
+  };
+}
+
+function buildQueryVariants(queryPlan) {
+  const variants = [];
+  const addVariant = (label, query, weight) => {
+    const normalizedQuery = String(query || '').trim();
+    if (!normalizedQuery) return;
+    if (variants.some((item) => item.query.toLowerCase() === normalizedQuery.toLowerCase())) return;
+    variants.push({ label, query: normalizedQuery, weight });
+  };
+
+  addVariant('original', queryPlan.query, 1);
+  addVariant('standalone', queryPlan.standalone_query, 0.95);
+  addVariant('expanded', queryPlan.expanded_query, 0.88);
+
+  return variants;
+}
+
+function buildTitleSearchInputs(queryPlan, queryVariants) {
+  const inputs = [];
+  const addInput = (label, text, weight) => {
+    const normalizedText = String(text || '').trim();
+    if (!normalizedText) return;
+    if (inputs.some((item) => item.text.toLowerCase() === normalizedText.toLowerCase())) return;
+    inputs.push({ label, text: normalizedText, weight });
+  };
+
+  addInput('title_original', queryPlan.query, 1);
+  addInput('title_standalone', queryPlan.standalone_query, 0.96);
+  queryPlan.title_hints.forEach((hint, index) => addInput(`title_hint_${index + 1}`, hint, 0.94));
+  if (queryPlan.keywords.length > 0) {
+    addInput('title_keywords', queryPlan.keywords.slice(0, 4).join(' '), 0.9);
+  }
+  queryVariants
+    .filter((variant) => variant.label === 'expanded')
+    .forEach((variant) => addInput('title_expanded', variant.query, 0.82));
+
+  return inputs;
+}
+
 async function queryEmbedding(query) {
   try {
     return await getEmbedding(query);
@@ -41,14 +154,15 @@ async function queryEmbedding(query) {
   }
 }
 
-function chunkVectorSearch(db, embedding, topK, threshold) {
+function chunkVectorSearch(db, embedding, topK, threshold, options = {}) {
   if (!embedding || !isVecAvailable()) return [];
+  const candidateMultiplier = Number(options.candidateMultiplier || 2);
   return db.prepare(`
     SELECT chunk_id, distance
     FROM chunks_vec
     WHERE embedding MATCH ?
       AND k = ?
-  `).all(JSON.stringify(embedding), topK * 2)
+  `).all(JSON.stringify(embedding), Math.max(topK * candidateMultiplier, topK))
     .map((row, index) => ({
       chunk_id: row.chunk_id,
       distance: row.distance,
@@ -58,14 +172,15 @@ function chunkVectorSearch(db, embedding, topK, threshold) {
     .filter((row) => row.vec_score === null || row.vec_score >= threshold);
 }
 
-function imageVectorSearch(db, embedding, topK, threshold) {
+function imageVectorSearch(db, embedding, topK, threshold, options = {}) {
   if (!embedding || !isVecAvailable()) return [];
+  const candidateMultiplier = Number(options.candidateMultiplier || 2);
   return db.prepare(`
     SELECT image_id, distance
     FROM images_vec
     WHERE embedding MATCH ?
       AND k = ?
-  `).all(JSON.stringify(embedding), topK * 2)
+  `).all(JSON.stringify(embedding), Math.max(topK * candidateMultiplier, topK))
     .map((row, index) => ({
       image_id: row.image_id,
       image_vec_score: distanceToSimilarity(row.distance),
@@ -74,18 +189,23 @@ function imageVectorSearch(db, embedding, topK, threshold) {
     .filter((row) => row.image_vec_score === null || row.image_vec_score >= threshold);
 }
 
-function ftsSearch(db, query, topK) {
+function ftsSearch(db, query, topK, fileIds = []) {
   const ftsQuery = buildFtsQuery(query);
   if (!ftsQuery) return [];
 
+  const normalizedFileIds = normalizeFileIds(fileIds);
+  const hasFileFilter = normalizedFileIds.length > 0;
+
   try {
     return db.prepare(`
-      SELECT rowid AS chunk_id, bm25(chunks_fts) AS rank
+      SELECT c.id AS chunk_id, bm25(chunks_fts) AS rank
       FROM chunks_fts
+      JOIN chunks c ON c.id = chunks_fts.rowid
       WHERE chunks_fts MATCH ?
+      ${hasFileFilter ? `AND c.file_id IN (${normalizedFileIds.map(() => '?').join(',')})` : ''}
       ORDER BY rank
       LIMIT ?
-    `).all(ftsQuery, topK * 2).map((row, index) => ({
+    `).all(ftsQuery, ...(hasFileFilter ? normalizedFileIds : []), topK * 3).map((row, index) => ({
       chunk_id: row.chunk_id,
       fts_rank: index + 1,
       fts_score: row.rank,
@@ -128,7 +248,7 @@ function findSectionBodyChunk(db, chunk) {
     SELECT id, content, type, position, line_start, line_end, heading_path
     FROM chunks
     WHERE file_id = ?
-      AND heading_path = ?
+      AND ifnull(heading_path, '') = ?
       AND position > ?
       AND type != 'heading'
     ORDER BY position ASC
@@ -197,7 +317,7 @@ function attachImageCandidates(byChunk, imageRows, imageMap, rrfK) {
 async function hybridSearch(query, opts = {}) {
   const config = getEffectiveConfig();
   const topK = Number(opts.topK || opts.top_k || config.topK || 5);
-  const vecThreshold = Number(opts.vecThreshold || config.vecScoreThreshold || 0.5);
+  const vecThreshold = Number(opts.vecThreshold || opts.vec_threshold || config.vecScoreThreshold || 0.5);
   const rrfK = Number(opts.rrfK || 60);
   const headingBoost = Number(opts.headingBoost || 0.1);
   const recencyBoost = Number(opts.recencyBoost || 0.05);
@@ -207,9 +327,13 @@ async function hybridSearch(query, opts = {}) {
 
   const embedding = await queryEmbedding(query);
   const [vecRows, ftsRows, rawImageRows] = await Promise.all([
-    Promise.resolve(chunkVectorSearch(db, embedding, topK, vecThreshold)),
-    Promise.resolve(ftsSearch(db, query, topK)),
-    Promise.resolve(imageVectorSearch(db, embedding, topK, vecThreshold)),
+    Promise.resolve(chunkVectorSearch(db, embedding, topK, vecThreshold, {
+      candidateMultiplier: hasFileFilter ? 6 : 3,
+    })),
+    Promise.resolve(ftsSearch(db, query, topK, fileIds)),
+    Promise.resolve(imageVectorSearch(db, embedding, topK, vecThreshold, {
+      candidateMultiplier: hasFileFilter ? 6 : 3,
+    })),
   ]);
 
   const imageRows = rawImageRows.length > 0
@@ -288,6 +412,7 @@ async function hybridSearch(query, opts = {}) {
         line_end: row.line_end,
         preview,
         score,
+        base_score: score,
         vec_score: candidate.vec_score ?? candidate.image_vec_score ?? null,
         fts_rank: candidate.fts_rank || null,
         source: classifySource(candidate),
@@ -296,41 +421,151 @@ async function hybridSearch(query, opts = {}) {
         image_proxy_url: candidate.image_proxy_url || null,
         image_alt_text: candidate.image_alt_text || '',
         image_caption: candidate.image_caption || '',
+        matched_queries: [],
       };
     })
     .filter(Boolean)
     .sort((left, right) => right.score - left.score)
+    .slice(0, Math.max(topK * 4, 20));
+}
+
+function searchFileMatches(db, queries = [], options = {}) {
+  const topK = Number(options.topK || 6);
+  const fileIds = normalizeFileIds(options.fileIds || options.file_ids);
+  const hasFileFilter = fileIds.length > 0;
+  const rrfK = Number(options.rrfK || 60);
+  const byFile = new Map();
+
+  queries.forEach((queryItem) => {
+    const ftsQuery = buildFtsQuery(queryItem.text);
+    if (!ftsQuery) return;
+
+    const rows = db.prepare(`
+      SELECT f.id AS file_id, f.title AS file_title, f.path AS file_path, bm25(files_fts) AS rank
+      FROM files_fts
+      JOIN files f ON f.id = files_fts.rowid
+      WHERE files_fts MATCH ?
+      ${hasFileFilter ? `AND f.id IN (${fileIds.map(() => '?').join(',')})` : ''}
+      ORDER BY rank
+      LIMIT ?
+    `).all(ftsQuery, ...(hasFileFilter ? fileIds : []), topK * 2);
+
+    rows.forEach((row, index) => {
+      const current = byFile.get(row.file_id) || {
+        file_id: row.file_id,
+        file_title: row.file_title || row.file_path,
+        file_path: row.file_path,
+        score: 0,
+        matched_queries: [],
+      };
+      current.score += rrfScore(index + 1, rrfK) * Number(queryItem.weight || 1);
+      current.matched_queries = uniqueStrings([...current.matched_queries, queryItem.label], 6);
+      byFile.set(row.file_id, current);
+    });
+  });
+
+  return [...byFile.values()]
+    .sort((left, right) => Number(right.score || 0) - Number(left.score || 0))
     .slice(0, topK);
 }
 
-function dedupeChunks(chunks = []) {
+function annotateVariantChunks(chunks = [], variant, options = {}) {
+  const titleMatchedIds = new Set(normalizeFileIds(options.titleMatchedFileIds));
+  return (Array.isArray(chunks) ? chunks : []).map((chunk) => ({
+    ...chunk,
+    score: Number(chunk.score || 0) * Number(variant.weight || 1),
+    base_score: Number(chunk.score || 0),
+    matched_queries: uniqueStrings([...(chunk.matched_queries || []), variant.label], 6),
+    title_match: titleMatchedIds.has(Number(chunk.file_id)),
+    title_matched_queries: titleMatchedIds.has(Number(chunk.file_id))
+      ? uniqueStrings([...(chunk.title_matched_queries || []), variant.label], 6)
+      : (chunk.title_matched_queries || []),
+  }));
+}
+
+function mergeChunks(chunks = []) {
   const byId = new Map();
+
   chunks.forEach((chunk) => {
     if (!chunk?.chunk_id) return;
-    const existing = byId.get(chunk.chunk_id);
-    if (!existing || Number(chunk.score || 0) > Number(existing.score || 0)) {
-      byId.set(chunk.chunk_id, chunk);
+
+    const current = byId.get(chunk.chunk_id);
+    if (!current) {
+      byId.set(chunk.chunk_id, {
+        ...chunk,
+        matched_queries: uniqueStrings(chunk.matched_queries, 6),
+        title_matched_queries: uniqueStrings(chunk.title_matched_queries, 6),
+      });
+      return;
     }
+
+    current.score += Number(chunk.score || 0);
+    current.base_score = Math.max(Number(current.base_score || 0), Number(chunk.base_score || 0));
+    current.current_file_priority = Boolean(current.current_file_priority || chunk.current_file_priority);
+    current.title_match = Boolean(current.title_match || chunk.title_match);
+    current.matched_queries = uniqueStrings([...(current.matched_queries || []), ...(chunk.matched_queries || [])], 6);
+    current.title_matched_queries = uniqueStrings([...(current.title_matched_queries || []), ...(chunk.title_matched_queries || [])], 6);
+    if (Number(chunk.score || 0) > Number(current.best_variant_score || 0)) {
+      current.preview = chunk.preview;
+      current.content = chunk.content;
+      current.source = chunk.source;
+      current.vec_score = chunk.vec_score;
+      current.fts_rank = chunk.fts_rank;
+      current.image_id = chunk.image_id;
+      current.image_url = chunk.image_url;
+      current.image_proxy_url = chunk.image_proxy_url;
+      current.image_alt_text = chunk.image_alt_text;
+      current.image_caption = chunk.image_caption;
+      current.best_variant_score = Number(chunk.score || 0);
+    }
+    byId.set(chunk.chunk_id, current);
   });
+
   return [...byId.values()];
 }
 
 function boostCurrentFileChunks(chunks = [], activeFileId) {
   if (!activeFileId) return chunks;
-  return chunks.map((chunk) => (
-    Number(chunk.file_id) === Number(activeFileId)
-      ? { ...chunk, score: Number(chunk.score || 0) + 0.25, current_file_priority: true }
-      : chunk
-  ));
+  return chunks.map((chunk) => {
+    if (Number(chunk.file_id) !== Number(activeFileId)) return chunk;
+    const baseScore = Number(chunk.score || 0);
+    const boost = Math.min(0.12, Math.max(0.04, baseScore * 0.25));
+    return {
+      ...chunk,
+      score: baseScore + boost,
+      current_file_priority: true,
+    };
+  });
 }
 
 function sortChunks(chunks = []) {
   return [...chunks].sort((left, right) => {
+    const scoreDiff = Number(right.score || 0) - Number(left.score || 0);
+    if (Math.abs(scoreDiff) > 0.0001) {
+      return scoreDiff;
+    }
     if (Boolean(right.current_file_priority) !== Boolean(left.current_file_priority)) {
       return Number(right.current_file_priority) - Number(left.current_file_priority);
     }
-    return Number(right.score || 0) - Number(left.score || 0);
+    return Number(right.base_score || 0) - Number(left.base_score || 0);
   });
+}
+
+function capChunksPerFile(chunks = [], options = {}) {
+  const limitPerFile = Number(options.limitPerFile || 3);
+  const totalLimit = Number(options.totalLimit || chunks.length);
+  const counts = new Map();
+  const selected = [];
+
+  sortChunks(chunks).forEach((chunk) => {
+    const fileId = Number(chunk.file_id || 0);
+    const currentCount = counts.get(fileId) || 0;
+    if (currentCount >= limitPerFile) return;
+    counts.set(fileId, currentCount + 1);
+    selected.push(chunk);
+  });
+
+  return selected.slice(0, totalLimit);
 }
 
 function quoteFromChunk(chunk) {
@@ -345,113 +580,260 @@ function quoteFromChunk(chunk) {
   };
 }
 
-function buildSectionGroups(chunks = [], options = {}) {
-  const maxSections = Number(options.maxSections || 6);
+function loadExpandedContextRows(db, group, options = {}) {
+  const before = Number(options.expandBefore || 1);
+  const after = Number(options.expandAfter || 1);
+  const headingPath = String(group.heading_path || '');
+  const positions = group.seeds
+    .map((chunk) => Number(chunk.position))
+    .filter((value) => Number.isFinite(value));
+
+  if (positions.length === 0) return [];
+
+  if (!headingPath) {
+    const minPosition = Math.min(...positions);
+    const maxPosition = Math.max(...positions);
+    return db.prepare(`
+      SELECT id, content, type, position, line_start, line_end, heading_path
+      FROM chunks
+      WHERE file_id = ?
+        AND position BETWEEN ? AND ?
+      ORDER BY position ASC
+    `).all(group.file_id, Math.max(0, minPosition - before), maxPosition + after);
+  }
+
+  const rows = db.prepare(`
+    SELECT id, content, type, position, line_start, line_end, heading_path
+    FROM chunks
+    WHERE file_id = ?
+      AND ifnull(heading_path, '') = ?
+    ORDER BY position ASC
+  `).all(group.file_id, headingPath);
+
+  if (rows.length === 0) return [];
+
+  const minPosition = Math.min(...positions);
+  const maxPosition = Math.max(...positions);
+  const startIndex = Math.max(0, rows.findIndex((row) => Number(row.position) >= minPosition) - before);
+  const reversedIndex = [...rows].reverse().findIndex((row) => Number(row.position) <= maxPosition);
+  const endIndex = reversedIndex === -1
+    ? rows.length - 1
+    : Math.min(rows.length - 1, rows.length - reversedIndex - 1 + after);
+
+  const slice = rows.slice(startIndex, endIndex + 1);
+  if (slice.some((row) => row.type === 'heading')) return slice;
+
+  const headingRow = rows.find((row) => row.type === 'heading');
+  return headingRow ? [headingRow, ...slice] : slice;
+}
+
+function buildExpandedSections(db, chunks = [], options = {}) {
+  const maxSections = Number(options.maxSections || 5);
   const maxQuotesPerSection = Number(options.maxQuotesPerSection || 2);
   const groups = new Map();
 
   chunks.forEach((chunk) => {
-    const key = `${chunk.file_id}::${chunk.heading_path || '正文'}`;
+    const key = `${chunk.file_id}::${chunk.heading_path || `__pos__${chunk.position}`}`;
     const current = groups.get(key) || {
       key,
       file_id: chunk.file_id,
       file_title: chunk.file_title,
       file_path: chunk.file_path,
       heading_path: chunk.heading_path || '',
-      line_start: chunk.line_start,
-      line_end: chunk.line_end,
-      score: Number(chunk.score || 0),
       current_file_priority: Boolean(chunk.current_file_priority),
-      quotes: [],
+      score: Number(chunk.score || 0),
+      title_match: Boolean(chunk.title_match),
+      matched_queries: [],
+      title_matched_queries: [],
+      seeds: [],
     };
 
-    current.score = Math.max(current.score, Number(chunk.score || 0));
     current.current_file_priority = current.current_file_priority || Boolean(chunk.current_file_priority);
-    current.line_start = current.line_start && chunk.line_start
-      ? Math.min(current.line_start, chunk.line_start)
-      : (current.line_start || chunk.line_start || null);
-    current.line_end = current.line_end && chunk.line_end
-      ? Math.max(current.line_end, chunk.line_end)
-      : (current.line_end || chunk.line_end || null);
-
-    if (!current.quotes.some((item) => item.chunk_id === chunk.chunk_id)) {
-      current.quotes.push(quoteFromChunk(chunk));
-    }
-
+    current.score = Math.max(current.score, Number(chunk.score || 0));
+    current.title_match = current.title_match || Boolean(chunk.title_match);
+    current.matched_queries = uniqueStrings([...(current.matched_queries || []), ...(chunk.matched_queries || [])], 6);
+    current.title_matched_queries = uniqueStrings([...(current.title_matched_queries || []), ...(chunk.title_matched_queries || [])], 6);
+    current.seeds.push(chunk);
     groups.set(key, current);
   });
 
   return [...groups.values()]
-    .map((section) => ({
-      ...section,
-      quotes: section.quotes
-        .sort((left, right) => Number(right.score || 0) - Number(left.score || 0))
-        .slice(0, maxQuotesPerSection),
-    }))
-    .sort((left, right) => {
-      if (Boolean(right.current_file_priority) !== Boolean(left.current_file_priority)) {
-        return Number(right.current_file_priority) - Number(left.current_file_priority);
-      }
-      return Number(right.score || 0) - Number(left.score || 0);
-    })
-    .slice(0, maxSections);
+    .sort((left, right) => Number(right.score || 0) - Number(left.score || 0))
+    .slice(0, maxSections)
+    .map((group) => {
+      const contextRows = loadExpandedContextRows(db, group, options);
+      const sortedSeeds = sortChunks(group.seeds);
+      const content = contextRows
+        .map((row) => String(row.content || '').trim())
+        .filter(Boolean)
+        .join('\n\n')
+        .trim();
+      const lineStart = contextRows.reduce((min, row) => {
+        if (!row.line_start) return min;
+        return min === null ? row.line_start : Math.min(min, row.line_start);
+      }, null);
+      const lineEnd = contextRows.reduce((max, row) => {
+        if (!row.line_end) return max;
+        return max === null ? row.line_end : Math.max(max, row.line_end);
+      }, null);
+
+      return {
+        key: group.key,
+        file_id: group.file_id,
+        file_title: group.file_title,
+        file_path: group.file_path,
+        heading_path: group.heading_path || '',
+        line_start: lineStart,
+        line_end: lineEnd,
+        score: Number(group.score || 0),
+        current_file_priority: Boolean(group.current_file_priority),
+        title_match: Boolean(group.title_match),
+        title_matched_queries: group.title_matched_queries,
+        matched_queries: group.matched_queries,
+        content,
+        preview: content.slice(0, 160),
+        quotes: sortedSeeds.slice(0, maxQuotesPerSection).map(quoteFromChunk),
+        evidence_sentences: selectEvidenceSentences(
+          content,
+          options.sentenceQuery || '',
+          options.sentenceKeywords || [],
+          Number(options.maxEvidenceSentences || 3)
+        ),
+      };
+    });
 }
 
-function buildRetrievalStats(chunks = [], sections = []) {
+function buildRetrievalStats(chunks = [], sections = [], matchedFiles = []) {
   const bestScore = chunks.reduce((max, chunk) => Math.max(max, Number(chunk.score || 0)), 0);
+  const sorted = sortChunks(chunks).slice(0, 2);
+  const topGap = sorted.length >= 2
+    ? Number((Number(sorted[0].score || 0) - Number(sorted[1].score || 0)).toFixed(4))
+    : Number(sorted[0]?.score || 0);
   return {
     chunk_count: chunks.length,
     section_count: sections.length,
     file_count: new Set(chunks.map((chunk) => chunk.file_id)).size,
+    section_file_count: new Set(sections.map((section) => section.file_id)).size,
+    matched_file_count: matchedFiles.length,
     best_score: bestScore,
+    top_score_gap: topGap,
   };
 }
 
 function hasSufficientEvidence(chunks = [], sections = [], stats = {}) {
   if (sections.length === 0) return false;
-  if (chunks.length < 2 && sections.length < 1) return false;
-  if (Number(stats.best_score || 0) < 0.015) return false;
+  const strongSections = sections.filter((section) => String(section.content || '').trim().length >= 48);
+  if (strongSections.length === 0) return false;
+  if (chunks.length === 0) return false;
+  if (Number(stats.best_score || 0) < 0.018 && strongSections.length < 2) {
+    return strongSections.some((section) => section.title_match && (section.quotes || []).length > 0 && String(section.content || '').trim().length >= 96);
+  }
   return true;
 }
 
-async function retrieveKnowledgeContext(query, opts = {}) {
+async function retrieveKnowledgeContext(queryInput, opts = {}) {
+  const queryPlan = normalizeQueryPlanInput(queryInput);
   const activeFileId = normalizePositiveId(opts.activeFileId || opts.active_file_id);
   const requestedFileIds = normalizeFileIds(opts.fileIds || opts.file_ids);
   const restrictToFileIds = Boolean(opts.restrictToFileIds || opts.restrict_to_file_ids);
   const topK = Number(opts.topK || opts.top_k || 5);
+  const config = getEffectiveConfig();
   const db = getDb();
+  const queryVariants = buildQueryVariants(queryPlan);
+  const titleSearchInputs = buildTitleSearchInputs(queryPlan, queryVariants);
+  const allowedFileIds = restrictToFileIds ? requestedFileIds : [];
+  const matchedFiles = searchFileMatches(db, titleSearchInputs, {
+    topK: Math.max(4, topK),
+    fileIds: restrictToFileIds ? requestedFileIds : undefined,
+  });
+  const titleMatchedFileIds = normalizeFileIds(matchedFiles.map((item) => item.file_id));
+  const generalFileIds = restrictToFileIds ? requestedFileIds : undefined;
+  const shouldRunGeneralSearch = !restrictToFileIds || requestedFileIds.length > 0;
+  const primaryQueryVariant = queryVariants[1] || queryVariants[0] || { label: 'original', query: queryPlan.query, weight: 1 };
 
-  const preferredChunks = activeFileId
-    ? await hybridSearch(query, {
+  const generalSearches = shouldRunGeneralSearch
+    ? queryVariants.map((variant) => hybridSearch(variant.query, {
       ...opts,
-      topK: Math.max(3, Math.min(topK, 5)),
-      vecThreshold: Math.min(Number(opts.vecThreshold || opts.vec_threshold || 0.5), 0.25),
+      topK: topK + 3,
+      vecThreshold: Number(opts.vecThreshold || opts.vec_threshold || config.vecScoreThreshold || 0.5),
+      fileIds: generalFileIds,
+    }).then((rows) => annotateVariantChunks(rows, variant, { titleMatchedFileIds })))
+    : [];
+
+  const currentFileAllowed = activeFileId && (!restrictToFileIds || requestedFileIds.includes(activeFileId));
+  const activeFileSearch = currentFileAllowed
+    ? hybridSearch(primaryQueryVariant.query, {
+      ...opts,
+      topK: Math.max(4, topK),
+      vecThreshold: Number(opts.vecThreshold || opts.vec_threshold || config.vecScoreThreshold || 0.5),
       fileIds: [activeFileId],
-    })
-    : [];
+    }).then((rows) => annotateVariantChunks(rows, {
+      label: 'active_file',
+      weight: 1.08,
+    }, { titleMatchedFileIds }))
+    : Promise.resolve([]);
 
-  const supplementalFileIds = activeFileId
-    ? requestedFileIds.filter((fileId) => fileId !== activeFileId)
-    : requestedFileIds;
-  const shouldSearchSupplement = !restrictToFileIds || supplementalFileIds.length > 0;
-  const supplementalChunks = shouldSearchSupplement
-    ? await hybridSearch(query, {
+  const titleFileSearch = titleMatchedFileIds.length > 0
+    ? hybridSearch(primaryQueryVariant.query, {
       ...opts,
-      topK: activeFileId ? topK + 2 : topK,
-      fileIds: supplementalFileIds.length > 0 ? supplementalFileIds : (restrictToFileIds ? [] : undefined),
-    })
-    : [];
+      topK: topK + 2,
+      vecThreshold: Number(opts.vecThreshold || opts.vec_threshold || config.vecScoreThreshold || 0.5),
+      fileIds: titleMatchedFileIds,
+    }).then((rows) => annotateVariantChunks(rows, {
+      label: 'title_file',
+      weight: 0.92,
+    }, { titleMatchedFileIds }))
+    : Promise.resolve([]);
 
-  const rankedChunks = sortChunks(dedupeChunks([
-    ...boostCurrentFileChunks(preferredChunks, activeFileId),
-    ...supplementalChunks,
-  ]));
-  const chunks = sortChunks(dedupeChunks(promoteHeadingMatches(db, rankedChunks))).slice(0, topK);
-  const sections = buildSectionGroups(chunks, opts);
-  const stats = buildRetrievalStats(chunks, sections);
+  const searchResults = await Promise.all([
+    ...generalSearches,
+    activeFileSearch,
+    titleFileSearch,
+  ]);
+
+  const rankedChunks = capChunksPerFile(
+    sortChunks(
+      mergeChunks(
+        promoteHeadingMatches(
+          db,
+          boostCurrentFileChunks(
+            mergeChunks(searchResults.flat()),
+            activeFileId
+          )
+        )
+      )
+    ),
+    {
+      limitPerFile: Number(opts.maxChunksPerFile || 3),
+      totalLimit: Math.max(topK * 2, 10),
+    }
+  );
+
+  const sortedRankedChunks = sortChunks(rankedChunks);
+  const sectionSeedChunks = sortedRankedChunks.slice(0, Math.max(topK * 2, 8));
+  const chunks = sortedRankedChunks.slice(0, topK);
+  const sections = buildExpandedSections(db, sectionSeedChunks, {
+    maxSections: Number(opts.maxSections || Math.max(topK * 2, 8)),
+    maxQuotesPerSection: Number(opts.maxQuotesPerSection || 2),
+    expandBefore: Number(opts.expandBefore || 1),
+    expandAfter: Number(opts.expandAfter || 1),
+    sentenceQuery: primaryQueryVariant.query,
+    sentenceKeywords: queryPlan.keywords,
+    maxEvidenceSentences: Number(opts.maxEvidenceSentences || 3),
+  });
+  const stats = buildRetrievalStats(chunks, sections, matchedFiles);
   const sufficiency = hasSufficientEvidence(chunks, sections, stats);
 
   return {
+    query_plan: queryPlan,
+    rewrite_queries: queryVariants.map((variant) => ({
+      label: variant.label,
+      query: variant.query,
+      weight: variant.weight,
+    })),
+    matched_files: matchedFiles,
+    seed_count: sectionSeedChunks.length,
+    expanded_section_count: sections.length,
     chunks,
     sections,
     stats,

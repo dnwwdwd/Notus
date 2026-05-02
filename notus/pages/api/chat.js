@@ -1,4 +1,7 @@
 const { ensureRuntime } = require('../../lib/runtime');
+const { getEffectiveConfig } = require('../../lib/config');
+const { createLogger, createRequestContext } = require('../../lib/logger');
+const { buildKnowledgeQueryPlan } = require('../../lib/queryPlanner');
 const { retrieveKnowledgeContext } = require('../../lib/retrieval');
 const { buildKnowledgeQAPrompt } = require('../../lib/prompt');
 const { streamChat } = require('../../lib/llm');
@@ -14,6 +17,15 @@ const {
   getConversationHistory,
   touchConversation,
 } = require('../../lib/conversations');
+const {
+  buildClarifyResponse,
+  buildKnowledgeHelperContext,
+  buildNoEvidenceAnswer,
+  decideKnowledgeAnswerMode,
+  isPromptNearCompactionThreshold,
+  maybeRerankKnowledgeSections,
+  shouldTriggerKnowledgeRerank,
+} = require('../../lib/knowledgeRuntime');
 
 function send(res, payload) {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
@@ -39,51 +51,12 @@ function citationsFromChunks(chunks) {
   }));
 }
 
-function buildInsufficientAnswer(sections = []) {
-  const evidence = sections.length > 0
-    ? sections
-      .slice(0, 3)
-      .map((section) => `- 《${section.file_title}》${section.heading_path ? ` ${section.heading_path}` : ''}`)
-      .join('\n')
-    : '';
-
-  if (!evidence) {
-    return '不知道。笔记里没有找到足够相关的内容，暂时没法可靠回答这个问题。';
-  }
-
-  return `我现在没法可靠回答这个问题。现有笔记里只找到少量相关线索，证据还不够充分。\n\n比较接近的内容有：\n${evidence}`;
-}
-
-function isLikelyFollowUpQuery(query) {
-  const text = String(query || '').trim();
-  if (!text) return false;
-  if (text.length <= 10) return true;
-  if (/^(继续|展开|补充|详细|具体|然后|还有|那|呢|为什么|怎么|如何)/.test(text)) return true;
-  if (/(这个|这个问题|这个结论|这个观点|上一条|刚才|前面|上述|第二种|第一种|第三种|这种|那种|它|他|她|其)/.test(text)) {
-    return true;
-  }
-  return false;
-}
-
-function buildEffectiveKnowledgeQuery(query, history) {
-  const text = String(query || '').trim();
-  const normalizedHistory = Array.isArray(history) ? history : [];
-  if (!isLikelyFollowUpQuery(text)) return text;
-
-  const previousQuestions = normalizedHistory
-    .filter((message) => message.role === 'user' && String(message.content || '').trim())
-    .slice(-2)
-    .map((message) => String(message.content || '').trim());
-
-  if (previousQuestions.length === 0) return text;
-  return `${previousQuestions.join('\n')}\n当前追问：${text}`;
-}
-
 function createKnowledgePromptController({
   query,
   effectiveQuery,
   conversationHistory,
   knowledgeContext,
+  answerMeta,
 }) {
   let stage = 0;
 
@@ -183,6 +156,9 @@ function createKnowledgePromptController({
       history: state.history,
       memorySummary: state.memorySummary,
       effectiveQuery,
+      answerMode: answerMeta?.answer_mode || 'grounded',
+      weakEvidenceReason: answerMeta?.weak_evidence_reason || '',
+      conflictSummary: answerMeta?.conflict_summary || '',
     });
   }
 
@@ -204,10 +180,15 @@ function createKnowledgePromptController({
 }
 
 export default async function handler(req, res) {
+  const context = createRequestContext(req, res, '/api/chat');
+  const logger = createLogger(context);
   if (req.method !== 'POST') return res.status(405).end();
 
   const runtime = ensureRuntime();
-  if (!runtime.ok) return res.status(500).json({ error: runtime.error.message, code: 'RUNTIME_ERROR' });
+  if (!runtime.ok) {
+    logger.error('chat.runtime.failed', { error: runtime.error });
+    return res.status(500).json({ error: runtime.error.message, code: 'RUNTIME_ERROR', request_id: context.request_id });
+  }
 
   const {
     conversation_id: conversationId,
@@ -218,7 +199,7 @@ export default async function handler(req, res) {
     reference_mode: referenceMode,
     reference_file_ids: referenceFileIds = [],
   } = req.body || {};
-  if (!query) return res.status(400).json({ error: 'query is required', code: 'QUERY_REQUIRED' });
+  if (!query) return res.status(400).json({ error: 'query is required', code: 'QUERY_REQUIRED', request_id: context.request_id });
 
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -226,12 +207,24 @@ export default async function handler(req, res) {
 
   let conversation = null;
   try {
+    const llmConfig = resolveLlmRuntimeConfig({ llmConfigId, model });
+    if (llmConfigId && !llmConfig) {
+      throw new Error('所选 LLM 配置不存在');
+    }
+
     conversation = ensureConversation({
       conversationId,
       kind: 'knowledge',
       title: query,
       fileId: null,
     });
+    const featureConfig = getEffectiveConfig();
+    const features = {
+      enableClarify: Boolean(featureConfig.knowledgeEnableClarify),
+      enableConditionalRerank: Boolean(featureConfig.knowledgeEnableConditionalRerank),
+      enableWeakEvidenceSupplement: Boolean(featureConfig.knowledgeEnableWeakEvidenceSupplement),
+      enableConflictMode: Boolean(featureConfig.knowledgeEnableConflictMode),
+    };
     const conversationHistory = getConversationHistory(conversation.id, { limit: 12 });
     appendConversationMessage({
       conversationId: conversation.id,
@@ -240,16 +233,214 @@ export default async function handler(req, res) {
     });
     touchConversation(conversation.id);
 
-    const effectiveQuery = buildEffectiveKnowledgeQuery(query, conversationHistory);
+    const helperContext = buildKnowledgeHelperContext({
+      conversationId: conversation.id,
+      query,
+      history: conversationHistory,
+      activeFileId,
+      referenceMode,
+      referenceFileIds,
+    });
+    const helperPressureHigh = llmConfig
+      ? isPromptNearCompactionThreshold(
+        [...conversationHistory, { role: 'user', content: query }],
+        llmConfig,
+        { model, taskType: 'knowledge_answer', ratio: 0.9 }
+      )
+      : false;
 
-    const knowledgeContext = await retrieveKnowledgeContext(effectiveQuery, {
+    const queryPlan = await buildKnowledgeQueryPlan({
+      query,
+      history: conversationHistory,
+      llmConfig: llmConfig || null,
+      model,
+      allowLlmRewrite: !helperPressureHigh,
+      enableClarify: features.enableClarify,
+      cacheContext: helperContext,
+    });
+    const effectiveQuery = queryPlan.standalone_query || query;
+    let helperTelemetry = {
+      helper_call_type: queryPlan.helper_call_type || '',
+      helper_call_triggered: Boolean(queryPlan.helper_call_triggered),
+      helper_call_cache_hit: Boolean(queryPlan.helper_call_cache_hit),
+      helper_call_latency_ms: Number(queryPlan.helper_call_latency_ms || 0),
+      helper_call_failed: Boolean(queryPlan.helper_call_failed),
+      fallback_reason: queryPlan.fallback_reason || '',
+    };
+
+    logger.info('chat.query_plan.resolved', {
+      conversation_id: conversation.id,
+      query,
+      intent: queryPlan.intent,
+      is_follow_up: queryPlan.is_follow_up,
+      standalone_query: queryPlan.standalone_query,
+      expanded_query: queryPlan.expanded_query,
+      keywords: queryPlan.keywords,
+      title_hints: queryPlan.title_hints,
+      planner_used_llm: queryPlan.used_llm,
+      clarity_score: queryPlan.clarity_score,
+      ambiguity_flags: queryPlan.ambiguity_flags,
+      clarify_needed: queryPlan.clarify_needed,
+      helper_call_type: helperTelemetry.helper_call_type,
+      helper_call_triggered: helperTelemetry.helper_call_triggered,
+      helper_call_cache_hit: helperTelemetry.helper_call_cache_hit,
+      helper_call_failed: helperTelemetry.helper_call_failed,
+      helper_call_latency_ms: helperTelemetry.helper_call_latency_ms,
+      fallback_reason: helperTelemetry.fallback_reason,
+    });
+
+    if (features.enableClarify && queryPlan.clarify_needed) {
+      const answerMeta = {
+        answer_mode: 'clarify_needed',
+        confidence: 0.12,
+        clarity_score: queryPlan.clarity_score,
+        ambiguity_flags: queryPlan.ambiguity_flags,
+        rerank_applied: false,
+        weak_evidence_reason: '',
+        conflict_summary: '',
+        retrieval_stats: null,
+        clarify_question: queryPlan.clarify_question,
+        ...helperTelemetry,
+      };
+      const answer = buildClarifyResponse(queryPlan);
+      send(res, {
+        type: 'assistant_meta',
+        ...answerMeta,
+      });
+      send(res, { type: 'token', text: answer });
+      send(res, { type: 'citations', citations: [] });
+      const messageId = appendConversationMessage({
+        conversationId: conversation.id,
+        role: 'assistant',
+        content: answer,
+        citations: [],
+        meta: answerMeta,
+      });
+      touchConversation(conversation.id);
+      send(res, {
+        type: 'done',
+        conversation_id: conversation.id,
+        message_id: messageId,
+        answer_mode: answerMeta.answer_mode,
+        confidence: answerMeta.confidence,
+        meta: answerMeta,
+      });
+      return res.end();
+    }
+
+    const knowledgeContext = await retrieveKnowledgeContext({
+      ...queryPlan,
+      query,
+    }, {
       topK: 5,
       activeFileId,
       fileIds: referenceMode === 'manual' ? referenceFileIds : [],
       restrictToFileIds: referenceMode === 'manual',
     });
-    const { chunks, sections, stats, sufficiency } = knowledgeContext;
-    send(res, { type: 'chunks', chunks, sections, stats, sufficiency });
+    const chunks = Array.isArray(knowledgeContext.chunks) ? knowledgeContext.chunks : [];
+    let sections = Array.isArray(knowledgeContext.sections) ? knowledgeContext.sections : [];
+    const stats = knowledgeContext.stats || {};
+    const sufficiency = Boolean(knowledgeContext.sufficiency);
+    const matchedFiles = Array.isArray(knowledgeContext.matched_files) ? knowledgeContext.matched_files : [];
+    const rewriteQueries = Array.isArray(knowledgeContext.rewrite_queries) ? knowledgeContext.rewrite_queries : [];
+    const seedCount = Number(knowledgeContext.seed_count || 0);
+    const expandedSectionCount = Number(knowledgeContext.expanded_section_count || sections.length);
+    const helperAlreadyUsed = Boolean(helperTelemetry.helper_call_triggered);
+    let rerankResult = null;
+
+    if (
+      features.enableConditionalRerank
+      && llmConfig
+      && !helperAlreadyUsed
+      && shouldTriggerKnowledgeRerank(queryPlan, knowledgeContext)
+    ) {
+      const promptPressureHigh = isPromptNearCompactionThreshold(
+        buildKnowledgeQAPrompt(query, knowledgeContext, {
+          history: conversationHistory,
+          effectiveQuery,
+          answerMode: 'grounded',
+        }),
+        llmConfig,
+        { model, taskType: 'knowledge_answer', ratio: 0.92 }
+      );
+      if (!promptPressureHigh) {
+        rerankResult = await maybeRerankKnowledgeSections({
+          query,
+          queryPlan,
+          knowledgeContext,
+          llmConfig,
+          model,
+          history: conversationHistory,
+          cacheContext: helperContext,
+          logger,
+        });
+        if (Array.isArray(rerankResult.sections) && rerankResult.sections.length > 0) {
+          knowledgeContext.sections = rerankResult.sections;
+          sections = rerankResult.sections;
+          helperTelemetry = {
+            helper_call_type: rerankResult.helper_call_type || 'rerank',
+            helper_call_triggered: Boolean(rerankResult.helper_call_triggered),
+            helper_call_cache_hit: Boolean(rerankResult.helper_call_cache_hit),
+            helper_call_latency_ms: Number(rerankResult.helper_call_latency_ms || 0),
+            helper_call_failed: Boolean(rerankResult.helper_call_failed),
+            fallback_reason: rerankResult.fallback_reason || '',
+          };
+        }
+      }
+    }
+
+    const answerMeta = {
+      ...decideKnowledgeAnswerMode({
+        queryPlan,
+        knowledgeContext,
+        features,
+        rerankResult,
+      }),
+      clarity_score: queryPlan.clarity_score,
+      ambiguity_flags: queryPlan.ambiguity_flags,
+      rerank_applied: Boolean(rerankResult?.rerank_applied),
+      retrieval_stats: stats,
+      clarify_question: '',
+      ...helperTelemetry,
+    };
+
+    logger.info('chat.retrieval.completed', {
+      conversation_id: conversation.id,
+      query,
+      matched_files: matchedFiles,
+      rewrite_queries: rewriteQueries,
+      seed_count: seedCount,
+      expanded_section_count: expandedSectionCount,
+      best_score: stats.best_score,
+      sufficiency,
+      answer_mode: answerMeta.answer_mode,
+      helper_call_type: helperTelemetry.helper_call_type,
+      helper_call_triggered: helperTelemetry.helper_call_triggered,
+      helper_call_cache_hit: helperTelemetry.helper_call_cache_hit,
+      helper_call_failed: helperTelemetry.helper_call_failed,
+      helper_call_latency_ms: helperTelemetry.helper_call_latency_ms,
+      fallback_reason: helperTelemetry.fallback_reason,
+    });
+
+    send(res, {
+      type: 'chunks',
+      chunks,
+      sections,
+      stats,
+      sufficiency,
+      query_plan: queryPlan,
+      matched_files: matchedFiles,
+      rewrite_queries: rewriteQueries,
+      seed_count: seedCount,
+      expanded_section_count: expandedSectionCount,
+      answer_mode: answerMeta.answer_mode,
+      confidence: answerMeta.confidence,
+      rerank_applied: answerMeta.rerank_applied,
+    });
+    send(res, {
+      type: 'assistant_meta',
+      ...answerMeta,
+    });
 
     const citations = citationsFromChunks(chunks);
     let answer = '';
@@ -257,22 +448,16 @@ export default async function handler(req, res) {
     let budget = null;
     let compacted = false;
 
-    if (chunks.length === 0) {
-      answer = buildInsufficientAnswer([]);
-      send(res, { type: 'token', text: answer });
-    } else if (!sufficiency) {
-      answer = buildInsufficientAnswer(sections);
+    if (answerMeta.answer_mode === 'no_evidence') {
+      answer = buildNoEvidenceAnswer(sections, matchedFiles);
       send(res, { type: 'token', text: answer });
     } else {
-      const llmConfig = llmConfigId ? resolveLlmRuntimeConfig({ llmConfigId, model }) : null;
-      if (llmConfigId && !llmConfig) {
-        throw new Error('所选 LLM 配置不存在');
-      }
       const promptController = createKnowledgePromptController({
         query,
         effectiveQuery,
         conversationHistory,
         knowledgeContext,
+        answerMeta,
       });
       const streamResult = await streamChat(promptController.buildMessages(), {
         model,
@@ -300,6 +485,7 @@ export default async function handler(req, res) {
       role: 'assistant',
       content: answer,
       citations,
+      meta: answerMeta,
     });
     touchConversation(conversation.id);
     send(res, {
@@ -309,12 +495,21 @@ export default async function handler(req, res) {
       usage,
       budget,
       compacted,
+      answer_mode: answerMeta.answer_mode,
+      confidence: answerMeta.confidence,
+      meta: answerMeta,
     });
   } catch (error) {
+    logger.error('chat.failed', {
+      error,
+      conversation_id: conversation?.id || null,
+      query,
+    });
     send(res, {
       type: 'error',
       error: error.message,
       conversation_id: conversation?.id || null,
+      request_id: context.request_id,
     });
   }
 

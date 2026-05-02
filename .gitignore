@@ -10,8 +10,26 @@ notus/.npm-cache/
 .env.local
 notus/.env.local
 npm-debug.log*
+.idea/
+notus.db
 lzc-dist/
 *.lpk
+lzc-build.yml
+lzc-manifest.yml
+lzc/
+lzc-icon.png
+package.yml
+docs/懒猫微服通用移植教程与规范(0425).md
+desktop/dist/
+desktop/resources/notus/
+web-dist/
 notus/notus.db*
 notus/logs/
 notus/notes/
+
+# project docs
+AGENTS.md
+CLAUDE.md
+README.md
+Requirements/
+docs/

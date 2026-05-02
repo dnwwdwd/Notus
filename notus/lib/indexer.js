@@ -14,6 +14,10 @@ const {
   readMarkdownFile,
   sha256,
 } = require('./files');
+const {
+  enqueueStyleExtraction,
+  setStyleBackfillPaused,
+} = require('./style');
 
 const BLOCK_NODE_TYPES = new Set([
   'heading',
@@ -90,6 +94,15 @@ function extractImages(content) {
   return images;
 }
 
+function buildChunkSearchPayload(fileTitle, filePath, headingPath, chunkContent) {
+  return [
+    fileTitle || '',
+    filePath || '',
+    headingPath || '',
+    chunkContent || '',
+  ].filter(Boolean).join('\n');
+}
+
 let parserPromise = null;
 
 async function getParser() {
@@ -107,7 +120,7 @@ async function getParser() {
   return parserPromise;
 }
 
-async function splitIntoChunks(content) {
+async function splitIntoChunks(content, options = {}) {
   const source = String(content || '');
   if (!source.trim()) return [];
 
@@ -134,9 +147,14 @@ async function splitIntoChunks(content) {
     const headingPath = type === 'heading'
       ? headingStack.filter(Boolean).join(' > ')
       : headingStack.filter(Boolean).join(' > ');
-    const textForSearch = `${headingPath}\n${chunkContent}`;
+      const textForSearch = buildChunkSearchPayload(
+        options.fileTitle,
+        options.filePath,
+        headingPath,
+        chunkContent
+      );
 
-    chunks.push({
+      chunks.push({
       type,
       content: chunkContent,
       position: chunks.length,
@@ -197,12 +215,20 @@ async function indexFile(inputPath) {
   `).run(relativePath, title, hash);
 
   const fileId = existing?.id || upsert.lastInsertRowid;
-  const chunks = await splitIntoChunks(content);
+  const chunks = await splitIntoChunks(content, {
+    fileTitle: title,
+    filePath: relativePath,
+  });
   let embeddings = null;
   let embeddingError = null;
 
   try {
-    const embeddingInputs = chunks.map((chunk) => `${chunk.heading_path || ''}\n${chunk.content}`);
+    const embeddingInputs = chunks.map((chunk) => buildChunkSearchPayload(
+      title,
+      relativePath,
+      chunk.heading_path,
+      chunk.content
+    ));
     embeddings = embeddingInputs.length > 0 ? await getEmbeddings(embeddingInputs) : [];
   } catch (error) {
     embeddingError = ensureError(error, 'INDEX_EMBEDDING_FAILED', '向量化失败');
@@ -283,6 +309,19 @@ async function indexFile(inputPath) {
         file_path: relativePath,
         error,
       });
+    });
+  }
+
+  if (!embeddingError) {
+    enqueueStyleExtraction(fileId, {
+      file: {
+        id: Number(fileId),
+        title,
+        path: relativePath,
+        content,
+      },
+      chunks,
+      fileHash: hash,
     });
   }
 
@@ -402,9 +441,14 @@ async function rebuildIndex(onProgress, options = {}) {
   const { listMarkdownFiles } = require('./files');
   const config = getEffectiveConfig();
   fs.mkdirSync(config.notesDir, { recursive: true });
+  setStyleBackfillPaused(true);
   if (options.clear !== false) clearIndex();
   const paths = listMarkdownFiles();
-  return indexBatch(paths, onProgress);
+  try {
+    return await indexBatch(paths, onProgress);
+  } finally {
+    setStyleBackfillPaused(false);
+  }
 }
 
 module.exports = {

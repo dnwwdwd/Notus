@@ -46,6 +46,7 @@ function parseMessageRow(row) {
     id: Number(row.id),
     conversation_id: Number(row.conversation_id),
     citations: row.citations ? JSON.parse(row.citations) : [],
+    meta: row.meta ? JSON.parse(row.meta) : null,
   };
 }
 
@@ -128,7 +129,7 @@ function ensureConversation({ conversationId, kind = 'knowledge', title, fileId 
   return createConversation({ kind, title, fileId, draftKey });
 }
 
-function appendConversationMessage({ conversationId, role, content, citations = null } = {}) {
+function appendConversationMessage({ conversationId, role, content, citations = null, meta = null } = {}) {
   const db = getDb();
   const normalizedConversationId = normalizeNullablePositiveInt(conversationId);
   if (!normalizedConversationId) {
@@ -139,11 +140,14 @@ function appendConversationMessage({ conversationId, role, content, citations = 
   const serializedCitations = citations === null || citations === undefined
     ? null
     : JSON.stringify(citations);
+  const serializedMeta = meta === null || meta === undefined
+    ? null
+    : JSON.stringify(meta);
 
   const result = db.prepare(`
-    INSERT INTO messages (conversation_id, role, content, citations)
-    VALUES (?, ?, ?, ?)
-  `).run(normalizedConversationId, normalizedRole, messageContent, serializedCitations);
+    INSERT INTO messages (conversation_id, role, content, citations, meta)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(normalizedConversationId, normalizedRole, messageContent, serializedCitations, serializedMeta);
 
   return Number(result.lastInsertRowid);
 }
@@ -220,6 +224,18 @@ function getConversationMessages(conversationId) {
   return rows.map(parseMessageRow);
 }
 
+function getConversationMessageById(messageId) {
+  const db = getDb();
+  const normalizedMessageId = normalizeNullablePositiveInt(messageId);
+  if (!normalizedMessageId) return null;
+  const row = db.prepare(`
+    SELECT *
+    FROM messages
+    WHERE id = ?
+  `).get(normalizedMessageId);
+  return row ? parseMessageRow(row) : null;
+}
+
 function getConversationHistory(conversationId, { limit = 12, includeTool = false } = {}) {
   const db = getDb();
   const normalizedConversationId = normalizeNullablePositiveInt(conversationId);
@@ -236,8 +252,10 @@ function getConversationHistory(conversationId, { limit = 12, includeTool = fals
   `).all(normalizedConversationId, normalizedLimit).reverse();
 
   return rows.map((row) => ({
+    id: Number(row.id),
     role: row.role,
     content: String(row.content || ''),
+    meta: row.meta ? JSON.parse(row.meta) : null,
   }));
 }
 
@@ -247,6 +265,7 @@ module.exports = {
   appendConversationMessage,
   ensureConversation,
   getConversation,
+  getConversationMessageById,
   getConversationMessages,
   getConversationHistory,
   listConversations,

@@ -460,6 +460,12 @@ a {
   animation: citationFlash 3s ease forwards;
 }
 
+.wysiwyg-content .ProseMirror span[data-citation-highlight] {
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  padding: 0.08em 0.14em;
+}
+
 .wysiwyg-content .ProseMirror .citation-highlight-persistent {
   background: var(--accent-subtle);
   background: color-mix(in srgb, var(--accent) 18%, transparent);

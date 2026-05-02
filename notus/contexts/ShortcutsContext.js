@@ -65,6 +65,16 @@ const SPECIAL_KEYS = {
   tab: 'Tab',
 };
 
+function detectDisplayPlatform() {
+  if (typeof navigator === 'undefined') return 'default';
+  const platformHints = [
+    navigator.userAgentData?.platform,
+    navigator.platform,
+    navigator.userAgent,
+  ].filter(Boolean).join(' ');
+  return /mac|iphone|ipad|ipod/i.test(platformHints) ? 'mac' : 'default';
+}
+
 function normalizeKeyName(rawKey) {
   const key = String(rawKey || '').trim().toLowerCase();
   if (!key) return '';
@@ -109,6 +119,24 @@ export function normalizeShortcut(shortcut) {
     modifierSet.has('alt') ? MODIFIER_LABELS.alt : null,
     key,
   ].filter(Boolean).join('+');
+}
+
+export function formatShortcutDisplay(shortcut, displayPlatform = detectDisplayPlatform()) {
+  const normalized = normalizeShortcut(shortcut);
+  if (!normalized) return '';
+
+  return normalized
+    .split('+')
+    .map((part) => {
+      if (part === 'Mod') {
+        return displayPlatform === 'mac' ? 'Command' : 'Ctrl';
+      }
+      if (part === 'Alt') {
+        return displayPlatform === 'mac' ? 'Option' : 'Alt';
+      }
+      return part;
+    })
+    .join('+');
 }
 
 function getEventKey(event) {
@@ -163,6 +191,11 @@ function mergeShortcuts(saved = {}) {
 
 export function ShortcutsProvider({ children }) {
   const [shortcuts, setShortcuts] = useState(DEFAULT_SHORTCUTS);
+  const [displayPlatform, setDisplayPlatform] = useState('default');
+
+  useEffect(() => {
+    setDisplayPlatform(detectDisplayPlatform());
+  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -208,9 +241,11 @@ export function ShortcutsProvider({ children }) {
     updateShortcut,
     resetShortcuts,
     normalizeShortcut,
+    formatShortcutDisplay,
+    displayShortcut: (shortcut) => formatShortcutDisplay(shortcut, displayPlatform),
     matchShortcut,
     toTiptapShortcut,
-  }), [resetShortcuts, shortcutList, shortcuts, updateShortcut]);
+  }), [displayPlatform, resetShortcuts, shortcutList, shortcuts, updateShortcut]);
 
   return (
     <ShortcutsContext.Provider value={value}>

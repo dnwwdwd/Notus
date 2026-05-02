@@ -1,5 +1,5 @@
 const { ensureRuntime } = require('../../../lib/runtime');
-const { renameFile } = require('../../../lib/files');
+const { buildRenamedPath, getFileById, renameFile } = require('../../../lib/files');
 const { indexFileWithFallback } = require('../../../lib/fileIndexing');
 const { createLogger, createRequestContext } = require('../../../lib/logger');
 
@@ -17,7 +17,25 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { old_path: oldPath, new_path: newPath } = req.body || {};
+    const {
+      id,
+      name,
+      old_path: oldPathFromBody,
+      new_path: newPathFromBody,
+    } = req.body || {};
+
+    let oldPath = oldPathFromBody;
+    let newPath = newPathFromBody;
+
+    if ((!oldPath || !newPath) && id && name) {
+      const existing = getFileById(id);
+      if (!existing) {
+        throw new Error('file not found');
+      }
+      oldPath = existing.path;
+      newPath = buildRenamedPath(existing.path, name);
+    }
+
     const file = renameFile(oldPath, newPath);
     const indexState = await indexFileWithFallback(file.path, logger, { action: 'rename' });
     return res.status(200).json({

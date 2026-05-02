@@ -8,11 +8,8 @@ const UNMOUNT_DELAY_MS = 360;
 
 export function PageTransitionOverlay() {
   const router = useRouter();
-  const initialTransition = typeof window !== 'undefined'
-    ? Boolean(consumeNavigationTransition())
-    : false;
-  const [mounted, setMounted] = useState(initialTransition);
-  const [active, setActive] = useState(initialTransition);
+  const [mounted, setMounted] = useState(false);
+  const [active, setActive] = useState(false);
   const hideTimerRef = useRef(null);
   const unmountTimerRef = useRef(null);
 
@@ -46,7 +43,9 @@ export function PageTransitionOverlay() {
   };
 
   useEffect(() => {
-    if (initialTransition) {
+    if (consumeNavigationTransition()) {
+      setMounted(true);
+      setActive(true);
       hideOverlay();
     }
 

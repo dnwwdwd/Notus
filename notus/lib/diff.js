@@ -71,7 +71,33 @@ function applyOperation(article, operation) {
   return { success: false, error: 'UNSUPPORTED_OPERATION' };
 }
 
+function applyOperations(article, operations = []) {
+  const queue = Array.isArray(operations) ? operations : [];
+  let nextArticle = cloneArticle(article);
+
+  for (let index = 0; index < queue.length; index += 1) {
+    const result = applyOperation(nextArticle, queue[index]);
+    if (!result.success) {
+      return {
+        success: false,
+        error: result.error,
+        failed_at: index,
+        applied_count: index,
+      };
+    }
+    nextArticle = result.article;
+  }
+
+  return {
+    success: true,
+    article: nextArticle,
+    applied_count: queue.length,
+    failed_at: null,
+  };
+}
+
 module.exports = {
   applyOperation,
+  applyOperations,
   computeDiff,
 };

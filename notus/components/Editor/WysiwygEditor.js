@@ -14,6 +14,7 @@ import Underline from '@tiptap/extension-underline';
 import { Markdown } from 'tiptap-markdown';
 import { all, createLowlight } from 'lowlight';
 import { useShortcuts } from '../../contexts/ShortcutsContext';
+import { CitationHighlight } from './CitationHighlightExtension';
 
 const lowlight = createLowlight(all);
 
@@ -39,6 +40,7 @@ export const WysiwygEditor = ({ value, onChange, onSave, onEditorReady }) => {
       TaskList,
       TaskItem.configure({ nested: true }),
       Underline,
+      CitationHighlight,
       Markdown.configure({
         html: false,
         transformPastedText: true,

@@ -12,6 +12,7 @@ import { Toggle } from '../ui/Toggle';
 import { useToast } from '../ui/Toast';
 import { LlmConfigCardsSection } from './LlmConfigCardsSection';
 import packageMeta from '../../package.json';
+import { usePlatform } from '../../contexts/PlatformContext';
 import {
   EMBEDDING_PROVIDERS,
   findProvider,
@@ -19,6 +20,7 @@ import {
 import { findEmbeddingModelMeta, inferEmbeddingProvider } from '../../lib/embeddingForm';
 import { useShortcuts, normalizeShortcut, DEFAULT_SHORTCUTS } from '../../contexts/ShortcutsContext';
 import { navigateWithFallback } from '../../utils/navigation';
+import { desktop as desktopClient } from '../../utils/platformClient';
 
 const APP_VERSION = packageMeta.version || '0.1.2';
 
@@ -535,24 +537,27 @@ const Logs = () => {
   );
 };
 
+function getRuntimeLabel(runtimeTarget) {
+  if (runtimeTarget === 'electron') return '桌面端';
+  if (runtimeTarget === 'lazycat') return '懒猫兼容模式';
+  return 'Web';
+}
+
 const Storage = () => {
   const toast = useToast();
+  const { profile, capabilities } = usePlatform();
   const [confirmClear, setConfirmClear] = useState(false);
   const [confirmRebuild, setConfirmRebuild] = useState(false);
+  const [confirmWipe, setConfirmWipe] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [rebuilding, setRebuilding] = useState(false);
+  const [wiping, setWiping] = useState(false);
   const [rebuildProgress, setRebuildProgress] = useState(0);
-  const [notesDir, setNotesDir] = useState('/lzcapp/var/notes');
   const [indexStatus, setIndexStatus] = useState({ total: 0, indexed: 0, pending: 0, failed: 0 });
 
   const refreshStatus = async () => {
-    const [settingsResponse, statusResponse] = await Promise.all([
-      fetch('/api/settings'),
-      fetch('/api/index/status'),
-    ]);
-    const settings = await settingsResponse.json();
+    const statusResponse = await fetch('/api/index/status');
     const status = await statusResponse.json();
-    if (settingsResponse.ok) setNotesDir(settings.notes_dir || '/lzcapp/var/notes');
     if (statusResponse.ok) setIndexStatus(status);
   };
 
@@ -613,9 +618,46 @@ const Storage = () => {
     }
   };
 
+  const handleOpenDataDirectory = async () => {
+    const result = await desktopClient.openDataDirectory();
+    if (result?.ok === false && !result.unavailable) {
+      toast(result.error || '打开数据目录失败', 'error');
+    }
+  };
+
+  const handleWipe = async () => {
+    setConfirmWipe(false);
+    setWiping(true);
+    try {
+      const result = await desktopClient.clearLocalDataAndQuit();
+      if (result?.ok === false) {
+        throw new Error(result.error || '清理本机数据失败');
+      }
+    } catch (error) {
+      toast(error.message || '清理本机数据失败', 'error');
+      setWiping(false);
+      return;
+    }
+  };
+
+  const notesDir = profile.notesDir || '';
+  const dataRoot = profile.dataRoot || '';
+  const runtimeLabel = getRuntimeLabel(profile.runtimeTarget);
+
   return (
     <div>
       <div style={{ fontSize: 'var(--text-xl)', fontWeight: 600, marginBottom: 28 }}>存储</div>
+      <Section title="运行环境">
+        <Field label="当前平台">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <TextInput value={runtimeLabel} disabled style={{ flex: 1 }} />
+            <Badge tone={profile.runtimeTarget === 'electron' ? 'accent' : 'success'}>{profile.storageMode === 'managed' ? '应用内托管' : '目录直连'}</Badge>
+          </div>
+        </Field>
+        <Field label="数据根目录">
+          <TextInput value={dataRoot} disabled />
+        </Field>
+      </Section>
       <Section title="笔记目录">
         <Field label="目录路径">
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -623,6 +665,11 @@ const Storage = () => {
             <Badge tone="success">已就绪</Badge>
           </div>
         </Field>
+        <NoteBox tone={profile.storageMode === 'managed' ? 'info' : 'success'}>
+          {profile.storageMode === 'managed'
+            ? '桌面端会把导入的 Markdown、附件、数据库和日志统一存放到应用工作区中，避免散落到其他目录。'
+            : '当前环境会直接使用现有目录中的文件，索引和运行时数据仍由 Notus 在本地维护。'}
+        </NoteBox>
       </Section>
       <Section title="索引状态">
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12, fontSize: 'var(--text-sm)' }}>
@@ -644,6 +691,19 @@ const Storage = () => {
           <Button variant="danger" loading={clearing} onClick={() => setConfirmClear(true)}>清除索引</Button>
         </div>
       </Section>
+      {capabilities.supportsDesktopShell && (
+        <Section title="桌面端操作">
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+            <Button variant="secondary" onClick={handleOpenDataDirectory}>打开数据目录</Button>
+            <Button variant="danger" loading={wiping} onClick={() => setConfirmWipe(true)}>清除本机数据并退出</Button>
+          </div>
+          <NoteBox tone={profile.canAutoPurgeOnUninstall ? 'success' : 'warning'}>
+            {profile.canAutoPurgeOnUninstall
+              ? '当前平台支持随卸载自动清理应用数据。你也可以先手动清理，再执行卸载。'
+              : '当前平台建议先执行“清除本机数据并退出”，再删除应用本体，这样更容易避免残留。'}
+          </NoteBox>
+        </Section>
+      )}
 
       <ConfirmDialog
         open={confirmClear}
@@ -662,13 +722,23 @@ const Storage = () => {
         message="将重新处理所有笔记文件，这可能需要几分钟。期间知识库查询仍可正常使用旧索引。"
         confirmLabel="开始重建"
       />
+      <ConfirmDialog
+        open={confirmWipe}
+        onClose={() => setConfirmWipe(false)}
+        onConfirm={handleWipe}
+        title="清除本机数据并退出"
+        message="此操作会删除 Notus 当前工作区中的笔记副本、附件、数据库、日志和本地会话，然后退出应用。"
+        confirmLabel="确认清理"
+        danger
+      />
     </div>
   );
 };
 
 const ShortcutsSettings = () => {
   const toast = useToast();
-  const { shortcutList, updateShortcut, resetShortcuts } = useShortcuts();
+  const { capabilities } = usePlatform();
+  const { shortcutList, updateShortcut, resetShortcuts, displayShortcut, formatShortcutDisplay } = useShortcuts();
   const [drafts, setDrafts] = useState(
     () => Object.fromEntries(Object.values(DEFAULT_SHORTCUTS).map((item) => [item.id, item.combo]))
   );
@@ -683,6 +753,19 @@ const ShortcutsSettings = () => {
       <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', marginBottom: 28 }}>
         在这里集中维护常用操作的快捷键。输入框中的快捷键提示默认隐藏，但实际操作仍会按这里的配置生效。
       </div>
+
+      {capabilities.supportsDesktopShell && (
+        <Section title="桌面端说明">
+          <NoteBox tone="info">
+            桌面端另外提供固定系统级快捷键 {displayShortcut('Mod+K')}，用于唤起主窗口并直接打开搜索。
+            这个系统级快捷键当前不跟随下面的自定义配置变化。
+          </NoteBox>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
+            <Badge tone="accent">macOS：{formatShortcutDisplay('Mod+K', 'mac')}</Badge>
+            <Badge tone="success">Windows / Linux：{formatShortcutDisplay('Mod+K', 'default')}</Badge>
+          </div>
+        </Section>
+      )}
 
       <Section title="常用操作">
         <div style={{ display: 'grid', gap: 12 }}>
@@ -734,6 +817,10 @@ const ShortcutsSettings = () => {
                   保存
                 </Button>
               </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <Badge tone="accent">macOS：{formatShortcutDisplay(drafts[item.id] || item.combo, 'mac')}</Badge>
+                <Badge tone="success">Windows / Linux：{formatShortcutDisplay(drafts[item.id] || item.combo, 'default')}</Badge>
+              </div>
             </div>
           ))}
         </div>
@@ -763,38 +850,50 @@ const ShortcutsSettings = () => {
   );
 };
 
-const About = () => (
-  <div>
-    <div style={{ fontSize: 'var(--text-xl)', fontWeight: 600, marginBottom: 28 }}>关于</div>
-    <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', marginBottom: 24 }}>
-      <div style={{ width: 56, height: 56, borderRadius: 12, background: 'var(--accent-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-        <NotusLogo size={36} />
+const About = () => {
+  return (
+    <div>
+      <div style={{ fontSize: 'var(--text-xl)', fontWeight: 600, marginBottom: 28 }}>关于</div>
+      <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', marginBottom: 24 }}>
+        <div style={{ width: 56, height: 56, borderRadius: 12, background: 'var(--accent-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+          <NotusLogo size={36} />
+        </div>
+        <div>
+          <div style={{ fontSize: 'var(--text-lg)', fontWeight: 600 }}>Notus</div>
+          <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>版本 {APP_VERSION}</div>
+          <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', marginTop: 4 }}>
+            私有化个人知识库与 AI 写作协作工具
+          </div>
+        </div>
       </div>
-      <div>
-        <div style={{ fontSize: 'var(--text-lg)', fontWeight: 600 }}>Notus</div>
-        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>版本 {APP_VERSION}</div>
-        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', marginTop: 4 }}>
-          私有化个人知识库与 AI 写作协作工具
+      <div
+        style={{
+          border: '1px solid var(--border-subtle)',
+          borderRadius: 'var(--radius-xl)',
+          background: 'linear-gradient(180deg, rgba(193,95,60,0.06) 0%, var(--bg-elevated) 100%)',
+          padding: '18px 20px',
+          boxShadow: 'var(--shadow-sm)',
+          maxWidth: 560,
+        }}
+      >
+        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', lineHeight: 1.8 }}>
+          当前版本专注本地知识库问答、块级创作协作和桌面工作区体验。
         </div>
       </div>
     </div>
-    <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', lineHeight: 1.8 }}>
-      <p>Notus 运行在懒猫微服上，数据存储在本地，不依赖云服务。</p>
-      <p>所有 AI 调用均通过你自己配置的 API Key 直接连接服务商，无中间代理。</p>
-    </div>
-  </div>
-);
+  );
+};
 
 const CONTENT_MAP = {
-  model: <ModelConfig />,
-  storage: <Storage />,
-  logs: <Logs />,
-  shortcuts: <ShortcutsSettings />,
-  about: <About />,
+  model: ModelConfig,
+  storage: Storage,
+  logs: Logs,
+  shortcuts: ShortcutsSettings,
+  about: About,
 };
 
 export function SettingsScreen({ section }) {
-  const content = CONTENT_MAP[section] || CONTENT_MAP.model;
+  const Content = CONTENT_MAP[section] || CONTENT_MAP.model;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
@@ -813,7 +912,7 @@ export function SettingsScreen({ section }) {
         <SettingsNav active={section} />
         <div style={{ flex: 1, overflow: 'auto', background: 'var(--bg-primary)', padding: 32, minWidth: 0 }}>
           <div style={{ maxWidth: 920, margin: '0 auto' }}>
-            {content}
+            <Content />
           </div>
         </div>
       </div>

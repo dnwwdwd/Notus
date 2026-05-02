@@ -52,6 +52,37 @@ const SUGGESTIONS = [
   '读书笔记里提到过哪些决策模型？',
 ];
 
+function buildAnswerStage(event = {}) {
+  const sectionCount = Array.isArray(event.sections) ? event.sections.length : 0;
+  const matchedFileCount = Array.isArray(event.matched_files) ? event.matched_files.length : 0;
+  const chunkCount = Array.isArray(event.chunks) ? event.chunks.length : 0;
+  const sources = sectionCount || matchedFileCount || chunkCount;
+  return {
+    stage: event.sufficiency === false || event.answer_mode === 'no_evidence' ? 'insufficient' : 'found',
+    sources,
+  };
+}
+
+function buildAssistantNote(message) {
+  const answerMode = String(message?.answerMode || message?.meta?.answer_mode || '').trim();
+  const meta = message?.meta || {};
+  if (answerMode === 'clarify_needed') {
+    return '这条消息是在补充问题范围，还没有开始检索知识库。';
+  }
+  if (answerMode === 'weak_evidence') {
+    return meta.weak_evidence_reason || '相关证据偏弱，这次回答只保留了可确认部分。';
+  }
+  if (answerMode === 'conflicting_evidence') {
+    return meta.conflict_summary
+      ? `笔记里存在不同说法：${meta.conflict_summary}`
+      : '笔记里存在不同说法，这次没有合并成单一结论。';
+  }
+  if (answerMode === 'no_evidence') {
+    return '这次没有在知识库里找到足够证据，所以没有给出事实性结论。';
+  }
+  return '';
+}
+
 function buildConversationListUrl() {
   const params = new URLSearchParams({ kind: 'knowledge', limit: '20' });
   return `/api/conversations?${params.toString()}`;
@@ -399,19 +430,9 @@ export default function KnowledgePage() {
         const rows = await fetchConversationList();
         if (cancelled) return;
         setConversationList(rows);
-        if (rows.length === 0) {
-          setActiveConversationId(null);
-          setConversationDraft(true);
-          setMessages([]);
-          return;
-        }
-
-        const initialConversationId = Number(rows[0].id);
-        const payload = await fetchConversationDetail(initialConversationId);
-        if (cancelled) return;
-        setActiveConversationId(initialConversationId);
-        setConversationDraft(false);
-        setMessages(mapConversationMessages(payload.messages, 'knowledge'));
+        setActiveConversationId(null);
+        setConversationDraft(true);
+        setMessages([]);
       } catch (loadError) {
         if (cancelled) return;
         setConversationList([]);
@@ -449,6 +470,7 @@ export default function KnowledgePage() {
     try {
       let answer = '';
       let citations = [];
+      let assistantMeta = null;
       let resolvedConversationId = activeConversationId;
       const response = await fetch('/api/chat', {
         method: 'POST',
@@ -478,7 +500,12 @@ export default function KnowledgePage() {
           resolvedConversationId = Number(event.conversation_id);
         }
         if (event.type === 'chunks') {
-          setRetrievalStage(event.sufficiency === false ? 'insufficient' : 'found');
+          setRetrievalStage(buildAnswerStage(event));
+        } else if (event.type === 'assistant_meta') {
+          assistantMeta = event;
+          if (event.answer_mode === 'clarify_needed') {
+            setRetrievalStage(null);
+          }
         } else if (event.type === 'token') {
           answer += event.text || '';
           setStreamText(answer);
@@ -486,9 +513,17 @@ export default function KnowledgePage() {
         } else if (event.type === 'citations') {
           citations = event.citations || [];
         } else if (event.type === 'done') {
+          const finalMeta = event.meta || assistantMeta;
           setMessages((prev) => [
             ...prev,
-            { id: event.message_id || Date.now(), role: 'assistant', content: answer, citations, noContext: citations.length === 0 },
+            {
+              id: event.message_id || Date.now(),
+              role: 'assistant',
+              content: answer,
+              citations,
+              meta: finalMeta,
+              answerMode: event.answer_mode || finalMeta?.answer_mode || null,
+            },
           ]);
           if (resolvedConversationId) {
             setActiveConversationId(resolvedConversationId);
@@ -666,46 +701,10 @@ export default function KnowledgePage() {
 
         const chatPanel = (
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
-          <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)', display: 'grid', gap: 10 }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-              <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>
-                {activeFile ? `当前文章：${activeFile.name}（仅影响优先检索，不切换历史对话）` : '当前未选择文章，提问将默认在整个知识库中检索'}
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                {!editorOpen && activeFile && (
-                  <Button variant="secondary" size="sm" onClick={() => setEditorOpen(true)}>
-                    显示文章
-                  </Button>
-                )}
-                <Tooltip content="查看历史对话">
-                  <span style={{ display: 'inline-flex' }}>
-                    <IconButton
-                      label="查看历史对话"
-                      active={historyDrawerOpen}
-                      disabled={loading || conversationListLoading}
-                      onClick={() => setHistoryDrawerOpen(true)}
-                    >
-                      {conversationListLoading ? <Icons.refresh size={15} style={{ animation: 'spin 1s linear infinite' }} /> : <Icons.list size={15} />}
-                    </IconButton>
-                  </span>
-                </Tooltip>
-                <Tooltip content="新建对话">
-                  <span style={{ display: 'inline-flex' }}>
-                    <IconButton
-                      label="新建对话"
-                      disabled={loading}
-                      onClick={handleNewConversation}
-                    >
-                      <Icons.plus size={15} />
-                    </IconButton>
-                  </span>
-                </Tooltip>
-              </div>
-            </div>
-
-            <div style={{ display: 'grid', gap: 8 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>参考来源</div>
+          <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)', display: 'grid', gap: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap', minWidth: 0 }}>
+                <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>参考来源</div>
                 {[
                   { value: 'auto', label: '自动匹配' },
                   { value: 'manual', label: '手动指定' },
@@ -715,10 +714,10 @@ export default function KnowledgePage() {
                     type="button"
                     onClick={() => setReferenceMode(mode.value)}
                     style={{
-                      height: 28,
-                      padding: '0 12px',
-                      background: referenceMode === mode.value ? 'var(--accent-subtle)' : 'var(--bg-elevated)',
-                      border: `1px solid ${referenceMode === mode.value ? 'var(--accent)' : 'var(--border-primary)'}`,
+                      height: 26,
+                      padding: '0 10px',
+                      background: referenceMode === mode.value ? 'var(--accent-subtle)' : 'transparent',
+                      border: `1px solid ${referenceMode === mode.value ? 'color-mix(in srgb, var(--accent) 35%, var(--border-primary))' : 'var(--border-subtle)'}`,
                       borderRadius: 'var(--radius-md)',
                       fontSize: 11,
                       color: referenceMode === mode.value ? 'var(--accent)' : 'var(--text-secondary)',
@@ -729,6 +728,39 @@ export default function KnowledgePage() {
                   </button>
                 ))}
               </div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6, marginLeft: 'auto', flexShrink: 0 }}>
+                {!editorOpen && activeFile && (
+                  <Button variant="secondary" size="sm" onClick={() => setEditorOpen(true)} style={{ height: 30 }}>
+                    显示文章
+                  </Button>
+                )}
+                <Tooltip content="查看历史对话">
+                  <span style={{ display: 'inline-flex' }}>
+                    <IconButton
+                      label="查看历史对话"
+                      size={30}
+                      active={historyDrawerOpen}
+                      disabled={loading || conversationListLoading}
+                      onClick={() => setHistoryDrawerOpen(true)}
+                    >
+                      {conversationListLoading ? <Icons.refresh size={14} style={{ animation: 'spin 1s linear infinite' }} /> : <Icons.clock size={14} />}
+                    </IconButton>
+                  </span>
+                </Tooltip>
+                <Tooltip content="新建对话">
+                  <span style={{ display: 'inline-flex' }}>
+                    <IconButton
+                      label="新建对话"
+                      size={30}
+                      disabled={loading}
+                      onClick={handleNewConversation}
+                    >
+                      <Icons.plus size={14} />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+              </div>
+            </div>
 
               {referenceMode === 'manual' && (
                 <>
@@ -773,7 +805,6 @@ export default function KnowledgePage() {
                   </div>
                 </>
               )}
-            </div>
           </div>
           <div style={{ flex: 1, overflow: 'auto', padding: '24px 32px' }}>
             <div style={{ maxWidth: 680, margin: '0 auto' }}>
@@ -826,10 +857,11 @@ export default function KnowledgePage() {
                             onCitationClick={handleCitationClick}
                             citationSelection={activeCitationSelection}
                             messageId={msg.id}
+                            answerMode={msg.answerMode}
                           />
-                          {msg.noContext && (
+                          {buildAssistantNote(msg) && (
                             <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: -4, marginBottom: 12, paddingLeft: 2 }}>
-                              未在知识库中找到相关文档，以上回答来自模型自身知识
+                              {buildAssistantNote(msg)}
                             </div>
                           )}
                         </div>
@@ -838,7 +870,7 @@ export default function KnowledgePage() {
 
                   {loading && (
                     <div style={{ margin: '16px 0' }}>
-                      {retrievalStage && <RetrievalStatus stage={retrievalStage} />}
+                      {retrievalStage && <RetrievalStatus stage={retrievalStage.stage} sources={retrievalStage.sources} />}
                       {streamText && <AiBubble text={streamText} streaming />}
                     </div>
                   )}

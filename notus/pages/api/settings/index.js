@@ -16,8 +16,16 @@ function publicSettings() {
   const config = getEffectiveConfig();
   const activeLlmConfig = getActiveLlmConfig();
   return {
+    runtime_target: config.runtimeTarget,
+    storage_mode: config.storageMode,
+    data_root: config.dataRoot,
+    capabilities: config.capabilities,
+    can_auto_purge_on_uninstall: config.canAutoPurgeOnUninstall,
     notes_dir: config.notesDir,
     assets_dir: config.assetsDir,
+    db_path: config.dbPath,
+    log_dir: config.logDir,
+    session_dir: config.sessionDir,
     setup_completed: stored.setup_completed === 'true',
     embedding: {
       provider: config.embeddingProvider,
@@ -37,6 +45,19 @@ function publicSettings() {
     },
     llm_configs: listLlmConfigs(),
     active_llm_config_id: activeLlmConfig?.id || null,
+    knowledge: {
+      enable_clarify: Boolean(config.knowledgeEnableClarify),
+      enable_conditional_rerank: Boolean(config.knowledgeEnableConditionalRerank),
+      enable_weak_evidence_supplement: Boolean(config.knowledgeEnableWeakEvidenceSupplement),
+      enable_conflict_mode: Boolean(config.knowledgeEnableConflictMode),
+    },
+    canvas: {
+      enable_style_extraction: Boolean(config.canvasEnableStyleExtraction),
+      enable_article_analysis: Boolean(config.canvasEnableArticleAnalysis),
+      global_edit_soft_max_blocks: Number(config.canvasGlobalEditSoftMaxBlocks || 12),
+      global_edit_hard_max_blocks: Number(config.canvasGlobalEditHardMaxBlocks || 20),
+      style_extraction_model: String(config.styleExtractionModel || ''),
+    },
   };
 }
 
@@ -62,6 +83,38 @@ export default function handler(req, res) {
     if (body.notes_dir) nextValues.notes_dir = body.notes_dir;
     if (body.assets_dir) nextValues.assets_dir = body.assets_dir;
     if (body.setup_completed !== undefined) nextValues.setup_completed = body.setup_completed ? 'true' : 'false';
+    if (body.knowledge) {
+      if (body.knowledge.enable_clarify !== undefined) {
+        nextValues.knowledge_enable_clarify = body.knowledge.enable_clarify ? 'true' : 'false';
+      }
+      if (body.knowledge.enable_conditional_rerank !== undefined) {
+        nextValues.knowledge_enable_conditional_rerank = body.knowledge.enable_conditional_rerank ? 'true' : 'false';
+      }
+      if (body.knowledge.enable_weak_evidence_supplement !== undefined) {
+        nextValues.knowledge_enable_weak_evidence_supplement = body.knowledge.enable_weak_evidence_supplement ? 'true' : 'false';
+      }
+      if (body.knowledge.enable_conflict_mode !== undefined) {
+        nextValues.knowledge_enable_conflict_mode = body.knowledge.enable_conflict_mode ? 'true' : 'false';
+      }
+    }
+
+    if (body.canvas) {
+      if (body.canvas.enable_style_extraction !== undefined) {
+        nextValues.canvas_enable_style_extraction = body.canvas.enable_style_extraction ? 'true' : 'false';
+      }
+      if (body.canvas.enable_article_analysis !== undefined) {
+        nextValues.canvas_enable_article_analysis = body.canvas.enable_article_analysis ? 'true' : 'false';
+      }
+      if (body.canvas.global_edit_soft_max_blocks !== undefined) {
+        nextValues.canvas_global_edit_soft_max_blocks = String(body.canvas.global_edit_soft_max_blocks);
+      }
+      if (body.canvas.global_edit_hard_max_blocks !== undefined) {
+        nextValues.canvas_global_edit_hard_max_blocks = String(body.canvas.global_edit_hard_max_blocks);
+      }
+      if (body.canvas.style_extraction_model !== undefined) {
+        nextValues.style_extraction_model = String(body.canvas.style_extraction_model || '').trim();
+      }
+    }
 
     if (body.embedding) {
       const embeddingFingerprint = buildEmbeddingFingerprint({
@@ -156,6 +209,8 @@ export default function handler(req, res) {
       embedding_provider: nextValues.embedding_provider || null,
       llm_provider: nextValues.llm_provider || null,
       notes_dir: nextValues.notes_dir || null,
+      canvas_style_extraction: nextValues.canvas_enable_style_extraction || null,
+      canvas_article_analysis: nextValues.canvas_enable_article_analysis || null,
     });
     return res.status(200).json({ ...publicSettings(), request_id: context.request_id });
   }

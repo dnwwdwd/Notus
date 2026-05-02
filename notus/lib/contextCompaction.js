@@ -81,6 +81,7 @@ function sanitizeKnowledgeSections(sections = [], options = {}) {
     quoteLimit = 3,
     quoteTokenBudget = 140,
     headingTokenBudget = 80,
+    contentTokenBudget = 260,
   } = options;
 
   return (Array.isArray(sections) ? sections : [])
@@ -88,6 +89,8 @@ function sanitizeKnowledgeSections(sections = [], options = {}) {
     .map((section) => ({
       ...section,
       heading_path: trimTextToTokenBudget(section.heading_path || '', headingTokenBudget, ' …'),
+      content: trimTextToTokenBudget(section.content || '', contentTokenBudget),
+      preview: trimTextToTokenBudget(section.preview || section.content || '', contentTokenBudget),
       quotes: (Array.isArray(section.quotes) ? section.quotes : [])
         .slice(0, Math.max(0, quoteLimit))
         .map((quote) => ({

@@ -1,3 +1,5 @@
+import Image from 'next/image';
+
 // Icon set for Notus — stroke-based SVG icons, currentColor
 
 const Icon = ({ d, size = 16, stroke = 1.6, fill = 'none', viewBox = '0 0 24 24', children, style, className }) => (
@@ -17,6 +19,7 @@ export const Icons = {
   folderOpen: (p) => <Icon {...p}><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2M3 7v11a2 2 0 0 0 2 2h13.5a2 2 0 0 0 1.9-1.4l2-6A1 1 0 0 0 21.5 11H5a2 2 0 0 0-2 2V7z"/></Icon>,
   file: (p) => <Icon {...p}><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/></Icon>,
   list: (p) => <Icon {...p}><path d="M3 6h18M3 12h18M3 18h18"/></Icon>,
+  clock: (p) => <Icon {...p}><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></Icon>,
   search: (p) => <Icon {...p}><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></Icon>,
   chevronUp: (p) => <Icon {...p}><path d="m6 15 6-6 6 6"/></Icon>,
   chevronLeft: (p) => <Icon {...p}><path d="m15 6-6 6 6 6"/></Icon>,
@@ -54,6 +57,7 @@ export const Icons = {
   drag: (p) => <Icon {...p}><circle cx="9" cy="6" r="1.2" fill="currentColor" stroke="none"/><circle cx="15" cy="6" r="1.2" fill="currentColor" stroke="none"/><circle cx="9" cy="12" r="1.2" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="1.2" fill="currentColor" stroke="none"/><circle cx="9" cy="18" r="1.2" fill="currentColor" stroke="none"/><circle cx="15" cy="18" r="1.2" fill="currentColor" stroke="none"/></Icon>,
   edit: (p) => <Icon {...p}><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></Icon>,
   robot: (p) => <Icon {...p}><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M12 4v4M8 14h.01M16 14h.01M9 18h6M2 13v3M22 13v3"/></Icon>,
+  brain: (p) => <Icon {...p}><path d="M9 4a3 3 0 0 0-3 3 3 3 0 0 0-2 5 3 3 0 0 0 2 5 3 3 0 0 0 6 0V7a3 3 0 0 0-3-3z"/><path d="M15 4a3 3 0 0 1 3 3 3 3 0 0 1 2 5 3 3 0 0 1-2 5 3 3 0 0 1-6 0V7a3 3 0 0 1 3-3z"/><path d="M8 10h4M12 14H8M16 10h-4M12 14h4"/></Icon>,
   home: (p) => <Icon {...p}><path d="m3 10 9-7 9 7v10a2 2 0 0 1-2 2h-4v-7h-6v7H5a2 2 0 0 1-2-2z"/></Icon>,
   refresh: (p) => <Icon {...p}><path d="M21 12a9 9 0 0 1-15 6.7L3 16M3 12a9 9 0 0 1 15-6.7L21 8M21 3v5h-5M3 21v-5h5"/></Icon>,
   wand: (p) => <Icon {...p}><path d="m6 21 9-9"/><path d="m14 5 1.5-1.5"/><path d="m18 9 1.5-1.5"/><path d="M5 14 3.5 12.5"/><path d="M9 18 7.5 16.5"/><path d="m15 7 2 2"/><path d="m5 19 2-2"/></Icon>,
@@ -66,11 +70,19 @@ export const Icons = {
 };
 
 // Notus brand mark
-export const NotusLogo = ({ size = 24, color = 'var(--accent)' }) => (
-  <svg width={size} height={size} viewBox="0 0 32 32" style={{ color }}>
-    <rect x="1" y="1" width="30" height="30" rx="7" fill="currentColor"/>
-    <path d="M10 22 V11 L21 21 V10" stroke="#FAF9F5" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" fill="none"/>
-    <circle cx="10" cy="22" r="1.6" fill="#FAF9F5"/>
-    <circle cx="21" cy="10" r="1.6" fill="#FAF9F5"/>
-  </svg>
+export const NotusLogo = ({ size = 24 }) => (
+  <Image
+    src="/logo.png"
+    alt="Notus"
+    width={size}
+    height={size}
+    unoptimized
+    style={{
+      width: size,
+      height: size,
+      display: 'block',
+      objectFit: 'contain',
+      flexShrink: 0,
+    }}
+  />
 );

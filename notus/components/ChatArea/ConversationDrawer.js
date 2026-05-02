@@ -80,7 +80,7 @@ export function ConversationDrawer({
           </button>
         </div>
 
-        <div style={{ flex: 1, overflow: 'auto', padding: 10, display: 'grid', gap: 8, minHeight: 0 }}>
+        <div style={{ flex: 1, overflow: 'auto', padding: 10, display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'stretch', minHeight: 0 }}>
           {loading ? (
             <div style={{ minHeight: 120, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)' }}>
               <Spinner size={18} />

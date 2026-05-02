@@ -18,6 +18,38 @@ function normalizeText(value = '') {
   return stripMarkdownSyntax(value).replace(/\s+/g, ' ').trim();
 }
 
+function compactSearchText(value = '') {
+  const normalized = normalizeText(value).toLowerCase();
+  try {
+    return normalized.replace(/[\s\p{P}\p{S}]+/gu, '');
+  } catch {
+    return normalized.replace(/[\s!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]+/g, '');
+  }
+}
+
+function buildCompactFragments(value = '') {
+  const compact = compactSearchText(value);
+  if (!compact || compact.length < 4) return [];
+
+  const fragments = new Set([compact]);
+  const windowSize = compact.length >= 12 ? 6 : Math.min(6, compact.length);
+  const step = Math.max(3, Math.floor(windowSize / 2));
+
+  fragments.add(compact.slice(0, windowSize));
+  fragments.add(compact.slice(Math.max(0, compact.length - windowSize)));
+
+  if (compact.length > windowSize * 2) {
+    const middle = Math.floor((compact.length - windowSize) / 2);
+    fragments.add(compact.slice(middle, middle + windowSize));
+  }
+
+  for (let index = 0; index + windowSize <= compact.length; index += step) {
+    fragments.add(compact.slice(index, index + windowSize));
+  }
+
+  return [...fragments].filter((fragment) => fragment.length >= 4);
+}
+
 function previewFromLines(markdown, lineStart, lineEnd) {
   const start = Number(lineStart);
   const end = Number(lineEnd);
@@ -97,11 +129,12 @@ function buildPreviewCandidates(options = {}) {
   const rawPreview = normalizeText(options.preview);
   const headingPreview = normalizeText(options.headingPath ? String(options.headingPath).split('>').pop() : '');
   const preferSectionBody = Boolean(sectionBodyPreview && (headingInfo || rawPreview.length <= 24));
+  const contentPreviews = preferSectionBody
+    ? uniqueNormalizedValues([sectionBodyPreview, rawPreview, exactPreview])
+    : uniqueNormalizedValues([rawPreview, exactPreview, sectionBodyPreview]);
 
   return {
-    previews: preferSectionBody
-      ? uniqueNormalizedValues([sectionBodyPreview, rawPreview, exactPreview, headingPreview])
-      : uniqueNormalizedValues([rawPreview, exactPreview, sectionBodyPreview, headingPreview]),
+    previews: contentPreviews.length > 0 ? contentPreviews : uniqueNormalizedValues([headingPreview]),
     preferBodyCandidate: preferSectionBody,
   };
 }
@@ -203,8 +236,21 @@ function scorePreviewAgainstText(text, preview) {
   if (text.includes(preview)) return preview.length + 1000;
   if (preview.includes(text)) return text.length;
 
-  const previewWords = preview.split(' ').filter(Boolean);
-  return previewWords.reduce((count, word) => (text.includes(word) ? count + word.length : count), 0);
+  const previewWords = preview.split(' ').filter((word) => word.length >= 2);
+  const wordScore = previewWords.reduce((count, word) => (text.includes(word) ? count + word.length : count), 0);
+
+  const compactText = compactSearchText(text);
+  const compactPreview = compactSearchText(preview);
+  if (!compactText || !compactPreview) return wordScore;
+  if (compactText.includes(compactPreview)) return Math.max(wordScore, compactPreview.length + 900);
+  if (compactPreview.includes(compactText)) return Math.max(wordScore, compactText.length);
+
+  const fragments = buildCompactFragments(preview);
+  const fragmentScore = fragments.reduce((score, fragment) => (
+    compactText.includes(fragment) ? score + fragment.length : score
+  ), 0);
+
+  return Math.max(wordScore, fragmentScore);
 }
 
 function scoreCandidateNode(node, previews = [], options = {}) {
@@ -216,7 +262,7 @@ function scoreCandidateNode(node, previews = [], options = {}) {
 
   normalizedPreviews.forEach((preview, index) => {
     const nextScore = scorePreviewAgainstText(text, preview);
-    if (nextScore < 0) return;
+    if (nextScore <= 0) return;
     bestScore = Math.max(bestScore, nextScore - index * 8);
   });
 
@@ -273,12 +319,13 @@ function naiveSubstringSearch(root, previews = []) {
   const candidates = [...root.querySelectorAll('h1,h2,h3,h4,h5,h6,p,blockquote,ul,ol,li,pre,td,th')];
 
   for (const preview of previews) {
-    if (!preview || preview.length < 4) continue;
-    const shortPreview = preview.length > 30 ? preview.slice(0, 30) : preview;
+    const fragments = buildCompactFragments(preview);
+    if (fragments.length === 0) continue;
 
     for (const node of candidates) {
       const text = normalizeText(node?.textContent);
-      if (text && text.includes(shortPreview)) return node;
+      const compactText = compactSearchText(text);
+      if (compactText && fragments.some((fragment) => compactText.includes(fragment))) return node;
     }
   }
 
@@ -345,7 +392,71 @@ function resolveCitationMatch(editor, options = {}) {
   return null;
 }
 
+let citationHighlightRunId = 0;
+
+function getEditorDocSize(editor) {
+  return Number(editor?.view?.state?.doc?.content?.size);
+}
+
+function clampEditorPos(editor, pos) {
+  const docSize = getEditorDocSize(editor);
+  if (!Number.isFinite(docSize)) return null;
+  const nextPos = Number(pos);
+  if (!Number.isFinite(nextPos)) return null;
+  return Math.max(0, Math.min(nextPos, docSize));
+}
+
+function getNodeHighlightRange(editor, node, options = {}) {
+  if (!editor?.view || !node?.isConnected) return null;
+
+  try {
+    const from = clampEditorPos(editor, editor.view.posAtDOM(node, 0));
+    const to = clampEditorPos(editor, editor.view.posAtDOM(node, node.childNodes?.length || 0));
+    if (from === null || to === null || to <= from) return null;
+    return { from, to, persistent: Boolean(options.persistent) };
+  } catch {
+    return null;
+  }
+}
+
+function applyEditorCitationDecoration(editor, nodes = [], options = {}) {
+  if (!editor?.commands?.setCitationHighlight) return false;
+
+  const ranges = [...new Set(nodes)]
+    .map((node) => getNodeHighlightRange(editor, node, options))
+    .filter(Boolean);
+  if (ranges.length === 0) return false;
+
+  citationHighlightRunId += 1;
+  const runId = citationHighlightRunId;
+
+  try {
+    editor.commands.setCitationHighlight(ranges);
+  } catch {
+    return false;
+  }
+
+  if (!options.persistent && typeof window !== 'undefined') {
+    window.setTimeout(() => {
+      if (runId !== citationHighlightRunId) return;
+      try {
+        editor.commands.clearCitationHighlight?.();
+      } catch {}
+    }, options.duration || 3000);
+  }
+
+  return true;
+}
+
+function clearEditorCitationDecoration(editor) {
+  citationHighlightRunId += 1;
+  try {
+    editor?.commands?.clearCitationHighlight?.();
+  } catch {}
+}
+
 function clearCitationHighlights(editor) {
+  clearEditorCitationDecoration(editor);
   const root = getEditorRoot(editor);
   if (!root) return;
   root.querySelectorAll('.citation-highlight, .citation-highlight-persistent, [data-citation-highlight]')
@@ -419,14 +530,17 @@ function attachCitationHighlight(editor, target = {}, options = {}) {
 
   clearCitationHighlights(editor);
   const className = options.persistent ? 'citation-highlight-persistent' : 'citation-highlight';
-  addHighlightClass(match, className, options);
+  const highlightNodes = [match];
 
   if (/^H[1-6]$/i.test(match.tagName || '')) {
     const bodySibling = findBodySibling(match);
     if (bodySibling) {
-      addHighlightClass(bodySibling, className, options);
+      highlightNodes.push(bodySibling);
     }
   }
+
+  applyEditorCitationDecoration(editor, highlightNodes, options);
+  highlightNodes.forEach((node) => addHighlightClass(node, className, options));
 
   return match;
 }

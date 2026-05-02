@@ -17,6 +17,11 @@ export default function handler(req, res) {
   return res.status(ok ? 200 : 503).json({
     status: ok ? 'ok' : 'error',
     version: appVersion,
+    runtime_target: config.runtimeTarget,
+    data_root: config.dataRoot,
+    storage_mode: config.storageMode,
+    capabilities: config.capabilities,
+    can_auto_purge_on_uninstall: config.canAutoPurgeOnUninstall,
     runtime: {
       ok: runtime.ok,
       vec_available: runtime.vecAvailable,
@@ -26,6 +31,8 @@ export default function handler(req, res) {
     directories: {
       notes_dir: config.notesDir,
       assets_dir: config.assetsDir,
+      db_path: config.dbPath,
+      log_dir: config.logDir,
       ready: directoriesReady,
     },
   });

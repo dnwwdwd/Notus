@@ -8,12 +8,15 @@ import { Spinner } from '../components/ui/Spinner';
 import { Toggle } from '../components/ui/Toggle';
 import { useToast } from '../components/ui/Toast';
 import { LlmConfigCardsSection } from '../components/Settings/LlmConfigCardsSection';
+import { useApp } from '../contexts/AppContext';
 import { useAppStatus } from '../contexts/AppStatusContext';
+import { usePlatform } from '../contexts/PlatformContext';
 import {
   EMBEDDING_PROVIDERS,
   findProvider,
 } from '../lib/modelCatalog';
 import { findEmbeddingModelMeta, inferEmbeddingProvider } from '../lib/embeddingForm';
+import { desktop as desktopClient } from '../utils/platformClient';
 
 const SETUP_STEP_STORAGE_KEY = 'notus-setup-step';
 
@@ -141,6 +144,10 @@ function buildEmbeddingConnectivitySignature({ provider, model, baseUrl, apiKey,
   });
 }
 
+function getImportEntryLabel(file) {
+  return file.relativePath || file.webkitRelativePath || file.name;
+}
+
 // ── Step1 — model config (horizontal layout) ────────────────────
 const Step1 = ({
   form,
@@ -170,7 +177,7 @@ const Step1 = ({
       {/* Two-column layout */}
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 0.92fr) minmax(0, 1.08fr)', gap: 20, marginBottom: 16 }}>
         {/* Left column: Embedding */}
-        <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-xl)', padding: 18, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ background: 'linear-gradient(180deg, rgba(193,95,60,0.04) 0%, var(--bg-elevated) 100%)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-xl)', boxShadow: 'var(--shadow-sm)', padding: 18, display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{ fontSize: 'var(--text-sm)', fontWeight: 600, color: 'var(--text-primary)', marginBottom: 2 }}>Embedding 模型</div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
@@ -222,7 +229,7 @@ const Step1 = ({
           </div>
         </div>
 
-        <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-xl)', padding: 18 }}>
+        <div style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.94) 0%, var(--bg-elevated) 100%)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-xl)', boxShadow: 'var(--shadow-sm)', padding: 18 }}>
           <LlmConfigCardsSection
             compact
             title="LLM 配置"
@@ -247,16 +254,17 @@ const Step1 = ({
   );
 };
 
-const Step2 = ({ selectedFiles, onSelectFiles, onClear }) => {
+const Step2 = ({ selectedFiles, onSelectFiles, onClear, runtimeTarget, storageMode, capabilities }) => {
   const fileInputRef = useRef(null);
   const directoryInputRef = useRef(null);
   const [dragging, setDragging] = useState(false);
+  const [desktopLoading, setDesktopLoading] = useState(false);
 
   const handleSelection = (fileList) => {
     const markdownFiles = Array.from(fileList || [])
       .filter((file) => /\.md$/i.test(file.name))
       .reduce((items, file) => {
-        const key = file.webkitRelativePath || file.name;
+        const key = getImportEntryLabel(file);
         if (!items.seen.has(key)) {
           items.seen.add(key);
           items.files.push(file);
@@ -266,6 +274,20 @@ const Step2 = ({ selectedFiles, onSelectFiles, onClear }) => {
 
     onSelectFiles(markdownFiles);
   };
+
+  const handleDesktopImport = async () => {
+    setDesktopLoading(true);
+    try {
+      const imported = await desktopClient.pickImportSource();
+      handleSelection(imported);
+    } finally {
+      setDesktopLoading(false);
+    }
+  };
+
+  const helperText = storageMode === 'managed'
+    ? '支持 .md；导入后会复制到 Notus 本机工作区中统一管理。'
+    : '支持 .md；也会扫描当前工作目录或已准备好的笔记目录。';
 
   return (
     <div>
@@ -309,9 +331,14 @@ const Step2 = ({ selectedFiles, onSelectFiles, onClear }) => {
         <div style={{ display: 'flex', justifyContent: 'center', gap: 8 }}>
           <Button variant="secondary" onClick={() => fileInputRef.current?.click()}>选择 Markdown 文件</Button>
           <Button variant="secondary" onClick={() => directoryInputRef.current?.click()}>选择文件夹</Button>
+          {capabilities?.supportsNativeOpenDialog && (
+            <Button variant="secondary" loading={desktopLoading} onClick={handleDesktopImport}>
+              从系统目录导入
+            </Button>
+          )}
         </div>
         <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 20 }}>
-          支持 .md · 也会扫描已挂载到笔记目录中的文件
+          {helperText}
         </div>
       </div>
       {selectedFiles.length > 0 ? (
@@ -327,14 +354,16 @@ const Step2 = ({ selectedFiles, onSelectFiles, onClear }) => {
         }}>
           <span style={{ color: 'var(--text-secondary)' }}><Icons.folder size={14} /></span>
           <span style={{ fontSize: 'var(--text-sm)', flex: 1, fontFamily: 'var(--font-mono)' }}>
-            {selectedFiles.slice(0, 2).map((file) => file.webkitRelativePath || file.name).join('，')}
+            {selectedFiles.slice(0, 2).map((file) => getImportEntryLabel(file)).join('，')}
             {selectedFiles.length > 2 ? ` 等 ${selectedFiles.length} 个文件` : ''}
           </span>
           <button type="button" onClick={onClear} style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>清空</button>
         </div>
       ) : (
         <NoteBox>
-          如果你已经在懒猫微服里挂载了笔记目录，可以不选择文件，下一步会直接扫描并建立索引。
+          {runtimeTarget === 'electron'
+            ? '如果暂时不导入文件，也可以先完成初始化，稍后再把 Markdown 导入到 Notus 的本机工作区。'
+            : '如果当前环境已经准备好笔记目录，也可以不选择文件，下一步会直接扫描并建立索引。'}
         </NoteBox>
       )}
     </div>
@@ -451,7 +480,9 @@ function pickResumedStep(restoredStep, derivedStep) {
 export default function SetupPage() {
   const router = useRouter();
   const toast = useToast();
+  const { syncImportedPaths } = useApp();
   const { status: appStatus, loading: statusLoading, refreshStatus } = useAppStatus();
+  const { profile } = usePlatform();
   const [step, setStep] = useState(0);
   const [stepReady, setStepReady] = useState(false);
   const [form, setForm] = useState(createInitialForm);
@@ -729,16 +760,22 @@ export default function SetupPage() {
   };
 
   const importSelectedFiles = async () => {
-    if (selectedImportFiles.length === 0) return null;
+    if (selectedImportFiles.length === 0) {
+      return {
+        summary: null,
+        importedPaths: [],
+      };
+    }
 
     const payloadFiles = await Promise.all(
       selectedImportFiles.map(async (file) => ({
-        name: file.webkitRelativePath || file.name,
+        name: getImportEntryLabel(file),
         content: await file.text(),
       }))
     );
 
     let summary = null;
+    const importedPaths = [];
     const response = await fetch('/api/files/import', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -756,6 +793,9 @@ export default function SetupPage() {
           total: event.total || payloadFiles.length,
           currentFile: event.currentFile || '',
         });
+      }
+      if (event.type === 'file' && ['imported', 'overwritten'].includes(event.status) && event.path) {
+        importedPaths.push(String(event.path));
       }
       if (event.type === 'file' && (event.status === 'failed' || event.warning)) {
         setStep3Errors((prev) => [...prev, { name: event.name, path: event.path, error: event.error || event.warning }]);
@@ -775,7 +815,10 @@ export default function SetupPage() {
       }
     });
 
-    return summary;
+    return {
+      summary,
+      importedPaths,
+    };
   };
 
   const rebuildIndex = async () => {
@@ -814,7 +857,15 @@ export default function SetupPage() {
     setStep3Progress({ stage: 'idle', current: 0, total: 0, currentFile: '' });
 
     try {
-      await importSelectedFiles();
+      const importedFromDirectory = selectedImportFiles.some((file) => getImportEntryLabel(file).includes('/'));
+      const importResult = await importSelectedFiles();
+      const importedPaths = importResult?.importedPaths || [];
+      if (importedPaths.length > 0) {
+        await syncImportedPaths(importedPaths, {
+          rootsOnly: importedFromDirectory,
+          selectPath: !importedFromDirectory && importedPaths.length === 1 ? importedPaths[0] : '',
+        });
+      }
       let latest = await refreshStatus({ quiet: true });
       const shouldRebuild = latest.index.total > 0 &&
         (latest.index.pending > 0 || latest.index.failed > 0 || latest.index.indexed < latest.index.total);
@@ -928,6 +979,9 @@ export default function SetupPage() {
             selectedFiles={selectedImportFiles}
             onSelectFiles={handleSelectImportFiles}
             onClear={() => handleSelectImportFiles([])}
+            runtimeTarget={profile.runtimeTarget}
+            storageMode={profile.storageMode}
+            capabilities={profile.capabilities}
           />
         )}
         {step === 2 && (

@@ -4,10 +4,17 @@ const DEFAULT_MAX_OUTPUT_TOKENS = 32768;
 const TASK_OUTPUT_BUDGETS = {
   default: 8192,
   knowledge_answer: 8192,
+  knowledge_query_plan: 1024,
+  knowledge_rerank: 512,
   canvas_agent: 12288,
   operation_json: 4096,
   outline_json: 4096,
   canvas_intent: 512,
+  canvas_query_plan: 768,
+  canvas_text: 4096,
+  canvas_analysis: 4096,
+  style_fingerprint: 1024,
+  style_profile: 1024,
   settings_test: 256,
 };
 

@@ -41,6 +41,19 @@ function getBaseName(relativePath) {
   return String(relativePath || '').replace(/\\/g, '/').split('/').pop() || '';
 }
 
+function normalizeFileName(inputName) {
+  const raw = String(inputName || '').replace(/\\/g, '/').trim();
+  if (!raw) throw new Error('name is required');
+  if (raw.includes('/')) throw new Error('name must not include path separators');
+  return ensureMarkdownPath(raw);
+}
+
+function buildRenamedPath(relativePath, nextName) {
+  const normalizedName = normalizeFileName(nextName);
+  const parentPath = getParentPath(relativePath);
+  return [parentPath, normalizedName].filter(Boolean).join('/');
+}
+
 function extractTitle(filePath, content = '') {
   const match = String(content || '').match(/^#\s+(.+)$/m);
   if (match) return match[1].trim();
@@ -338,7 +351,12 @@ function renameFile(oldPath, newPath) {
   fs.renameSync(oldTarget.absolutePath, newTarget.absolutePath);
   getDb().prepare("UPDATE files SET path = ?, title = ?, updated_at = datetime('now') WHERE path = ?")
     .run(newTarget.relativePath, getBaseName(newTarget.relativePath).replace(/\.md$/i, ''), oldTarget.relativePath);
-  return upsertFileRecord(newTarget.relativePath, readMarkdownFile(newTarget.relativePath), 0);
+  const row = upsertFileRecord(newTarget.relativePath, readMarkdownFile(newTarget.relativePath), 0);
+  return {
+    ...row,
+    old_path: oldTarget.relativePath,
+    new_path: newTarget.relativePath,
+  };
 }
 
 function moveFiles(paths, dest) {
@@ -383,6 +401,7 @@ module.exports = {
   resolveInside,
   getParentPath,
   getBaseName,
+  buildRenamedPath,
   extractTitle,
   sha256,
   readMarkdownFile,

@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Icons } from '../ui/Icons';
-import { DropdownSelect } from '../ui/DropdownSelect';
 import { useShortcuts } from '../../contexts/ShortcutsContext';
 
 function toAttachment(file) {
@@ -101,6 +101,258 @@ function MenuItem({ icon, label, hint, active, muted, onClick }) {
   );
 }
 
+const MODEL_PICKER_WIDTH = 118;
+const MODEL_MENU_WIDTH = 204;
+const MODEL_MENU_OFFSET = 3;
+const MODEL_MENU_EDGE_GAP = 8;
+
+function ModelPicker({ configs = [], selectedId, onChange, disabled }) {
+  const triggerRef = useRef(null);
+  const menuRef = useRef(null);
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [menuPosition, setMenuPosition] = useState(null);
+
+  const options = useMemo(
+    () => configs.map((item) => ({
+      value: item.id,
+      label: item.model || item.name || `模型 ${item.id}`,
+      name: item.name || '',
+      searchText: [item.model, item.name, item.id].filter(Boolean).join(' '),
+    })),
+    [configs]
+  );
+
+  const selectedOption = useMemo(
+    () => options.find((item) => String(item.value) === String(selectedId)) || options[0] || null,
+    [options, selectedId]
+  );
+
+  const searchable = options.length > 6;
+  const filteredOptions = useMemo(() => {
+    const keyword = query.trim().toLowerCase();
+    if (!keyword) return options;
+    return options.filter((item) => item.searchText.toLowerCase().includes(keyword));
+  }, [options, query]);
+
+  const syncMenuPosition = useCallback(() => {
+    const trigger = triggerRef.current;
+    if (!trigger || typeof window === 'undefined') return;
+
+    const rect = trigger.getBoundingClientRect();
+    const width = Math.min(MODEL_MENU_WIDTH, Math.max(168, window.innerWidth - MODEL_MENU_EDGE_GAP * 2));
+    const estimatedHeight = Math.min(
+      252,
+      Math.max(72, filteredOptions.length * 34 + (searchable ? 52 : 12))
+    );
+    const left = Math.min(
+      Math.max(MODEL_MENU_EDGE_GAP, rect.right - width),
+      window.innerWidth - width - MODEL_MENU_EDGE_GAP
+    );
+
+    setMenuPosition({
+      top: Math.max(MODEL_MENU_EDGE_GAP, rect.top - estimatedHeight - MODEL_MENU_OFFSET),
+      left,
+      width,
+    });
+  }, [filteredOptions.length, searchable]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    syncMenuPosition();
+
+    const handlePointerDown = (event) => {
+      if (triggerRef.current?.contains(event.target)) return;
+      if (menuRef.current?.contains(event.target)) return;
+      setOpen(false);
+    };
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    const handleWindowChange = () => syncMenuPosition();
+
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('resize', handleWindowChange);
+    window.addEventListener('scroll', handleWindowChange, true);
+
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('resize', handleWindowChange);
+      window.removeEventListener('scroll', handleWindowChange, true);
+    };
+  }, [open, syncMenuPosition]);
+
+  useEffect(() => {
+    if (!open) setQuery('');
+  }, [open]);
+
+  useEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
+
+  const label = selectedOption?.label || '未配置模型';
+  const isDisabled = disabled || options.length === 0;
+
+  const menu = open && menuPosition ? createPortal(
+    <div
+      ref={menuRef}
+      style={{
+        position: 'fixed',
+        top: menuPosition.top,
+        left: menuPosition.left,
+        width: menuPosition.width,
+        padding: 5,
+        background: '#fff',
+        border: '1px solid #E8E6DC',
+        borderRadius: 12,
+        boxShadow: '0 10px 26px rgba(20, 20, 19, 0.13)',
+        zIndex: 1300,
+        transformOrigin: 'bottom right',
+      }}
+    >
+      {searchable && (
+        <div style={{ padding: 3, borderBottom: '1px solid #F0EFE8', marginBottom: 3 }}>
+          <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+            <span style={{ position: 'absolute', left: 10, color: '#8A887F', display: 'inline-flex' }}>
+              <Icons.search size={13} />
+            </span>
+            <input
+              autoFocus
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="搜索模型"
+              style={{
+                width: '100%',
+                height: 30,
+                padding: '0 10px 0 31px',
+                background: '#FAF9F5',
+                border: '1px solid #E8E6DC',
+                borderRadius: 9,
+                outline: 'none',
+                color: '#141413',
+                fontSize: 13,
+              }}
+            />
+          </div>
+        </div>
+      )}
+
+      <div style={{ maxHeight: 214, overflow: 'auto', display: 'grid', gap: 2 }}>
+        {filteredOptions.length === 0 ? (
+          <div style={{ padding: '10px 12px', color: '#8A887F', fontSize: 13 }}>
+            没有匹配的模型
+          </div>
+        ) : filteredOptions.map((option) => {
+          const active = String(option.value) === String(selectedOption?.value);
+          return (
+            <button
+              key={option.value}
+              type="button"
+              onClick={() => {
+                onChange?.(option.value);
+                setOpen(false);
+              }}
+              style={{
+                width: '100%',
+                minHeight: 32,
+                padding: '6px 8px',
+                borderRadius: 9,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 10,
+                background: active ? '#F5F0EA' : 'transparent',
+                color: active ? '#C15F3C' : '#141413',
+                textAlign: 'left',
+                cursor: 'pointer',
+              }}
+              onMouseEnter={(event) => {
+                if (!active) event.currentTarget.style.background = '#F7F6F1';
+              }}
+              onMouseLeave={(event) => {
+                if (!active) event.currentTarget.style.background = 'transparent';
+              }}
+            >
+              <span style={{ display: 'grid', gap: 2, minWidth: 0 }}>
+                <span style={{ fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {option.label}
+                </span>
+                {option.name && option.name !== option.label ? (
+                  <span style={{ fontSize: 11, color: active ? '#C15F3C' : '#8A887F', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {option.name}
+                  </span>
+                ) : null}
+              </span>
+              {active ? <Icons.check size={14} /> : null}
+            </button>
+          );
+        })}
+      </div>
+    </div>,
+    document.body
+  ) : null;
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        aria-label={selectedOption ? `选择模型，当前为 ${label}` : '选择模型'}
+        title={label}
+        disabled={isDisabled}
+        onClick={() => {
+          if (isDisabled) return;
+          setOpen((prev) => !prev);
+        }}
+        style={{
+          width: MODEL_PICKER_WIDTH,
+          height: 34,
+          padding: '0 4px',
+          borderRadius: 10,
+          border: 'none',
+          background: 'transparent',
+          color: isDisabled ? '#B0AEA5' : open ? '#C15F3C' : '#6B6A65',
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 5,
+          cursor: isDisabled ? 'not-allowed' : 'pointer',
+          opacity: isDisabled ? 0.68 : 1,
+          flex: `0 0 ${MODEL_PICKER_WIDTH}px`,
+          minWidth: MODEL_PICKER_WIDTH,
+          maxWidth: MODEL_PICKER_WIDTH,
+          transition: 'color var(--transition-fast), transform var(--transition-fast), opacity var(--transition-fast)',
+        }}
+        onMouseDown={(event) => {
+          if (!isDisabled) event.currentTarget.style.transform = 'scale(0.97)';
+        }}
+        onMouseUp={(event) => {
+          event.currentTarget.style.transform = 'scale(1)';
+        }}
+        onBlur={(event) => {
+          event.currentTarget.style.transform = 'scale(1)';
+        }}
+      >
+        <span style={{ minWidth: 0, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12 }}>
+          {label}
+        </span>
+        <Icons.chevronUp
+          size={13}
+          style={{
+            color: '#8A887F',
+            flexShrink: 0,
+            transform: open ? 'rotate(180deg)' : 'rotate(0deg)',
+            transition: 'transform var(--transition-fast)',
+          }}
+        />
+      </button>
+      {menu}
+    </>
+  );
+}
+
 export const InputBar = ({
   placeholder = '今天需要什么帮助？',
   onSend,
@@ -114,6 +366,7 @@ export const InputBar = ({
   disabled = false,
   showPlusMenu = false,
   mentionOptions = [],
+  notice = null,
 }) => {
   const [value, setValue] = useState('');
   const [attachments, setAttachments] = useState([]);
@@ -121,12 +374,14 @@ export const InputBar = ({
   const [dragging, setDragging] = useState(false);
   const [cursorIndex, setCursorIndex] = useState(0);
   const textareaRef = useRef(null);
+  const shellRef = useRef(null);
   const fileInputRef = useRef(null);
   const imageInputRef = useRef(null);
   const plusMenuRef = useRef(null);
   const prevInjectedRef = useRef('');
   const attachmentsRef = useRef([]);
   const dragCounterRef = useRef(0);
+  const [shellWidth, setShellWidth] = useState(null);
   const { shortcuts, matchShortcut } = useShortcuts();
 
   const selectedConfig = useMemo(
@@ -140,6 +395,19 @@ export const InputBar = ({
     el.style.height = '40px';
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
   }, [value, isEmpty]);
+
+  useEffect(() => {
+    const el = shellRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return undefined;
+
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      setShellWidth(entry.contentRect.width);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     if (!injectedValue || injectedValue === prevInjectedRef.current) return;
@@ -263,19 +531,13 @@ export const InputBar = ({
     });
   };
 
-  const shellStyle = isEmpty
-    ? {
-      maxWidth: 720,
-      borderRadius: 24,
-      boxShadow: '0 10px 34px rgba(0, 0, 0, 0.05)',
-      border: '1px solid #E5E3D9',
-    }
-    : {
-      maxWidth: 720,
-      borderRadius: 22,
-      boxShadow: '0 10px 28px rgba(0, 0, 0, 0.05)',
-      border: '1px solid #E5E3D9',
-    };
+  const narrowInput = shellWidth !== null && shellWidth < 520;
+  const shellStyle = {
+    maxWidth: 720,
+    borderRadius: 18,
+    boxShadow: isEmpty ? '0 6px 18px rgba(0, 0, 0, 0.05)' : '0 4px 14px rgba(0, 0, 0, 0.045)',
+    border: '1px solid #E5E3D9',
+  };
 
   return (
     <div
@@ -304,7 +566,7 @@ export const InputBar = ({
       }}
       style={{
         width: '100%',
-        padding: isEmpty ? '12px 16px 16px' : '10px 16px 12px',
+        padding: '10px 16px 12px',
         background: 'var(--bg-primary)',
         borderTop: isEmpty ? 'none' : '1px solid var(--border-subtle)',
         flexShrink: 0,
@@ -332,7 +594,23 @@ export const InputBar = ({
         }}
       />
 
-      <div style={{ maxWidth: shellStyle.maxWidth, margin: '0 auto', position: 'relative' }}>
+      <div ref={shellRef} style={{ maxWidth: shellStyle.maxWidth, margin: '0 auto', position: 'relative' }}>
+        {notice?.text ? (
+          <div
+            style={{
+              marginBottom: 10,
+              padding: '10px 12px',
+              borderRadius: 14,
+              background: notice.tone === 'accent' ? 'var(--accent-subtle)' : 'var(--bg-secondary)',
+              border: `1px solid ${notice.tone === 'accent' ? 'color-mix(in srgb, var(--accent) 24%, var(--border-primary))' : 'var(--border-subtle)'}`,
+              color: notice.tone === 'accent' ? 'var(--accent)' : 'var(--text-secondary)',
+              fontSize: 12,
+              lineHeight: 1.6,
+            }}
+          >
+            {notice.text}
+          </div>
+        ) : null}
         {dragging && showPlusMenu && (
           <div
             style={{
@@ -371,9 +649,16 @@ export const InputBar = ({
             </div>
           )}
 
-          <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 8, padding: '10px 10px 10px 10px' }}>
+          <div style={{
+            position: 'relative',
+            display: 'flex',
+            alignItems: narrowInput ? 'stretch' : 'flex-end',
+            gap: 8,
+            padding: '10px',
+            flexWrap: narrowInput ? 'wrap' : 'nowrap',
+          }}>
             {showPlusMenu && (
-              <div ref={plusMenuRef} style={{ position: 'relative' }}>
+              <div ref={plusMenuRef} style={{ position: 'relative', order: narrowInput ? 2 : 0, flexShrink: 0 }}>
                 <button
                   type="button"
                   onClick={() => {
@@ -446,7 +731,12 @@ export const InputBar = ({
               </div>
             )}
 
-            <div style={{ flex: 1, minWidth: 0, position: 'relative' }}>
+            <div style={{
+              flex: narrowInput ? '1 0 100%' : '1 1 auto',
+              minWidth: narrowInput ? '100%' : 180,
+              position: 'relative',
+              order: narrowInput ? 1 : 0,
+            }}>
               <textarea
                 ref={textareaRef}
                 value={value}
@@ -475,9 +765,9 @@ export const InputBar = ({
                 rows={1}
                 style={{
                   width: '100%',
-                  minHeight: isEmpty ? 54 : 40,
+                  minHeight: 40,
                   maxHeight: 200,
-                  padding: isEmpty ? '14px 8px' : '7px 8px',
+                  padding: '7px 8px',
                   background: 'transparent',
                   border: 'none',
                   outline: 'none',
@@ -485,7 +775,10 @@ export const InputBar = ({
                   overflowY: 'auto',
                   color: disabled ? '#B0AEA5' : '#141413',
                   fontSize: 15,
-                  lineHeight: 1.7,
+                  lineHeight: 1.6,
+                  whiteSpace: 'pre-wrap',
+                  overflowWrap: 'break-word',
+                  wordBreak: 'normal',
                 }}
               />
 
@@ -537,36 +830,28 @@ export const InputBar = ({
               )}
             </div>
 
-            <div style={{ width: isEmpty ? 180 : 150, flexShrink: 0 }}>
-              <DropdownSelect
-                value={selectedConfig?.id || ''}
-                options={llmConfigs.map((item) => ({
-                  value: item.id,
-                  label: item.model || item.name || `模型 ${item.id}`,
-                  searchText: [item.model, item.name].filter(Boolean).join(' '),
-                }))}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'flex-end',
+                gap: 6,
+                order: narrowInput ? 2 : 0,
+                marginLeft: 'auto',
+                flex: narrowInput ? '1 1 auto' : '0 0 auto',
+                minWidth: 0,
+              }}
+            >
+              <ModelPicker
+                configs={llmConfigs}
+                selectedId={selectedConfig?.id || ''}
                 onChange={(nextValue) => {
                   setPlusMenuOpen(false);
                   onConfigChange?.(nextValue);
                 }}
                 disabled={llmConfigs.length === 0}
-                placeholder="未配置模型"
-                searchable={llmConfigs.length > 6}
-                placement="bottom"
-                buttonStyle={{
-                  minHeight: 34,
-                  height: 34,
-                  padding: '0 10px',
-                  borderRadius: 10,
-                  background: '#F5F4EF',
-                  border: '1px solid #E8E6DC',
-                  color: selectedConfig ? '#4A4945' : '#B0AEA5',
-                }}
-                menuStyle={{ borderRadius: 18 }}
               />
-            </div>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               {loading ? (
                 <button
                   type="button"

@@ -1,5 +1,5 @@
 // /canvas — AI creation canvas page
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useLayoutEffect } from 'react';
 import { closestCenter, DndContext, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import { arrayMove, SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { useRouter } from 'next/router';
@@ -53,8 +53,41 @@ const MOCK_BLOCKS_BY_TOPIC = {
   ],
 };
 
+const CANVAS_LAYOUT_STORAGE_KEY = 'notus-layout-canvas-left-percent';
+const CANVAS_LAYOUT_DEFAULT = 62;
+const CANVAS_LAYOUT_MIN = 30;
+const CANVAS_LAYOUT_MAX = 80;
+const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
+
 function getInitialBlocks(topic) {
   return MOCK_BLOCKS_BY_TOPIC[topic] || MOCK_BLOCKS_BY_TOPIC.default;
+}
+
+function clampCanvasLayoutPercent(value) {
+  const parsed = Number.parseFloat(value);
+  const base = Number.isFinite(parsed) ? parsed : CANVAS_LAYOUT_DEFAULT;
+  return Math.min(Math.max(base, CANVAS_LAYOUT_MIN), CANVAS_LAYOUT_MAX);
+}
+
+function readCanvasLayoutCache() {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(CANVAS_LAYOUT_STORAGE_KEY);
+    if (raw === null) return null;
+    return clampCanvasLayoutPercent(raw);
+  } catch {
+    return null;
+  }
+}
+
+function writeCanvasLayoutCache(value) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(
+      CANVAS_LAYOUT_STORAGE_KEY,
+      String(clampCanvasLayoutPercent(value))
+    );
+  } catch {}
 }
 
 function getQueryValue(value) {
@@ -439,6 +472,9 @@ export default function CanvasPage() {
   const [savingArticle, setSavingArticle] = useState(false);
   const [outlineLoading, setOutlineLoading] = useState(false);
   const [outlineStatusText, setOutlineStatusText] = useState('');
+  const [canvasLayoutLeftPercent, setCanvasLayoutLeftPercent] = useState(CANVAS_LAYOUT_DEFAULT);
+  const layoutChangeCountRef = useRef(0);
+  const persistedLayoutLeftPercentRef = useRef(null);
   const articleFileId = Number(article?.fileId || article?.file_id) || null;
   const canvasConversationEnabled = Boolean(articleFileId);
   const conversationScopeKey = !article
@@ -480,6 +516,76 @@ export default function CanvasPage() {
       return llmConfigs[0]?.id || null;
     });
   }, [activeConfigId, llmConfigs]);
+
+  useIsomorphicLayoutEffect(() => {
+    const cached = readCanvasLayoutCache();
+    if (cached === null) return;
+    setCanvasLayoutLeftPercent(cached);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const baselineChangeCount = layoutChangeCountRef.current;
+
+    fetch('/api/settings', { cache: 'no-store' })
+      .then((response) => readApiResponse(response, '读取布局设置失败'))
+      .then((settings) => {
+        if (cancelled) return;
+        if (layoutChangeCountRef.current !== baselineChangeCount) return;
+        const savedPercent = settings?.layout?.canvas_left_percent;
+        if (savedPercent === undefined || savedPercent === null) return;
+        const normalized = clampCanvasLayoutPercent(savedPercent);
+        persistedLayoutLeftPercentRef.current = normalized;
+        writeCanvasLayoutCache(normalized);
+        setCanvasLayoutLeftPercent(normalized);
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleCanvasLayoutChange = useCallback((nextPercent) => {
+    layoutChangeCountRef.current += 1;
+    setCanvasLayoutLeftPercent(clampCanvasLayoutPercent(nextPercent));
+  }, []);
+
+  const handleCanvasLayoutCommit = useCallback(async (nextPercent) => {
+    const normalized = clampCanvasLayoutPercent(nextPercent);
+    writeCanvasLayoutCache(normalized);
+    setCanvasLayoutLeftPercent(normalized);
+
+    if (
+      persistedLayoutLeftPercentRef.current !== null
+      && Math.abs(persistedLayoutLeftPercentRef.current - normalized) < 0.01
+    ) {
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          layout: {
+            canvas_left_percent: normalized,
+          },
+        }),
+        keepalive: true,
+      });
+      const payload = await readApiResponse(response, '创作页分栏宽度保存失败');
+      const confirmedPercent = payload?.layout?.canvas_left_percent;
+      const confirmed = confirmedPercent === undefined || confirmedPercent === null
+        ? normalized
+        : clampCanvasLayoutPercent(confirmedPercent);
+      persistedLayoutLeftPercentRef.current = confirmed;
+      writeCanvasLayoutCache(confirmed);
+      setCanvasLayoutLeftPercent(confirmed);
+    } catch (error) {
+      toast(error.message || '创作页分栏宽度保存失败', 'danger');
+    }
+  }, [toast]);
 
   // Scroll chat to bottom
   useEffect(() => {
@@ -1288,9 +1394,12 @@ export default function CanvasPage() {
     >
       <div style={{ position: 'relative', flex: 1, display: 'flex', minHeight: 0 }}>
         <ResizableLayout
-          initialLeftPercent={62}
-          minLeftPercent={30}
-          maxLeftPercent={80}
+          initialLeftPercent={CANVAS_LAYOUT_DEFAULT}
+          minLeftPercent={CANVAS_LAYOUT_MIN}
+          maxLeftPercent={CANVAS_LAYOUT_MAX}
+          leftPercent={canvasLayoutLeftPercent}
+          onLeftPercentChange={handleCanvasLayoutChange}
+          onLeftPercentCommit={handleCanvasLayoutCommit}
           left={
         <div style={{ overflow: 'auto', background: 'var(--bg-primary)', height: '100%', position: 'relative', minHeight: 0 }} ref={canvasContentRef}>
           <DocumentFindBar

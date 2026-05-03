@@ -59,6 +59,7 @@ const HeaderIconButton = ({
         style={{
           width: 32,
           height: 32,
+          boxSizing: 'border-box',
           borderRadius: 'var(--radius-sm)',
           display: 'inline-flex',
           alignItems: 'center',
@@ -143,6 +144,7 @@ export const TopBar = ({
       ? `未保存，点击保存（${displayShortcut(shortcuts.docSave.combo)}）`
       : '当前文档已保存';
   const saveButtonDisabled = saveDisabled || saveState === 'saved';
+  const dirtySaveOutline = 'color-mix(in srgb, var(--danger) 42%, var(--border-primary))';
 
   const openSearch = useCallback(() => {
     setSearchOpen(true);
@@ -344,8 +346,9 @@ export const TopBar = ({
               loading={saveState === 'saving'}
               onClick={() => { void onSave?.(); }}
               style={{
-                background: saveState === 'dirty' ? 'var(--accent)' : saveState === 'saved' ? 'var(--accent-subtle)' : 'var(--bg-secondary)',
-                color: saveState === 'dirty' ? 'var(--text-on-accent)' : saveState === 'saved' ? 'var(--success)' : 'var(--text-secondary)',
+                background: saveState === 'dirty' ? 'color-mix(in srgb, var(--danger) 10%, var(--bg-elevated))' : saveState === 'saved' ? 'var(--accent-subtle)' : 'var(--bg-secondary)',
+                color: saveState === 'dirty' ? 'var(--danger)' : saveState === 'saved' ? 'var(--success)' : 'var(--text-secondary)',
+                border: saveState === 'dirty' ? `1px solid ${dirtySaveOutline}` : '1px solid transparent',
                 opacity: 1,
               }}
             >
@@ -355,7 +358,7 @@ export const TopBar = ({
             <Tooltip content={saveTooltip} placement="bottom" gap={6}>
               <span style={{ display: 'inline-flex', flexShrink: 0 }}>
                 <Button
-                  variant={saveState === 'dirty' ? 'primary' : 'secondary'}
+                  variant="secondary"
                   size="sm"
                   onClick={() => { void onSave?.(); }}
                   disabled={saveButtonDisabled}
@@ -364,8 +367,9 @@ export const TopBar = ({
                   title={saveTooltip}
                   style={{
                     opacity: 1,
-                    color: saveState === 'saved' ? 'var(--success)' : undefined,
-                    borderColor: saveState === 'saved' ? 'color-mix(in srgb, var(--success) 30%, var(--border-primary))' : undefined,
+                    background: saveState === 'dirty' ? 'color-mix(in srgb, var(--danger) 8%, var(--bg-elevated))' : undefined,
+                    color: saveState === 'dirty' ? 'var(--danger)' : saveState === 'saved' ? 'var(--success)' : undefined,
+                    borderColor: saveState === 'dirty' ? dirtySaveOutline : saveState === 'saved' ? 'color-mix(in srgb, var(--success) 30%, var(--border-primary))' : undefined,
                   }}
                 >
                   {saveLabel}

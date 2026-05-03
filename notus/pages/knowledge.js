@@ -1,5 +1,5 @@
 // /knowledge — Knowledge base Q&A page
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useLayoutEffect } from 'react';
 import dynamic from 'next/dynamic';
 import { useRouter } from 'next/router';
 import { Shell } from '../components/Layout/Shell';
@@ -51,6 +51,39 @@ const SUGGESTIONS = [
   '整理一下我对"慢"的思考',
   '读书笔记里提到过哪些决策模型？',
 ];
+
+const KNOWLEDGE_LAYOUT_STORAGE_KEY = 'notus-layout-knowledge-left-percent';
+const KNOWLEDGE_LAYOUT_DEFAULT = 44;
+const KNOWLEDGE_LAYOUT_MIN = 20;
+const KNOWLEDGE_LAYOUT_MAX = 75;
+const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
+
+function clampKnowledgeLayoutPercent(value) {
+  const parsed = Number.parseFloat(value);
+  const base = Number.isFinite(parsed) ? parsed : KNOWLEDGE_LAYOUT_DEFAULT;
+  return Math.min(Math.max(base, KNOWLEDGE_LAYOUT_MIN), KNOWLEDGE_LAYOUT_MAX);
+}
+
+function readKnowledgeLayoutCache() {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(KNOWLEDGE_LAYOUT_STORAGE_KEY);
+    if (raw === null) return null;
+    return clampKnowledgeLayoutPercent(raw);
+  } catch {
+    return null;
+  }
+}
+
+function writeKnowledgeLayoutCache(value) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(
+      KNOWLEDGE_LAYOUT_STORAGE_KEY,
+      String(clampKnowledgeLayoutPercent(value))
+    );
+  } catch {}
+}
 
 function buildAnswerStage(event = {}) {
   const sectionCount = Array.isArray(event.sections) ? event.sections.length : 0;
@@ -124,10 +157,13 @@ export default function KnowledgePage() {
   const [referenceMode, setReferenceMode] = useState('auto');
   const [manualReferenceFileIds, setManualReferenceFileIds] = useState([]);
   const [selectedLlmConfigId, setSelectedLlmConfigId] = useState(null);
+  const [editorLayoutLeftPercent, setEditorLayoutLeftPercent] = useState(KNOWLEDGE_LAYOUT_DEFAULT);
   const docContentRef = useRef('');
   const persistedDocContentRef = useRef('');
   const chatEndRef = useRef(null);
   const requestControllerRef = useRef(null);
+  const layoutChangeCountRef = useRef(0);
+  const persistedLayoutLeftPercentRef = useRef(null);
 
   const referenceFileOptions = allFiles.map((file) => ({
     value: file.id,
@@ -162,6 +198,76 @@ export default function KnowledgePage() {
   useEffect(() => () => {
     requestControllerRef.current?.abort();
   }, []);
+
+  useIsomorphicLayoutEffect(() => {
+    const cached = readKnowledgeLayoutCache();
+    if (cached === null) return;
+    setEditorLayoutLeftPercent(cached);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const baselineChangeCount = layoutChangeCountRef.current;
+
+    fetch('/api/settings', { cache: 'no-store' })
+      .then((response) => readApiResponse(response, '读取布局设置失败'))
+      .then((settings) => {
+        if (cancelled) return;
+        if (layoutChangeCountRef.current !== baselineChangeCount) return;
+        const savedPercent = settings?.layout?.knowledge_left_percent;
+        if (savedPercent === undefined || savedPercent === null) return;
+        const normalized = clampKnowledgeLayoutPercent(savedPercent);
+        persistedLayoutLeftPercentRef.current = normalized;
+        writeKnowledgeLayoutCache(normalized);
+        setEditorLayoutLeftPercent(normalized);
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleEditorLayoutChange = useCallback((nextPercent) => {
+    layoutChangeCountRef.current += 1;
+    setEditorLayoutLeftPercent(clampKnowledgeLayoutPercent(nextPercent));
+  }, []);
+
+  const handleEditorLayoutCommit = useCallback(async (nextPercent) => {
+    const normalized = clampKnowledgeLayoutPercent(nextPercent);
+    writeKnowledgeLayoutCache(normalized);
+    setEditorLayoutLeftPercent(normalized);
+
+    if (
+      persistedLayoutLeftPercentRef.current !== null
+      && Math.abs(persistedLayoutLeftPercentRef.current - normalized) < 0.01
+    ) {
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          layout: {
+            knowledge_left_percent: normalized,
+          },
+        }),
+        keepalive: true,
+      });
+      const payload = await readApiResponse(response, '知识库分栏宽度保存失败');
+      const confirmedPercent = payload?.layout?.knowledge_left_percent;
+      const confirmed = confirmedPercent === undefined || confirmedPercent === null
+        ? normalized
+        : clampKnowledgeLayoutPercent(confirmedPercent);
+      persistedLayoutLeftPercentRef.current = confirmed;
+      writeKnowledgeLayoutCache(confirmed);
+      setEditorLayoutLeftPercent(confirmed);
+    } catch (error) {
+      toast(error.message || '知识库分栏宽度保存失败', 'danger');
+    }
+  }, [toast]);
 
   const clearActiveCitationState = useCallback(() => {
     clearCitationHighlights(editor);
@@ -922,9 +1028,12 @@ export default function KnowledgePage() {
         if (editorPanel) {
           return (
             <ResizableLayout
-              initialLeftPercent={44}
-              minLeftPercent={20}
-              maxLeftPercent={75}
+              initialLeftPercent={KNOWLEDGE_LAYOUT_DEFAULT}
+              minLeftPercent={KNOWLEDGE_LAYOUT_MIN}
+              maxLeftPercent={KNOWLEDGE_LAYOUT_MAX}
+              leftPercent={editorLayoutLeftPercent}
+              onLeftPercentChange={handleEditorLayoutChange}
+              onLeftPercentCommit={handleEditorLayoutCommit}
               left={editorPanel}
               right={chatPanel}
             />

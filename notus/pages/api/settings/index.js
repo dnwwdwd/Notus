@@ -11,6 +11,34 @@ const {
   consumeConnectivityVerificationToken,
 } = require('../../../lib/connectivityVerification');
 
+const LAYOUT_SETTINGS = {
+  knowledge_left_percent: {
+    key: 'knowledge_layout_left_percent',
+    min: 20,
+    max: 75,
+  },
+  canvas_left_percent: {
+    key: 'canvas_layout_left_percent',
+    min: 30,
+    max: 80,
+  },
+};
+
+function normalizeLayoutPercent(value, { min, max }) {
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed)) return null;
+  return Math.min(Math.max(parsed, min), max);
+}
+
+function readLayoutSettings(stored = {}) {
+  return Object.fromEntries(
+    Object.entries(LAYOUT_SETTINGS).map(([field, definition]) => [
+      field,
+      normalizeLayoutPercent(stored[definition.key], definition),
+    ])
+  );
+}
+
 function publicSettings() {
   const stored = getSettingsMap();
   const config = getEffectiveConfig();
@@ -58,6 +86,7 @@ function publicSettings() {
       global_edit_hard_max_blocks: Number(config.canvasGlobalEditHardMaxBlocks || 20),
       style_extraction_model: String(config.styleExtractionModel || ''),
     },
+    layout: readLayoutSettings(stored),
   };
 }
 
@@ -113,6 +142,21 @@ export default function handler(req, res) {
       }
       if (body.canvas.style_extraction_model !== undefined) {
         nextValues.style_extraction_model = String(body.canvas.style_extraction_model || '').trim();
+      }
+    }
+
+    if (body.layout) {
+      for (const [field, definition] of Object.entries(LAYOUT_SETTINGS)) {
+        if (body.layout[field] === undefined) continue;
+        const normalized = normalizeLayoutPercent(body.layout[field], definition);
+        if (normalized === null) {
+          return res.status(400).json({
+            error: `${field} 必须是有效数字`,
+            code: 'INVALID_SETTINGS',
+            request_id: context.request_id,
+          });
+        }
+        nextValues[definition.key] = String(normalized);
       }
     }
 
@@ -211,6 +255,8 @@ export default function handler(req, res) {
       notes_dir: nextValues.notes_dir || null,
       canvas_style_extraction: nextValues.canvas_enable_style_extraction || null,
       canvas_article_analysis: nextValues.canvas_enable_article_analysis || null,
+      knowledge_layout_left_percent: nextValues[LAYOUT_SETTINGS.knowledge_left_percent.key] || null,
+      canvas_layout_left_percent: nextValues[LAYOUT_SETTINGS.canvas_left_percent.key] || null,
     });
     return res.status(200).json({ ...publicSettings(), request_id: context.request_id });
   }

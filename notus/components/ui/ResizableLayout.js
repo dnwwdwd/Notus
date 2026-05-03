@@ -1,7 +1,7 @@
 // ResizableLayout — two panels separated by a draggable divider
 // left / right: React nodes rendered in each panel
 // initialLeftPercent: starting width of left panel as percentage of container
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 export const ResizableLayout = ({
   left,
@@ -9,12 +9,42 @@ export const ResizableLayout = ({
   initialLeftPercent = 44,
   minLeftPercent = 15,
   maxLeftPercent = 82,
+  leftPercent,
+  onLeftPercentChange,
+  onLeftPercentCommit,
   style,
 }) => {
-  const [leftPercent, setLeftPercent] = useState(initialLeftPercent);
+  const clampPercent = useCallback((value) => {
+    const parsed = Number.parseFloat(value);
+    const fallback = Number.isFinite(parsed) ? parsed : initialLeftPercent;
+    return Math.min(Math.max(fallback, minLeftPercent), maxLeftPercent);
+  }, [initialLeftPercent, minLeftPercent, maxLeftPercent]);
+  const controlled = Number.isFinite(Number(leftPercent));
+  const [internalLeftPercent, setInternalLeftPercent] = useState(() => clampPercent(initialLeftPercent));
   const dragging = useRef(false);
   const containerRef = useRef(null);
   const handleRef = useRef(null);
+  const resolvedLeftPercent = clampPercent(controlled ? leftPercent : internalLeftPercent);
+  const latestLeftPercentRef = useRef(resolvedLeftPercent);
+
+  useEffect(() => {
+    latestLeftPercentRef.current = resolvedLeftPercent;
+  }, [resolvedLeftPercent]);
+
+  useEffect(() => {
+    if (controlled) return;
+    setInternalLeftPercent(clampPercent(initialLeftPercent));
+  }, [clampPercent, controlled, initialLeftPercent]);
+
+  const updateLeftPercent = useCallback((value) => {
+    const nextPercent = clampPercent(value);
+    latestLeftPercentRef.current = nextPercent;
+    if (!controlled) {
+      setInternalLeftPercent((prev) => (Math.abs(prev - nextPercent) < 0.01 ? prev : nextPercent));
+    }
+    onLeftPercentChange?.(nextPercent);
+    return nextPercent;
+  }, [clampPercent, controlled, onLeftPercentChange]);
 
   const onMouseDown = useCallback((e) => {
     e.preventDefault();
@@ -25,7 +55,7 @@ export const ResizableLayout = ({
       if (!dragging.current || !containerRef.current) return;
       const rect = containerRef.current.getBoundingClientRect();
       const pct = ((event.clientX - rect.left) / rect.width) * 100;
-      setLeftPercent(Math.min(Math.max(pct, minLeftPercent), maxLeftPercent));
+      updateLeftPercent(pct);
     };
 
     const onUp = () => {
@@ -35,18 +65,19 @@ export const ResizableLayout = ({
       document.removeEventListener('mouseup', onUp);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
+      onLeftPercentCommit?.(latestLeftPercentRef.current);
     };
 
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
-  }, [minLeftPercent, maxLeftPercent]);
+  }, [onLeftPercentCommit, updateLeftPercent]);
 
   return (
     <div ref={containerRef} style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0, ...style }}>
       {/* Left panel */}
-      <div style={{ width: `${leftPercent}%`, display: 'flex', flexDirection: 'column', overflow: 'hidden', flexShrink: 0, minHeight: 0 }}>
+      <div style={{ width: `${resolvedLeftPercent}%`, display: 'flex', flexDirection: 'column', overflow: 'hidden', flexShrink: 0, minHeight: 0 }}>
         {left}
       </div>
 

@@ -252,16 +252,28 @@ function buildAppMenu() {
           },
         },
         { type: 'separator' },
-        { role: 'quit' },
+        { label: '退出', accelerator: process.platform === 'darwin' ? 'Command+Q' : 'Ctrl+Q', click: () => app.quit() },
       ],
     },
     {
       label: '编辑',
-      submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }],
+      submenu: [
+        { label: '撤销', role: 'undo' },
+        { label: '重做', role: 'redo' },
+        { type: 'separator' },
+        { label: '剪切', role: 'cut' },
+        { label: '复制', role: 'copy' },
+        { label: '粘贴', role: 'paste' },
+        { label: '全选', role: 'selectAll' },
+      ],
     },
     {
       label: '窗口',
-      submenu: [{ role: 'reload' }, { role: 'toggledevtools' }, { role: 'minimize' }],
+      submenu: [
+        { label: '重新加载', role: 'reload' },
+        { label: '开发者工具', role: 'toggledevtools' },
+        { label: '最小化', role: 'minimize' },
+      ],
     },
   ];
 

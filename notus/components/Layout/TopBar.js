@@ -177,8 +177,8 @@ export const TopBar = ({
   }, [active, activePage]);
 
   const handlePickFile = useCallback((file) => {
-    runAction(() => {
-      closeSearch();
+    closeSearch();
+    const action = () => {
       const targetPage = resolveTargetPage();
       selectFile(file);
       const href = `/${targetPage}?fileId=${encodeURIComponent(file.id)}`;
@@ -189,8 +189,13 @@ export const TopBar = ({
       if (router.asPath !== href && targetPage === 'files') {
         navigateWithFallback(router, href, { mode: 'router' });
       }
-    });
-  }, [closeSearch, resolveTargetPage, router, runAction, selectFile]);
+    };
+    if (requestAction && requestAction.length >= 2) {
+      requestAction(file, action);
+      return;
+    }
+    runAction(action);
+  }, [closeSearch, requestAction, resolveTargetPage, router, runAction, selectFile]);
 
   useEffect(() => {
     const handleKeydown = (event) => {

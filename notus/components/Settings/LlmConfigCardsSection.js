@@ -102,29 +102,26 @@ function ConfigCard({ item, onEdit, onDelete, onSetDefault, compact = false }) {
         </div>
       </div>
 
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: 10,
-          flexWrap: 'wrap',
-          padding: compact ? '10px 12px' : '11px 13px',
-          borderRadius: 14,
-          background: item.is_active ? 'rgba(193,95,60,0.06)' : 'rgba(26,19,17,0.03)',
-          border: '1px solid var(--border-subtle)',
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-          <span style={{ color: item.is_active ? 'var(--accent)' : 'var(--text-tertiary)', display: 'inline-flex' }}>
+      {item.is_active ? (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            padding: compact ? '10px 12px' : '11px 13px',
+            borderRadius: 14,
+            background: 'rgba(193,95,60,0.06)',
+            border: '1px solid var(--border-subtle)',
+          }}
+        >
+          <span style={{ color: 'var(--accent)', display: 'inline-flex' }}>
             <Icons.sparkles size={14} />
           </span>
           <div style={{ fontSize: compact ? 12 : 'var(--text-sm)', color: 'var(--text-secondary)', minWidth: 0 }}>
-            {item.is_active ? '当前知识库和创作页默认使用这套模型配置。' : '可切换为默认配置，供知识库和创作页直接调用。'}
+            当前知识库和创作页默认使用这套模型配置。
           </div>
         </div>
-        <Badge tone={item.api_key_set ? 'success' : 'warning'}>{item.api_key_set ? '配置完整' : '需补充 Key'}</Badge>
-      </div>
+      ) : null}
     </div>
   );
 }

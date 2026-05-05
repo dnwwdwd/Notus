@@ -13,10 +13,6 @@ import { useToast } from '../ui/Toast';
 import { LlmConfigCardsSection } from './LlmConfigCardsSection';
 import packageMeta from '../../package.json';
 import { usePlatform } from '../../contexts/PlatformContext';
-import {
-  EMBEDDING_PROVIDERS,
-  findProvider,
-} from '../../lib/modelCatalog';
 import { findEmbeddingModelMeta, inferEmbeddingProvider } from '../../lib/embeddingForm';
 import { useShortcuts, normalizeShortcut, DEFAULT_SHORTCUTS } from '../../contexts/ShortcutsContext';
 import { navigateWithFallback } from '../../utils/navigation';
@@ -138,9 +134,9 @@ function buildEmbeddingConnectivitySignature({ provider, model, baseUrl, apiKey,
 const ModelConfig = () => {
   const toast = useToast();
   const [embProvider, setEmbProvider] = useState('qwen');
-  const [embModel, setEmbModel] = useState('text-embedding-v3');
+  const [embModel, setEmbModel] = useState('');
   const [embApiKey, setEmbApiKey] = useState('');
-  const [embBaseUrl, setEmbBaseUrl] = useState(findProvider(EMBEDDING_PROVIDERS, 'qwen').baseUrl);
+  const [embBaseUrl, setEmbBaseUrl] = useState('');
   const [embMultimodalEnabled, setEmbMultimodalEnabled] = useState(false);
   const [testState, setTestState] = useState('idle');
   const [saving, setSaving] = useState(false);
@@ -178,9 +174,6 @@ const ModelConfig = () => {
       .then((settings) => {
         if (cancelled) return;
         if (settings.embedding) {
-          setEmbProvider(settings.embedding.provider || 'qwen');
-          setEmbModel(settings.embedding.model || 'text-embedding-v3');
-          setEmbBaseUrl(settings.embedding.base_url || '');
           setDetectedEmbDim(Number(settings.embedding.dim || 0) || null);
           setEmbMultimodalEnabled(Boolean(settings.embedding.multimodal_enabled));
         }
@@ -298,6 +291,9 @@ const ModelConfig = () => {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || '保存失败');
       setEmbApiKey('');
+      setEmbProvider(payload.embedding?.provider || resolvedEmbProvider);
+      setEmbModel(String(payload.embedding?.model || embModel || '').trim());
+      setEmbBaseUrl(String(payload.embedding?.base_url || embBaseUrl || '').trim());
       setKeyHints({
         embedding: Boolean(payload.embedding?.api_key_set),
       });

@@ -3,7 +3,7 @@ import { forwardRef, useState } from 'react';
 import { Icons } from './Icons';
 import { DropdownSelect } from './DropdownSelect';
 
-export const TextInput = ({ value, placeholder, masked, state, onChange, style, ...rest }) => {
+export const TextInput = forwardRef(({ value, placeholder, masked, state, onChange, style, ...rest }, ref) => {
   const [showPassword, setShowPassword] = useState(false);
   const border = { success: 'var(--success)', error: 'var(--danger)' }[state] || 'var(--border-primary)';
   const inputType = masked ? (showPassword ? 'text' : 'password') : 'text';
@@ -11,6 +11,7 @@ export const TextInput = ({ value, placeholder, masked, state, onChange, style, 
   return (
     <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
       <input
+        ref={ref}
         type={inputType}
         value={value || ''}
         placeholder={placeholder}
@@ -18,6 +19,7 @@ export const TextInput = ({ value, placeholder, masked, state, onChange, style, 
         style={{
           width: '100%',
           height: 40,
+          boxSizing: 'border-box',
           padding: masked ? '0 36px 0 12px' : (state ? '0 36px 0 12px' : '0 12px'),
           background: 'var(--bg-input)',
           border: `1px solid ${border}`,
@@ -62,7 +64,9 @@ export const TextInput = ({ value, placeholder, masked, state, onChange, style, 
       )}
     </div>
   );
-};
+});
+
+TextInput.displayName = 'TextInput';
 
 export const SearchInput = forwardRef(({ value, placeholder = '搜索…', onChange, style, ...rest }, ref) => (
   <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
@@ -78,6 +82,7 @@ export const SearchInput = forwardRef(({ value, placeholder = '搜索…', onCha
       style={{
         width: '100%',
         height: 32,
+        boxSizing: 'border-box',
         padding: '0 10px 0 32px',
         background: 'var(--bg-input)',
         border: '1px solid var(--border-primary)',
@@ -116,6 +121,7 @@ export const TextArea = ({ value, placeholder, onChange, minRows = 2, style, ...
     rows={minRows}
     style={{
       width: '100%',
+      boxSizing: 'border-box',
       padding: '10px 12px',
       background: 'var(--bg-input)',
       border: '1px solid var(--border-primary)',

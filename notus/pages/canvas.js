@@ -137,6 +137,10 @@ function buildCanvasFallbackBlocks(markdown = '') {
     }));
 }
 
+function buildCanvasFileHref(fileId) {
+  return `/canvas?fileId=${encodeURIComponent(fileId)}`;
+}
+
 async function computeClientArticleHash(article) {
   if (typeof window === 'undefined' || !window.crypto?.subtle || typeof window.TextEncoder === 'undefined') {
     return '';
@@ -475,6 +479,7 @@ export default function CanvasPage() {
   const [canvasLayoutLeftPercent, setCanvasLayoutLeftPercent] = useState(CANVAS_LAYOUT_DEFAULT);
   const layoutChangeCountRef = useRef(0);
   const persistedLayoutLeftPercentRef = useRef(null);
+  const dirtyStateRef = useRef(false);
   const articleFileId = Number(article?.fileId || article?.file_id) || null;
   const canvasConversationEnabled = Boolean(articleFileId);
   const conversationScopeKey = !article
@@ -631,6 +636,9 @@ export default function CanvasPage() {
       await refreshFiles();
       const nextFile = allFiles.find((file) => file.id === payload.file_id) || { id: payload.file_id, path: payload.path, name: payload.title };
       if (nextFile?.id) selectFile(nextFile);
+      if (payload.file_id) {
+        router.replace(buildCanvasFileHref(payload.file_id), undefined, { shallow: true }).catch(() => {});
+      }
       setSaveState('saved');
       toast('文章已保存并建立索引', 'success');
       return true;
@@ -641,7 +649,7 @@ export default function CanvasPage() {
     } finally {
       setSavingArticle(false);
     }
-  }, [allFiles, article, blocks, refreshFiles, selectFile, toast]);
+  }, [allFiles, article, blocks, refreshFiles, router, selectFile, toast]);
 
   const aiState = deriveAiReadiness({
     appStatus,
@@ -665,6 +673,10 @@ export default function CanvasPage() {
   });
   const navigationGuard = article && saveState === 'dirty' ? unsavedGuard.request : undefined;
 
+  useEffect(() => {
+    dirtyStateRef.current = saveState === 'dirty';
+  }, [saveState]);
+
   const documentFind = useDocumentFind({
     enabled: Boolean(article),
     getRoot: () => canvasContentRef.current,
@@ -683,12 +695,13 @@ export default function CanvasPage() {
 
   // Support ?fileId=X coming from editor "AI 创作" button
   useEffect(() => {
+    if (!router.isReady) return;
     const queryFileId = Number(getQueryValue(router.query.fileId));
     if (!Number.isFinite(queryFileId) || activeFile?.id === queryFileId) return;
     const nextFile = allFiles.find((file) => file.id === queryFileId);
     if (!nextFile) return;
     selectFile(nextFile);
-  }, [activeFile?.id, allFiles, router.query.fileId, selectFile]);
+  }, [activeFile?.id, allFiles, router.isReady, router.query.fileId, selectFile]);
 
   const loadSourceFileContent = useCallback(async (fileId) => {
     const cached = getCachedContent(fileId);
@@ -753,6 +766,36 @@ export default function CanvasPage() {
     if (article?.fileId === activeFile.id) return;
     loadArticleFromFile(activeFile);
   }, [activeFile?.id, article?.fileId, loadArticleFromFile]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!router.isReady) return;
+    const expectedHref = articleFileId ? buildCanvasFileHref(articleFileId) : '/canvas';
+    if (router.asPath === expectedHref) return;
+    router.replace(expectedHref, undefined, { shallow: true }).catch(() => {});
+  }, [articleFileId, router, router.asPath, router.isReady]);
+
+  const requestCanvasFileSwitch = useCallback((fileOrAction) => {
+    if (typeof fileOrAction === 'function') {
+      if (dirtyStateRef.current) {
+        unsavedGuard.request(fileOrAction);
+        return;
+      }
+      fileOrAction();
+      return;
+    }
+
+    const file = fileOrAction;
+    if (!file?.id) return;
+    const action = () => {
+      selectFile(file);
+      router.replace(buildCanvasFileHref(file.id), undefined, { shallow: true }).catch(() => {});
+    };
+    if (dirtyStateRef.current) {
+      unsavedGuard.request(action);
+      return;
+    }
+    action();
+  }, [router, selectFile, unsavedGuard]);
 
   const handleStart = useCallback(async (topic) => {
     if (!aiReady) return;
@@ -1368,7 +1411,7 @@ export default function CanvasPage() {
   // ── Entry screen ──
   if (!article) {
     return (
-      <Shell active="canvas" tocDisabled requestAction={navigationGuard} navigateOnFileSelect={false}>
+      <Shell active="canvas" tocDisabled requestAction={requestCanvasFileSwitch} navigateOnFileSelect={false}>
         <CanvasEntry
           onStart={handleStart}
           locked={aiUiState.showLockedState}
@@ -1389,7 +1432,7 @@ export default function CanvasPage() {
       onSave={handleSaveArticle}
       saveDisabled={saveState !== 'dirty'}
       tocDisabled
-      requestAction={navigationGuard}
+      requestAction={requestCanvasFileSwitch}
       navigateOnFileSelect={false}
     >
       <div style={{ position: 'relative', flex: 1, display: 'flex', minHeight: 0 }}>

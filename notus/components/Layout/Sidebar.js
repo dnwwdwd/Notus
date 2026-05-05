@@ -219,6 +219,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
   const importFileInputRef = useRef(null);
   const importDirectoryInputRef = useRef(null);
   const searchInputRef = useRef(null);
+  const createNameInputRef = useRef(null);
   const {
     activePage,
     files,
@@ -305,6 +306,15 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
   useEffect(() => {
     setContextMenu(null);
   }, [router.asPath]);
+
+  useEffect(() => {
+    if (!createMode) return undefined;
+    const timer = window.setTimeout(() => {
+      createNameInputRef.current?.focus?.();
+      createNameInputRef.current?.select?.();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [createMode]);
 
   const handleContextMenu = useCallback((node, x, y) => {
     setContextMenu({ node, x, y });
@@ -420,6 +430,10 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
       }
     };
     if (requestAction) {
+      if (requestAction.length >= 2) {
+        requestAction(file, action);
+        return;
+      }
       requestAction(action);
       return;
     }
@@ -714,6 +728,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
               {createMode === 'folder' ? '目录名' : '文件名'}
             </div>
             <TextInput
+              ref={createNameInputRef}
               value={newName}
               onChange={(event) => setNewName(event.target.value)}
               placeholder={createMode === 'folder' ? '例如：新的专题' : '例如：新的草稿'}

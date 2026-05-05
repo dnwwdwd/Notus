@@ -39,6 +39,8 @@ export const Dialog = ({ open, onClose, title, children, footer, maxWidth = 480 
           boxShadow: 'var(--shadow-lg)',
           width: '100%',
           maxWidth,
+          boxSizing: 'border-box',
+          margin: '0 16px',
           border: '1px solid var(--border-subtle)',
           animation: 'slideUp var(--transition-normal)',
         }}

@@ -15,9 +15,9 @@
     "dev:desktop:all": "node desktop/scripts/dev-all.js",
     "build:desktop": "node desktop/scripts/build-desktop.js",
     "dist:desktop": "npm run build:desktop && electron-builder",
-    "dist:desktop:mac:x64": "npm run build:desktop && electron-builder --mac dmg --x64",
-    "dist:desktop:mac:arm64": "npm run build:desktop && electron-builder --mac dmg --arm64",
-    "dist:desktop:win:x64": "npm run build:desktop && electron-builder --win nsis --x64",
+    "dist:desktop:mac:x64": "node desktop/scripts/build-desktop.js --platform=darwin --arch=x64 && electron-builder --mac dmg --x64",
+    "dist:desktop:mac:arm64": "node desktop/scripts/build-desktop.js --platform=darwin --arch=arm64 && electron-builder --mac dmg --arm64",
+    "dist:desktop:win:x64": "node desktop/scripts/build-desktop.js --platform=win32 --arch=x64 && electron-builder --win nsis --x64",
     "dist:lpk": "node desktop/scripts/build-lpk.js"
   },
   "devDependencies": {
@@ -28,7 +28,8 @@
     "appId": "com.notus.app",
     "productName": "Notus",
     "directories": {
-      "output": "desktop/dist"
+      "output": "desktop/dist",
+      "buildResources": "desktop/build"
     },
     "files": [
       "desktop/main/**/*",
@@ -46,9 +47,11 @@
       }
     ],
     "mac": {
-      "category": "public.app-category.productivity"
+      "category": "public.app-category.productivity",
+      "icon": "icon.icns"
     },
     "win": {
+      "icon": "icon.ico",
       "target": [
         "nsis"
       ]
@@ -57,7 +60,10 @@
       "oneClick": true,
       "deleteAppDataOnUninstall": true,
       "perMachine": false,
-      "allowToChangeInstallationDirectory": false
+      "allowToChangeInstallationDirectory": false,
+      "installerIcon": "icon.ico",
+      "uninstallerIcon": "icon.ico",
+      "installerHeaderIcon": "icon.ico"
     }
   }
 }

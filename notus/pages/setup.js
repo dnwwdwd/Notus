@@ -11,10 +11,6 @@ import { LlmConfigCardsSection } from '../components/Settings/LlmConfigCardsSect
 import { useApp } from '../contexts/AppContext';
 import { useAppStatus } from '../contexts/AppStatusContext';
 import { usePlatform } from '../contexts/PlatformContext';
-import {
-  EMBEDDING_PROVIDERS,
-  findProvider,
-} from '../lib/modelCatalog';
 import { findEmbeddingModelMeta, inferEmbeddingProvider } from '../lib/embeddingForm';
 import { desktop as desktopClient } from '../utils/platformClient';
 
@@ -445,8 +441,8 @@ const Step3 = ({ running, progress, indexStatus, summary, errors }) => {
 function createInitialForm() {
   return {
     embProvider: 'qwen',
-    embModel: 'text-embedding-v3',
-    embBaseUrl: findProvider(EMBEDDING_PROVIDERS, 'qwen').baseUrl,
+    embModel: '',
+    embBaseUrl: '',
     embApiKey: '',
     embMultimodalEnabled: false,
   };
@@ -540,9 +536,6 @@ export default function SetupPage() {
         if (cancelled || !settings) return;
         setForm((prev) => ({
           ...prev,
-          embProvider: settings.embedding?.provider || prev.embProvider,
-          embModel: settings.embedding?.model || prev.embModel,
-          embBaseUrl: settings.embedding?.base_url || prev.embBaseUrl,
           embMultimodalEnabled: Boolean(settings.embedding?.multimodal_enabled),
         }));
         setDetectedEmbDim(Number(settings.embedding?.dim || 0) || null);
@@ -717,6 +710,9 @@ export default function SetupPage() {
 
       setForm((prev) => ({
         ...prev,
+        embProvider: payload.embedding?.provider || prev.embProvider,
+        embModel: String(payload.embedding?.model || prev.embModel || '').trim(),
+        embBaseUrl: String(payload.embedding?.base_url || prev.embBaseUrl || '').trim(),
         embApiKey: '',
       }));
       setDetectedEmbDim(embDim);

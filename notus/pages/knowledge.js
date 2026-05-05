@@ -288,7 +288,8 @@ export default function KnowledgePage() {
   useEffect(() => {
     if (!router.isReady) return;
     const requestedFileId = Number(getQueryValue(router.query.fileId));
-    if (!Number.isFinite(requestedFileId) || activeFile?.id === requestedFileId) return;
+    if (!Number.isFinite(requestedFileId)) return;
+    if (activeFile?.id === requestedFileId) return;
     const targetFile = allFiles.find((file) => file.id === requestedFileId);
     if (!targetFile) return;
     selectFile(targetFile);

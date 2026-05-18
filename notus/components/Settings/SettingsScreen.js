@@ -22,6 +22,7 @@ const APP_VERSION = packageMeta.version || '0.1.2';
 
 export const SETTINGS_SECTIONS = [
   { id: 'model', label: '模型配置', icon: <Icons.robot size={14} />, href: '/settings/model' },
+  { id: 'personalization', label: '个性化', icon: <Icons.palette size={14} />, href: '/settings/personalization' },
   { id: 'storage', label: '存储', icon: <Icons.database size={14} />, href: '/settings/storage' },
   { id: 'logs', label: '日志', icon: <Icons.list size={14} />, href: '/settings/logs' },
   { id: 'shortcuts', label: '快捷键', icon: <Icons.dots size={14} />, href: '/settings/shortcuts' },
@@ -173,7 +174,16 @@ const ModelConfig = () => {
       .then((response) => response.json())
       .then((settings) => {
         if (cancelled) return;
+        const savedEmbModel = String(settings.embedding?.model || '').trim();
+        const savedEmbBaseUrl = String(settings.embedding?.base_url || '').trim();
         if (settings.embedding) {
+          setEmbProvider(inferEmbeddingProvider({
+            provider: settings.embedding.provider,
+            baseUrl: savedEmbBaseUrl,
+            model: savedEmbModel,
+          }));
+          setEmbModel((current) => current || savedEmbModel);
+          setEmbBaseUrl((current) => current || savedEmbBaseUrl);
           setDetectedEmbDim(Number(settings.embedding.dim || 0) || null);
           setEmbMultimodalEnabled(Boolean(settings.embedding.multimodal_enabled));
         }
@@ -313,6 +323,17 @@ const ModelConfig = () => {
       <div style={{ fontSize: 'var(--text-xl)', fontWeight: 600, marginBottom: 6 }}>模型配置</div>
       <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', marginBottom: 20 }}>
         Embedding 继续单独配置；所有对话模型统一通过卡片管理，并保存在服务端。
+      </div>
+      <div style={{
+        marginBottom: 20,
+        padding: '10px 12px',
+        borderRadius: 'var(--radius-md)',
+        background: 'var(--bg-secondary)',
+        color: 'var(--text-secondary)',
+        fontSize: 'var(--text-sm)',
+        lineHeight: 1.6,
+      }}>
+        启用文档级上下文后，知识库问答会把命中的 Markdown 正文从本地文件系统读取后发送给所选对话模型；回答下方会显示本次读取了哪些文件。
       </div>
 
       <div style={{ marginBottom: 32 }}>
@@ -529,6 +550,81 @@ const Logs = () => {
           </div>
         )}
       </Section>
+    </div>
+  );
+};
+
+const Personalization = () => {
+  const toast = useToast();
+  const [titleFilenameBindingEnabled, setTitleFilenameBindingEnabled] = useState(false);
+  const [savingTitleFilenameBinding, setSavingTitleFilenameBinding] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/settings')
+      .then((response) => response.json())
+      .then((settings) => {
+        if (cancelled) return;
+        setTitleFilenameBindingEnabled(Boolean(settings.editor?.title_filename_binding_enabled));
+      })
+      .catch(() => toast('读取配置失败', 'error'));
+    return () => {
+      cancelled = true;
+    };
+  }, [toast]);
+
+  const handleTitleFilenameBindingToggle = async (nextValue) => {
+    if (savingTitleFilenameBinding) return;
+    const previousValue = titleFilenameBindingEnabled;
+    setTitleFilenameBindingEnabled(nextValue);
+    setSavingTitleFilenameBinding(true);
+    try {
+      const response = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          editor: {
+            title_filename_binding_enabled: nextValue,
+          },
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || '保存失败');
+      setTitleFilenameBindingEnabled(Boolean(payload.editor?.title_filename_binding_enabled));
+      toast(nextValue ? '标题与文件名双向绑定已开启' : '标题与文件名双向绑定已关闭', 'success');
+    } catch (error) {
+      setTitleFilenameBindingEnabled(previousValue);
+      toast(error.message || '保存失败', 'error');
+    } finally {
+      setSavingTitleFilenameBinding(false);
+    }
+  };
+
+  return (
+    <div>
+      <div style={{ fontSize: 'var(--text-xl)', fontWeight: 600, marginBottom: 28 }}>个性化</div>
+      <div style={{ display: 'grid', gap: 12 }}>
+        <div
+          style={{
+            border: '1px solid var(--border-subtle)',
+            borderRadius: 'var(--radius-lg)',
+            background: 'var(--bg-elevated)',
+            padding: 16,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 16,
+          }}
+        >
+          <div style={{ fontSize: 'var(--text-sm)', fontWeight: 600 }}>标题与文件名双向绑定</div>
+          <div style={{ flexShrink: 0 }}>
+            <Toggle
+              on={titleFilenameBindingEnabled}
+              onChange={(value) => handleTitleFilenameBindingToggle(value)}
+            />
+          </div>
+        </div>
+      </div>
     </div>
   );
 };
@@ -865,16 +961,9 @@ const About = () => {
       <div
         style={{
           border: '1px solid var(--border-subtle)',
-          borderRadius: 'var(--radius-xl)',
-          background: 'linear-gradient(180deg, rgba(193,95,60,0.06) 0%, var(--bg-elevated) 100%)',
-          padding: '18px 20px',
-          boxShadow: 'var(--shadow-sm)',
-          maxWidth: 560,
         }}
       >
-        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', lineHeight: 1.8 }}>
-          当前版本专注本地知识库问答、块级创作协作和桌面工作区体验。
-        </div>
+        当前版本专注本地知识库问答、块级创作协作和桌面工作区体验。
       </div>
     </div>
   );
@@ -882,6 +971,7 @@ const About = () => {
 
 const CONTENT_MAP = {
   model: ModelConfig,
+  personalization: Personalization,
   storage: Storage,
   logs: Logs,
   shortcuts: ShortcutsSettings,
@@ -892,7 +982,7 @@ export function SettingsScreen({ section }) {
   const Content = CONTENT_MAP[section] || CONTENT_MAP.model;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', minWidth: 1360, minHeight: 800 }}>
       <TopBar active="" />
       <div
         style={{

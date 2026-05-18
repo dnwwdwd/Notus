@@ -10,7 +10,6 @@ import { ConversationDrawer } from '../components/ChatArea/ConversationDrawer';
 import { InputBar } from '../components/ChatArea/InputBar';
 import { BatchOperationCard } from '../components/AIPanel/BatchOperationCard';
 import { ClarifyInteractionCard } from '../components/AIPanel/ClarifyInteractionCard';
-import { RetryPreviewCard } from '../components/AIPanel/RetryPreviewCard';
 import { ResizableLayout } from '../components/ui/ResizableLayout';
 import { DropdownSelect } from '../components/ui/DropdownSelect';
 import { DocumentFindBar } from '../components/ui/DocumentFindBar';
@@ -28,6 +27,9 @@ import { useLlmConfigs } from '../hooks/useLlmConfigs';
 import { useStableAiReadiness } from '../hooks/useStableAiReadiness';
 import { useDocumentFind } from '../hooks/useDocumentFind';
 import { useUnsavedChangesGuard } from '../hooks/useUnsavedChangesGuard';
+import { shouldKeepCanvasRoutePending, shouldSyncCanvasQueryFile } from '../lib/canvasRouting';
+import { getVisibleDocumentLabel } from '../lib/documentLabels';
+import { splitEditorVisibleMarkdown } from '../lib/markdownMeta';
 import { deriveAiReadiness } from '../utils/aiReadiness';
 import { mapConversationMessages } from '../utils/conversations';
 import { readApiResponse } from '../utils/http';
@@ -55,8 +57,10 @@ const MOCK_BLOCKS_BY_TOPIC = {
 
 const CANVAS_LAYOUT_STORAGE_KEY = 'notus-layout-canvas-left-percent';
 const CANVAS_LAYOUT_DEFAULT = 62;
-const CANVAS_LAYOUT_MIN = 30;
-const CANVAS_LAYOUT_MAX = 80;
+const CANVAS_LAYOUT_MIN = 48;
+const CANVAS_LAYOUT_MAX = 64;
+const CANVAS_EDITOR_MIN_WIDTH = 660;
+const CANVAS_CHAT_MIN_WIDTH = 456;
 const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
 
 function getInitialBlocks(topic) {
@@ -466,7 +470,6 @@ export default function CanvasPage() {
   const [pendingOperationSets, setPendingOperationSets] = useState([]);
   const [pendingInteractions, setPendingInteractions] = useState([]);
   const [interactionSubmittingId, setInteractionSubmittingId] = useState(null);
-  const [retryingInteractionId, setRetryingInteractionId] = useState(null);
   const [styleSource, setStyleSource] = useState('auto');
   const [manualStyleFileIds, setManualStyleFileIds] = useState([]);
   const [selectedLlmConfigId, setSelectedLlmConfigId] = useState(null);
@@ -480,6 +483,8 @@ export default function CanvasPage() {
   const layoutChangeCountRef = useRef(0);
   const persistedLayoutLeftPercentRef = useRef(null);
   const dirtyStateRef = useRef(false);
+  const pendingRouteFileIdRef = useRef(null);
+  const hiddenArticleFrontmatterRef = useRef('');
   const articleFileId = Number(article?.fileId || article?.file_id) || null;
   const canvasConversationEnabled = Boolean(articleFileId);
   const conversationScopeKey = !article
@@ -490,8 +495,8 @@ export default function CanvasPage() {
 
   const documentFileOptions = allFiles.map((file) => ({
     value: file.id,
-    label: file.name,
-    searchText: file.path,
+    label: getVisibleDocumentLabel(file, '未命名文档'),
+    searchText: `${file.title || ''} ${file.name || ''} ${file.path || ''}`,
   }));
   const styleFileOptions = documentFileOptions;
   const selectedStyleFiles = manualStyleFileIds
@@ -615,6 +620,7 @@ export default function CanvasPage() {
             ...article,
             draft_key: article.draft_key || article.draftKey || null,
             file_id: article.file_id || article.fileId,
+            hidden_frontmatter: hiddenArticleFrontmatterRef.current,
             blocks,
           },
         }),
@@ -626,18 +632,27 @@ export default function CanvasPage() {
 
       setArticle({
         ...(payload.article || article),
+        title: getVisibleDocumentLabel(payload.article || article, '未命名创作'),
         file_id: payload.file_id,
         fileId: payload.file_id,
         draft_key: null,
         draftKey: null,
         sourcePath: payload.path,
       });
+      hiddenArticleFrontmatterRef.current = payload.article?.hidden_frontmatter || hiddenArticleFrontmatterRef.current || '';
       setBlocks(payload.article?.blocks || blocks);
       await refreshFiles();
       const nextFile = allFiles.find((file) => file.id === payload.file_id) || { id: payload.file_id, path: payload.path, name: payload.title };
       if (nextFile?.id) selectFile(nextFile);
       if (payload.file_id) {
-        router.replace(buildCanvasFileHref(payload.file_id), undefined, { shallow: true }).catch(() => {});
+        pendingRouteFileIdRef.current = payload.file_id;
+        router.replace(buildCanvasFileHref(payload.file_id), undefined, { shallow: true })
+          .then(() => {
+            pendingRouteFileIdRef.current = null;
+          })
+          .catch(() => {
+            pendingRouteFileIdRef.current = null;
+          });
       }
       setSaveState('saved');
       toast('文章已保存并建立索引', 'success');
@@ -662,8 +677,14 @@ export default function CanvasPage() {
   const aiLockDescription = aiState.reason === 'llm'
     ? '先完成 LLM 和 Embedding 配置后，创作页 AI 才会开放。'
     : '还需要先完成 Embedding 配置后，才能生成大纲、调用 AI 改写，并继续完成整篇创作。';
-  const canvasFileLabel = articleFileId ? article?.title : `${article?.title || '未命名创作'} · 未保存大纲`;
-  const canvasInputDisabled = !aiReady || !canvasConversationEnabled;
+  const articleTitleLabel = getVisibleDocumentLabel(article, '未命名创作');
+  const canvasFileLabel = articleFileId ? articleTitleLabel : `${articleTitleLabel} · 未保存大纲`;
+  const activeClarifyInteraction = loading
+    ? null
+    : ([...pendingInteractions].reverse().find((item) => item.status === 'pending')
+      || [...pendingInteractions].reverse().find((item) => item.status === 'failed')
+      || null);
+  const canvasInputDisabled = !aiReady || !canvasConversationEnabled || Boolean(activeClarifyInteraction);
 
   const unsavedGuard = useUnsavedChangesGuard({
     isDirty: saveState === 'dirty',
@@ -697,11 +718,28 @@ export default function CanvasPage() {
   useEffect(() => {
     if (!router.isReady) return;
     const queryFileId = Number(getQueryValue(router.query.fileId));
-    if (!Number.isFinite(queryFileId) || activeFile?.id === queryFileId) return;
+    if (!shouldSyncCanvasQueryFile({
+      requestedFileId: queryFileId,
+      activeFileId: activeFile?.id,
+      articleFileId,
+      pendingRouteFileId: pendingRouteFileIdRef.current,
+    })) {
+      if (
+        pendingRouteFileIdRef.current
+        && Number(pendingRouteFileIdRef.current) === Number(queryFileId)
+        && !shouldKeepCanvasRoutePending({
+          pendingRouteFileId: pendingRouteFileIdRef.current,
+          articleFileId,
+        })
+      ) {
+        pendingRouteFileIdRef.current = null;
+      }
+      return;
+    }
     const nextFile = allFiles.find((file) => file.id === queryFileId);
     if (!nextFile) return;
     selectFile(nextFile);
-  }, [activeFile?.id, allFiles, router.isReady, router.query.fileId, selectFile]);
+  }, [activeFile?.id, allFiles, articleFileId, router.isReady, router.query.fileId, selectFile]);
 
   const loadSourceFileContent = useCallback(async (fileId) => {
     const cached = getCachedContent(fileId);
@@ -718,13 +756,14 @@ export default function CanvasPage() {
   const hydrateArticleFromPayload = useCallback((file, payload) => {
     setArticle({
       ...(payload || {}),
-      title: payload?.title || file.name.replace(/\.md$/i, ''),
+      title: getVisibleDocumentLabel(payload || file, '未命名创作'),
       file_id: payload?.file_id || file.id,
       fileId: payload?.file_id || file.id,
       draft_key: null,
       draftKey: null,
       sourcePath: file.path,
     });
+    hiddenArticleFrontmatterRef.current = payload?.hidden_frontmatter || payload?.hiddenFrontmatter || '';
     setBlocks(Array.isArray(payload?.blocks) ? payload.blocks : []);
     setActiveConversationId(null);
     setConversationDraft(true);
@@ -743,14 +782,16 @@ export default function CanvasPage() {
       const response = await fetch(`/api/articles/${file.id}`);
       const payload = await readApiResponse(response, '文章加载失败');
       hydrateArticleFromPayload(file, payload);
-    } catch (error) {
+      } catch (error) {
       try {
         const sourceFile = await loadSourceFileContent(file.id);
+        const { visibleContent, hiddenFrontmatter } = splitEditorVisibleMarkdown(sourceFile.content || '');
         hydrateArticleFromPayload(file, {
           id: `article_${file.id}`,
           file_id: file.id,
-          title: file.title || file.name.replace(/\.md$/i, ''),
-          blocks: buildCanvasFallbackBlocks(sourceFile.content || ''),
+          title: getVisibleDocumentLabel(file, '未命名创作'),
+          hidden_frontmatter: hiddenFrontmatter || '',
+          blocks: buildCanvasFallbackBlocks(visibleContent || ''),
         });
         toast('文章结构化失败，已按原始段落打开', 'warning');
       } catch (fallbackError) {
@@ -769,12 +810,29 @@ export default function CanvasPage() {
 
   useEffect(() => {
     if (!router.isReady) return;
+    if (!articleFileId) return;
+    if (shouldKeepCanvasRoutePending({
+      pendingRouteFileId: pendingRouteFileIdRef.current,
+      articleFileId,
+    })) {
+      return;
+    }
+    if (pendingRouteFileIdRef.current && Number(pendingRouteFileIdRef.current) === Number(articleFileId)) {
+      pendingRouteFileIdRef.current = null;
+    }
     const expectedHref = articleFileId ? buildCanvasFileHref(articleFileId) : '/canvas';
     if (router.asPath === expectedHref) return;
-    router.replace(expectedHref, undefined, { shallow: true }).catch(() => {});
+    pendingRouteFileIdRef.current = articleFileId;
+    router.replace(expectedHref, undefined, { shallow: true })
+      .then(() => {
+        pendingRouteFileIdRef.current = null;
+      })
+      .catch(() => {
+        pendingRouteFileIdRef.current = null;
+      });
   }, [articleFileId, router, router.asPath, router.isReady]);
 
-  const requestCanvasFileSwitch = useCallback((fileOrAction) => {
+  const requestCanvasFileSwitch = useCallback((fileOrAction, _fallbackAction) => {
     if (typeof fileOrAction === 'function') {
       if (dirtyStateRef.current) {
         unsavedGuard.request(fileOrAction);
@@ -787,8 +845,13 @@ export default function CanvasPage() {
     const file = fileOrAction;
     if (!file?.id) return;
     const action = () => {
+      pendingRouteFileIdRef.current = file.id;
       selectFile(file);
-      router.replace(buildCanvasFileHref(file.id), undefined, { shallow: true }).catch(() => {});
+      router.replace(buildCanvasFileHref(file.id), undefined, { shallow: true })
+        .then(() => {})
+        .catch(() => {
+          pendingRouteFileIdRef.current = null;
+        });
     };
     if (dirtyStateRef.current) {
       unsavedGuard.request(action);
@@ -800,6 +863,7 @@ export default function CanvasPage() {
   const handleStart = useCallback(async (topic) => {
     if (!aiReady) return;
     const title = topic || '未命名创作';
+    hiddenArticleFrontmatterRef.current = '';
     setArticle({ title });
     setBlocks([]);
     setActiveConversationId(null);
@@ -1157,20 +1221,15 @@ export default function CanvasPage() {
       toast('请先在模型配置中新增并测试至少一个 LLM 配置', 'warning');
       return;
     }
-    setRetryingInteractionId(interaction.id);
-    try {
-      await executeAgentRun({
-        interaction_id: interaction.id,
-        interaction_response: interaction.response || null,
-        llm_config_id: llmConfigId,
-        active_file_id: activeFile?.id || null,
-        article: { ...article, blocks },
-        style_mode: styleSource,
-        style_file_ids: styleSource === 'manual' ? manualStyleFileIds : undefined,
-      });
-    } finally {
-      setRetryingInteractionId(null);
-    }
+    await executeAgentRun({
+      interaction_id: interaction.id,
+      interaction_response: interaction.response || null,
+      llm_config_id: llmConfigId,
+      active_file_id: activeFile?.id || null,
+      article: { ...article, blocks },
+      style_mode: styleSource,
+      style_file_ids: styleSource === 'manual' ? manualStyleFileIds : undefined,
+    });
   }, [activeFile?.id, article, blocks, executeAgentRun, manualStyleFileIds, selectedLlmConfigId, styleSource, toast]);
 
   const handleInteractionCardSubmit = useCallback(async (interaction, answers) => {
@@ -1303,6 +1362,7 @@ export default function CanvasPage() {
   const handleRetryInteraction = useCallback(async (interaction) => {
     if (!interaction?.id) return;
     try {
+      setPendingInteractions((prev) => prev.filter((item) => Number(item.id) !== Number(interaction.id)));
       await runInteractionResume(interaction, selectedLlmConfigId);
     } catch {}
   }, [runInteractionResume, selectedLlmConfigId]);
@@ -1344,6 +1404,16 @@ export default function CanvasPage() {
       });
       const payload = await response.json();
       if (!response.ok || !payload.success) {
+        if (payload?.operation_set_status) {
+          setPendingOperationSets((prev) => prev.map((item) => (
+            Number(item.id) === Number(operationSet?.id)
+              ? { ...item, status: payload.operation_set_status }
+              : item
+          )));
+        }
+        if (payload?.error === 'OLD_MISMATCH') {
+          throw new Error('这组预览对应的原文已经变化，请重新生成后再应用');
+        }
         throw new Error(payload.error || '应用修改失败');
       }
       const nextArticle = payload.article
@@ -1393,15 +1463,24 @@ export default function CanvasPage() {
     acc[String(item.id)] = item;
     return acc;
   }, {});
-  const pendingInteractionById = pendingInteractions.reduce((acc, item) => {
-    acc[String(item.id)] = item;
-    return acc;
-  }, {});
-  const pendingInteractionByMessageId = pendingInteractions.reduce((acc, item) => {
-    if (item?.message_id) acc[String(item.message_id)] = item;
-    return acc;
-  }, {});
-  const currentPendingInteraction = [...pendingInteractions].reverse().find((item) => item.status === 'pending') || null;
+  const hiddenInteractionIds = new Set(
+    pendingInteractions
+      .filter((item) => item && ['pending', 'failed'].includes(item.status))
+      .map((item) => String(item.id))
+  );
+  const visibleMessages = messages.filter((msg) => {
+    if (msg.role !== 'assistant') return true;
+    const meta = msg.meta && typeof msg.meta === 'object' ? msg.meta : {};
+    const interactionId = String(meta.interaction_id || '');
+    const retryInteractionId = String(meta.retry_interaction_id || '');
+    if (meta.interaction_kind === 'clarify_card' && hiddenInteractionIds.has(interactionId)) {
+      return false;
+    }
+    if (meta.retry_available && hiddenInteractionIds.has(retryInteractionId)) {
+      return false;
+    }
+    return true;
+  });
   const highlightedBlockIds = new Set(
     pendingOperationSets
       .filter((item) => item.status === 'pending')
@@ -1440,6 +1519,8 @@ export default function CanvasPage() {
           initialLeftPercent={CANVAS_LAYOUT_DEFAULT}
           minLeftPercent={CANVAS_LAYOUT_MIN}
           maxLeftPercent={CANVAS_LAYOUT_MAX}
+          minLeftPx={CANVAS_EDITOR_MIN_WIDTH}
+          minRightPx={CANVAS_CHAT_MIN_WIDTH}
           leftPercent={canvasLayoutLeftPercent}
           onLeftPercentChange={handleCanvasLayoutChange}
           onLeftPercentCommit={handleCanvasLayoutCommit}
@@ -1465,7 +1546,7 @@ export default function CanvasPage() {
                 margin: 0,
                 flex: 1,
               }} data-canvas-title="true">
-                {article.title}
+                {articleTitleLabel}
               </h1>
             </div>
             <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', marginBottom: 28 }}>
@@ -1593,7 +1674,7 @@ export default function CanvasPage() {
                       onClick={() => setManualStyleFileIds((prev) => prev.filter((fileId) => fileId !== file.id))}
                       style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
                     >
-                      <Badge tone="accent">{file.name} ×</Badge>
+                      <Badge tone="accent">{getVisibleDocumentLabel(file, '未命名文档')} ×</Badge>
                     </button>
                   )) : (
                     <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
@@ -1637,12 +1718,12 @@ export default function CanvasPage() {
                 </div>
               </div>
             )}
-            {canvasConversationEnabled && messages.length === 0 && !loading && (
+            {canvasConversationEnabled && visibleMessages.length === 0 && !loading && (
               <div style={{ padding: '32px 0', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: 'var(--text-sm)' }}>
                 <div style={{ marginTop: 8 }}>向 AI 发送指令，如：<br />「让 @b2 更简洁」或「为第 3 段加上例子」</div>
               </div>
             )}
-            {messages.map((msg) => (
+            {visibleMessages.map((msg) => (
               msg.role === 'user'
                 ? <UserBubble key={msg.id}>{msg.content}</UserBubble>
                 : (
@@ -1650,41 +1731,28 @@ export default function CanvasPage() {
                     {msg.meta?.show_decision_summary && msg.meta?.decision_summary ? (
                       <DecisionSummaryCard summary={msg.meta.decision_summary} />
                     ) : null}
-                    {msg.meta?.show_decision_summary && msg.meta?.canvas_mode === 'edit' ? (
-                      <CorrectionChipBar
-                        onSelect={handleDecisionCorrection}
-                        disabled={loading}
-                      />
-                    ) : null}
-                    {pendingInteractionByMessageId[String(msg.id)] ? (
-                      <ClarifyInteractionCard
-                        interaction={pendingInteractionByMessageId[String(msg.id)]}
-                        onSubmit={handleInteractionCardSubmit}
-                        onRetry={handleRetryInteraction}
-                        submitting={interactionSubmittingId === Number(pendingInteractionByMessageId[String(msg.id)]?.id)}
-                      />
-                    ) : msg.meta?.operation_set_id && pendingOperationSetById[String(msg.meta.operation_set_id)] ? (
+                    {msg.meta?.operation_set_id && pendingOperationSetById[String(msg.meta.operation_set_id)] ? (
                       <BatchOperationCard
                         operationSet={pendingOperationSetById[String(msg.meta.operation_set_id)]}
                         blocks={blocks}
                         onApply={handleApplyOperationSet}
                         onCancel={handleCancelOperationSet}
                       />
-                    ) : msg.meta?.retry_available && pendingInteractionById[String(msg.meta.retry_interaction_id)] ? (
-                      <RetryPreviewCard
-                        onRetry={() => handleRetryInteraction(pendingInteractionById[String(msg.meta.retry_interaction_id)])}
-                        loading={retryingInteractionId === Number(msg.meta.retry_interaction_id)}
+                    ) : msg.meta?.show_decision_summary && msg.meta?.canvas_mode === 'edit' ? (
+                      <CorrectionChipBar
+                        onSelect={handleDecisionCorrection}
+                        disabled={loading}
                       />
                     ) : null}
                   </AiBubble>
                 )
             ))}
-            {loading && streamText && <AiBubble text={streamText} streaming />}
+            {loading && <AiBubble text={streamText} streaming />}
             <div ref={chatEndRef} />
           </div>
 
           <InputBar
-            isEmpty={canvasConversationEnabled && messages.length === 0 && !loading}
+            isEmpty={canvasConversationEnabled && visibleMessages.length === 0 && !loading}
             placeholder={canvasConversationEnabled ? '例如：让 @b2 更简洁，或为第 3 段加一个例子…' : '先保存当前大纲为文档，再继续 AI 改写…'}
             onSend={handleSend}
             onStop={() => requestControllerRef.current?.abort()}
@@ -1696,13 +1764,36 @@ export default function CanvasPage() {
             disabled={canvasInputDisabled}
             showPlusMenu={false}
             mentionOptions={[{ value: '__all__', token: '@全文', label: '全文', preview: '对整篇文章生效', searchText: '全文 整篇 整文' }, ...mentionOptions]}
-            notice={currentPendingInteraction
-              ? {
-                tone: 'accent',
-                text: '上方还有一张待确认卡片。你可以直接回答那张卡片，也可以在这里补充说明，系统会优先尝试把这条输入解析为卡片回答。',
-              }
-              : null}
           />
+          {activeClarifyInteraction ? (
+            <div
+              style={{
+                position: 'absolute',
+                left: 0,
+                right: 0,
+                bottom: 0,
+                zIndex: 10,
+                pointerEvents: 'none',
+              }}
+            >
+              <div
+                style={{
+                  padding: '56px 12px 12px',
+                  background: 'linear-gradient(180deg, rgba(247, 244, 238, 0) 0%, var(--bg-primary) 28%)',
+                  pointerEvents: 'none',
+                }}
+              >
+                <div style={{ pointerEvents: 'auto' }}>
+                  <ClarifyInteractionCard
+                    interaction={activeClarifyInteraction}
+                    onSubmit={handleInteractionCardSubmit}
+                    onRetry={handleRetryInteraction}
+                    submitting={interactionSubmittingId === Number(activeClarifyInteraction?.id)}
+                  />
+                </div>
+              </div>
+            </div>
+          ) : null}
           <ConversationDrawer
             open={historyDrawerOpen}
             onClose={() => setHistoryDrawerOpen(false)}

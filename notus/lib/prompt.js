@@ -1,10 +1,12 @@
 // All LLM prompt templates
+const { trimTextToTokenBudget } = require('./llmBudget');
 
 function normalizeKnowledgeContext(input) {
   if (Array.isArray(input)) {
     return {
       chunks: input,
       sections: [],
+      documents: [],
       sufficiency: input.length > 0,
       stats: {},
     };
@@ -12,9 +14,27 @@ function normalizeKnowledgeContext(input) {
   return {
     chunks: Array.isArray(input?.chunks) ? input.chunks : [],
     sections: Array.isArray(input?.sections) ? input.sections : [],
+    documents: Array.isArray(input?.documents) ? input.documents : [],
     sufficiency: Boolean(input?.sufficiency),
     stats: input?.stats || {},
   };
+}
+
+function formatKnowledgeDocuments(documents = []) {
+  return documents
+    .map((doc, index) => {
+      const flags = [
+        doc.truncated ? '已按预算节选' : '完整正文',
+        doc.stale_index ? '索引可能过期，正文已从文件系统读取最新版本' : '',
+      ].filter(Boolean).join('；');
+      return [
+        `[文档 ${index + 1}] 《${doc.title || doc.path}》`,
+        `  - 文件：${doc.path || ''}`,
+        flags ? `  - 状态：${flags}` : '',
+        trimTextToTokenBudget(doc.content || '', doc.truncated ? 3200 : 9000),
+      ].filter(Boolean).join('\n');
+    })
+    .join('\n\n');
 }
 
 function formatKnowledgeSections(sections = []) {
@@ -75,6 +95,9 @@ function buildKnowledgeQAPrompt(query, input, options = {}) {
   const sectionText = context.sections.length > 0
     ? formatKnowledgeSections(context.sections)
     : '暂无按章节整理后的证据组。';
+  const documentText = context.documents.length > 0
+    ? formatKnowledgeDocuments(context.documents)
+    : '暂无文档级上下文。';
   const chunkText = context.chunks.length > 0
     ? formatKnowledgeChunks(context.chunks)
     : '暂无原始检索片段。';
@@ -91,6 +114,7 @@ function buildKnowledgeQAPrompt(query, input, options = {}) {
         '优先用流畅的自然语言回答；只有在确实更清楚时，才使用简短列表。',
         '不要大段复述检索原文，不要为了显得完整而凑结构。',
         '如果给出了“更早对话摘要”，那只是会话记忆，不是事实来源，不能压过当前证据。',
+        '优先综合“文档级上下文”回答；如果文档被节选，必须保持保守，不要把节选外的信息说成已确认。',
         '优先综合“按章节整理后的证据组”作答，它比零散片段更完整。',
         '如果只命中了文档标题或文件名，但正文证据仍然偏弱，要明确说明“已定位到相关文档，但正文证据有限”，不要装作已经完全确认。',
         answerMode === 'weak_evidence'
@@ -120,6 +144,9 @@ function buildKnowledgeQAPrompt(query, input, options = {}) {
         `检索统计：chunks=${context.stats.chunk_count || context.chunks.length}，sections=${context.stats.section_count || context.sections.length}，files=${context.stats.file_count || 0}，best_score=${context.stats.best_score || 0}`,
         weakEvidenceReason ? `弱证据原因：${weakEvidenceReason}` : '',
         conflictSummary ? `冲突摘要：${conflictSummary}` : '',
+        '',
+        '文档级上下文：',
+        documentText,
         '',
         '按章节整理后的证据组：',
         sectionText,

@@ -1,5 +1,6 @@
 const { ensureRuntime } = require('../../../lib/runtime');
 const { blocksToMarkdown } = require('../../../utils/markdownBlocks');
+const { mergeEditorVisibleMarkdown } = require('../../../lib/markdownMeta');
 const { createFile, getFileById, updateFile } = require('../../../lib/files');
 const { indexFileWithFallback } = require('../../../lib/fileIndexing');
 const { createLogger, createRequestContext } = require('../../../lib/logger');
@@ -26,13 +27,17 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'article.blocks is required', code: 'INVALID_ARTICLE', request_id: context.request_id });
   }
 
-  const markdown = blocksToMarkdown(article.blocks);
+  const visibleMarkdown = blocksToMarkdown(article.blocks);
+  const markdown = mergeEditorVisibleMarkdown(
+    visibleMarkdown,
+    article.hidden_frontmatter || article.hiddenFrontmatter || ''
+  );
   const draftKey = article.draft_key || article.draftKey || null;
 
   try {
     let file;
     if (article.file_id) {
-      file = updateFile(article.file_id, markdown);
+      file = updateFile(article.file_id, markdown, { titleFilenameBindingEnabled: false });
     } else {
       const targetPath = path || `${String(article.title || '未命名文章').trim() || '未命名文章'}.md`;
       file = createFile(targetPath, markdown);
@@ -57,6 +62,7 @@ export default async function handler(req, res) {
         file_id: latest.id,
         draft_key: null,
         title: latest.title,
+        hidden_frontmatter: article.hidden_frontmatter || article.hiddenFrontmatter || '',
         blocks: article.blocks,
       },
     });

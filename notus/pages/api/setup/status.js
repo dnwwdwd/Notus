@@ -1,6 +1,6 @@
 const { ensureRuntime } = require('../../../lib/runtime');
 const { getEffectiveConfig } = require('../../../lib/config');
-const { getSetting } = require('../../../lib/db');
+const { getSetting, setSetting } = require('../../../lib/db');
 const { getAllFiles } = require('../../../lib/files');
 const { listLlmConfigs } = require('../../../lib/llmConfigs');
 
@@ -19,9 +19,18 @@ export default function handler(req, res) {
     config.embeddingModel &&
     Number(config.embeddingDim) > 0
   );
+  const persistedSetupCompleted = getSetting('setup_completed') === 'true';
+  const hasExistingWorkspace = files.length > 0;
+  const hasPersistedModelConfig = Boolean(embeddingConfigured || llmConfigured);
+  const setupCompleted = persistedSetupCompleted || hasExistingWorkspace || hasPersistedModelConfig;
+
+  if (setupCompleted && !persistedSetupCompleted) {
+    setSetting('setup_completed', 'true');
+  }
+
   return res.status(200).json({
-    configured: getSetting('setup_completed') === 'true',
-    completed: getSetting('setup_completed') === 'true',
+    configured: setupCompleted,
+    completed: setupCompleted,
     runtime_target: config.runtimeTarget,
     storage_mode: config.storageMode,
     data_root: config.dataRoot,

@@ -350,21 +350,17 @@ function buildDecisionSummaryFromAnswers(answers = {}, payload = {}) {
 function parseStructuredSourceAnswer(question, answer = {}, interaction = {}) {
   const optionId = String(answer.option_id || answer.value || '').trim();
   const customText = String(answer.custom_text || answer.text || '').trim();
+  if (customText) {
+    return {
+      ...buildAnswer('custom_content', question, { label: '自定义内容', text: customText, source_content_type: 'draft_text' }),
+      source_kind: 'custom_content',
+      source_content_snapshot: customText,
+      source_content_digest: computeTextDigest(customText),
+      source_content_type: 'draft_text',
+    };
+  }
   if (optionId) {
     const option = (question.options || []).find((item) => item.id === optionId) || null;
-    if (optionId === 'custom_content' && customText) {
-      return {
-        ...buildAnswer(optionId, question, {
-          label: option?.label || '自定义内容',
-          text: customText,
-          source_content_type: 'draft_text',
-        }),
-        source_kind: 'custom_content',
-        source_content_snapshot: customText,
-        source_content_digest: computeTextDigest(customText),
-        source_content_type: 'draft_text',
-      };
-    }
     if (optionId === 'previous_assistant_message') {
       return {
         ...buildAnswer(optionId, question, {
@@ -424,6 +420,41 @@ function parseRawSourceAnswer(question, rawText, interaction = {}) {
 function parseStructuredTargetAnswer(question, answer = {}, interaction = {}) {
   const optionId = String(answer.option_id || answer.value || '').trim();
   const customText = String(answer.custom_text || answer.text || '').trim();
+  if (customText) {
+    const candidateIds = Array.isArray(interaction?.payload?.candidate_block_ids)
+      ? interaction.payload.candidate_block_ids
+      : [];
+    const articleBlocks = Array.isArray(interaction?.payload?.article_blocks)
+      ? interaction.payload.article_blocks
+      : [];
+    const blockByOrdinal = textToOrdinalBlockId(articleBlocks, customText);
+    const relationHint = inferTargetPositionRelation(customText) || 'after_anchor';
+    if (blockByOrdinal) {
+      return buildAnswer(`block:${blockByOrdinal}`, question, {
+        label: `第 ${articleBlocks.findIndex((item) => item.id === blockByOrdinal) + 1} 段`,
+        block_id: blockByOrdinal,
+        position_relation: relationHint,
+        relation_hint: relationHint,
+      });
+    }
+    if (candidateIds.length === 1) {
+      return buildAnswer(`block:${candidateIds[0]}`, question, {
+        label: `第 ${articleBlocks.findIndex((item) => item.id === candidateIds[0]) + 1} 段`,
+        block_id: candidateIds[0],
+        position_relation: relationHint,
+        relation_hint: relationHint,
+      });
+    }
+    return {
+      ...buildAnswer('custom_target_location', question, {
+        label: '自定义位置',
+        text: customText,
+        position_relation: relationHint,
+        relation_hint: relationHint,
+      }),
+      unresolved_custom: true,
+    };
+  }
   if (!optionId && !customText) return null;
 
   if (optionId) {
@@ -444,40 +475,7 @@ function parseStructuredTargetAnswer(question, answer = {}, interaction = {}) {
     }
   }
 
-  if (!customText) return null;
-  const candidateIds = Array.isArray(interaction?.payload?.candidate_block_ids)
-    ? interaction.payload.candidate_block_ids
-    : [];
-  const articleBlocks = Array.isArray(interaction?.payload?.article_blocks)
-    ? interaction.payload.article_blocks
-    : [];
-  const blockByOrdinal = textToOrdinalBlockId(articleBlocks, customText);
-  const relationHint = inferTargetPositionRelation(customText) || 'after_anchor';
-  if (blockByOrdinal) {
-    return buildAnswer(`block:${blockByOrdinal}`, question, {
-      label: `第 ${articleBlocks.findIndex((item) => item.id === blockByOrdinal) + 1} 段`,
-      block_id: blockByOrdinal,
-      position_relation: relationHint,
-      relation_hint: relationHint,
-    });
-  }
-  if (candidateIds.length === 1) {
-    return buildAnswer(`block:${candidateIds[0]}`, question, {
-      label: `第 ${articleBlocks.findIndex((item) => item.id === candidateIds[0]) + 1} 段`,
-      block_id: candidateIds[0],
-      position_relation: relationHint,
-      relation_hint: relationHint,
-    });
-  }
-  return {
-    ...buildAnswer('custom_target_location', question, {
-      label: '自定义位置',
-      text: customText,
-      position_relation: relationHint,
-      relation_hint: relationHint,
-    }),
-    unresolved_custom: true,
-  };
+  return null;
 }
 
 function parseRawTargetAnswer(question, rawText, interaction = {}) {
@@ -505,6 +503,18 @@ function parseRawTargetAnswer(question, rawText, interaction = {}) {
 
 function parseStructuredWriteModeAnswer(question, answer = {}) {
   const optionId = String(answer.option_id || answer.value || '').trim();
+  const customText = String(answer.custom_text || answer.text || '').trim();
+  if (customText) {
+    const inferred = parseRawWriteModeAnswer(question, customText);
+    if (inferred) return inferred;
+    return {
+      ...buildAnswer('custom_write_mode', question, {
+        label: '自定义写入方式',
+        text: customText,
+      }),
+      unresolved_custom: true,
+    };
+  }
   if (!optionId) return null;
   const option = (question.options || []).find((item) => item.id === optionId) || null;
   if (!option) return null;
@@ -536,6 +546,10 @@ function parseRawWriteModeAnswer(question, rawText) {
 
 function parseStructuredPrimaryIntentAnswer(question, answer = {}) {
   const optionId = normalizePrimaryIntentValue(answer.option_id || answer.value || '');
+  const customText = String(answer.custom_text || answer.text || '').trim();
+  if (customText) {
+    return parseRawPrimaryIntentAnswer(question, customText);
+  }
   if (!optionId) return null;
   const option = (question.options || []).find((item) => normalizePrimaryIntentValue(item.id) === optionId) || null;
   return buildAnswer(optionId, question, {
@@ -758,7 +772,7 @@ function validateInteractionSourceDigest(interaction, getMessageById) {
   return computeTextDigest(source.source_content_snapshot) === source.source_content_digest;
 }
 
-function buildResumePlanFromInteraction(interaction) {
+function buildResumePlanFromInteraction(interaction, article) {
   const payload = interaction?.payload || {};
   const answers = getExistingAnswers(interaction);
   const primaryIntent = normalizePrimaryIntentValue(answers.primary_intent?.value || payload.primary_intent || 'edit');
@@ -769,11 +783,24 @@ function buildResumePlanFromInteraction(interaction) {
   const correctionState = payload.correction_state && typeof payload.correction_state === 'object'
     ? payload.correction_state
     : null;
+  const articleBlocks = Array.isArray(article?.blocks) && article.blocks.length > 0
+    ? article.blocks.map((block, index) => ({
+      id: block.id,
+      index: index + 1,
+      type: block.type,
+      content: String(block.content || ''),
+    }))
+    : (Array.isArray(payload.article_blocks) ? payload.article_blocks : []);
+  const liveBlockIds = new Set(articleBlocks.map((block) => block.id).filter(Boolean));
+  const filteredCandidateBlockIds = Array.isArray(payload.candidate_block_ids)
+    ? payload.candidate_block_ids.filter((blockId) => liveBlockIds.has(blockId))
+    : [];
   const targetBlockId = targetAnswer?.block_id || (
     typeof targetAnswer?.value === 'string' && targetAnswer.value.startsWith('block:')
       ? targetAnswer.value.slice('block:'.length)
       : null
   );
+  const targetBlockExists = !targetBlockId || liveBlockIds.has(targetBlockId);
   const writeMode = deriveWriteModeFromAnswers(targetAnswer, writeModeAnswer);
   const positionRelation = derivePositionRelation(targetAnswer, writeMode);
   const writeAction = deriveWriteAction(writeMode);
@@ -784,7 +811,7 @@ function buildResumePlanFromInteraction(interaction) {
       primary_intent: 'text',
       scope_mode: targetBlockId ? 'single' : 'none',
       target_block_ids: targetBlockId ? [targetBlockId] : [],
-      candidate_block_ids: Array.isArray(payload.candidate_block_ids) ? payload.candidate_block_ids : [],
+      candidate_block_ids: filteredCandidateBlockIds,
       operation_kind: 'discuss',
       needs_style: false,
       needs_knowledge: false,
@@ -808,7 +835,7 @@ function buildResumePlanFromInteraction(interaction) {
       primary_intent: 'analyze',
       scope_mode: 'none',
       target_block_ids: [],
-      candidate_block_ids: Array.isArray(payload.candidate_block_ids) ? payload.candidate_block_ids : [],
+      candidate_block_ids: filteredCandidateBlockIds,
       operation_kind: 'analyze',
       needs_style: false,
       needs_knowledge: false,
@@ -826,12 +853,59 @@ function buildResumePlanFromInteraction(interaction) {
     };
   }
 
+  if (targetBlockId && !targetBlockExists) {
+    return {
+      intent: 'edit',
+      primary_intent: 'edit',
+      scope_mode: 'none',
+      target_block_ids: [],
+      candidate_block_ids: filteredCandidateBlockIds,
+      target_candidates: [],
+      operation_kind: writeMode === 'replace_target' ? 'rewrite' : 'insert',
+      needs_style: false,
+      needs_knowledge: false,
+      clarify_needed: true,
+      helper_used: false,
+      clarify_reason: 'missing_target_location',
+      clarify_question: '原来的写入位置已经失效，请重新确认要写到哪里。',
+      clarify_render_mode: 'card',
+      missing_slots: ['target_location'],
+      answer_slots: {
+        primary_intent: answers.primary_intent || null,
+        source_content_ref: answers.source_content_ref || null,
+        write_mode: writeModeAnswer || null,
+      },
+      prefilled_answers: {
+        primary_intent: answers.primary_intent || null,
+        source_content_ref: answers.source_content_ref || null,
+        write_mode: writeModeAnswer || null,
+      },
+      target_location: null,
+      target_anchor: null,
+      position_relation: '',
+      write_action: writeAction,
+      write_mode: writeMode,
+      original_user_input: String(payload.original_user_input || ''),
+      source_message_id: source.source_message_id,
+      source_kind: source.source_kind,
+      source_content_snapshot: source.source_content_snapshot,
+      source_content_digest: source.source_content_digest,
+      source_content_type: source.source_content_type || payload.source_content_type || '',
+      summary_instruction: String(answers.additional_note?.text || ''),
+      decision_summary: '原来的写入位置已经失效，请重新确认位置。',
+      correction_state: correctionState,
+      risk_level: payload.risk_level || 'medium',
+      ai_arbitration_mode: payload.ai_arbitration_mode || 'resume',
+      show_decision_summary: true,
+    };
+  }
+
   return {
     intent: 'edit',
     primary_intent: 'edit',
     scope_mode: targetBlockId ? 'single' : 'none',
     target_block_ids: targetBlockId ? [targetBlockId] : [],
-    candidate_block_ids: Array.isArray(payload.candidate_block_ids) ? payload.candidate_block_ids : [],
+    candidate_block_ids: filteredCandidateBlockIds,
     operation_kind: writeMode === 'replace_target' ? 'rewrite' : 'insert',
     needs_style: false,
     needs_knowledge: false,

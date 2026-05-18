@@ -13,6 +13,7 @@ const {
 let db = null;
 let vecAvailable = false;
 let initError = null;
+let schemaReady = false;
 
 function ensureParentDir(filePath) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -72,6 +73,8 @@ function migrateRegularTables(database) {
     ['position', 'INTEGER NOT NULL DEFAULT 0'],
     ['has_image', 'INTEGER NOT NULL DEFAULT 0'],
     ['search_text', "TEXT NOT NULL DEFAULT ''"],
+    ['source_hash', 'TEXT'],
+    ['index_version', 'INTEGER NOT NULL DEFAULT 1'],
   ];
 
   chunkColumns.forEach(([column, definition]) => {
@@ -83,6 +86,15 @@ function migrateRegularTables(database) {
   const fileColumns = [
     ['index_error', 'TEXT'],
     ['retry_count', 'INTEGER NOT NULL DEFAULT 0'],
+    ['stable_id', 'TEXT'],
+    ['size', 'INTEGER NOT NULL DEFAULT 0'],
+    ['mtime', 'INTEGER NOT NULL DEFAULT 0'],
+    ['char_count', 'INTEGER NOT NULL DEFAULT 0'],
+    ['token_count', 'INTEGER NOT NULL DEFAULT 0'],
+    ['frontmatter', 'TEXT'],
+    ['tags', 'TEXT'],
+    ['heading_outline', 'TEXT'],
+    ['index_version', 'INTEGER NOT NULL DEFAULT 1'],
   ];
 
   fileColumns.forEach(([column, definition]) => {
@@ -111,6 +123,10 @@ function migrateRegularTables(database) {
 
   const conversationColumns = [
     ['draft_key', 'TEXT'],
+    ['read_scope', 'TEXT'],
+    ['retrieval_scope', 'TEXT'],
+    ['write_scope', 'TEXT'],
+    ['style_scope', 'TEXT'],
   ];
 
   conversationColumns.forEach(([column, definition]) => {
@@ -143,6 +159,25 @@ function migrateRegularTables(database) {
   if (!hasColumn(database, 'files', 'hash')) {
     database.exec("ALTER TABLE files ADD COLUMN hash TEXT;");
   }
+
+  database.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_files_stable_id
+      ON files(stable_id)
+      WHERE stable_id IS NOT NULL AND stable_id != '';
+    CREATE INDEX IF NOT EXISTS idx_files_mtime ON files(mtime);
+    CREATE INDEX IF NOT EXISTS idx_files_hash ON files(hash);
+    CREATE INDEX IF NOT EXISTS idx_chunks_source_hash ON chunks(source_hash);
+    CREATE INDEX IF NOT EXISTS idx_chunks_index_version ON chunks(index_version);
+  `);
+
+  database.prepare(`
+    UPDATE chunks
+    SET source_hash = (
+      SELECT files.hash FROM files WHERE files.id = chunks.file_id
+    )
+    WHERE (source_hash IS NULL OR source_hash = '')
+      AND EXISTS (SELECT 1 FROM files WHERE files.id = chunks.file_id)
+  `).run();
 
   const rows = database.prepare(`
     SELECT id, model, context_window_tokens, max_output_tokens
@@ -200,6 +235,10 @@ function migrateIncompatibleTables(database) {
     .find((row) => row.name === 'id');
   if (conversationId && !/INTEGER/i.test(conversationId.type || '')) {
     database.exec(`
+      DROP TABLE IF EXISTS canvas_operation_sets;
+      DROP TABLE IF EXISTS conversation_interactions;
+    `);
+    database.exec(`
       DROP TABLE IF EXISTS messages;
       DROP TABLE IF EXISTS conversations;
 
@@ -209,6 +248,10 @@ function migrateIncompatibleTables(database) {
         title      TEXT,
         file_id    INTEGER REFERENCES files(id) ON DELETE SET NULL,
         draft_key  TEXT,
+        read_scope TEXT,
+        retrieval_scope TEXT,
+        write_scope TEXT,
+        style_scope TEXT,
         created_at TEXT DEFAULT (datetime('now')),
         updated_at TEXT DEFAULT (datetime('now'))
       );
@@ -297,13 +340,28 @@ function recreateFilesFts(database) {
   `);
 }
 
-function initDb() {
-  if (db) return db;
+function ensureSchema(database, config) {
+  migrateRegularTables(database);
+  migrateIncompatibleTables(database);
+  ensureConversationIndexes(database);
+  createVecTable(database, config.embeddingDim);
+  createImageVecTable(database, config.embeddingDim);
+  recreateFts(database);
+  recreateFilesFts(database);
+  schemaReady = true;
+}
 
+function initDb() {
   const config = readEnvConfig();
-  ensureParentDir(config.dbPath);
+  if (db) {
+    if (!schemaReady) {
+      ensureSchema(db, config);
+    }
+    return db;
+  }
 
   try {
+    ensureParentDir(config.dbPath);
     db = new Database(config.dbPath);
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');
@@ -317,7 +375,16 @@ function initDb() {
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         path        TEXT UNIQUE NOT NULL,
         title       TEXT,
+        stable_id   TEXT,
         hash        TEXT,
+        size        INTEGER NOT NULL DEFAULT 0,
+        mtime       INTEGER NOT NULL DEFAULT 0,
+        char_count  INTEGER NOT NULL DEFAULT 0,
+        token_count INTEGER NOT NULL DEFAULT 0,
+        frontmatter TEXT,
+        tags        TEXT,
+        heading_outline TEXT,
+        index_version INTEGER NOT NULL DEFAULT 1,
         indexed     INTEGER DEFAULT 0,
         indexed_at  TEXT,
         index_error TEXT,
@@ -339,6 +406,8 @@ function initDb() {
         heading_path TEXT,
         has_image    INTEGER DEFAULT 0,
         search_text  TEXT NOT NULL DEFAULT '',
+        source_hash  TEXT,
+        index_version INTEGER NOT NULL DEFAULT 1,
         created_at   TEXT DEFAULT (datetime('now'))
       );
       CREATE INDEX IF NOT EXISTS idx_chunks_file_id ON chunks(file_id);
@@ -370,6 +439,10 @@ function initDb() {
         title      TEXT,
         file_id    INTEGER REFERENCES files(id) ON DELETE SET NULL,
         draft_key  TEXT,
+        read_scope TEXT,
+        retrieval_scope TEXT,
+        write_scope TEXT,
+        style_scope TEXT,
         created_at TEXT DEFAULT (datetime('now')),
         updated_at TEXT DEFAULT (datetime('now'))
       );
@@ -477,17 +550,19 @@ function initDb() {
         ON conversation_interactions(message_id);
     `);
 
-    migrateRegularTables(db);
-    migrateIncompatibleTables(db);
-    ensureConversationIndexes(db);
-    createVecTable(db, config.embeddingDim);
-    createImageVecTable(db, config.embeddingDim);
-    recreateFts(db);
-    recreateFilesFts(db);
+    ensureSchema(db, config);
 
     initError = null;
     return db;
   } catch (error) {
+    schemaReady = false;
+    if (db) {
+      try {
+        db.close();
+      } catch {}
+    }
+    db = null;
+    vecAvailable = false;
     initError = error;
     throw error;
   }

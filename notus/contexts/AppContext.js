@@ -335,7 +335,7 @@ export function AppProvider({ children }) {
   const setCachedContent = useCallback((fileId, content) => { contentCache.current.set(fileId, content); }, []);
   const clearCachedContent = useCallback((fileId) => { contentCache.current.delete(fileId); }, []);
 
-  const createFile = useCallback(async ({ parentPath = '', name, content = '' }) => {
+  const createFile = useCallback(async ({ parentPath = '', name, content = '' }, options = {}) => {
     const filePath = [parentPath, name].filter(Boolean).join('/');
     const response = await fetch('/api/files', {
       method: 'POST',
@@ -350,11 +350,14 @@ export function AppProvider({ children }) {
 
     const nextTree = await refreshFiles();
     const nextActiveFile = flattenTree(nextTree).find((item) => item.type === 'file' && item.id === payload.id);
-    if (nextActiveFile) {
+    if (nextActiveFile && options.autoSelect !== false) {
       selectFile(nextActiveFile);
     }
 
-    return payload;
+    return {
+      ...payload,
+      selectedFile: nextActiveFile || null,
+    };
   }, [refreshFiles, selectFile]);
 
   const syncImportedPaths = useCallback(async (paths = [], options = {}) => {

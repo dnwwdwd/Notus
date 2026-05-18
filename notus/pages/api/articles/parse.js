@@ -1,5 +1,6 @@
 const { ensureRuntime } = require('../../../lib/runtime');
 const { getFileById } = require('../../../lib/files');
+const { splitEditorVisibleMarkdown } = require('../../../lib/markdownMeta');
 const { articleFromMarkdown } = require('../../../utils/markdownBlocks');
 
 function detectFallbackBlockType(content = '') {
@@ -11,12 +12,12 @@ function detectFallbackBlockType(content = '') {
   return 'paragraph';
 }
 
-function buildFallbackArticle(file) {
-  const source = String(file?.content || '').replace(/\r\n/g, '\n').trim();
-  const segments = source
-    ? source.split(/\n{2,}/).map((item) => item.trim()).filter(Boolean)
+function buildFallbackArticle(file, source = '') {
+  const normalizedSource = String(source || '').replace(/\r\n/g, '\n').trim();
+  const segments = normalizedSource
+    ? normalizedSource.split(/\n{2,}/).map((item) => item.trim()).filter(Boolean)
     : [];
-  const blocks = (segments.length > 0 ? segments : [source])
+  const blocks = (segments.length > 0 ? segments : [normalizedSource])
     .filter(Boolean)
     .map((content, index) => ({
       id: `b_${index + 1}`,
@@ -61,16 +62,24 @@ export default async function handler(req, res) {
     return;
   }
 
+  const { visibleContent, hiddenFrontmatter } = splitEditorVisibleMarkdown(file.content || '');
+
   try {
     const article = await articleFromMarkdown({
       id: `article_${file.id}`,
       file_id: file.id,
       title: file.title,
-      markdown: file.content,
+      markdown: visibleContent || '',
     });
-    res.status(200).json(article);
+    res.status(200).json({
+      ...article,
+      hidden_frontmatter: hiddenFrontmatter || '',
+    });
     return;
   } catch {
-    res.status(200).json(buildFallbackArticle(file));
+    res.status(200).json({
+      ...buildFallbackArticle(file, visibleContent || ''),
+      hidden_frontmatter: hiddenFrontmatter || '',
+    });
   }
 }

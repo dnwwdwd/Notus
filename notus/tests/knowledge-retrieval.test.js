@@ -26,6 +26,7 @@ function loadKnowledgeModules(tempDir) {
     '../lib/db',
     '../lib/config',
     '../lib/retrieval',
+    '../lib/workspaceDocuments',
     '../lib/queryPlanner',
     '../lib/knowledgeRuntime',
     '../lib/knowledgeHelperCache',
@@ -36,22 +37,26 @@ function loadKnowledgeModules(tempDir) {
 
   const { getDb } = require('../lib/db');
   const { buildSearchText } = require('../lib/tokenizer');
+  const { getEffectiveConfig } = require('../lib/config');
   const retrieval = require('../lib/retrieval');
+  const workspaceDocuments = require('../lib/workspaceDocuments');
   const planner = require('../lib/queryPlanner');
   const runtime = require('../lib/knowledgeRuntime');
   const helperCache = require('../lib/knowledgeHelperCache');
 
   return {
     db: getDb(),
+    config: getEffectiveConfig(),
     buildSearchText,
     retrieval,
+    workspaceDocuments,
     planner,
     runtime,
     helperCache,
   };
 }
 
-function seedFixtures(db, buildSearchText) {
+function seedFixtures(db, buildSearchText, notesDir) {
   const insertFile = db.prepare(`
     INSERT INTO files (path, title, hash, indexed, indexed_at, updated_at)
     VALUES (?, ?, ?, 1, datetime('now'), datetime('now'))
@@ -62,6 +67,13 @@ function seedFixtures(db, buildSearchText) {
   `);
 
   function addDocument(doc) {
+    const absolutePath = path.join(notesDir, doc.path);
+    fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+    fs.writeFileSync(
+      absolutePath,
+      [`# ${doc.title}`, '', ...doc.blocks.map((block) => block.content)].join('\n\n'),
+      'utf8'
+    );
     const fileResult = insertFile.run(doc.path, doc.title, `${doc.title}-hash`);
     const fileId = Number(fileResult.lastInsertRowid);
     let currentHeading = '';
@@ -197,13 +209,15 @@ async function runTests() {
   const tempDir = createTempWorkspace();
   const {
     db,
+    config,
     buildSearchText,
     retrieval,
+    workspaceDocuments,
     planner,
     runtime,
     helperCache,
   } = loadKnowledgeModules(tempDir);
-  const fileIds = seedFixtures(db, buildSearchText);
+  const fileIds = seedFixtures(db, buildSearchText, config.notesDir);
 
   const titleToId = {
     '本地缓存方案': fileIds.localCache,
@@ -222,6 +236,23 @@ async function runTests() {
     enableWeakEvidenceSupplement: true,
     enableConflictMode: true,
   };
+
+  const workspaceContext = await retrieval.retrieveKnowledgeContext('本地缓存 LRU 策略', {
+    topK: 3,
+  });
+  const documentContext = await workspaceDocuments.retrieveWorkspaceDocuments('本地缓存 LRU 策略', {
+    knowledgeContext: workspaceContext,
+    maxDocuments: 2,
+  });
+  assert.ok(documentContext.documents.length > 0, 'workspace document retrieval should return documents');
+  assert.ok(
+    documentContext.documents[0].content.includes('进程内 LRU 策略'),
+    'workspace document retrieval should read full markdown from filesystem'
+  );
+  assert.ok(
+    documentContext.document_summaries.every((doc) => !Object.prototype.hasOwnProperty.call(doc, 'content')),
+    'client document summaries must not expose full content'
+  );
 
   const metrics = {
     hitCount: 0,

@@ -3,6 +3,7 @@ const { getEffectiveConfig } = require('../../lib/config');
 const { createLogger, createRequestContext } = require('../../lib/logger');
 const { buildKnowledgeQueryPlan } = require('../../lib/queryPlanner');
 const { retrieveKnowledgeContext } = require('../../lib/retrieval');
+const { retrieveWorkspaceDocuments } = require('../../lib/workspaceDocuments');
 const { buildKnowledgeQAPrompt } = require('../../lib/prompt');
 const { streamChat } = require('../../lib/llm');
 const { resolveLlmRuntimeConfig } = require('../../lib/llmConfigs');
@@ -16,7 +17,12 @@ const {
   ensureConversation,
   getConversationHistory,
   touchConversation,
+  updateConversationScopes,
 } = require('../../lib/conversations');
+const {
+  resolveCombinedScopeFileIds,
+  scopeFromLegacyReference: buildRetrievalScopeFromLegacy,
+} = require('../../lib/workspaceScope');
 const {
   buildClarifyResponse,
   buildKnowledgeHelperContext,
@@ -51,6 +57,17 @@ function citationsFromChunks(chunks) {
   }));
 }
 
+function buildCitationSummary(knowledgeContext = {}) {
+  const sections = Array.isArray(knowledgeContext.sections) ? knowledgeContext.sections : [];
+  const chunks = Array.isArray(knowledgeContext.chunks) ? knowledgeContext.chunks : [];
+  const matchedFiles = Array.isArray(knowledgeContext.matched_files) ? knowledgeContext.matched_files : [];
+  return {
+    citation_count: chunks.length,
+    section_count: sections.length,
+    matched_file_count: matchedFiles.length,
+  };
+}
+
 function createKnowledgePromptController({
   query,
   effectiveQuery,
@@ -65,6 +82,7 @@ function createKnowledgePromptController({
       return {
         history: conversationHistory,
         memorySummary: '',
+        documents: knowledgeContext.documents || [],
         sections: sanitizeKnowledgeSections(knowledgeContext.sections, {
           sectionLimit: 4,
           quoteLimit: 3,
@@ -81,6 +99,11 @@ function createKnowledgePromptController({
       return {
         history: conversationHistory,
         memorySummary: '',
+        documents: (knowledgeContext.documents || []).slice(0, 2).map((doc) => ({
+          ...doc,
+          content: String(doc.content || '').slice(0, 6000),
+          truncated: true,
+        })),
         sections: sanitizeKnowledgeSections(knowledgeContext.sections, {
           sectionLimit: 3,
           quoteLimit: 2,
@@ -100,6 +123,7 @@ function createKnowledgePromptController({
       return {
         history: recentHistory,
         memorySummary,
+        documents: [],
         sections: sanitizeKnowledgeSections(knowledgeContext.sections, {
           sectionLimit: 3,
           quoteLimit: 2,
@@ -119,6 +143,7 @@ function createKnowledgePromptController({
       return {
         history: recentHistory,
         memorySummary,
+        documents: [],
         sections: sanitizeKnowledgeSections(knowledgeContext.sections, {
           sectionLimit: 2,
           quoteLimit: 1,
@@ -137,6 +162,7 @@ function createKnowledgePromptController({
     return {
       history: recentHistory,
       memorySummary,
+      documents: [],
       sections: sanitizeKnowledgeSections(knowledgeContext.sections, {
         sectionLimit: 1,
         quoteLimit: 1,
@@ -150,6 +176,7 @@ function createKnowledgePromptController({
     const state = buildStageSnapshot(stage);
     return buildKnowledgeQAPrompt(query, {
       ...knowledgeContext,
+      documents: state.documents,
       sections: state.sections,
       chunks: state.chunks,
     }, {
@@ -218,6 +245,18 @@ export default async function handler(req, res) {
       title: query,
       fileId: null,
     });
+    let retrievalScope = conversation.retrieval_scope || { type: 'all' };
+    if (referenceMode !== undefined) {
+      retrievalScope = buildRetrievalScopeFromLegacy({ referenceMode, referenceFileIds });
+      conversation = updateConversationScopes(conversation.id, { retrieval_scope: retrievalScope }) || conversation;
+    }
+    const scopeResolution = resolveCombinedScopeFileIds(
+      retrievalScope,
+      conversation.read_scope || { type: 'all' },
+      { activeFileId }
+    );
+    const scopedFileIds = scopeResolution.fileIds;
+    const restrictToScope = scopeResolution.restrictToFileIds;
     const featureConfig = getEffectiveConfig();
     const features = {
       enableClarify: Boolean(featureConfig.knowledgeEnableClarify),
@@ -238,8 +277,8 @@ export default async function handler(req, res) {
       query,
       history: conversationHistory,
       activeFileId,
-      referenceMode,
-      referenceFileIds,
+      referenceMode: restrictToScope ? 'manual' : 'auto',
+      referenceFileIds: scopedFileIds,
     });
     const helperPressureHigh = llmConfig
       ? isPromptNearCompactionThreshold(
@@ -334,15 +373,27 @@ export default async function handler(req, res) {
     }, {
       topK: 5,
       activeFileId,
-      fileIds: referenceMode === 'manual' ? referenceFileIds : [],
-      restrictToFileIds: referenceMode === 'manual',
+      fileIds: scopedFileIds,
+      restrictToFileIds: restrictToScope,
     });
+    Object.assign(knowledgeContext, await retrieveWorkspaceDocuments({
+      ...queryPlan,
+      query,
+    }, {
+      knowledgeContext,
+      maxDocuments: 5,
+      activeFileId,
+      fileIds: scopedFileIds,
+      restrictToFileIds: restrictToScope,
+    }));
     const chunks = Array.isArray(knowledgeContext.chunks) ? knowledgeContext.chunks : [];
     let sections = Array.isArray(knowledgeContext.sections) ? knowledgeContext.sections : [];
     const stats = knowledgeContext.stats || {};
     const sufficiency = Boolean(knowledgeContext.sufficiency);
     const matchedFiles = Array.isArray(knowledgeContext.matched_files) ? knowledgeContext.matched_files : [];
     const rewriteQueries = Array.isArray(knowledgeContext.rewrite_queries) ? knowledgeContext.rewrite_queries : [];
+    const documentSummaries = Array.isArray(knowledgeContext.document_summaries) ? knowledgeContext.document_summaries : [];
+    const documentStats = knowledgeContext.document_stats || {};
     const seedCount = Number(knowledgeContext.seed_count || 0);
     const expandedSectionCount = Number(knowledgeContext.expanded_section_count || sections.length);
     const helperAlreadyUsed = Boolean(helperTelemetry.helper_call_triggered);
@@ -400,6 +451,8 @@ export default async function handler(req, res) {
       ambiguity_flags: queryPlan.ambiguity_flags,
       rerank_applied: Boolean(rerankResult?.rerank_applied),
       retrieval_stats: stats,
+      documents: documentSummaries,
+      document_stats: documentStats,
       clarify_question: '',
       ...helperTelemetry,
     };
@@ -414,6 +467,7 @@ export default async function handler(req, res) {
       best_score: stats.best_score,
       sufficiency,
       answer_mode: answerMeta.answer_mode,
+      document_stats: documentStats,
       helper_call_type: helperTelemetry.helper_call_type,
       helper_call_triggered: helperTelemetry.helper_call_triggered,
       helper_call_cache_hit: helperTelemetry.helper_call_cache_hit,
@@ -422,10 +476,14 @@ export default async function handler(req, res) {
       fallback_reason: helperTelemetry.fallback_reason,
     });
 
+    const citationSummary = buildCitationSummary(knowledgeContext);
+
     send(res, {
       type: 'chunks',
       chunks,
       sections,
+      documents: documentSummaries,
+      document_stats: documentStats,
       stats,
       sufficiency,
       query_plan: queryPlan,
@@ -433,12 +491,15 @@ export default async function handler(req, res) {
       rewrite_queries: rewriteQueries,
       seed_count: seedCount,
       expanded_section_count: expandedSectionCount,
+      citation_count: citationSummary.citation_count,
       answer_mode: answerMeta.answer_mode,
       confidence: answerMeta.confidence,
       rerank_applied: answerMeta.rerank_applied,
     });
     send(res, {
       type: 'assistant_meta',
+      source_count: citationSummary.citation_count,
+      document_stats: documentStats,
       ...answerMeta,
     });
 
@@ -479,7 +540,11 @@ export default async function handler(req, res) {
       });
     }
 
-    send(res, { type: 'citations', citations });
+    send(res, {
+      type: 'citations',
+      citations,
+      source_count: citationSummary.citation_count,
+    });
     const messageId = appendConversationMessage({
       conversationId: conversation.id,
       role: 'assistant',
@@ -497,6 +562,8 @@ export default async function handler(req, res) {
       compacted,
       answer_mode: answerMeta.answer_mode,
       confidence: answerMeta.confidence,
+      source_count: citationSummary.citation_count,
+      document_stats: documentStats,
       meta: answerMeta,
     });
   } catch (error) {

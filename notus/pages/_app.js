@@ -11,7 +11,7 @@ import { AppStatusProvider } from '../contexts/AppStatusContext';
 import { PlatformProvider } from '../contexts/PlatformContext';
 import { ShortcutsProvider } from '../contexts/ShortcutsContext';
 
-const CORE_ROUTES = ['/files', '/knowledge', '/canvas', '/settings/model'];
+const CORE_ROUTES = ['/files', '/knowledge', '/canvas', '/settings/model', '/settings/personalization'];
 
 function CoreRoutePrefetcher() {
   const router = useRouter();

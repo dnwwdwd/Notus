@@ -9,21 +9,35 @@ export const ResizableLayout = ({
   initialLeftPercent = 44,
   minLeftPercent = 15,
   maxLeftPercent = 82,
+  minLeftPx = 0,
+  minRightPx = 0,
   leftPercent,
   onLeftPercentChange,
   onLeftPercentCommit,
   style,
 }) => {
+  const containerRef = useRef(null);
+  const handleRef = useRef(null);
+  const [containerWidth, setContainerWidth] = useState(0);
+
   const clampPercent = useCallback((value) => {
     const parsed = Number.parseFloat(value);
     const fallback = Number.isFinite(parsed) ? parsed : initialLeftPercent;
-    return Math.min(Math.max(fallback, minLeftPercent), maxLeftPercent);
-  }, [initialLeftPercent, minLeftPercent, maxLeftPercent]);
+    const handleWidth = 4;
+    const pxMinPercent = containerWidth > 0 && minLeftPx > 0
+      ? (minLeftPx / containerWidth) * 100
+      : minLeftPercent;
+    const pxMaxPercent = containerWidth > 0 && minRightPx > 0
+      ? ((containerWidth - minRightPx - handleWidth) / containerWidth) * 100
+      : maxLeftPercent;
+    const resolvedMin = Math.max(minLeftPercent, pxMinPercent);
+    const resolvedMax = Math.min(maxLeftPercent, pxMaxPercent);
+    if (resolvedMin > resolvedMax) return Math.min(Math.max(fallback, minLeftPercent), maxLeftPercent);
+    return Math.min(Math.max(fallback, resolvedMin), resolvedMax);
+  }, [containerWidth, initialLeftPercent, maxLeftPercent, minLeftPercent, minLeftPx, minRightPx]);
   const controlled = Number.isFinite(Number(leftPercent));
   const [internalLeftPercent, setInternalLeftPercent] = useState(() => clampPercent(initialLeftPercent));
   const dragging = useRef(false);
-  const containerRef = useRef(null);
-  const handleRef = useRef(null);
   const resolvedLeftPercent = clampPercent(controlled ? leftPercent : internalLeftPercent);
   const latestLeftPercentRef = useRef(resolvedLeftPercent);
 
@@ -35,6 +49,19 @@ export const ResizableLayout = ({
     if (controlled) return;
     setInternalLeftPercent(clampPercent(initialLeftPercent));
   }, [clampPercent, controlled, initialLeftPercent]);
+
+  useEffect(() => {
+    const node = containerRef.current;
+    if (!node || typeof ResizeObserver === 'undefined') return undefined;
+
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      setContainerWidth(entry.contentRect.width);
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
 
   const updateLeftPercent = useCallback((value) => {
     const nextPercent = clampPercent(value);
@@ -77,7 +104,7 @@ export const ResizableLayout = ({
   return (
     <div ref={containerRef} style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0, ...style }}>
       {/* Left panel */}
-      <div style={{ width: `${resolvedLeftPercent}%`, display: 'flex', flexDirection: 'column', overflow: 'hidden', flexShrink: 0, minHeight: 0 }}>
+      <div style={{ width: `${resolvedLeftPercent}%`, display: 'flex', flexDirection: 'column', overflow: 'hidden', flexShrink: 0, minWidth: minLeftPx || 0, minHeight: 0 }}>
         {left}
       </div>
 
@@ -99,7 +126,7 @@ export const ResizableLayout = ({
       />
 
       {/* Right panel */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0, minHeight: 0 }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: minRightPx || 0, minHeight: 0 }}>
         {right}
       </div>
     </div>

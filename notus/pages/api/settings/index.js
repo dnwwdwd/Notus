@@ -14,13 +14,13 @@ const {
 const LAYOUT_SETTINGS = {
   knowledge_left_percent: {
     key: 'knowledge_layout_left_percent',
-    min: 20,
-    max: 75,
+    min: 32,
+    max: 64,
   },
   canvas_left_percent: {
     key: 'canvas_layout_left_percent',
-    min: 30,
-    max: 80,
+    min: 48,
+    max: 64,
   },
 };
 
@@ -86,6 +86,9 @@ function publicSettings() {
       global_edit_hard_max_blocks: Number(config.canvasGlobalEditHardMaxBlocks || 20),
       style_extraction_model: String(config.styleExtractionModel || ''),
     },
+    editor: {
+      title_filename_binding_enabled: stored.editor_title_filename_binding_enabled === 'true',
+    },
     layout: readLayoutSettings(stored),
   };
 }
@@ -142,6 +145,12 @@ export default function handler(req, res) {
       }
       if (body.canvas.style_extraction_model !== undefined) {
         nextValues.style_extraction_model = String(body.canvas.style_extraction_model || '').trim();
+      }
+    }
+
+    if (body.editor) {
+      if (body.editor.title_filename_binding_enabled !== undefined) {
+        nextValues.editor_title_filename_binding_enabled = body.editor.title_filename_binding_enabled ? 'true' : 'false';
       }
     }
 
@@ -255,6 +264,7 @@ export default function handler(req, res) {
       notes_dir: nextValues.notes_dir || null,
       canvas_style_extraction: nextValues.canvas_enable_style_extraction || null,
       canvas_article_analysis: nextValues.canvas_enable_article_analysis || null,
+      editor_title_filename_binding_enabled: nextValues.editor_title_filename_binding_enabled || null,
       knowledge_layout_left_percent: nextValues[LAYOUT_SETTINGS.knowledge_left_percent.key] || null,
       canvas_layout_left_percent: nextValues[LAYOUT_SETTINGS.canvas_left_percent.key] || null,
     });

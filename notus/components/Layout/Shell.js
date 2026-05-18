@@ -28,7 +28,7 @@ export const Shell = ({
   }, [active, setActiveWorkspacePage]);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', minWidth: 1360, minHeight: 800 }}>
       <TopBar
         active={active}
         fileName={fileName}

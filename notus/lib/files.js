@@ -1,8 +1,18 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { getDb } = require('./db');
+const { getDb, getSetting } = require('./db');
 const { getEffectiveConfig } = require('./config');
+const {
+  buildMarkdownMetadata,
+  generateStableId,
+  injectFrontmatterId,
+  extractVisiblePrimaryHeading,
+  mergeEditorVisibleMarkdown,
+  normalizeFileNameBase,
+  rewriteVisibleMarkdownPrimaryHeading,
+  splitEditorVisibleMarkdown,
+} = require('./markdownMeta');
 
 function normalizeRelativePath(inputPath) {
   const raw = String(inputPath || '').replace(/\\/g, '/').trim();
@@ -54,6 +64,26 @@ function buildRenamedPath(relativePath, nextName) {
   return [parentPath, normalizedName].filter(Boolean).join('/');
 }
 
+function isTitleFilenameBindingEnabled() {
+  return String(getSetting('editor_title_filename_binding_enabled', 'false')).trim() === 'true';
+}
+
+function getBindingTitleFromContent(content = '') {
+  return normalizeFileNameBase(extractVisiblePrimaryHeading(content));
+}
+
+function pathExists(relativePath) {
+  const config = getEffectiveConfig();
+  const target = resolveInside(config.notesDir, ensureMarkdownPath(relativePath));
+  return fs.existsSync(target.absolutePath);
+}
+
+function applyVisibleTitleBinding(fileContent = '', nextTitle = '') {
+  const { visibleContent, hiddenFrontmatter } = splitEditorVisibleMarkdown(fileContent);
+  const updatedVisibleContent = rewriteVisibleMarkdownPrimaryHeading(visibleContent, nextTitle);
+  return mergeEditorVisibleMarkdown(updatedVisibleContent, hiddenFrontmatter);
+}
+
 function extractTitle(filePath, content = '') {
   const match = String(content || '').match(/^#\s+(.+)$/m);
   if (match) return match[1].trim();
@@ -62,6 +92,25 @@ function extractTitle(filePath, content = '') {
 
 function sha256(content) {
   return crypto.createHash('sha256').update(content).digest('hex');
+}
+
+function formatSqliteDate(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  const safeDate = Number.isFinite(date.getTime()) ? date : new Date();
+  return safeDate.toISOString().slice(0, 19).replace('T', ' ');
+}
+
+function getFileUpdatedAt(relativePath) {
+  const config = getEffectiveConfig();
+  const target = resolveInside(config.notesDir, ensureMarkdownPath(relativePath));
+  const stats = fs.statSync(target.absolutePath);
+  return formatSqliteDate(stats.mtime);
+}
+
+function getFileStat(relativePath) {
+  const config = getEffectiveConfig();
+  const target = resolveInside(config.notesDir, ensureMarkdownPath(relativePath));
+  return fs.statSync(target.absolutePath);
 }
 
 function readMarkdownFile(relativePath) {
@@ -74,8 +123,64 @@ function writeMarkdownFile(relativePath, content) {
   const config = getEffectiveConfig();
   const target = resolveInside(config.notesDir, ensureMarkdownPath(relativePath));
   fs.mkdirSync(path.dirname(target.absolutePath), { recursive: true });
-  fs.writeFileSync(target.absolutePath, content, 'utf8');
+  const tmpPath = `${target.absolutePath}.notus-${process.pid}-${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(tmpPath, content, 'utf8');
+    fs.renameSync(tmpPath, target.absolutePath);
+  } catch (error) {
+    if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+    throw error;
+  }
   return target.relativePath;
+}
+
+function resolveStableId(db, existingRow, frontmatterId = '') {
+  const current = String(existingRow?.stable_id || '').trim();
+  if (current) return current;
+
+  const candidate = String(frontmatterId || '').trim();
+  if (candidate) {
+    const duplicate = db.prepare('SELECT id FROM files WHERE stable_id = ?').get(candidate);
+    if (!duplicate || Number(duplicate.id) === Number(existingRow?.id || 0)) return candidate;
+  }
+
+  let generated = generateStableId();
+  while (db.prepare('SELECT id FROM files WHERE stable_id = ?').get(generated)) {
+    generated = generateStableId();
+  }
+  return generated;
+}
+
+function serializeJson(value) {
+  return JSON.stringify(value || null);
+}
+
+function parseJsonSafe(value, fallback) {
+  if (!value) return fallback;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function buildFileRecordPayload(db, normalized, source, existingRow = null, stat = null) {
+  const fileStat = stat || getFileStat(normalized);
+  const metadata = buildMarkdownMetadata(source, normalized, fileStat);
+  const stableId = resolveStableId(db, existingRow, metadata.frontmatterId);
+  return {
+    stableId,
+    frontmatterId: metadata.frontmatterId,
+    title: metadata.title || extractTitle(normalized, source),
+    hash: sha256(source),
+    size: metadata.size,
+    mtime: metadata.mtime,
+    charCount: metadata.charCount,
+    tokenCount: metadata.tokenCount,
+    frontmatter: serializeJson(metadata.frontmatter),
+    tags: serializeJson(metadata.tags),
+    headingOutline: serializeJson(metadata.headingOutline),
+  };
 }
 
 function listMarkdownFiles() {
@@ -131,19 +236,48 @@ function upsertFileRecord(relativePath, content = null, indexed = 0) {
   const db = getDb();
   const normalized = ensureMarkdownPath(relativePath);
   const source = content === null ? readMarkdownFile(normalized) : String(content || '');
-  const title = extractTitle(normalized, source);
-  const hash = sha256(source);
+  const existing = db.prepare('SELECT * FROM files WHERE path = ?').get(normalized);
+  const payload = buildFileRecordPayload(db, normalized, source, existing);
+  const updatedAt = getFileUpdatedAt(normalized);
 
   const result = db.prepare(`
-    INSERT INTO files (path, title, hash, indexed, updated_at)
-    VALUES (?, ?, ?, ?, datetime('now'))
+    INSERT INTO files (
+      path, stable_id, title, hash, size, mtime, char_count, token_count,
+      frontmatter, tags, heading_outline, indexed, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(path) DO UPDATE SET
+      stable_id = CASE
+        WHEN files.stable_id IS NULL OR files.stable_id = '' THEN excluded.stable_id
+        ELSE files.stable_id
+      END,
       title = excluded.title,
       hash = CASE WHEN files.hash IS NULL OR files.hash = '' THEN excluded.hash ELSE files.hash END,
+      size = excluded.size,
+      mtime = excluded.mtime,
+      char_count = excluded.char_count,
+      token_count = excluded.token_count,
+      frontmatter = excluded.frontmatter,
+      tags = excluded.tags,
+      heading_outline = excluded.heading_outline,
       indexed = excluded.indexed,
       index_error = NULL,
-      updated_at = datetime('now')
-  `).run(normalized, title, hash, indexed);
+      updated_at = excluded.updated_at
+  `).run(
+    normalized,
+    payload.stableId,
+    payload.title,
+    payload.hash,
+    payload.size,
+    payload.mtime,
+    payload.charCount,
+    payload.tokenCount,
+    payload.frontmatter,
+    payload.tags,
+    payload.headingOutline,
+    indexed,
+    updatedAt
+  );
 
   const row = db.prepare('SELECT * FROM files WHERE path = ?').get(normalized);
   return { ...row, inserted: result.changes > 0 };
@@ -156,12 +290,60 @@ function syncFilesFromDisk() {
 
   paths.forEach((relativePath) => {
     const content = readMarkdownFile(relativePath);
-    const title = extractTitle(relativePath, content);
+    let existing = db.prepare('SELECT * FROM files WHERE path = ?').get(relativePath);
+    let payload = buildFileRecordPayload(db, relativePath, content, existing);
+
+    if (!existing && payload.frontmatterId) {
+      const renamed = db.prepare(`
+        SELECT *
+        FROM files
+        WHERE stable_id = ?
+          AND path != ?
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 1
+      `).get(payload.frontmatterId, relativePath);
+      if (renamed && !seen.has(renamed.path)) {
+        db.prepare('UPDATE files SET path = ?, updated_at = datetime(\'now\') WHERE id = ?')
+          .run(relativePath, renamed.id);
+        existing = { ...renamed, path: relativePath };
+        payload = buildFileRecordPayload(db, relativePath, content, existing);
+      }
+    }
+
+    const updatedAt = getFileUpdatedAt(relativePath);
     db.prepare(`
-      INSERT INTO files (path, title, hash, indexed, updated_at)
-      VALUES (?, ?, '', 0, datetime('now'))
-      ON CONFLICT(path) DO UPDATE SET title = excluded.title
-    `).run(relativePath, title);
+      INSERT INTO files (
+        path, stable_id, title, hash, size, mtime, char_count, token_count,
+        frontmatter, tags, heading_outline, indexed, updated_at
+      )
+      VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, 0, ?)
+      ON CONFLICT(path) DO UPDATE SET
+        stable_id = CASE
+          WHEN files.stable_id IS NULL OR files.stable_id = '' THEN excluded.stable_id
+          ELSE files.stable_id
+        END,
+        title = excluded.title,
+        size = excluded.size,
+        mtime = excluded.mtime,
+        char_count = excluded.char_count,
+        token_count = excluded.token_count,
+        frontmatter = excluded.frontmatter,
+        tags = excluded.tags,
+        heading_outline = excluded.heading_outline,
+        updated_at = excluded.updated_at
+    `).run(
+      relativePath,
+      payload.stableId,
+      payload.title,
+      payload.size,
+      payload.mtime,
+      payload.charCount,
+      payload.tokenCount,
+      payload.frontmatter,
+      payload.tags,
+      payload.headingOutline,
+      updatedAt
+    );
   });
 
   const rows = db.prepare('SELECT path FROM files').all();
@@ -180,11 +362,15 @@ function getFileById(id) {
   const content = readMarkdownFile(row.path);
   return {
     id: row.id,
+    stable_id: row.stable_id || null,
     path: row.path,
     title: row.title || extractTitle(row.path, content),
     name: getBaseName(row.path),
     content,
     indexed: row.indexed,
+    hash: row.hash || '',
+    token_count: Number(row.token_count || 0),
+    heading_outline: parseJsonSafe(row.heading_outline, []),
     updated_at: row.updated_at,
   };
 }
@@ -198,11 +384,15 @@ function getFileByPath(filePath) {
   const content = readMarkdownFile(row.path);
   return {
     id: row.id,
+    stable_id: row.stable_id || null,
     path: row.path,
     title: row.title || extractTitle(row.path, content),
     name: getBaseName(row.path),
     content,
     indexed: row.indexed,
+    hash: row.hash || '',
+    token_count: Number(row.token_count || 0),
+    heading_outline: parseJsonSafe(row.heading_outline, []),
     updated_at: row.updated_at,
   };
 }
@@ -213,7 +403,7 @@ function getAllFiles() {
   return db.prepare(`
     SELECT id, path, title, indexed, updated_at, index_error
     FROM files
-    ORDER BY path COLLATE NOCASE
+    ORDER BY datetime(updated_at) DESC, path COLLATE NOCASE
   `).all().map((row) => ({
     id: row.id,
     path: row.path,
@@ -225,9 +415,20 @@ function getAllFiles() {
   }));
 }
 
+function compareUpdatedAtDesc(left, right) {
+  const leftTime = Date.parse(String(left?.updated_at || ''));
+  const rightTime = Date.parse(String(right?.updated_at || ''));
+  const timeDiff = (Number.isFinite(rightTime) ? rightTime : 0) - (Number.isFinite(leftTime) ? leftTime : 0);
+  if (timeDiff !== 0) return timeDiff;
+  return String(left?.name || '').localeCompare(String(right?.name || ''), 'zh-Hans-CN');
+}
+
 function sortTree(nodes) {
   nodes.sort((left, right) => {
     if (left.type !== right.type) return left.type === 'folder' ? -1 : 1;
+    if (left.type === 'file' && right.type === 'file') {
+      return compareUpdatedAtDesc(left, right);
+    }
     return left.name.localeCompare(right.name, 'zh-Hans-CN');
   });
   nodes.forEach((node) => {
@@ -264,6 +465,7 @@ function buildTree() {
     const node = {
       type: 'file',
       id: file.id,
+      title: file.title,
       name: file.name,
       path: file.path,
       indexed: file.indexed,
@@ -290,7 +492,8 @@ function createFolder(folderPath) {
 }
 
 function createFile(filePath, content = '') {
-  const finalPath = writeMarkdownFile(filePath, content || `# ${getBaseName(filePath).replace(/\.md$/i, '')}\n\n`);
+  const initialContent = content || `# ${getBaseName(filePath).replace(/\.md$/i, '')}\n\n`;
+  const finalPath = writeMarkdownFile(filePath, injectFrontmatterId(initialContent));
   const row = upsertFileRecord(finalPath, readMarkdownFile(finalPath), 0);
   return {
     id: row.id,
@@ -317,19 +520,57 @@ function saveFileByPath(filePath, content = '') {
   };
 }
 
-function updateFile(id, content) {
+function updateFile(id, content, options = {}) {
   const existing = getFileById(id);
   if (!existing) throw new Error('file not found');
-  const finalPath = writeMarkdownFile(existing.path, String(content || ''));
-  const row = upsertFileRecord(finalPath, String(content || ''), 0);
-  return {
+  const source = String(content || '');
+  const finalPath = writeMarkdownFile(existing.path, source);
+  const row = upsertFileRecord(finalPath, source, 0);
+  const savedFile = {
     id: row.id,
     path: row.path,
     title: row.title,
     name: getBaseName(row.path),
-    content: String(content || ''),
+    content: source,
     indexed: row.indexed,
     updated_at: row.updated_at,
+  };
+
+  const bindingEnabled = options.titleFilenameBindingEnabled !== undefined
+    ? Boolean(options.titleFilenameBindingEnabled)
+    : isTitleFilenameBindingEnabled();
+  if (!bindingEnabled) {
+    return {
+      ...savedFile,
+      title_binding_applied: false,
+      title_binding_warning: '',
+    };
+  }
+
+  const currentBaseName = getBaseName(existing.path).replace(/\.md$/i, '');
+  const nextBaseName = getBindingTitleFromContent(source);
+  if (!nextBaseName || nextBaseName === currentBaseName) {
+    return {
+      ...savedFile,
+      title_binding_applied: false,
+      title_binding_warning: '',
+    };
+  }
+
+  const nextPath = buildRenamedPath(existing.path, nextBaseName);
+  if (pathExists(nextPath)) {
+    return {
+      ...savedFile,
+      title_binding_applied: false,
+      title_binding_warning: `正文已保存，但目标文件名「${nextBaseName}」已存在，未同步文件名。`,
+    };
+  }
+
+  const renamedFile = renameFile(existing.path, nextPath);
+  return {
+    ...renamedFile,
+    title_binding_applied: true,
+    title_binding_warning: '',
   };
 }
 
@@ -347,16 +588,52 @@ function renameFile(oldPath, newPath) {
   const config = getEffectiveConfig();
   const oldTarget = resolveInside(config.notesDir, oldPath);
   const newTarget = resolveInside(config.notesDir, ensureMarkdownPath(newPath));
+  if (oldTarget.relativePath === newTarget.relativePath) {
+    const current = getFileByPath(oldTarget.relativePath);
+    if (!current) throw new Error('file not found');
+    return {
+      ...current,
+      old_path: oldTarget.relativePath,
+      new_path: newTarget.relativePath,
+    };
+  }
+  if (fs.existsSync(newTarget.absolutePath)) {
+    throw new Error(`目标文件已存在：${newTarget.relativePath}`);
+  }
   fs.mkdirSync(path.dirname(newTarget.absolutePath), { recursive: true });
   fs.renameSync(oldTarget.absolutePath, newTarget.absolutePath);
-  getDb().prepare("UPDATE files SET path = ?, title = ?, updated_at = datetime('now') WHERE path = ?")
-    .run(newTarget.relativePath, getBaseName(newTarget.relativePath).replace(/\.md$/i, ''), oldTarget.relativePath);
-  const row = upsertFileRecord(newTarget.relativePath, readMarkdownFile(newTarget.relativePath), 0);
+  getDb().prepare('UPDATE files SET path = ?, title = ?, updated_at = ? WHERE path = ?')
+    .run(
+      newTarget.relativePath,
+      getBaseName(newTarget.relativePath).replace(/\.md$/i, ''),
+      getFileUpdatedAt(newTarget.relativePath),
+      oldTarget.relativePath
+    );
+  upsertFileRecord(newTarget.relativePath, readMarkdownFile(newTarget.relativePath), 0);
+  const current = getFileByPath(newTarget.relativePath);
+  if (!current) throw new Error('file not found');
   return {
-    ...row,
+    ...current,
     old_path: oldTarget.relativePath,
     new_path: newTarget.relativePath,
   };
+}
+
+function syncFileHeadingToName(id, nextTitle) {
+  const existing = getFileById(id);
+  if (!existing) throw new Error('file not found');
+
+  const resolvedTitle = normalizeFileNameBase(nextTitle) || getBaseName(existing.path).replace(/\.md$/i, '');
+  const nextContent = applyVisibleTitleBinding(existing.content, resolvedTitle);
+  if (nextContent === existing.content) {
+    return {
+      ...existing,
+      title_binding_applied: false,
+      title_binding_warning: '',
+    };
+  }
+
+  return updateFile(id, nextContent, { titleFilenameBindingEnabled: false });
 }
 
 function moveFiles(paths, dest) {
@@ -372,21 +649,23 @@ function listFilesByIds(ids = []) {
   const normalizedIds = ids.map((id) => Number(id)).filter((id) => Number.isFinite(id));
   if (normalizedIds.length === 0) return [];
   const placeholders = normalizedIds.map(() => '?').join(',');
+  const orderMap = new Map(normalizedIds.map((id, index) => [id, index]));
   const rows = getDb().prepare(`
     SELECT id, path, title, indexed, updated_at
     FROM files
     WHERE id IN (${placeholders})
-    ORDER BY path COLLATE NOCASE
   `).all(...normalizedIds);
 
-  return rows.map((row) => ({
+  return rows
+    .sort((left, right) => (orderMap.get(left.id) || 0) - (orderMap.get(right.id) || 0))
+    .map((row) => ({
     id: row.id,
     path: row.path,
     title: row.title || getBaseName(row.path).replace(/\.md$/i, ''),
     name: getBaseName(row.path),
     indexed: row.indexed,
     updated_at: row.updated_at,
-  }));
+    }));
 }
 
 function listFilesByPaths(paths = []) {
@@ -402,8 +681,12 @@ module.exports = {
   getParentPath,
   getBaseName,
   buildRenamedPath,
+  buildFileRecordPayload,
   extractTitle,
   sha256,
+  formatSqliteDate,
+  getFileUpdatedAt,
+  getFileStat,
   readMarkdownFile,
   writeMarkdownFile,
   listMarkdownFiles,
@@ -419,6 +702,8 @@ module.exports = {
   saveFileByPath,
   updateFile,
   deleteFile,
+  isTitleFilenameBindingEnabled,
   renameFile,
+  syncFileHeadingToName,
   moveFiles,
 };

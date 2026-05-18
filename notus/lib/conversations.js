@@ -1,4 +1,10 @@
 const { getDb } = require('./db');
+const {
+  DEFAULT_SCOPES,
+  SCOPE_KEYS,
+  normalizeConversationScopes,
+  serializeScope,
+} = require('./workspaceScope');
 
 const DEFAULT_TITLE = '新对话';
 
@@ -29,11 +35,13 @@ function buildConversationTitle(input) {
 
 function toConversationRow(row) {
   if (!row) return null;
+  const scopes = normalizeConversationScopes(row);
   return {
     ...row,
     id: Number(row.id),
     file_id: normalizeNullablePositiveInt(row.file_id),
     draft_key: normalizeDraftKey(row.draft_key),
+    ...scopes,
     message_count: Number(row.message_count || 0),
     preview: String(row.preview || ''),
     preview_role: row.preview_role || '',
@@ -106,27 +114,42 @@ function listConversations({ kind = null, fileId, draftKey, limit = 20 } = {}) {
   return rows.map(toConversationRow);
 }
 
-function createConversation({ kind = 'knowledge', title, fileId = null, draftKey = null } = {}) {
+function createConversation({ kind = 'knowledge', title, fileId = null, draftKey = null, scopes = {} } = {}) {
   const db = getDb();
   const normalizedKind = normalizeKind(kind);
   const normalizedFileId = normalizeNullablePositiveInt(fileId);
   const normalizedDraftKey = normalizeDraftKey(draftKey);
+  const normalizedScopes = normalizeConversationScopes({
+    ...DEFAULT_SCOPES,
+    ...scopes,
+    write_scope: scopes.write_scope || (normalizedFileId
+      ? { type: 'current_file', file_id: normalizedFileId }
+      : DEFAULT_SCOPES.write_scope),
+  });
   const result = db.prepare(`
-    INSERT INTO conversations (kind, title, file_id, draft_key, created_at, updated_at)
-    VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
+    INSERT INTO conversations (
+      kind, title, file_id, draft_key,
+      read_scope, retrieval_scope, write_scope, style_scope,
+      created_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
   `).run(
     normalizedKind,
     buildConversationTitle(title),
     normalizedFileId,
-    normalizedDraftKey
+    normalizedDraftKey,
+    serializeScope(normalizedScopes.read_scope, DEFAULT_SCOPES.read_scope),
+    serializeScope(normalizedScopes.retrieval_scope, DEFAULT_SCOPES.retrieval_scope),
+    serializeScope(normalizedScopes.write_scope, DEFAULT_SCOPES.write_scope),
+    serializeScope(normalizedScopes.style_scope, DEFAULT_SCOPES.style_scope)
   );
   return getConversation(result.lastInsertRowid);
 }
 
-function ensureConversation({ conversationId, kind = 'knowledge', title, fileId = null, draftKey = null } = {}) {
+function ensureConversation({ conversationId, kind = 'knowledge', title, fileId = null, draftKey = null, scopes = {} } = {}) {
   const existing = getConversation(conversationId);
   if (existing) return existing;
-  return createConversation({ kind, title, fileId, draftKey });
+  return createConversation({ kind, title, fileId, draftKey, scopes });
 }
 
 function appendConversationMessage({ conversationId, role, content, citations = null, meta = null } = {}) {
@@ -194,6 +217,41 @@ function syncConversationBinding(conversationId, { fileId, draftKey, title } = {
   `).run(...params, normalizedConversationId);
 
   return getConversation(normalizedConversationId);
+}
+
+function updateConversationScopes(conversationId, scopes = {}) {
+  const db = getDb();
+  const normalizedConversationId = normalizeNullablePositiveInt(conversationId);
+  if (!normalizedConversationId) return null;
+  const existing = getConversation(normalizedConversationId);
+  if (!existing) return null;
+  const merged = normalizeConversationScopes({
+    ...existing,
+    ...scopes,
+  });
+  const sets = [];
+  const params = [];
+
+  SCOPE_KEYS.forEach((key) => {
+    if (Object.prototype.hasOwnProperty.call(scopes, key)) {
+      sets.push(`${key} = ?`);
+      params.push(serializeScope(merged[key], DEFAULT_SCOPES[key]));
+    }
+  });
+
+  if (sets.length === 0) return existing;
+  sets.push("updated_at = datetime('now')");
+  db.prepare(`
+    UPDATE conversations
+    SET ${sets.join(', ')}
+    WHERE id = ?
+  `).run(...params, normalizedConversationId);
+
+  return getConversation(normalizedConversationId);
+}
+
+function resetConversationScopes(conversationId) {
+  return updateConversationScopes(conversationId, DEFAULT_SCOPES);
 }
 
 function rebindDraftConversations({ kind = 'canvas', draftKey, fileId } = {}) {
@@ -270,6 +328,8 @@ module.exports = {
   getConversationHistory,
   listConversations,
   rebindDraftConversations,
+  resetConversationScopes,
   syncConversationBinding,
   touchConversation,
+  updateConversationScopes,
 };

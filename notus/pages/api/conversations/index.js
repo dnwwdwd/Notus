@@ -23,12 +23,22 @@ export default function handler(req, res) {
       kind = 'knowledge',
       file_id: fileId = null,
       draft_key: draftKey = null,
+      read_scope: readScope,
+      retrieval_scope: retrievalScope,
+      write_scope: writeScope,
+      style_scope: styleScope,
     } = req.body || {};
     const conversation = createConversation({
       kind,
       title,
       fileId,
       draftKey,
+      scopes: {
+        ...(readScope ? { read_scope: readScope } : {}),
+        ...(retrievalScope ? { retrieval_scope: retrievalScope } : {}),
+        ...(writeScope ? { write_scope: writeScope } : {}),
+        ...(styleScope ? { style_scope: styleScope } : {}),
+      },
     });
     return res.status(201).json(conversation);
   }

@@ -4,7 +4,7 @@ import dynamic from 'next/dynamic';
 import { useRouter } from 'next/router';
 import { Shell } from '../components/Layout/Shell';
 import { EditorToolbar } from '../components/Editor/EditorToolbar';
-import { UserBubble, AiBubble, RetrievalStatus } from '../components/ChatArea/ChatMessage';
+import { UserBubble, AiBubble } from '../components/ChatArea/ChatMessage';
 import { ConversationDrawer } from '../components/ChatArea/ConversationDrawer';
 import { InputBar } from '../components/ChatArea/InputBar';
 import { ResizableLayout } from '../components/ui/ResizableLayout';
@@ -27,6 +27,8 @@ import { useStableAiReadiness } from '../hooks/useStableAiReadiness';
 import { useDocumentFind } from '../hooks/useDocumentFind';
 import { useUnsavedChangesGuard } from '../hooks/useUnsavedChangesGuard';
 import { deriveAiReadiness } from '../utils/aiReadiness';
+import { getVisibleDocumentLabel } from '../lib/documentLabels';
+import { mergeEditorVisibleMarkdown, splitEditorVisibleMarkdown } from '../lib/markdownMeta';
 import {
   attachCitationHighlight,
   clearCitationHighlights,
@@ -54,8 +56,10 @@ const SUGGESTIONS = [
 
 const KNOWLEDGE_LAYOUT_STORAGE_KEY = 'notus-layout-knowledge-left-percent';
 const KNOWLEDGE_LAYOUT_DEFAULT = 44;
-const KNOWLEDGE_LAYOUT_MIN = 20;
-const KNOWLEDGE_LAYOUT_MAX = 75;
+const KNOWLEDGE_LAYOUT_MIN = 32;
+const KNOWLEDGE_LAYOUT_MAX = 64;
+const KNOWLEDGE_EDITOR_MIN_WIDTH = 600;
+const KNOWLEDGE_CHAT_MIN_WIDTH = 456;
 const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
 
 function clampKnowledgeLayoutPercent(value) {
@@ -89,7 +93,8 @@ function buildAnswerStage(event = {}) {
   const sectionCount = Array.isArray(event.sections) ? event.sections.length : 0;
   const matchedFileCount = Array.isArray(event.matched_files) ? event.matched_files.length : 0;
   const chunkCount = Array.isArray(event.chunks) ? event.chunks.length : 0;
-  const sources = sectionCount || matchedFileCount || chunkCount;
+  const citationCount = Number(event.citation_count || 0);
+  const sources = citationCount || sectionCount || matchedFileCount || chunkCount;
   return {
     stage: event.sufficiency === false || event.answer_mode === 'no_evidence' ? 'insufficient' : 'found',
     sources,
@@ -130,6 +135,7 @@ export default function KnowledgePage() {
     pendingCitation,
     clearPendingCitation,
     selectFile,
+    refreshFiles,
     getCachedContent,
     setCachedContent,
   } = useApp();
@@ -160,6 +166,7 @@ export default function KnowledgePage() {
   const [editorLayoutLeftPercent, setEditorLayoutLeftPercent] = useState(KNOWLEDGE_LAYOUT_DEFAULT);
   const docContentRef = useRef('');
   const persistedDocContentRef = useRef('');
+  const hiddenDocFrontmatterRef = useRef('');
   const chatEndRef = useRef(null);
   const requestControllerRef = useRef(null);
   const layoutChangeCountRef = useRef(0);
@@ -167,8 +174,8 @@ export default function KnowledgePage() {
 
   const referenceFileOptions = allFiles.map((file) => ({
     value: file.id,
-    label: file.name,
-    searchText: file.path,
+    label: getVisibleDocumentLabel(file, '未命名文档'),
+    searchText: `${file.title || ''} ${file.name || ''} ${file.path || ''}`,
   }));
   const selectedReferenceFiles = manualReferenceFileIds
     .map((fileId) => allFiles.find((file) => file.id === fileId))
@@ -301,6 +308,7 @@ export default function KnowledgePage() {
       setDocError(null);
       docContentRef.current = '';
       persistedDocContentRef.current = '';
+      hiddenDocFrontmatterRef.current = '';
       setEditorReadyFileId(null);
       setActiveCitationTarget(null);
       setActiveCitationSelection(null);
@@ -315,10 +323,12 @@ export default function KnowledgePage() {
     loadFile(activeFile.id)
       .then((file) => {
         if (cancelled) return;
-        const nextContent = file.content || '';
+        const { visibleContent, hiddenFrontmatter } = splitEditorVisibleMarkdown(file.content || '');
+        const nextContent = visibleContent || '';
         setDocContent(nextContent);
         docContentRef.current = nextContent;
         persistedDocContentRef.current = nextContent;
+        hiddenDocFrontmatterRef.current = hiddenFrontmatter || '';
         setDocLoading(false);
       })
       .catch((loadError) => {
@@ -407,19 +417,26 @@ export default function KnowledgePage() {
     setDocSaveState('saving');
 
     try {
+      const contentToSave = mergeEditorVisibleMarkdown(nextContent, hiddenDocFrontmatterRef.current);
       const response = await fetch(`/api/files/${activeFile.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: nextContent }),
+        body: JSON.stringify({ content: contentToSave }),
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || '保存失败');
 
-      const savedContent = payload.content || nextContent;
+      const { visibleContent, hiddenFrontmatter } = splitEditorVisibleMarkdown(payload.content || contentToSave);
+      const savedContent = visibleContent || nextContent;
       persistedDocContentRef.current = savedContent;
       docContentRef.current = savedContent;
+      hiddenDocFrontmatterRef.current = hiddenFrontmatter || hiddenDocFrontmatterRef.current || '';
       setDocContent(savedContent);
-      setCachedContent(activeFile.id, savedContent);
+      setCachedContent(activeFile.id, payload.content || contentToSave);
+      await refreshFiles({ background: true });
+      if (payload.title_binding_warning) {
+        toast(payload.title_binding_warning, 'warning');
+      }
       setDocSaveState('saved');
       return true;
     } catch (saveError) {
@@ -427,7 +444,7 @@ export default function KnowledgePage() {
       toast(saveError.message || '保存失败', 'error');
       return false;
     }
-  }, [activeFile?.id, toast, setCachedContent]);
+  }, [activeFile?.id, refreshFiles, setCachedContent, toast]);
 
   const handleDocChange = useCallback((nextContent) => {
     if (nextContent === docContentRef.current) return;
@@ -570,13 +587,16 @@ export default function KnowledgePage() {
     requestControllerRef.current = controller;
     setError(null);
     setLoading(true);
-    setRetrievalStage('searching');
+    setRetrievalStage({ stage: 'searching', sources: 0 });
     setMessages((prev) => [...prev, { id: Date.now(), role: 'user', content: query }]);
     setStreamText('');
 
     try {
       let answer = '';
       let citations = [];
+      let documents = [];
+      let documentStats = null;
+      let sourceCount = 0;
       let assistantMeta = null;
       let resolvedConversationId = activeConversationId;
       const response = await fetch('/api/chat', {
@@ -607,9 +627,12 @@ export default function KnowledgePage() {
           resolvedConversationId = Number(event.conversation_id);
         }
         if (event.type === 'chunks') {
+          documents = Array.isArray(event.documents) ? event.documents : [];
+          documentStats = event.document_stats || null;
           setRetrievalStage(buildAnswerStage(event));
         } else if (event.type === 'assistant_meta') {
           assistantMeta = event;
+          documentStats = event.document_stats || documentStats;
           if (event.answer_mode === 'clarify_needed') {
             setRetrievalStage(null);
           }
@@ -619,8 +642,10 @@ export default function KnowledgePage() {
           setRetrievalStage(null);
         } else if (event.type === 'citations') {
           citations = event.citations || [];
+          sourceCount = Number(event.source_count || event.citations?.length || 0);
         } else if (event.type === 'done') {
           const finalMeta = event.meta || assistantMeta;
+          documentStats = event.document_stats || finalMeta?.document_stats || documentStats;
           setMessages((prev) => [
             ...prev,
             {
@@ -628,6 +653,9 @@ export default function KnowledgePage() {
               role: 'assistant',
               content: answer,
               citations,
+              documents,
+              documentStats,
+              sourceCount: Number(event.source_count || finalMeta?.source_count || sourceCount || citations.length || 0),
               meta: finalMeta,
               answerMode: event.answer_mode || finalMeta?.answer_mode || null,
             },
@@ -690,9 +718,11 @@ export default function KnowledgePage() {
   });
   const navigationGuard = activeFile && docSaveState === 'dirty' ? unsavedGuard.request : undefined;
 
+  const getDocumentFindRoot = useCallback(() => getEditorRoot(editor), [editor]);
+
   const documentFind = useDocumentFind({
     enabled: Boolean(activeFile && editor && editorOpen),
-    getRoot: () => getEditorRoot(editor),
+    getRoot: getDocumentFindRoot,
     selector: 'h1,h2,h3,h4,h5,h6,p,li,blockquote,pre,td,th',
     contentVersion: `${activeFile?.id || 'none'}:${docContent}`,
   });
@@ -724,7 +754,7 @@ export default function KnowledgePage() {
   return (
     <Shell
       active="knowledge"
-      fileName={activeFile?.name || null}
+      fileName={getVisibleDocumentLabel(activeFile, '未命名文档')}
       saveState={activeFile ? docSaveState : undefined}
       onSave={activeFile ? handleDocSave : undefined}
       saveDisabled={!activeFile || docSaveState !== 'dirty'}
@@ -742,7 +772,7 @@ export default function KnowledgePage() {
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                 <Icons.file size={14} />
                 <span style={{ fontSize: 'var(--text-sm)', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {activeFile?.name || '文章预览'}
+                  {getVisibleDocumentLabel(activeFile, '文章预览')}
                 </span>
                 {activeCitationTarget && (
                   <Button
@@ -788,7 +818,16 @@ export default function KnowledgePage() {
                   onRetry={() => {
                     setDocLoading(true);
                     loadFile(activeFile.id)
-                      .then((file) => { setDocError(null); setDocContent(file.content || ''); setDocLoading(false); })
+                      .then((file) => {
+                        const { visibleContent, hiddenFrontmatter } = splitEditorVisibleMarkdown(file.content || '');
+                        const nextContent = visibleContent || '';
+                        setDocError(null);
+                        setDocContent(nextContent);
+                        docContentRef.current = nextContent;
+                        persistedDocContentRef.current = nextContent;
+                        hiddenDocFrontmatterRef.current = hiddenFrontmatter || '';
+                        setDocLoading(false);
+                      })
                       .catch((loadError) => { setDocError(loadError.message); setDocLoading(false); });
                   }}
                 />
@@ -902,7 +941,7 @@ export default function KnowledgePage() {
                         onClick={() => setManualReferenceFileIds((prev) => prev.filter((fileId) => fileId !== file.id))}
                         style={{ display: 'inline-flex', alignItems: 'center' }}
                       >
-                        <Badge tone="accent">{file.name} ×</Badge>
+                        <Badge tone="accent">{getVisibleDocumentLabel(file, '未命名文档')} ×</Badge>
                       </button>
                     )) : (
                       <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
@@ -961,24 +1000,22 @@ export default function KnowledgePage() {
                           <AiBubble
                             text={msg.content}
                             citations={msg.citations}
+                            sourceCount={msg.sourceCount || msg.meta?.source_count || 0}
+                            assistantNote={buildAssistantNote(msg)}
+                            documents={msg.documents || msg.meta?.documents || []}
+                            documentStats={msg.documentStats || msg.meta?.document_stats || null}
                             onCitationClick={handleCitationClick}
                             citationSelection={activeCitationSelection}
                             messageId={msg.id}
                             answerMode={msg.answerMode}
                           />
-                          {buildAssistantNote(msg) && (
-                            <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: -4, marginBottom: 12, paddingLeft: 2 }}>
-                              {buildAssistantNote(msg)}
-                            </div>
-                          )}
                         </div>
                       )
                   )}
 
                   {loading && (
                     <div style={{ margin: '16px 0' }}>
-                      {retrievalStage && <RetrievalStatus stage={retrievalStage.stage} sources={retrievalStage.sources} />}
-                      {streamText && <AiBubble text={streamText} streaming />}
+                      <AiBubble text={streamText} streaming retrievalStage={retrievalStage} />
                     </div>
                   )}
 
@@ -1032,6 +1069,8 @@ export default function KnowledgePage() {
               initialLeftPercent={KNOWLEDGE_LAYOUT_DEFAULT}
               minLeftPercent={KNOWLEDGE_LAYOUT_MIN}
               maxLeftPercent={KNOWLEDGE_LAYOUT_MAX}
+              minLeftPx={KNOWLEDGE_EDITOR_MIN_WIDTH}
+              minRightPx={KNOWLEDGE_CHAT_MIN_WIDTH}
               leftPercent={editorLayoutLeftPercent}
               onLeftPercentChange={handleEditorLayoutChange}
               onLeftPercentCommit={handleEditorLayoutCommit}

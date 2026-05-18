@@ -158,6 +158,29 @@ async function runTests() {
     assert.ok(ambiguousPlan.missing_slots.includes('target_location'));
     assert.ok(ambiguousPlan.candidate_block_ids.length >= 2);
 
+    const deterministicSinglePlan = await planner.resolveCanvasRequest({
+      userInput: '将第二段主体内容换成新的第二段主体内容',
+      article,
+      conversationHistory: [],
+      styleMode: 'auto',
+    });
+    assert.strictEqual(deterministicSinglePlan.clarify_needed, false);
+    assert.deepStrictEqual(deterministicSinglePlan.target_block_ids, ['b3']);
+    assert.ok(deterministicSinglePlan.deterministic_edit);
+    assert.strictEqual(deterministicSinglePlan.deterministic_edit.source_text, '第二段主体内容');
+    assert.strictEqual(deterministicSinglePlan.deterministic_edit.target_text, '新的第二段主体内容');
+
+    const deterministicAmbiguousPlan = await planner.resolveCanvasRequest({
+      userInput: '将关于性能优化换成关于缓存设计',
+      article,
+      conversationHistory: [],
+      styleMode: 'auto',
+    });
+    assert.strictEqual(deterministicAmbiguousPlan.clarify_needed, true);
+    assert.strictEqual(deterministicAmbiguousPlan.clarify_reason, 'ambiguous_target_block');
+    assert.ok(deterministicAmbiguousPlan.candidate_block_ids.includes('b4'));
+    assert.ok(deterministicAmbiguousPlan.candidate_block_ids.includes('b5'));
+
     const summaryFollowPlan = await planner.resolveCanvasRequest({
       userInput: '按刚才建议改',
       article,
@@ -207,6 +230,18 @@ async function runTests() {
     assert.strictEqual(helperPlan.helper_used, true);
     assert.deepStrictEqual(helperPlan.target_block_ids, ['b3']);
     assert.strictEqual(helperPlan.operation_kind, 'rewrite');
+
+    const draftArticlePlan = await planner.resolveCanvasRequest({
+      userInput: '请写一篇关于缓存设计的文章',
+      article,
+      conversationHistory: [],
+      styleMode: 'auto',
+    });
+    assert.strictEqual(draftArticlePlan.intent, 'edit');
+    assert.strictEqual(draftArticlePlan.primary_intent, 'edit');
+    assert.strictEqual(draftArticlePlan.scope_mode, 'global');
+    assert.strictEqual(draftArticlePlan.operation_kind, 'expand');
+    assert.strictEqual(draftArticlePlan.clarify_needed, false);
   } finally {
     restore();
   }

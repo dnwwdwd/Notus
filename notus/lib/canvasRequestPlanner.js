@@ -3,7 +3,7 @@ const { sha256 } = require('./files');
 const { buildCanvasQueryPlanPrompt } = require('./prompt');
 const { trimTextToTokenBudget } = require('./llmBudget');
 
-const PLANNER_VERSION = 'canvas-intent-v5';
+const PLANNER_VERSION = 'canvas-intent-v6';
 const HELPER_CACHE_TTL_MS = 3 * 60 * 1000;
 const MAX_TARGET_CANDIDATES = 6;
 const MAX_SOURCE_CANDIDATES = 6;
@@ -129,8 +129,91 @@ function parseExplicitMentionIds(article, userInput) {
   return byId;
 }
 
+function escapeRegExp(text = '') {
+  return String(text || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function normalizeDeterministicFragment(text = '') {
+  return String(text || '')
+    .trim()
+    .replace(/^[“"'「『【（(]+/, '')
+    .replace(/[”"'」』】）)]+$/, '')
+    .replace(/[。！？]$/, '')
+    .trim();
+}
+
+function stripDeterministicTargetHints(text = '') {
+  return String(text || '')
+    .replace(/@b\d+(?:\s*-\s*(?:@?b)?\d+)?/gi, ' ')
+    .replace(/第\s*\d+\s*(?:段|块)/g, ' ')
+    .replace(/全文|整篇|整文/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractDeterministicRewrite(userInput = '') {
+  const text = stripDeterministicTargetHints(userInput);
+  if (!text) return null;
+  const match = text.match(/(?:把|将)\s*(.+?)\s*(?:改为|改成|换成|替换为)\s*(.+?)(?:[。！？]|$)/);
+  if (!match) return null;
+  const sourceText = normalizeDeterministicFragment(match[1]);
+  const targetText = normalizeDeterministicFragment(match[2]);
+  if (!sourceText || !targetText || sourceText === targetText) return null;
+  if (sourceText.length > 48 || targetText.length > 80) return null;
+  return {
+    source_text: sourceText,
+    target_text: targetText,
+  };
+}
+
+function blockSupportsDeterministicRewrite(block, rewrite = null) {
+  if (!block || !rewrite?.source_text || !rewrite?.target_text) return false;
+  const content = getBlockText(block);
+  if (!content) return false;
+  if (content.includes(rewrite.source_text)) return true;
+  const escaped = escapeRegExp(rewrite.source_text);
+  return new RegExp(`${escaped}\\s*(?:为|是|：|:)\\s*[^\\n，。；;]+`).test(content);
+}
+
+function refineTargetsWithDeterministicRewrite(article, rewrite = null, options = {}) {
+  if (!rewrite) {
+    return {
+      matched_block_ids: [],
+      preferred_ids: [],
+      ambiguous: false,
+    };
+  }
+
+  const blocks = Array.isArray(article?.blocks) ? article.blocks : [];
+  const explicitTargets = unique(options.explicitTargets || []);
+  const recentTargetIds = unique(options.recentTargetIds || []);
+  const candidateBlockIds = unique(options.candidateBlockIds || []);
+  const prioritizedPool = explicitTargets.length > 0
+    ? explicitTargets
+    : recentTargetIds.length > 0
+      ? recentTargetIds
+      : candidateBlockIds.length > 0
+        ? candidateBlockIds
+        : blocks.map((block) => block.id);
+  const matchedBlockIds = prioritizedPool.filter((blockId) => {
+    const block = blocks.find((item) => item.id === blockId);
+    return blockSupportsDeterministicRewrite(block, rewrite);
+  });
+
+  return {
+    matched_block_ids: unique(matchedBlockIds),
+    preferred_ids: matchedBlockIds.length === 1 ? matchedBlockIds : [],
+    ambiguous: matchedBlockIds.length > 1,
+  };
+}
+
 function isGlobalPhrase(input = '') {
-  return /全文|整篇|整文|全篇|通篇|整篇文章|整篇内容|整个文章|整篇都/.test(String(input || ''));
+  return /全文|整篇|整文|全篇|通篇|整篇文章|整篇内容|整个文章|整篇都/.test(String(input || ''))
+    || isDraftArticlePhrase(input);
+}
+
+function isDraftArticlePhrase(input = '') {
+  return /(?:给我|帮我|请)?(?:写|起草|生成)(?:一篇)?(?:关于[\u3400-\u9fffA-Za-z0-9_-]{2,40}的)?(?:文章|稿子|正文)|写文章|写正文|起草文章|生成正文|补全全文|展开成一篇文章|扩成一篇文章/.test(String(input || ''));
 }
 
 function extractSearchTerms(text = '') {
@@ -324,6 +407,9 @@ function inferIntentCandidates(userInput = '', options = {}) {
   if (/分析|评估|点评|检查|可读性|逻辑|结构|完整性|风格一致性|哪里有问题/.test(text)) {
     pushReason('analyze', 7, 'analysis_keyword');
   }
+  if (isDraftArticlePhrase(text)) {
+    pushReason('edit', 10, 'draft_article_keyword');
+  }
   if (/写到文档|写入文档|写进去|写到正文|写进正文|落到文档|落到正文|放到文档|放进文档|加入文档|写到文章里/.test(text)) {
     pushReason('edit', 9, 'write_to_document_keyword');
   }
@@ -370,6 +456,13 @@ function resolvePrimaryIntent(intentCandidates = []) {
   const second = list[1] || { id: 'text', score: 0 };
   const topScore = Number(top.score || 0);
   const secondScore = Number(second.score || 0);
+  if (topScore === 0) {
+    return {
+      primary_intent: 'text',
+      confidence: 0.4,
+      ambiguous: false,
+    };
+  }
   const total = list.reduce((sum, item) => sum + Number(item.score || 0), 0) || 1;
   const confidence = clamp(0.42 + ((topScore - secondScore) * 0.08) + (topScore / total * 0.2), 0.35, 0.98);
   return {
@@ -381,6 +474,7 @@ function resolvePrimaryIntent(intentCandidates = []) {
 
 function inferOperationKind(userInput = '') {
   const text = String(userInput || '');
+  if (isDraftArticlePhrase(text)) return 'expand';
   if (/写到文档|写入文档|写进去|写到正文|落到文档|落到正文|放到文档|加入文档/.test(text)) return 'insert';
   if (/按刚才(?:的)?建议改|按上面(?:的)?问题改|按刚才(?:的)?问题改|继续改|接着改|延续刚才/.test(text)) return 'rewrite';
   if (/交换顺序|调整顺序|调序|重排|换一下顺序/.test(text)) return 'reorder';
@@ -828,6 +922,8 @@ function buildDecisionSummary(plan = {}) {
     return `已按${parts.join(' + ')}理解。`;
   }
 
+  if (plan.scope_mode === 'global') return '已按全文编辑理解。';
+
   const targetIds = Array.isArray(plan.target_block_ids) ? plan.target_block_ids : [];
   if (targetIds.length === 1) return '已按单段编辑理解。';
   if (targetIds.length > 1) return '已按多段联合编辑理解。';
@@ -1091,6 +1187,8 @@ async function resolveCanvasRequest({
   const carryTargets = !correctionState?.wrong_target && (needsCarryPreviousTarget(userInput) || Boolean(followUpSummary));
   const explicitTargets = parseExplicitMentionIds(article, userInput);
   const recentTargetIds = carryTargets ? (recentContext?.target_block_ids || []) : [];
+  const deterministicRewrite = extractDeterministicRewrite(userInput);
+  if (deterministicRewrite) decisionPath.push('deterministic_rewrite:requested');
 
   const sourceRef = extractSourceReference(userInput, conversationHistory, {
     correctionState,
@@ -1106,6 +1204,11 @@ async function resolveCanvasRequest({
   const { primary_intent: inferredIntent, confidence: inferredIntentConfidence, ambiguous: ambiguousIntent } = resolvePrimaryIntent(intentCandidates);
   let primaryIntent = inferredIntent;
   let intentConfidence = inferredIntentConfidence;
+  if (deterministicRewrite && primaryIntent !== 'edit') {
+    primaryIntent = 'edit';
+    intentConfidence = Math.max(intentConfidence, 0.86);
+    decisionPath.push('deterministic_rewrite:intent_edit');
+  }
   decisionPath.push(`intent:${primaryIntent}`);
 
   const inferredOperationKind = inferOperationKind(userInput);
@@ -1127,6 +1230,32 @@ async function resolveCanvasRequest({
   let candidateBlockIds = unique(targetInfo.candidate_block_ids);
   let targetCandidates = targetInfo.target_candidates || [];
   let targetConfidence = targetInfo.target_confidence || 0.28;
+  const deterministicTargetInfo = refineTargetsWithDeterministicRewrite(article, deterministicRewrite, {
+    explicitTargets,
+    recentTargetIds,
+    candidateBlockIds,
+  });
+  if (deterministicTargetInfo.matched_block_ids.length > 0) {
+    candidateBlockIds = unique([...candidateBlockIds, ...deterministicTargetInfo.matched_block_ids]);
+    targetCandidates = unique([...deterministicTargetInfo.matched_block_ids, ...targetCandidates.map((item) => item.block_id)])
+      .map((blockId) => {
+        const existing = targetCandidates.find((item) => item.block_id === blockId);
+        if (existing) return existing;
+        return buildPlannerBlockPackage(article, blockId, 72, ['deterministic_match']);
+      })
+      .filter(Boolean);
+  }
+  if (deterministicTargetInfo.preferred_ids.length === 1) {
+    targetBlockIds = unique([
+      ...explicitTargets,
+      ...recentTargetIds,
+      ...deterministicTargetInfo.preferred_ids,
+    ]);
+    targetConfidence = Math.max(targetConfidence, 0.95);
+    decisionPath.push('deterministic_rewrite:resolved_target');
+  } else if (deterministicTargetInfo.ambiguous) {
+    decisionPath.push('deterministic_rewrite:ambiguous_target');
+  }
 
   const scopeFromPhrase = isGlobalPhrase(userInput) ? 'global' : 'none';
   let scopeMode = scopeFromPhrase;
@@ -1182,6 +1311,9 @@ async function resolveCanvasRequest({
     prefilled_answers: answerSlots,
     summary_instruction: followUpSummary,
     correction_state: correctionState || null,
+    deterministic_edit: deterministicRewrite && targetBlockIds.length === 1
+      ? deterministicRewrite
+      : null,
     decision_path: decisionPath,
     ai_arbitration_mode: 'none',
     prompt_injection_flags: unique((targetCandidates || []).flatMap((item) => item.reasons.includes('prompt_injection_signal') ? ['target_candidate'] : []).concat(
@@ -1235,7 +1367,7 @@ async function resolveCanvasRequest({
       missingSlots = ['source_content_ref'];
     } else {
       if (!answerSlots.target_location) {
-        clarifyReason = targetInfo.ambiguous || candidateBlockIds.length > 1
+        clarifyReason = targetInfo.ambiguous || deterministicTargetInfo.ambiguous || candidateBlockIds.length > 1
           ? 'ambiguous_target_block'
           : 'missing_target_location';
         missingSlots.push('target_location');
@@ -1246,7 +1378,7 @@ async function resolveCanvasRequest({
       }
     }
   } else if (primaryIntent === 'edit' && scopeMode === 'none' && !['discuss', 'analyze'].includes(operationKind)) {
-    clarifyReason = targetInfo.ambiguous || candidateBlockIds.length > 1
+    clarifyReason = targetInfo.ambiguous || deterministicTargetInfo.ambiguous || candidateBlockIds.length > 1
       ? 'ambiguous_target_block'
       : 'missing_target_location';
     missingSlots = ['target_location'];
@@ -1436,7 +1568,7 @@ async function resolveCanvasRequest({
       clarify_needed: true,
       clarify_reason: clarifyReason || 'missing_target_location',
       clarify_question: buildClarifyQuestion(clarifyReason || 'missing_target_location', normalizedMissingSlots),
-      clarify_render_mode: structuredClarifyCount >= 2 ? 'text' : 'card',
+      clarify_render_mode: 'card',
       missing_slots: normalizedMissingSlots,
       prefilled_answers: answerSlots,
       answer_slots: answerSlots,

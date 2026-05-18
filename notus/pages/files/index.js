@@ -17,10 +17,13 @@ import {
   getEditorRoot,
   getEditorScrollContainer,
   getQueryValue,
+  getHeadingLevel,
   normalizeText,
   previewFromLines,
   retryFocusCitationTarget,
 } from '../../utils/documentNavigation';
+import { getVisibleDocumentLabel } from '../../lib/documentLabels';
+import { mergeEditorVisibleMarkdown, splitEditorVisibleMarkdown } from '../../lib/markdownMeta';
 
 // WysiwygEditor: SSR-incompatible (Tiptap uses DOM APIs)
 // onEditorReady lifts the editor instance up so the toolbar can use it
@@ -29,13 +32,32 @@ const WysiwygEditor = dynamic(
   { ssr: false, loading: () => <SkeletonText lines={7} /> }
 );
 
+const TOC_HEADING_SELECTOR = 'h1,h2,h3,h4,h5,h6';
+
+function collectHeadingItemsFromEditor(editorInstance) {
+  if (!editorInstance?.state?.doc) return [];
+
+  const headings = [];
+  editorInstance.state.doc.descendants((node) => {
+    if (node.type?.name !== 'heading') return true;
+    headings.push({
+      level: Math.max((Number(node.attrs?.level) || 1) - 1, 0),
+      text: normalizeText(node.textContent),
+    });
+    return true;
+  });
+
+  return headings.filter((item) => item.text);
+}
+
 export default function FilesPage() {
   const router = useRouter();
   const toast = useToast();
-  const { activeFile, allFiles, pendingCitation, clearPendingCitation, selectFile, getCachedContent, setCachedContent } = useApp();
+  const { activeFile, allFiles, pendingCitation, clearPendingCitation, selectFile, refreshFiles, getCachedContent, setCachedContent } = useApp();
   const activeFileId = activeFile?.id;
   const contentRef = useRef('');
   const persistedContentRef = useRef('');
+  const hiddenFrontmatterRef = useRef('');
   const pendingNavRef = useRef(null);
 
   const [editor, setEditor] = useState(null);      // Tiptap editor instance
@@ -84,6 +106,7 @@ export default function FilesPage() {
       setContent('');
       contentRef.current = '';
       persistedContentRef.current = '';
+      hiddenFrontmatterRef.current = '';
       return undefined;
     }
 
@@ -95,10 +118,12 @@ export default function FilesPage() {
     loadFile(activeFileId)
       .then((file) => {
         if (cancelled) return;
-        const nextContent = file.content || '';
+        const { visibleContent, hiddenFrontmatter } = splitEditorVisibleMarkdown(file.content || '');
+        const nextContent = visibleContent || '';
         setContent(nextContent);
         contentRef.current = nextContent;
         persistedContentRef.current = nextContent;
+        hiddenFrontmatterRef.current = hiddenFrontmatter || '';
         setLoading(false);
       })
       .catch((loadError) => {
@@ -128,10 +153,23 @@ export default function FilesPage() {
     if (!editor) return;
     const container = getEditorScrollContainer(editor);
     const root = getEditorRoot(editor);
-    const headings = root ? [...root.querySelectorAll('h1,h2,h3')] : [];
+    const headings = root ? [...root.querySelectorAll(TOC_HEADING_SELECTOR)] : [];
     const target = headings[index];
     if (!container || !target) return;
     container.scrollTo({ top: Math.max(target.offsetTop - 48, 0), behavior: 'smooth' });
+  }, [editor]);
+
+  const syncTocHeadings = useCallback(() => {
+    if (!editor) {
+      setTocHeadings([]);
+      setActiveHeadingIndex(-1);
+      return false;
+    }
+
+    const headings = collectHeadingItemsFromEditor(editor);
+
+    setTocHeadings(headings);
+    return headings.length > 0;
   }, [editor]);
 
   useEffect(() => {
@@ -139,22 +177,11 @@ export default function FilesPage() {
       setTocHeadings([]);
       return undefined;
     }
-
     const frameId = window.requestAnimationFrame(() => {
-      const root = getEditorRoot(editor);
-      const headings = root
-        ? [...root.querySelectorAll('h1,h2,h3')]
-          .map((heading) => ({
-            level: Number(heading.tagName.slice(1)) - 1,
-            text: normalizeText(heading.textContent),
-          }))
-          .filter((item) => item.text)
-        : [];
-      setTocHeadings(headings);
+      syncTocHeadings();
     });
-
     return () => window.cancelAnimationFrame(frameId);
-  }, [content, editor]);
+  }, [content, editor, syncTocHeadings]);
 
   useEffect(() => {
     if (!editor) return undefined;
@@ -164,7 +191,7 @@ export default function FilesPage() {
 
     const syncActiveHeading = () => {
       const nextRoot = getEditorRoot(editor);
-      const headings = nextRoot ? [...nextRoot.querySelectorAll('h1,h2,h3')] : [];
+      const headings = nextRoot ? [...nextRoot.querySelectorAll(TOC_HEADING_SELECTOR)] : [];
       if (headings.length === 0) {
         setActiveHeadingIndex(-1);
         return;
@@ -251,10 +278,11 @@ export default function FilesPage() {
     }
     setSaveState('saving');
     try {
+      const contentToSave = mergeEditorVisibleMarkdown(nextContent, hiddenFrontmatterRef.current);
       const response = await fetch(`/api/files/${activeFileId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: nextContent }),
+        body: JSON.stringify({ content: contentToSave }),
       });
       const payload = await response.json();
 
@@ -262,11 +290,17 @@ export default function FilesPage() {
         throw new Error(payload.error || '保存失败');
       }
 
-      const savedContent = payload.content || nextContent;
+      const { visibleContent, hiddenFrontmatter } = splitEditorVisibleMarkdown(payload.content || contentToSave);
+      const savedContent = visibleContent || nextContent;
       persistedContentRef.current = savedContent;
       contentRef.current = savedContent;
+      hiddenFrontmatterRef.current = hiddenFrontmatter || hiddenFrontmatterRef.current || '';
       setContent(savedContent);
-      setCachedContent(activeFileId, savedContent);
+      setCachedContent(activeFileId, payload.content || contentToSave);
+      await refreshFiles({ background: true });
+      if (payload.title_binding_warning) {
+        toast(payload.title_binding_warning, 'warning');
+      }
       setSaveState('saved');
       setShowIndexToast(true);
       setTimeout(() => setShowIndexToast(false), 4000);
@@ -276,7 +310,7 @@ export default function FilesPage() {
       toast(saveError.message || '保存失败', 'error');
       return false;
     }
-  }, [activeFileId, toast, setCachedContent]);
+  }, [activeFileId, refreshFiles, setCachedContent, toast]);
 
   const handleChange = useCallback((newContent) => {
     if (newContent === contentRef.current) return;
@@ -300,9 +334,11 @@ export default function FilesPage() {
   });
   const navigationGuard = activeFile && saveState === 'dirty' ? unsavedGuard.request : undefined;
 
+  const getDocumentFindRoot = useCallback(() => getEditorRoot(editor), [editor]);
+
   const documentFind = useDocumentFind({
     enabled: Boolean(activeFile && editor),
-    getRoot: () => getEditorRoot(editor),
+    getRoot: getDocumentFindRoot,
     selector: 'h1,h2,h3,h4,h5,h6,p,li,blockquote,pre,td,th',
     contentVersion: `${activeFileId || 'none'}:${content}`,
   });
@@ -319,7 +355,7 @@ export default function FilesPage() {
   return (
     <Shell
       active="files"
-      fileName={activeFile?.name || null}
+      fileName={getVisibleDocumentLabel(activeFile, '未命名文档')}
       saveState={activeFile ? saveState : undefined}
       onSave={activeFile ? handleSave : undefined}
       saveDisabled={!activeFile || saveState !== 'dirty'}
@@ -364,7 +400,11 @@ export default function FilesPage() {
               loadFile(activeFile.id)
                 .then((file) => {
                   setError(null);
-                  setContent(file.content || '');
+                  const { visibleContent, hiddenFrontmatter } = splitEditorVisibleMarkdown(file.content || '');
+                  setContent(visibleContent || '');
+                  contentRef.current = visibleContent || '';
+                  persistedContentRef.current = visibleContent || '';
+                  hiddenFrontmatterRef.current = hiddenFrontmatter || '';
                   setLoading(false);
                 })
                 .catch((loadError) => {

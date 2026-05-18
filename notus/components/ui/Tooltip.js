@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 
 const GAP = 8;
 
-export const Tooltip = ({ content, children, placement = 'top', gap = GAP }) => {
+export const Tooltip = ({ content, children, placement = 'top', gap = GAP, disabled = false }) => {
   const triggerRef = useRef(null);
   const [open, setOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
@@ -14,7 +14,7 @@ export const Tooltip = ({ content, children, placement = 'top', gap = GAP }) => 
   }, []);
 
   useEffect(() => {
-    if (!open) return undefined;
+    if (!open || disabled) return undefined;
 
     const updatePosition = () => {
       const trigger = triggerRef.current;
@@ -41,21 +41,44 @@ export const Tooltip = ({ content, children, placement = 'top', gap = GAP }) => 
       window.removeEventListener('scroll', updatePosition, true);
       window.removeEventListener('resize', updatePosition);
     };
-  }, [gap, open, placement]);
+  }, [disabled, gap, open, placement]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+
+    const close = () => setOpen(false);
+    document.addEventListener('mousedown', close, true);
+    document.addEventListener('pointerdown', close, true);
+    document.addEventListener('keydown', close, true);
+
+    return () => {
+      document.removeEventListener('mousedown', close, true);
+      document.removeEventListener('pointerdown', close, true);
+      document.removeEventListener('keydown', close, true);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!disabled) return undefined;
+    setOpen(false);
+    return undefined;
+  }, [disabled]);
 
   return (
     <>
       <span
         ref={triggerRef}
         style={{ display: 'inline-flex' }}
-        onMouseEnter={() => setOpen(true)}
+        onMouseEnter={() => { if (!disabled) setOpen(true); }}
         onMouseLeave={() => setOpen(false)}
-        onFocus={() => setOpen(true)}
+        onFocus={() => { if (!disabled) setOpen(true); }}
         onBlur={() => setOpen(false)}
+        onPointerDown={() => setOpen(false)}
+        onClick={() => setOpen(false)}
       >
         {children}
       </span>
-      {mounted && open && position && content ? createPortal(
+      {mounted && open && position && content && !disabled ? createPortal(
         <div
           role="tooltip"
           style={{

@@ -224,9 +224,9 @@ export const EditorToolbar = ({ editor, fileId, showAICreate = true, isDirty = f
 
   const headingOptions = useMemo(() => ([
     { value: 'paragraph', label: '正文' },
-    { value: 'h1', label: 'H1 大标题' },
-    { value: 'h2', label: 'H2 中标题' },
-    { value: 'h3', label: 'H3 小标题' },
+    { value: 'h1', label: 'H1' },
+    { value: 'h2', label: 'H2' },
+    { value: 'h3', label: 'H3' },
     { value: 'h4', label: 'H4' },
     { value: 'h5', label: 'H5' },
     { value: 'h6', label: 'H6' },
@@ -346,6 +346,14 @@ export const EditorToolbar = ({ editor, fileId, showAICreate = true, isDirty = f
         </ToolbarButton>
         <ToolbarButton title="行内代码" active={isActive('code')} disabled={disabled} onClick={() => e?.chain().focus().toggleCode().run()}>
           <Icons.code size={15} />
+        </ToolbarButton>
+        <ToolbarButton
+          title="文本居中"
+          active={Boolean(e?.isActive({ textAlign: 'center' }))}
+          disabled={disabled}
+          onClick={() => e?.chain().focus().toggleTextAlignCenter().run()}
+        >
+          <AlignCenterIcon />
         </ToolbarButton>
         <Divider />
 
@@ -474,6 +482,12 @@ const CodeBlockIcon = () => (
 const UnderlineIcon = () => (
   <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
     <path d="M6 4v6a6 6 0 0 0 12 0V4M4 20h16" />
+  </svg>
+);
+
+const AlignCenterIcon = () => (
+  <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M4 6h16M7 10h10M3 14h18M7 18h10" />
   </svg>
 );
 

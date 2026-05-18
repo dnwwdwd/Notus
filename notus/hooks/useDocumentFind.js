@@ -26,16 +26,16 @@ export function useDocumentFind({
   const refreshResults = useCallback((nextQuery) => {
     const root = getRoot?.();
     if (!root) {
-      setResults([]);
-      setCurrentIndex(0);
+      setResults((prev) => (prev.length > 0 ? [] : prev));
+      setCurrentIndex((prev) => (prev === 0 ? prev : 0));
       return [];
     }
 
     clearHighlights(root);
     const keyword = normalizeText(nextQuery);
     if (!keyword) {
-      setResults([]);
-      setCurrentIndex(0);
+      setResults((prev) => (prev.length > 0 ? [] : prev));
+      setCurrentIndex((prev) => (prev === 0 ? prev : 0));
       return [];
     }
 
@@ -76,10 +76,10 @@ export function useDocumentFind({
   const close = useCallback(() => {
     const root = getRoot?.();
     if (root) clearHighlights(root);
-    setOpen(false);
-    setQuery('');
-    setResults([]);
-    setCurrentIndex(0);
+    setOpen((prev) => (prev ? false : prev));
+    setQuery((prev) => (prev ? '' : prev));
+    setResults((prev) => (prev.length > 0 ? [] : prev));
+    setCurrentIndex((prev) => (prev === 0 ? prev : 0));
   }, [getRoot]);
 
   const openFind = useCallback(() => {

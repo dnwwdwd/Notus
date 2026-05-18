@@ -9,6 +9,9 @@ import { Tooltip } from '../ui/Tooltip';
 import { useToast } from '../ui/Toast';
 import { useApp } from '../../contexts/AppContext';
 import { useShortcuts } from '../../contexts/ShortcutsContext';
+import { getVisibleDocumentLabel } from '../../lib/documentLabels';
+import { shouldSelectCreatedFileInContext } from '../../lib/sidebarRouting';
+import { sortFilesForDisplay, sortTreeForDisplay } from '../../lib/sidebarSort';
 import { navigateWithFallback } from '../../utils/navigation';
 
 function flatTree(nodes, openFolders, searchMode = false, depth = 0) {
@@ -28,7 +31,7 @@ function filterTree(nodes, query) {
   if (!keyword) return nodes;
 
   return nodes.reduce((accumulator, node) => {
-    const matchesSelf = node.name.toLowerCase().includes(keyword) || node.path.toLowerCase().includes(keyword);
+    const matchesSelf = [node.name, node.title, node.path].some((value) => String(value || '').toLowerCase().includes(keyword));
 
     if (node.type === 'folder') {
       const children = filterTree(node.children || [], query);
@@ -100,7 +103,7 @@ async function consumeSseResponse(response, onPayload) {
 function parseDownloadFilename(contentDisposition) {
   const header = String(contentDisposition || '');
   const match = header.match(/filename="(.+?)"/i);
-  return match ? match[1] : `notus-export-${Date.now()}.zip`;
+  return match ? match[1] : `notus-export-${Date.now()}.md`;
 }
 
 function formatImportSummary(summary) {
@@ -205,7 +208,7 @@ const FileRow = ({ item, isActive, onSelect, onToggle, onContextMenu }) => {
         </>
       )}
       <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-        {item.name}
+        {isFolder ? item.name : getVisibleDocumentLabel(item, '未命名文档')}
       </span>
       <FileStatusIndicator status={item.status} />
     </div>
@@ -340,7 +343,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
     if (!contextMenu) return;
     const { node } = contextMenu;
     setContextMenu(null);
-    if (!window.confirm(`确定删除文件「${node.name}」吗？此操作不可撤销。`)) return;
+    if (!window.confirm(`确定删除文件「${getVisibleDocumentLabel(node, '未命名文档')}」吗？此操作不可撤销。`)) return;
     try {
       const response = await fetch(`/api/files/${node.id}`, { method: 'DELETE' });
       if (!response.ok) {
@@ -379,19 +382,28 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
   }, [refreshFiles, renameName, renameNode, toast]);
 
   const filteredTree = useMemo(() => filterTree(files, deferredSearchQuery), [files, deferredSearchQuery]);
+  const orderedTree = useMemo(
+    () => sortTreeForDisplay(filteredTree),
+    [filteredTree]
+  );
   const flat = useMemo(
-    () => flatTree(filteredTree, openFolders, Boolean(deferredSearchQuery.trim())),
-    [filteredTree, openFolders, deferredSearchQuery]
+    () => flatTree(orderedTree, openFolders, Boolean(deferredSearchQuery.trim())),
+    [orderedTree, openFolders, deferredSearchQuery]
+  );
+
+  const orderedExportFiles = useMemo(
+    () => sortFilesForDisplay(allFiles),
+    [allFiles]
   );
 
   const exportCandidates = useMemo(() => {
     const keyword = exportQuery.trim().toLowerCase();
-    if (!keyword) return allFiles;
-    return allFiles.filter((file) => {
+    if (!keyword) return orderedExportFiles;
+    return orderedExportFiles.filter((file) => {
       const target = `${file.title || ''} ${file.name || ''} ${file.path || ''}`.toLowerCase();
       return target.includes(keyword);
     });
-  }, [allFiles, exportQuery]);
+  }, [exportQuery, orderedExportFiles]);
 
   const importSucceededResults = useMemo(
     () => importResults.filter((item) => ['imported', 'overwritten'].includes(item.status)),
@@ -425,7 +437,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
         navigateWithFallback(router, href);
         return;
       }
-      if (currentPage === 'files') {
+      if (router.asPath !== href) {
         navigateWithFallback(router, href, { mode: 'router' });
       }
     };
@@ -500,9 +512,19 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
         await createFolder({ parentPath, name: newName.trim() });
         toast('目录已创建', 'success');
       } else {
-        const created = await createFile({ parentPath, name: newName.trim() });
+        const created = await createFile(
+          { parentPath, name: newName.trim() },
+          {
+            autoSelect: shouldSelectCreatedFileInContext({
+              navigateOnFileSelect,
+              hasRequestAction: Boolean(requestAction),
+            }),
+          }
+        );
         toast(created.warning ? `文件已创建，但索引告警：${created.warning}` : '文件已创建', created.warning ? 'warning' : 'success');
-        if (navigateOnFileSelect) {
+        if (created.selectedFile?.id) {
+          handleSelectFile(created.selectedFile);
+        } else if (navigateOnFileSelect) {
           const href = `/${currentPage}?fileId=${encodeURIComponent(created.id)}`;
           if (router.pathname !== `/${currentPage}`) {
             navigateWithFallback(router, href);
@@ -1115,7 +1137,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
                   </div>
                   <div style={{ minWidth: 0, flex: 1 }}>
                     <div style={{ fontSize: 'var(--text-sm)', fontWeight: 500, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {file.title || file.name}
+                      {getVisibleDocumentLabel(file, '未命名文档')}
                     </div>
                     <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {file.path}

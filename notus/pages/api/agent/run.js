@@ -9,6 +9,7 @@ const {
   getConversationHistory,
   getConversationMessageById,
   touchConversation,
+  updateConversationScopes,
 } = require('../../../lib/conversations');
 const {
   computeArticleHash,
@@ -24,6 +25,13 @@ const {
   updateInteraction,
   validateInteractionSourceDigest,
 } = require('../../../lib/conversationInteractions');
+const {
+  isScopeUnrestricted,
+  resolveScopeFileIds,
+  scopeFromLegacyReference,
+  scopeFromLegacyStyle,
+} = require('../../../lib/workspaceScope');
+const { getVisibleDocumentLabel } = require('../../../lib/documentLabels');
 
 function send(res, payload) {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
@@ -31,8 +39,8 @@ function send(res, payload) {
 
 function normalizeCitations(citations = []) {
   return citations.map((item) => ({
-    file: item.file_title || item.file || '',
-    file_title: item.file_title || item.file || '',
+    file: getVisibleDocumentLabel(item.file_title || item.file || '', '未命名文档'),
+    file_title: getVisibleDocumentLabel(item.file_title || item.file || '', '未命名文档'),
     file_id: item.file_id || null,
     path: item.heading_path || item.path || '',
     heading_path: item.heading_path || item.path || '',
@@ -81,6 +89,45 @@ function unique(values = []) {
   return [...new Set((Array.isArray(values) ? values : []).filter(Boolean))];
 }
 
+function hasBodyKey(body = {}, key) {
+  return Object.prototype.hasOwnProperty.call(body, key);
+}
+
+function legacyRequestScopes(body = {}) {
+  const updates = {};
+  if (hasBodyKey(body, 'reference_mode') || hasBodyKey(body, 'fact_file_ids')) {
+    updates.retrieval_scope = scopeFromLegacyReference({
+      referenceMode: body.reference_mode,
+      referenceFileIds: body.fact_file_ids,
+    });
+  }
+  if (hasBodyKey(body, 'style_mode') || hasBodyKey(body, 'style_file_ids')) {
+    updates.style_scope = scopeFromLegacyStyle({
+      styleMode: body.style_mode,
+      styleFileIds: body.style_file_ids,
+    });
+  }
+  return updates;
+}
+
+function resolveLegacyAgentScopes(conversation, { activeFileId, referenceMode, factFileIds, styleMode, styleFileIds } = {}) {
+  const retrievalScope = conversation.retrieval_scope || scopeFromLegacyReference({ referenceMode, referenceFileIds: factFileIds });
+  const styleScope = conversation.style_scope || scopeFromLegacyStyle({ styleMode, styleFileIds });
+  const resolvedFactIds = isScopeUnrestricted(retrievalScope)
+    ? []
+    : resolveScopeFileIds(retrievalScope, { activeFileId });
+  const resolvedStyleIds = isScopeUnrestricted(styleScope)
+    ? []
+    : resolveScopeFileIds(styleScope, { activeFileId });
+
+  return {
+    referenceMode: resolvedFactIds.length > 0 ? 'manual' : 'auto',
+    factFileIds: resolvedFactIds.length > 0 ? resolvedFactIds : factFileIds,
+    styleMode: resolvedStyleIds.length > 0 ? 'manual' : 'auto',
+    styleFileIds: resolvedStyleIds.length > 0 ? resolvedStyleIds : styleFileIds,
+  };
+}
+
 function buildClarifyQuestions(result, article) {
   const missingSlots = Array.isArray(result.missingSlots) ? result.missingSlots : [];
   const sourceCandidates = Array.isArray(result.sourceCandidates) ? result.sourceCandidates : [];
@@ -92,29 +139,25 @@ function buildClarifyQuestions(result, article) {
     questions.push({
       id: 'primary_intent',
       slot: 'primary_intent',
-      label: '这次你是想继续讨论，还是直接改文档？',
-      description: '确认主意图后，我会按对应方式继续，不会把聊天和改文档混在一起。',
+      label: '这次要做什么？',
       type: 'single_select',
       required: true,
       options: [
         {
           id: 'edit',
           label: '直接改文档',
-          description: '继续生成文档修改预览',
         },
         {
           id: 'text',
           label: '继续讨论',
-          description: '先聊想法，不直接改文档',
         },
         {
           id: 'analyze',
           label: '文章分析',
-          description: '先分析结构、逻辑或表达问题',
         },
       ],
-      allow_custom: false,
-      custom_placeholder: '',
+      allow_custom: true,
+      custom_placeholder: '自定义答案',
       recommended_option_ids: result.primaryIntent ? [result.primaryIntent] : ['edit'],
     });
   }
@@ -124,19 +167,18 @@ function buildClarifyQuestions(result, article) {
     questions.push({
       id: 'source_content_ref',
       slot: 'source_content_ref',
-      label: '这次要写入哪段内容？',
-      description: '我会直接使用这段内容，不重新生成。',
+      label: '要写入哪段内容？',
       type: singleSelect ? 'single_select' : 'text_input',
       required: true,
       options: singleSelect
         ? sourceCandidates.map((item) => ({
           id: item.id,
           label: item.label,
-          description: item.description || '使用这条已有内容',
+          description: item.description || '',
         }))
         : [],
       allow_custom: true,
-      custom_placeholder: '直接粘贴要写入的内容，或说明“上一条回复”',
+      custom_placeholder: '自定义内容',
       recommended_option_ids: sourceCandidates[0] ? [sourceCandidates[0].id] : [],
     });
   }
@@ -146,13 +188,12 @@ function buildClarifyQuestions(result, article) {
     questions.push({
       id: 'target_location',
       slot: 'target_location',
-      label: '要写到文档的哪个位置？',
-      description: '如果你没有用 @ 指定，这里需要补足写入位置。',
+      label: '要写到哪里？',
       type: 'single_select',
       required: true,
       options,
       allow_custom: true,
-      custom_placeholder: '例如：写到引言后面，或第 2 段后',
+      custom_placeholder: '自定义位置',
       recommended_option_ids: options[2] ? [options[2].id] : (options[1] ? [options[1].id] : []),
     });
   }
@@ -161,29 +202,25 @@ function buildClarifyQuestions(result, article) {
     questions.push({
       id: 'write_mode',
       slot: 'write_mode',
-      label: '这次用什么写入方式？',
-      description: '明确写入方式后，我会直接生成预览，不再重新猜。',
+      label: '怎么写入？',
       type: 'single_select',
       required: true,
       options: [
         {
           id: 'append_new_blocks',
           label: '追加新段落',
-          description: '保留现有内容，把这段内容作为新的段落写入',
         },
         {
           id: 'replace_target',
           label: '替换目标段落',
-          description: '用这段内容直接覆盖目标位置的原文',
         },
         {
           id: 'insert_before_target',
           label: '写到目标前面',
-          description: '把这段内容插到目标位置前面',
         },
       ],
-      allow_custom: false,
-      custom_placeholder: '',
+      allow_custom: true,
+      custom_placeholder: '自定义方式',
       recommended_option_ids: ['append_new_blocks'],
     });
   }
@@ -199,8 +236,7 @@ function buildClarifyInteractionPayload({ userInput, article, result }) {
   const questions = buildClarifyQuestions(result, article);
 
   return {
-    title: '继续生成预览前，还需要确认几个点',
-    description: '补齐这些信息后，我会直接继续生成修改预览，不要求你重新发一轮。',
+    title: '确认后继续',
     original_user_input: String(userInput || ''),
     primary_intent: result.primaryIntent || 'edit',
     source_message_id: sourceReference.source_message_id || null,
@@ -223,6 +259,20 @@ function buildClarifyInteractionPayload({ userInput, article, result }) {
     })),
     prefilled_answers: prefilledAnswers,
     questions,
+  };
+}
+
+function buildPendingInteractionResponse(payload = {}) {
+  const prefilledAnswers = payload.prefilled_answers && typeof payload.prefilled_answers === 'object'
+    ? payload.prefilled_answers
+    : {};
+  const missingSlots = (Array.isArray(payload.questions) ? payload.questions : [])
+    .map((question) => question?.id)
+    .filter(Boolean);
+  return {
+    answers: { ...prefilledAnswers },
+    missing_slots: missingSlots,
+    resolution_status: Object.keys(prefilledAnswers).length > 0 ? 'partial' : 'failed',
   };
 }
 
@@ -305,8 +355,11 @@ export default async function handler(req, res) {
   let interaction = interactionId ? getInteractionById(interactionId) : null;
   const isInteractionResume = Boolean(interaction?.id);
   const articleHash = computeArticleHash(article);
+  const resolvedUserInput = isInteractionResume
+    ? (interaction?.payload?.original_user_input || userInput || '继续生成预览')
+    : userInput;
 
-  if (!isInteractionResume && !userInput) {
+  if (!isInteractionResume && !resolvedUserInput) {
     return res.status(400).json({
       error: 'user_input is required',
       code: 'INVALID_AGENT_REQUEST',
@@ -354,12 +407,23 @@ export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
 
-  const conversation = ensureConversation({
+  let conversation = ensureConversation({
     conversationId: isInteractionResume ? interaction.conversation_id : conversationId,
     kind: 'canvas',
     title: isInteractionResume ? (interaction.payload?.original_user_input || '继续生成预览') : userInput,
     fileId: articleFileId,
     draftKey: article?.draft_key || article?.draftKey || null,
+  });
+  const scopeUpdates = isInteractionResume ? {} : legacyRequestScopes(req.body || {});
+  if (Object.keys(scopeUpdates).length > 0) {
+    conversation = updateConversationScopes(conversation.id, scopeUpdates) || conversation;
+  }
+  const effectiveScopes = resolveLegacyAgentScopes(conversation, {
+    activeFileId: activeFileId || articleFileId,
+    referenceMode,
+    factFileIds,
+    styleMode,
+    styleFileIds,
   });
 
   const conversationHistory = getConversationHistory(conversation.id, { limit: 12 });
@@ -383,16 +447,16 @@ export default async function handler(req, res) {
     }
 
     const result = await runCanvasAgent({
-      userInput: isInteractionResume ? (interaction.payload?.original_user_input || userInput || '继续生成预览') : userInput,
+      userInput: resolvedUserInput,
       article,
       conversationHistory,
       activeFileId,
-      referenceMode,
-      factFileIds,
-      styleMode,
-      styleFileIds,
+      referenceMode: effectiveScopes.referenceMode,
+      factFileIds: effectiveScopes.factFileIds,
+      styleMode: effectiveScopes.styleMode,
+      styleFileIds: effectiveScopes.styleFileIds,
       llmConfig,
-      forcedPlan: isInteractionResume ? buildResumePlanFromInteraction(interaction) : null,
+      forcedPlan: isInteractionResume ? buildResumePlanFromInteraction(interaction, article) : null,
     }, (event) => send(res, { ...event, conversation_id: conversation.id }));
 
     if (
@@ -402,19 +466,30 @@ export default async function handler(req, res) {
       && STRUCTURED_REASON_CODES.includes(result.clarifyReason)
     ) {
       const payload = buildClarifyInteractionPayload({
-        userInput,
+        userInput: resolvedUserInput,
         article,
         result,
       });
-      let clarifyInteraction = createInteraction({
-        conversationId: conversation.id,
-        kind: 'clarify_card',
-        source: 'canvas',
-        status: 'pending',
-        reasonCode: result.clarifyReason,
-        articleHash,
-        payload,
-      });
+      const pendingResponse = buildPendingInteractionResponse(payload);
+      let clarifyInteraction = isInteractionResume
+        ? updateInteraction(interaction.id, {
+          status: 'pending',
+          reasonCode: result.clarifyReason,
+          articleHash,
+          payload,
+          response: pendingResponse,
+          answeredAt: null,
+        })
+        : createInteraction({
+          conversationId: conversation.id,
+          kind: 'clarify_card',
+          source: 'canvas',
+          status: 'pending',
+          reasonCode: result.clarifyReason,
+          articleHash,
+          payload,
+          response: pendingResponse,
+        });
 
       const assistantMeta = buildAssistantMeta(result, null, {
         interaction_id: clarifyInteraction.id,
@@ -422,7 +497,7 @@ export default async function handler(req, res) {
         reason_code: result.clarifyReason,
         question_count: payload.questions.length,
       });
-      const assistantMessage = String(result.text || '').trim() || '还需要补充一点信息。';
+      const assistantMessage = String(result.text || '').trim() || '请确认后继续。';
       const messageId = appendConversationMessage({
         conversationId: conversation.id,
         role: 'assistant',
@@ -433,7 +508,7 @@ export default async function handler(req, res) {
       touchConversation(conversation.id);
       clarifyInteraction = updateInteraction(clarifyInteraction.id, { messageId });
 
-      logger.info('canvas.clarify.requested', {
+      logger.info(isInteractionResume ? 'canvas.clarify.reopened' : 'canvas.clarify.requested', {
         conversation_id: conversation.id,
         file_id: articleFileId,
         reason_code: result.clarifyReason,
@@ -601,7 +676,7 @@ export default async function handler(req, res) {
   } catch (error) {
     if (isInteractionResume && interaction) {
       interaction = updateInteraction(interaction.id, { status: 'failed' });
-      const assistantMessage = '已记录你的回答，但生成预览失败。你可以重试生成预览，无需重新回答。';
+      const assistantMessage = '生成预览失败，请重试。';
       const assistantMeta = {
         canvas_mode: 'clarify_resume_failed',
         scope_mode: 'none',

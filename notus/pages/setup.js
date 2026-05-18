@@ -534,8 +534,17 @@ export default function SetupPage() {
       .then((response) => response.json())
       .then((settings) => {
         if (cancelled || !settings) return;
+        const savedEmbModel = String(settings.embedding?.model || '').trim();
+        const savedEmbBaseUrl = String(settings.embedding?.base_url || '').trim();
         setForm((prev) => ({
           ...prev,
+          embProvider: inferEmbeddingProvider({
+            provider: settings.embedding?.provider || prev.embProvider,
+            baseUrl: savedEmbBaseUrl,
+            model: savedEmbModel,
+          }),
+          embModel: prev.embModel || savedEmbModel,
+          embBaseUrl: prev.embBaseUrl || savedEmbBaseUrl,
           embMultimodalEnabled: Boolean(settings.embedding?.multimodal_enabled),
         }));
         setDetectedEmbDim(Number(settings.embedding?.dim || 0) || null);

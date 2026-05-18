@@ -10,6 +10,9 @@ const { processImagesForFile, deleteImageVectorsByFileId } = require('./images')
 const {
   ensureMarkdownPath,
   extractTitle,
+  buildFileRecordPayload,
+  getFileStat,
+  getFileUpdatedAt,
   syncFilesFromDisk,
   readMarkdownFile,
   sha256,
@@ -30,6 +33,7 @@ const BLOCK_NODE_TYPES = new Set([
   'thematicBreak',
 ]);
 const logger = createLogger({ subsystem: 'indexer' });
+const INDEX_VERSION = 1;
 
 function normalizeContent(content = '') {
   return String(content).replace(/\r\n/g, '\n').replace(/^\n+|\n+$/g, '');
@@ -147,14 +151,14 @@ async function splitIntoChunks(content, options = {}) {
     const headingPath = type === 'heading'
       ? headingStack.filter(Boolean).join(' > ')
       : headingStack.filter(Boolean).join(' > ');
-      const textForSearch = buildChunkSearchPayload(
-        options.fileTitle,
-        options.filePath,
-        headingPath,
-        chunkContent
-      );
+    const textForSearch = buildChunkSearchPayload(
+      options.fileTitle,
+      options.filePath,
+      headingPath,
+      chunkContent
+    );
 
-      chunks.push({
+    chunks.push({
       type,
       content: chunkContent,
       position: chunks.length,
@@ -195,24 +199,90 @@ async function indexFile(inputPath) {
   const relativePath = resolveIndexPath(inputPath);
   const content = readMarkdownFile(relativePath);
   const hash = sha256(content);
-  const title = extractTitle(relativePath, content);
+  const stat = getFileStat(relativePath);
+  const existing = db.prepare('SELECT * FROM files WHERE path = ?').get(relativePath);
+  const payload = buildFileRecordPayload(db, relativePath, content, existing, stat);
+  const title = payload.title || extractTitle(relativePath, content);
+  const updatedAt = getFileUpdatedAt(relativePath);
 
-  const existing = db.prepare('SELECT id, hash, indexed FROM files WHERE path = ?').get(relativePath);
-  if (existing && existing.hash === hash && existing.indexed === 1) {
+  if (
+    existing &&
+    existing.hash === hash &&
+    existing.indexed === 1 &&
+    Number(existing.index_version || 1) >= INDEX_VERSION
+  ) {
+    db.prepare(`
+      UPDATE files
+      SET stable_id = CASE
+            WHEN stable_id IS NULL OR stable_id = '' THEN ?
+            ELSE stable_id
+          END,
+          title = ?,
+          size = ?,
+          mtime = ?,
+          char_count = ?,
+          token_count = ?,
+          frontmatter = ?,
+          tags = ?,
+          heading_outline = ?,
+          updated_at = ?
+      WHERE id = ?
+    `).run(
+      payload.stableId,
+      payload.title,
+      payload.size,
+      payload.mtime,
+      payload.charCount,
+      payload.tokenCount,
+      payload.frontmatter,
+      payload.tags,
+      payload.headingOutline,
+      updatedAt,
+      existing.id
+    );
     return { fileId: existing.id, chunksCount: 0, skipped: true };
   }
 
   const upsert = db.prepare(`
-    INSERT INTO files (path, title, hash, indexed, indexed_at, index_error, updated_at)
-    VALUES (?, ?, ?, 0, NULL, NULL, datetime('now'))
+    INSERT INTO files (
+      path, stable_id, title, hash, size, mtime, char_count, token_count,
+      frontmatter, tags, heading_outline, index_version, indexed, indexed_at, index_error, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?)
     ON CONFLICT(path) DO UPDATE SET
+      stable_id = CASE
+        WHEN files.stable_id IS NULL OR files.stable_id = '' THEN excluded.stable_id
+        ELSE files.stable_id
+      END,
       title = excluded.title,
       hash = excluded.hash,
+      size = excluded.size,
+      mtime = excluded.mtime,
+      char_count = excluded.char_count,
+      token_count = excluded.token_count,
+      frontmatter = excluded.frontmatter,
+      tags = excluded.tags,
+      heading_outline = excluded.heading_outline,
+      index_version = excluded.index_version,
       indexed = 0,
       indexed_at = NULL,
       index_error = NULL,
       updated_at = excluded.updated_at
-  `).run(relativePath, title, hash);
+  `).run(
+    relativePath,
+    payload.stableId,
+    title,
+    hash,
+    payload.size,
+    payload.mtime,
+    payload.charCount,
+    payload.tokenCount,
+    payload.frontmatter,
+    payload.tags,
+    payload.headingOutline,
+    INDEX_VERSION,
+    updatedAt
+  );
 
   const fileId = existing?.id || upsert.lastInsertRowid;
   const chunks = await splitIntoChunks(content, {
@@ -241,8 +311,9 @@ async function indexFile(inputPath) {
 
   const insertChunk = db.prepare(`
     INSERT INTO chunks (
-      file_id, content, type, position, line_start, line_end, heading_path, has_image, search_text
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      file_id, content, type, position, line_start, line_end, heading_path,
+      has_image, search_text, source_hash, index_version
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertImage = db.prepare(`
     INSERT INTO images (
@@ -267,7 +338,9 @@ async function indexFile(inputPath) {
         chunk.line_end,
         chunk.heading_path,
         chunk.has_image,
-        chunk.search_text
+        chunk.search_text,
+        hash,
+        INDEX_VERSION
       );
       const chunkId = result.lastInsertRowid;
 
@@ -286,9 +359,9 @@ async function indexFile(inputPath) {
         SET indexed = 0,
             index_error = ?,
             retry_count = retry_count + 1,
-            updated_at = datetime('now')
+            updated_at = ?
         WHERE id = ?
-      `).run(embeddingError.message, fileId);
+      `).run(embeddingError.message, updatedAt, fileId);
     } else {
       db.prepare(`
         UPDATE files
@@ -296,9 +369,10 @@ async function indexFile(inputPath) {
             indexed_at = datetime('now'),
             index_error = NULL,
             retry_count = 0,
-            updated_at = datetime('now')
+            index_version = ?,
+            updated_at = ?
         WHERE id = ?
-      `).run(fileId);
+      `).run(INDEX_VERSION, updatedAt, fileId);
     }
   })();
 
@@ -338,15 +412,16 @@ function markFileIndexFailed(inputPath, error) {
   const db = getDb();
   const relativePath = resolveIndexPath(inputPath);
   const normalized = ensureError(error, 'INDEX_FAILED', '索引失败');
+  const updatedAt = getFileUpdatedAt(relativePath);
   db.prepare(`
     UPDATE files
     SET indexed = 0,
         indexed_at = NULL,
         index_error = ?,
         retry_count = retry_count + 1,
-        updated_at = datetime('now')
+        updated_at = ?
     WHERE path = ?
-  `).run(normalized.message, relativePath);
+  `).run(normalized.message, updatedAt, relativePath);
   logger.error('index.file.failed', {
     file_path: relativePath,
     error: normalized,
@@ -413,8 +488,7 @@ function clearIndex() {
     SET indexed = 0,
         indexed_at = NULL,
         index_error = NULL,
-        retry_count = 0,
-        updated_at = datetime('now')
+        retry_count = 0
   `).run();
 }
 

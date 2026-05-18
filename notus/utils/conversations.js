@@ -35,6 +35,7 @@ export function mapConversationMessages(messages = [], kind = 'knowledge') {
         role: message.role,
         content: String(message.content || ''),
         citations,
+        sourceCount: Number(meta?.source_count || citations.length || 0),
         meta,
         answerMode,
       };

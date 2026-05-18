@@ -1,6 +1,6 @@
 # Notus 产品需求文档（PRD）
 
-> v2.0 · 由 PDD 派生 · 接口级技术实现规范（数据库 schema、API、关键函数签名）
+> v2.1 · 由 PDD 派生 · 接口级技术实现规范（数据库 schema、API、关键函数签名）
 
 ---
 
@@ -11,18 +11,29 @@
 | 前端框架 | Next.js 15（**Pages Router**，非 App Router）+ React 19 |
 | 语言 | JavaScript（暂不引入 TypeScript） |
 | 包管理器 | npm |
-| UI 组件策略 | Radix Primitives（行为）+ 手写样式（token 驱动）；编辑器 Tiptap + tiptap-markdown + lowlight；渲染 react-markdown；拖拽 @dnd-kit/core；命令面板 cmdk |
-| MD 渲染插件链 | remark-gfm + rehype-highlight + rehype-katex |
+| UI 组件策略 | Radix Primitives（行为）+ 手写样式（token 驱动）；编辑器 Tiptap + tiptap-markdown + `@tiptap/extension-mathematics` + lowlight；渲染 react-markdown；拖拽 @dnd-kit/core；命令面板 cmdk |
+| MD 渲染插件链 | remark-gfm + remark-math + rehype-highlight + rehype-katex |
 | 数据库 | SQLite（better-sqlite3），WAL 模式 |
 | 向量检索 | sqlite-vec（SQLite 扩展） |
 | 全文检索 | SQLite FTS5（应用层预分词写入 `search_text`） |
 | 中文分词 | jieba-wasm（应用层分词，失败时回退简化分词） |
 | 文件监听 | chokidar（usePolling:true, interval:3000ms, awaitWriteFinish） |
-| Embedding | 用户在设置页手动填写 Base URL、模型名与 API Key；设置页与 `/setup` 第 1 步初次展示时，这三个输入框默认留空，不自动回填已保存值，API Key 仅通过“已保存，留空不修改”占位提示反映状态；系统根据 Base URL 和模型名自动识别兼容厂商，可选文本或多模态，开启 `EMBEDDING_MULTIMODAL_ENABLED` 后为图片建立向量 |
-| LLM | 用户在设置页手动填写 Base URL、模型名与 API Key；系统根据 Base URL 和模型名自动识别兼容厂商，流式输出 |
+| Embedding | 用户在设置页手动填写 Base URL、模型名与 API Key；设置页与 `/setup` 第 1 步首次进入时表单先以空态呈现，读取到服务端已保存配置后回填 Base URL 与模型名，API Key 不回显，仅通过“已保存，留空不修改”占位提示反映状态；系统根据 Base URL 和模型名自动识别兼容厂商，可选文本或多模态，开启 `EMBEDDING_MULTIMODAL_ENABLED` 后为图片建立向量 |
+| LLM | 用户在设置页手动填写 Base URL、模型名与 API Key；系统根据 Base URL 和模型名自动识别兼容厂商，流式输出；设置页需说明文档级上下文会把命中 Markdown 正文发送给所选对话模型 |
 | 运行平台 | Web + Electron 桌面端主线，保留对懒猫运行时的代码兼容；业务层统一依赖平台中间层解析路径与能力 |
 
 **不用 TypeScript / App Router / shadcn-ui / Python sidecar** —— 减少复杂度、减少 AI 自动生成时的路由混淆、不依赖默认主题。
+
+### 1.1 长期产品形态约束
+
+Notus 的长期形态不是“知识库问答 + 普通文件改写”，而是本地 Markdown 工作区中的 AI 协作环境。技术实现需要遵守以下约束：
+
+- 文件系统是真相来源，数据库只保存索引、缓存、会话、预览和运行状态。
+- Agent 的上下文来自工作区状态：当前文件、当前目录、用户选择的范围、检索证据、风格参考、对话历史和运行配置。
+- 任何写入 Markdown 的能力都必须先形成可审查结果；单文件使用块级 diff，多文件使用批量预览。
+- 检索范围、写入范围和风格参考范围要逐步从请求参数升级为会话级产品状态，并在 UI 中可见。
+- 通用知识和用户笔记依据必须分开表达，服务端不能把模型自身知识混入“来自笔记”的证据链。
+- 新能力优先以工作区工具形式扩展，例如读取文件、搜索工作区、创建笔记、更新 frontmatter、生成多文件预览、整理目录和检查内部链接。
 
 ---
 
@@ -84,6 +95,23 @@ Electron 桌面端在拷贝 standalone 产物后，必须按目标 `platform/arc
 
 SQLite 只存索引数据，不存文件内容本体。所有表支持 CASCADE 清理。
 
+长期目标中，`files` 表承担文档元数据表职责，`.md` 正文仍从文件系统读取。为了支持路径变更、多文件任务和工作区级 Agent，后续需要在不破坏现有整数主键的前提下补强稳定身份和文件状态字段：
+
+| 字段 | 所属表 | 作用 |
+|------|--------|------|
+| `stable_id` | `files` | 跨路径稳定文档身份，可来自 frontmatter id，也可由系统生成 |
+| `size` | `files` | 文件字节数，用于启动对账和变化判断 |
+| `mtime` | `files` | 文件修改时间，用于快速判断外部变更 |
+| `char_count` / `token_count` | `files` | 文档级上下文预算判断 |
+| `frontmatter` | `files` | frontmatter JSON 缓存，不作为正文存储 |
+| `tags` | `files` | 从 frontmatter 提取的标签 JSON 数组，用于后续范围过滤 |
+| `heading_outline` | `files` | 章节结构缓存，用于文档级上下文选择 |
+| `index_version` | `files` | 索引算法升级时触发重建 |
+| `source_hash` | `chunks` | 生成 chunk 时的文件 hash，用于识别过期索引 |
+| `index_version` | `chunks` | 生成 chunk 时使用的索引算法版本 |
+
+其中 `stable_id` 不替换现有 `files.id`。`files.id` 继续作为 SQLite 内部关联主键，`stable_id` 用于长期引用、路径变更识别和未来多文件任务。
+
 ### 3.1 建表语句
 
 ```sql
@@ -91,8 +119,17 @@ SQLite 只存索引数据，不存文件内容本体。所有表支持 CASCADE �
 CREATE TABLE IF NOT EXISTS files (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   path        TEXT UNIQUE NOT NULL,           -- 相对 /notes/ 的路径
-  title       TEXT,                            -- 从首个 h1 或文件名提取
+  title       TEXT,                            -- 从 frontmatter.title、首个 h1 或文件名提取
+  stable_id   TEXT,                            -- frontmatter id 或 notus_ 前缀生成 ID
   hash        TEXT,                            -- 文件内容 SHA-256
+  size        INTEGER NOT NULL DEFAULT 0,
+  mtime       INTEGER NOT NULL DEFAULT 0,
+  char_count  INTEGER NOT NULL DEFAULT 0,
+  token_count INTEGER NOT NULL DEFAULT 0,
+  frontmatter TEXT,
+  tags        TEXT,
+  heading_outline TEXT,
+  index_version INTEGER NOT NULL DEFAULT 1,
   indexed     INTEGER DEFAULT 0,               -- 0=未索引 1=已索引
   indexed_at  DATETIME,
   created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -100,6 +137,11 @@ CREATE TABLE IF NOT EXISTS files (
 );
 CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
 CREATE INDEX IF NOT EXISTS idx_files_indexed ON files(indexed);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_files_stable_id
+  ON files(stable_id)
+  WHERE stable_id IS NOT NULL AND stable_id != '';
+CREATE INDEX IF NOT EXISTS idx_files_mtime ON files(mtime);
+CREATE INDEX IF NOT EXISTS idx_files_hash ON files(hash);
 
 -- 分块
 CREATE TABLE IF NOT EXISTS chunks (
@@ -112,10 +154,14 @@ CREATE TABLE IF NOT EXISTS chunks (
   line_end     INTEGER,
   heading_path TEXT,                            -- 所属 heading 层级，如 "性能优化 > 缓存策略"
   has_image    INTEGER DEFAULT 0,
-  search_text  TEXT                             -- 应用层分词后的检索字段
+  search_text  TEXT,                            -- 应用层分词后的检索字段
+  source_hash  TEXT,                            -- 生成 chunk 时的文件 hash
+  index_version INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_file_id ON chunks(file_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_position ON chunks(file_id, position);
+CREATE INDEX IF NOT EXISTS idx_chunks_source_hash ON chunks(source_hash);
+CREATE INDEX IF NOT EXISTS idx_chunks_index_version ON chunks(index_version);
 
 -- 向量（sqlite-vec 虚拟表，维度由 EMBEDDING_DIM 环境变量决定）
 -- 建表语句由 lib/db.js 在初始化时动态拼接（见 §3.2）
@@ -196,6 +242,10 @@ CREATE TABLE IF NOT EXISTS conversations (
   title      TEXT,
   file_id    INTEGER REFERENCES files(id) ON DELETE SET NULL,
   draft_key  TEXT,                             -- 仅用于兼容旧版未保存草稿会话，现行前端新流程不再创建新的 draft 会话
+  read_scope TEXT,                             -- JSON：允许读取哪些 Markdown
+  retrieval_scope TEXT,                        -- JSON：检索召回范围
+  write_scope TEXT,                            -- JSON：允许生成修改预览的范围
+  style_scope TEXT,                            -- JSON：风格参考范围
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -278,6 +328,38 @@ db.exec(`
 
 ## 4. 核心库接口（`lib/*.js`）
 
+### 4.0 工作区 Agent 目标分层
+
+当前版本的知识库问答和创作画布已经具备工作区 Agent 的基础能力。第一阶段已完成会话范围、文档级上下文、索引元数据和工具层骨架；后续仍会继续扩展多文件任务和文件管理类工具。
+
+```
+用户界面层
+  - 当前文件 / 目录 / 选中文件 / 全库范围
+  - 只读分析 / 生成预览 / 确认写入
+  - 风格参考范围
+
+会话状态层
+  - conversation.kind
+  - read_scope / retrieval_scope / write_scope / style_scope
+  - 当前任务、交互卡片、批量预览、最近决策摘要
+
+工作区工具层
+  - search_knowledge / read_file / get_style_context
+  - ask_user / preview_edit_article
+  - create_note / rename_file / move_file
+  - update_frontmatter / preview_patch_files
+  - rename_file / move_file / merge_notes / split_note
+  - analyze_folder / check_links
+
+执行与审查层
+  - 单文件块级 diff
+  - 多文件批量预览
+  - 高风险操作确认
+  - 应用后自动索引
+```
+
+短期内不要求一次性实现完整多文件工具，但新的 Agent 能力必须能归入上述分层，避免继续把产品做成单纯聊天或单文件改写。
+
 ### 4.1 `lib/db.js`
 
 ```javascript
@@ -311,13 +393,29 @@ function removeFile(relativePath)
 
 **`indexFile` 流程：**
 1. 读文件，计算 SHA-256 hash
-2. 查 files 表，hash 未变 → 返回 `{skipped: true}`
-3. hash 变化 → 删除旧 chunks（CASCADE 自动清 vec/fts/images）
-4. `splitIntoChunks` 分块
-5. 事务批量写 chunks 表（FTS 触发器自动同步）
-6. 逐块调用 `getEmbedding`，写 chunks_vec
-7. Embedding 失败 → 标记 `files.indexed = 0`，不抛错，后台任务重试
-8. 成功 → 更新 files 表 hash、indexed=1、indexed_at
+2. 解析 frontmatter、tags、heading outline、size、mtime、char_count、token_count
+3. 查 files 表，hash 与 `index_version` 均未变化 → 更新轻量元数据并返回 `{skipped: true}`
+4. hash 或版本变化 → 删除旧 chunks 与对应向量，只重建当前文件
+5. `splitIntoChunks` 分块
+6. 事务批量写 chunks 表，写入 `source_hash` 和 `index_version`（FTS 触发器自动同步）
+7. 批量生成 embedding，写 `chunks_vec`
+8. Embedding 失败 → 标记 `files.indexed = 0`，不抛错，后台任务重试
+9. 成功 → 更新 files 表 hash、indexed=1、indexed_at、index_version
+
+迁移要求：
+
+- `lib/db.js` 只能做非破坏性 `ALTER TABLE` 和索引补齐，不得在普通迁移中清空 `chunks_vec`
+- `chunks.source_hash` 初次迁移时回填为对应 `files.hash`
+- 切换 embedding 维度时仍由 `resetVec(dim)` 显式重建向量表
+- `stable_id` 不替代现有 `files.id`，旧向量仍通过 `chunks.id -> chunks_vec.chunk_id` 关联
+
+`stable_id` 策略：
+
+- frontmatter 有唯一 `id` 时使用它
+- 没有 frontmatter id 时仅在数据库生成 `notus_` 前缀 ID
+- 旧 Markdown 不批量写回 frontmatter
+- Notus 新建 Markdown 时写入 frontmatter id
+- 重复 frontmatter id 不覆盖既有文件身份，当前文件使用数据库生成 ID
 
 ### 4.3 `lib/embeddings.js`
 
@@ -370,6 +468,14 @@ async function hybridSearch(query, opts)
 - `stats`
 - `sufficiency`
 
+新增 `retrieveWorkspaceDocuments(queryPlan, opts)`，在保留现有 `hybridSearch()` 与 `retrieveKnowledgeContext()` 的基础上增加文档级上下文：
+
+- 根据命中 chunks / sections 聚合到 `file_id`
+- 通过 `files.path` 从文件系统读取真实 Markdown 正文
+- 重新计算当前文件 hash；若与 `files.hash` 不同，返回 `stale_index: true`，本次仍使用最新正文
+- 小文档传完整正文；超出单文档预算时传 heading outline、命中章节和相邻上下文，并标记 `truncated: true`
+- SSE 只返回 `document_summaries` 与 `document_stats`，不把完整正文直接发给前端
+
 其中：
 
 - `query_plan` 固定包含 `intent / clarity_score / ambiguity_flags / clarify_needed / clarify_question / rewrite_strategy`
@@ -385,7 +491,8 @@ async function hybridSearch(query, opts)
 6. 对 heading chunk 做正文提升
 7. 将命中 chunk 扩展成 section 级证据包
 8. 基于证据包质量计算 `sufficiency`
-9. 必要时对最多 8 个 section 做单次条件 rerank
+9. 将候选 chunk/section 聚合为文档级上下文，从文件系统读取真实 Markdown
+10. 必要时对最多 8 个 section 做单次条件 rerank
 
 **单索引约束：**
 
@@ -470,6 +577,8 @@ async function runCanvasAgent({
 
 1. `resolveCanvasRequest()`：
    - 先用规则识别 `@bN / @b2-b5 / 第 N 段 / 全文 / 上一轮目标块延续 / 上一轮建议摘要延续`
+   - 对“把/将 A 改为 / 换成 / 替换为 B”这类确定性短语，先尝试在显式 `@`、最近目标块和当前候选块中做唯一命中；唯一命中时直接按编辑意图和单块改写处理，多命中时回退为结构化澄清
+   - “写一篇文章 / 写正文 / 起草文章”命中后，直接按 `primary_intent=edit + scope_mode=global` 处理，不允许默认落到 `analyze`
    - 固定输出 `intent_candidates / primary_intent / intent_confidence / target_candidates / source_candidates / source_content_type / target_anchor / position_relation / write_action / risk_level / decision_path / decision_summary / ai_arbitration_mode`
    - 兼容保留旧字段 `intent / scope_mode / target_block_ids / candidate_block_ids / operation_kind / clarify_needed / clarify_reason / missing_slots / prefilled_answers / answer_slots / summary_instruction`
    - 规则层先产出候选，不直接一把定案；只有低置信或高风险场景才触发单次 `canvas_query_plan` helper
@@ -479,7 +588,9 @@ async function runCanvasAgent({
    - `text` 走流式文本回复
    - `analyze` 走文章分析文本回复
    - `edit` 走单块 / 多块 / 全文分批执行器
+   - 当 `deterministic_edit + 单块唯一命中` 同时成立时，执行器可直接构造同块 `replace` 预览，不再额外调用 LLM
    - 对“把上面的内容写到文档中”这类已冻结来源内容的请求，优先用来源快照直接构造写入预览，不重新生成同一段正文
+   - 续跑 interaction 前必须基于最新 `article.blocks` 重新校验 `target_block_id`；如果块已不存在，返回新的 `clarify_needed`，只要求重新确认位置，不允许继续硬跑到 `BLOCK_NOT_FOUND`
    - 助手结果会额外回传 `primary_intent / intent_confidence / risk_level / decision_summary / ai_arbitration_mode / source_content_type / target_anchor / position_relation / write_action / correction_state / show_decision_summary`
 
 全文改写固定规则：
@@ -610,9 +721,9 @@ GET  /api/files/tree                 → Array<folder|file 节点>
                                      folder: { type:'folder', name, path, children }
 GET  /api/files/:id                  → { id, path, title, name, content, indexed, updated_at }
 POST /api/files                      Body: { path, content?, kind?: 'file'|'folder' } → 创建文件或文件夹
-PUT  /api/files/:id                  Body: { content } → 保存 + 触发增量索引
+PUT  /api/files/:id                  Body: { content } → 保存 + 触发增量索引；响应非破坏性新增 `title_binding_applied`、`title_binding_warning`
 DELETE /api/files/:id
-POST /api/files/rename               Body: { old_path, new_path }
+POST /api/files/rename               Body: { old_path, new_path } 或 { id, name } → 重命名；响应非破坏性新增 `title_binding_applied`、`title_binding_warning`
 POST /api/files/move                 Body: { paths, dest }
 POST /api/files/import               Body: {
                                        parentPath?,
@@ -623,7 +734,7 @@ POST /api/files/import               Body: {
                                        { type: 'progress', current, total, currentFile }
                                        { type: 'file', status, name, path, id?, indexed?, error? }
                                        { type: 'done', imported, overwritten, skipped, failed, total }
-GET  /api/files/export               Query: ?ids=1,2 or ?paths=a.md,b.md → ZIP
+GET  /api/files/export               Query: ?ids=1,2 or ?paths=a.md,b.md → 单文件返回原始 Markdown，多文件返回 ZIP；`Content-Disposition` 需兼容中文文件名
 GET  /api/files/:id/content-image    Query: ?src=https://... → 缓存图片并返回；失败时 307 回源
 ```
 
@@ -759,16 +870,17 @@ DELETE /api/conversations/:id
 - 知识库页默认只按 `kind=knowledge` 读取全局历史，不再用 `file_id` 分桶。
 - 创作页会话默认按 `kind=canvas + file_id` 读取；`draft_key` 仅保留给旧数据兼容与迁移。
 - 画布会话详情会附带 `pending_operation_sets`，前端刷新后可恢复全部未应用预览。
-- 画布会话详情还会附带 `pending_interactions`，前端刷新后可恢复 `pending / stale / failed` 提问卡片。
+- 画布会话详情还会附带 `pending_interactions`，前端刷新后可恢复 `pending / stale / failed` 提问卡片；`pending / failed` 卡片在前端以右侧 AI 面板底部列表抽屉形式恢复，不再内联到消息流。结构化澄清应始终返回卡片抽屉，不因多轮澄清降级成纯文本追问。
 
 ### 5.8 设置
 
 ```
-GET  /api/settings                   → { notes_dir, assets_dir, setup_completed, embedding, llm, layout }
+GET  /api/settings                   → { notes_dir, assets_dir, setup_completed, embedding, llm, editor, layout }
 PUT  /api/settings                   Body: {
                                        notes_dir?, assets_dir?, setup_completed?,
                                        embedding?: { provider?, model?, dim?, multimodal_enabled?, base_url?, api_key? },
                                        llm?: { provider?, model?, base_url?, api_key? },
+                                       editor?: { title_filename_binding_enabled? },
                                        layout?: { knowledge_left_percent?, canvas_left_percent? }
                                      }
                                      → 持久化到 settings 表
@@ -778,6 +890,7 @@ POST /api/settings/test              Body: { kind: 'embedding'|'llm', config }
 
 - `layout.knowledge_left_percent`：知识库页左侧编辑区宽度百分比
 - `layout.canvas_left_percent`：创作页左侧画布区宽度百分比
+- `editor.title_filename_binding_enabled`：标题与文件名双向绑定开关，默认 `false`
 
 ---
 
@@ -817,6 +930,7 @@ POST /api/settings/test              Body: { kind: 'embedding'|'llm', config }
 - 章节证据扩展：命中 seed chunk 后，补齐同 heading 下的邻近 chunk，合并为可直接回答的 section 证据包
 - 条件 rerank：仅在复杂问题或候选不稳定时触发，且一轮只允许一次 helper
 - 证据保守策略：只命中文档标题但正文证据不足时，明确说明“已定位到相关文档，但正文证据有限”
+- 展示口径统一：SSE 需显式回传 `source_count`，让检索状态条、助手消息元数据和最终来源卡片使用同一份来源计数；检索状态、补充说明和来源卡片在前端与 AI 回复正文共用同一个回复容器；只命中文档标题且正文几乎没有有效内容的候选，不进入最终来源卡片
 - 回答模式：固定为 `clarify_needed / grounded / weak_evidence / conflicting_evidence / no_evidence`
 - helper 缓存：`rewrite` 与 `rerank` 使用 5 分钟短时缓存，键包含会话、查询、当前文档、参考模式、参考文件和历史摘要哈希
 
@@ -862,7 +976,30 @@ function applyOperation(article, op) {
 }
 ```
 
+补充约束：
+
+- AI 返回 `replace / delete` 操作时，如果 `old` 缺失，必须回填为目标块当前真实内容
+- 如果模型返回的 `old` 只是目标块正文的裁剪片段、只存在换行差异，或与当前块内容存在明确包含关系，应在服务端归一到当前块真实内容后再进入最终比对，避免用户未改文档也触发 `OLD_MISMATCH`
+- 若最终仍因文章内容变化而返回 `OLD_MISMATCH`，前端应把该预览标记为过期，并提示用户重新生成，而不是直接暴露底层错误码
+
 成功后：更新画布 state → 序列化 blocks 为 MD 文本 → 写回 MD 文件 → watcher 触发增量索引。
+
+### 6.6 编辑器块级对齐
+
+- 所见即所得编辑器需要支持“文本居中”按钮，作用范围限于 `paragraph / heading`
+- 居中不是纯前端临时样式，保存后必须继续可回读
+- Markdown 持久化时使用可解析的块级容器语法包裹居中段落，再由编辑器解析链路恢复为 `textAlign=center`
+
+### 6.7 编辑器图片预览
+
+- 文件页与知识库页复用同一套所见即所得编辑器图片预览逻辑，不额外在页面层分叉实现
+- 编辑器必须单独接管剪贴板中的图片文件，优先读取为 data URL 后插入文档，避免浏览器默认粘贴与编辑器内容同步相互覆盖，导致连续粘贴时只短暂闪现后丢失
+- Tiptap 图片节点需要允许解析 data URL，保证工具栏插图与剪贴板图片走同一条稳定的持久化链路
+- 点击编辑器正文内的图片后，前端只收集当前 `.ProseMirror` 节点下的图片列表，预览切换范围严格限定为当前文档
+- 预览层需要支持 `ArrowLeft` / `ArrowRight` 切换上一张或下一张图片，支持 `Escape` 关闭
+- 文档内容变化时，如果预览仍处于打开状态，前端应重新同步当前文档图片列表；若图片列表已为空，则自动关闭预览层
+- 预览打开期间需要锁定页面滚动，避免底层编辑区跟随方向键或滚轮产生干扰
+- 标题层级下拉按钮打开菜单时，触发器 tooltip 必须立即关闭，不能残留遮挡菜单内容
 
 ---
 
@@ -916,37 +1053,19 @@ API Key 运行时可在设置页覆盖，优先级：设置页保存值 > 环境
 
 ## 9. 懒猫微服部署（v1 单体）
 
-### 9.1 `lzc-manifest.yml`
+### 9.1 `package.yml`
 
 ```yaml
 package: cloud.lazycat.app.notus
-version: 0.1.2
+version: 0.1.3
 name: Notus
 description: 私有化个人知识库与 AI 写作协作工具
-license: MIT
-author: YourName
-
-application:
-  subdomain: notus
-  image: registry.lazycat.cloud/library/node:20-alpine
-  upstreams:
-    - location: /
-      backend: http://127.0.0.1:3000
-      disable_trim_location: true
-      backend_launch_command: /bin/sh /lzcapp/pkg/content/lzc/run.sh
-  environment:
-    - NODE_ENV=production
-    - PORT=3000
-    - NOTES_DIR=/lzcapp/var/notes
-    - ASSETS_DIR=/lzcapp/var/assets
-    - DB_PATH=/lzcapp/var/data/index.db
-  public_path:
-    - /lzcapp/var/notes
-    - /lzcapp/var/assets
-    - /lzcapp/var/data
-  health_check:
-    start_period: "45s"
-    test_url: "http://127.0.0.1:3000/api/health"
+author: dnwwdwd
+license: Apache-2.0
+homepage: https://github.com/dnwwdwd/Notus
+unsupported_platforms:
+  - ios
+  - android
 
 locales:
   zh:
@@ -960,16 +1079,41 @@ locales:
     description: Private personal knowledge base and AI writing assistant
 ```
 
-**注意：** v1 单体架构（`application.upstreams` + `backend_launch_command`，无 `services` 块）。
+静态元数据统一写入 `package.yml`；当前 `.lpk` 包标识符固定为 `cloud.lazycat.app.notus`，并通过 `unsupported_platforms` 显式声明不支持 `ios` 与 `android`。
 
-### 9.2 `lzc-build.yml`
+### 9.2 `lzc-manifest.yml`
+
+```yaml
+application:
+  subdomain: notus
+  image: registry.lazycat.cloud/u30387910/library/node:549f023f95a10c59
+  background_task: false
+  upstreams:
+    - location: /
+      backend: http://127.0.0.1:3000
+      disable_trim_location: true
+      backend_launch_command: /bin/sh /lzcapp/pkg/content/lzc/run.sh
+  environment:
+    - NODE_ENV=production
+    - PORT=3000
+    - NOTES_DIR=/lzcapp/var/notes
+    - ASSETS_DIR=/lzcapp/var/assets
+    - DB_PATH=/lzcapp/var/data/index.db
+  health_check:
+    start_period: "90s"
+    test_url: "http://127.0.0.1:3000/api/health"
+```
+
+**注意：** 当前仓库使用 LPK v2 结构，`lzc-manifest.yml` 只保留运行时配置；静态字段不要再写回 manifest 顶层。运行形态仍为 v1 单体架构（`application.upstreams` + `backend_launch_command`，无 `services` 块）。
+
+### 9.3 `lzc-build.yml`
 
 ```yaml
 buildscript: ./lzc/build-package.sh
 contentdir: ./lzc-dist
 ```
 
-### 9.3 `lzc/build-package.sh`
+### 9.4 `lzc/build-package.sh`
 
 ```bash
 #!/bin/sh
@@ -998,7 +1142,7 @@ cp LICENSE README.md "$DIST/" 2>/dev/null || true
 chmod +x "$DIST/lzc/run.sh"
 ```
 
-### 9.4 `lzc/run.sh`
+### 9.5 `lzc/run.sh`
 
 ```bash
 #!/bin/sh
@@ -1046,12 +1190,30 @@ exec node server.js
 - M2-01 App Shell（TopBar + Sidebar + Layout）
   - TopBar 顶部保存按钮统一承载 `saving / dirty / saved` 三种状态；其中 `dirty` 必须使用红色文字和红色边框，明确提示当前内容尚未保存
   - 文件页、知识库页、创作页在当前内容为 `dirty` 时，从侧边栏、顶部搜索或页内切换到其他文档前都必须先触发同一套未保存确认弹窗；确认保存或放弃后，才允许继续跳转
+  - 创作页对 `?fileId=` 的处理必须避免“旧 query 把新选中文档写回去”的状态循环；切换中的目标文档只有在文章内容真正切到目标文件后，才能释放路由同步保护
+  - 侧边栏“新建文件后自动打开”必须复用与普通点文件相同的页面级切换入口；当页面存在未保存守卫或创作页路由保护时，不能在共享上下文里直接 `selectFile`
+  - 文件页、知识库页、创作页在同页切换 `fileId` 时都必须触发路由更新；知识库页和创作页的同页切文档也应显示统一的全局 `PageTransitionOverlay`
 - M2-02 FileTree 组件 + `/api/files/*` API
+  - 前端所有可见文档标签统一优先 `title`，其次显示去掉 `.md` 的文件名，最后才使用占位文案；禁止显示 `article_xxx`、`notus_xxx`、裸 `fileId` 这类技术标识
+  - 侧边栏显式重命名属于强制改名操作；若目标文件已存在，整次重命名必须失败，不能覆盖已有文件
+  - 当 `editor.title_filename_binding_enabled=true` 时，侧边栏显式重命名后需要同步更新正文首个可见 H1；若正文没有 H1，则自动补一个新的一级标题
 - M2-03 WYSIWYG Markdown 编辑器 + Typora 风格 CSS
+  - 文件页、知识库页和创作页的可见编辑区都必须隐藏仅包含系统 `id` 的 frontmatter；保存时再与正文重新合并，避免在编辑区直接暴露内部 fileId 风格文案
+  - 当 `editor.title_filename_binding_enabled=true` 时，文件页与知识库页在手动保存 Markdown 时，需要读取正文首个可见 H1，规范化后尝试同步文件名；若目标文件名冲突，正文保存仍需成功，但响应里要返回 `title_binding_warning`
+  - 编辑器粘贴 Markdown 纯文本时，必须继续启用 `tiptap-markdown` 的 `transformPastedText`，并补齐与当前支持语法对应的 Tiptap 节点；至少要覆盖标题、列表、任务列表和 GFM 表格，避免“支持粘贴 Markdown 但表格退化成普通文本”
+  - 编辑器在加载已有 Markdown 文档时，必须把标题和 GFM 表格稳定还原为真实的 `heading/table` 节点；同时在所见即所得里直接输入完整的 Markdown 表格语法后，也要自动把该语法块转换为真正的表格节点，而不是长期停留在普通段落文本
+  - 所见即所得编辑器中的 GFM 表格必须显示外框、单元格边框、表头背景和选中单元格反馈；编辑态显示不能弱于 Markdown 预览区的表格可读性
+  - 当剪贴板同时包含 HTML 与纯文本，且纯文本命中 `$...$` / `$$...$$` 数学语法时，编辑器需要优先按 Markdown 解析这一份纯文本，保证公式第一次粘贴就直接进入 KaTeX 渲染态，而不是先显示源码、再靠回车触发转换
+  - 编辑器必须支持 `$...$` 行内公式与 `$$...$$` 块级公式，并统一使用 KaTeX 渲染；数学节点需可点击再次编辑，不能只做到一次性显示后无法修改
+  - 编辑器中的图片必须支持文档内预览，点击图片后可在当前文档范围内查看大图，并用左右方向键切换相邻图片
 - M2-04 MarkdownRenderer（remark/rehype 插件链）
+  - Markdown 展示链路必须补齐 `remark-math + rehype-katex`，保证预览区、聊天流式回答和编辑器输出的公式语法一致
 - M2-05 TocTree + 滚动高亮
+  - 文件页 TOC 必须统一基于编辑器真实渲染的 `h1~h6` 节点生成；采集、点击跳转和滚动高亮不能只覆盖前三级标题
+  - 文件页 TOC 在切换文档或编辑器回填 Markdown 内容后，必须允许等待编辑器 DOM 稳定再刷新，不能因为首帧未完成渲染就把已有标题误判成空 TOC
 - M2-06 URL hash 来源跳转 + 3s 高亮淡出
 - M2-07 批量导入/导出 API + SSE 进度
+  - 导出接口在只收到 1 个文件时直接返回原始 Markdown 响应，只有多文件时才生成 zip
 - M2-08 `/indexing` 页面
 
 ### M3 知识库问答
@@ -1062,6 +1224,10 @@ exec node server.js
 - M3-04 `/api/chat` SSE 流式 API
 - M3-05 ChatArea + SourceCard 组件
 - M3-06 多模型切换下拉（支持搜索）
+- 知识库页与创作页在流式回复开始后，都必须立即渲染 AI 气泡占位；首 token 到来前使用固定占位的柔和三点等待态，避免布局跳动。知识库检索状态必须进入 AI loading 气泡内部，按“分析问题 / 检索笔记 / 找到证据 / 组织答案”等步骤动态切换，不作为独立状态条固定在回复外部
+- 输入框生成中只保留停止按钮；真正的“AI 正在回复”反馈只能放在 AI 回复气泡区，不能继续放在输入框内部
+- AI 回复气泡本体不显示边框；来源卡片、状态徽标等内部组件可按自身语义保留必要边界
+  - 模型选择器必须固定在输入框右下角发送/停止按钮左侧；触发器在窄宽度下单行 `ellipsis` 缩略显示，菜单项仍展示完整模型名
 
 ### M4 AI 创作画布
 
@@ -1079,8 +1245,9 @@ exec node server.js
 
 ### M5 体验打磨 & 部署
 
-- M5-01 设置页（模型/存储/快捷键/关于 + 校验流程；LLM 预算字段持久化但不在卡片中展示）
+- M5-01 设置页（模型/个性化/存储/快捷键/关于 + 校验流程；LLM 预算字段持久化但不在卡片中展示）
 - M5-02 CommandPalette（cmdk）
+  - 顶部全局文章搜索弹层打开后，搜索输入框必须自动聚焦，保证鼠标或快捷键唤起后都能直接输入，不需要再额外点击一次
 - M5-03 快捷键绑定
 - M5-04 Toast 全局错误降级
 - M5-05 主题样式基础（当前不单独提供外观设置入口）

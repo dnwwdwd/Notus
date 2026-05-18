@@ -165,6 +165,54 @@ async function runTests() {
   }
 
   {
+    const article = {
+      title: '测试文章',
+      blocks: [
+        { id: 'b1', type: 'paragraph', content: '第一段' },
+        { id: 'b2', type: 'paragraph', content: '第二段内容，包含更多解释。' },
+      ],
+    };
+    const { agent, restore } = withMockedCanvasAgent({
+      completeChat: async () => ({
+        message: {
+          content: JSON.stringify({
+            summary: '已按第二段生成修改。',
+            operations: [
+              { op: 'replace', block_id: 'b2', old: '第二段内容', new: '第二段内容，包含更多解释。（已精简）' },
+            ],
+          }),
+        },
+      }),
+    });
+    try {
+      const result = await agent.runCanvasAgent({
+        userInput: '精简 @b2',
+        article,
+        conversationHistory: [],
+        forcedPlan: {
+          intent: 'edit',
+          primary_intent: 'edit',
+          scope_mode: 'single',
+          target_block_ids: ['b2'],
+          operation_kind: 'rewrite',
+          helper_used: false,
+          needs_style: false,
+          needs_knowledge: false,
+          clarify_needed: false,
+        },
+      });
+      assert.strictEqual(result.operations.length, 1);
+      assert.strictEqual(
+        result.operations[0].old,
+        '第二段内容，包含更多解释。',
+        'operation.old should be normalized to the live block content when model only returns a partial old snapshot'
+      );
+    } finally {
+      restore();
+    }
+  }
+
+  {
     let callCount = 0;
     const events = [];
     const article = buildParagraphArticle(13);
@@ -299,6 +347,100 @@ async function runTests() {
       assert.strictEqual(result.operations[0].block_id, 'b2');
       assert.strictEqual(result.operations[0].new, '这是第一段。');
       assert.strictEqual(result.operations[1].new, '这是第二段。');
+    } finally {
+      restore();
+    }
+  }
+
+  {
+    let called = false;
+    const article = {
+      title: '测试文章',
+      blocks: [
+        { id: 'b1', type: 'paragraph', content: '第一段' },
+        { id: 'b2', type: 'paragraph', content: '第二段内容' },
+      ],
+    };
+    const { agent, restore } = withMockedCanvasAgent({
+      completeChat: async () => {
+        called = true;
+        throw new Error('deterministic edit should not call llm');
+      },
+      streamChat: async () => {
+        throw new Error('deterministic edit should not stream');
+      },
+    });
+    try {
+      const result = await agent.runCanvasAgent({
+        userInput: '将第二段内容换成第二段内容（已精简）',
+        article,
+        conversationHistory: [],
+        forcedPlan: {
+          intent: 'edit',
+          primary_intent: 'edit',
+          scope_mode: 'single',
+          target_block_ids: ['b2'],
+          operation_kind: 'rewrite',
+          helper_used: false,
+          needs_style: false,
+          needs_knowledge: false,
+          clarify_needed: false,
+          deterministic_edit: {
+            source_text: '第二段内容',
+            target_text: '第二段内容（已精简）',
+          },
+        },
+      });
+      assert.strictEqual(called, false);
+      assert.strictEqual(result.operations.length, 1);
+      assert.strictEqual(result.operations[0].op, 'replace');
+      assert.strictEqual(result.operations[0].block_id, 'b2');
+      assert.strictEqual(result.operations[0].new, '第二段内容（已精简）');
+    } finally {
+      restore();
+    }
+  }
+
+  {
+    const article = {
+      title: '测试文章',
+      blocks: [
+        { id: 'b1', type: 'paragraph', content: '第一段' },
+        { id: 'b2', type: 'paragraph', content: '第二段内容' },
+      ],
+    };
+    const { agent, restore } = withMockedCanvasAgent({
+      completeChat: async () => ({
+        message: {
+          content: JSON.stringify({
+            summary: '已按要求修改。',
+            operations: [
+              { op: 'replace', block_id: 'b1', old: '第一段', new: '第一段（已修改）' },
+            ],
+          }),
+        },
+      }),
+    });
+    try {
+      const result = await agent.runCanvasAgent({
+        userInput: '精简 @b2',
+        article,
+        conversationHistory: [],
+        forcedPlan: {
+          intent: 'edit',
+          primary_intent: 'edit',
+          scope_mode: 'single',
+          target_block_ids: ['b2'],
+          operation_kind: 'rewrite',
+          helper_used: false,
+          needs_style: false,
+          needs_knowledge: false,
+          clarify_needed: false,
+        },
+      });
+      assert.strictEqual(result.operations.length, 1);
+      assert.strictEqual(result.operations[0].block_id, 'b2');
+      assert.strictEqual(result.operations[0].old, '第二段内容');
     } finally {
       restore();
     }

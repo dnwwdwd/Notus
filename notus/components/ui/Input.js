@@ -90,7 +90,18 @@ export const SearchInput = forwardRef(({ value, placeholder = '搜索…', onCha
         fontSize: 'var(--text-sm)',
         color: 'var(--text-primary)',
         outline: 'none',
+        transition: 'border-color var(--transition-fast), box-shadow var(--transition-fast), background var(--transition-fast)',
         ...style,
+      }}
+      onFocus={(event) => {
+        event.currentTarget.style.borderColor = 'color-mix(in srgb, var(--accent) 40%, var(--border-primary))';
+        event.currentTarget.style.boxShadow = '0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent)';
+        rest.onFocus?.(event);
+      }}
+      onBlur={(event) => {
+        event.currentTarget.style.borderColor = 'var(--border-primary)';
+        event.currentTarget.style.boxShadow = 'none';
+        rest.onBlur?.(event);
       }}
       {...rest}
     />

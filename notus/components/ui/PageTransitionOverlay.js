@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
 import { NotusLogo } from './Icons';
+import { shouldSuppressQueryOnlyRouteOverlay } from '../../lib/canvasRouting';
 import { consumeNavigationTransition } from '../../utils/navigation';
 
 const HIDE_DELAY_MS = 180;
@@ -55,7 +56,14 @@ export function PageTransitionOverlay() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    const handleStart = () => {
+    const handleStart = (nextUrl, { shallow } = {}) => {
+      if (shouldSuppressQueryOnlyRouteOverlay({
+        currentUrl: router.asPath,
+        nextUrl,
+        shallow,
+      })) {
+        return;
+      }
       showOverlay();
     };
     const handleComplete = () => {

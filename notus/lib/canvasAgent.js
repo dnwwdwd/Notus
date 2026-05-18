@@ -50,6 +50,42 @@ function normalizeStringArray(values = []) {
   return [...new Set((Array.isArray(values) ? values : []).map((item) => String(item || '').trim()).filter(Boolean))];
 }
 
+function escapeRegExp(text = '') {
+  return String(text || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function replaceFieldValue(content = '', sourceText = '', targetText = '') {
+  const escapedSource = escapeRegExp(sourceText);
+  const fieldPattern = new RegExp(`(${escapedSource}\\s*(?:为|是|：|:)\\s*)([^\\n，。；;]+)`);
+  if (!fieldPattern.test(content)) return null;
+  return content.replace(fieldPattern, `$1${targetText}`);
+}
+
+function applyDeterministicRewrite(content = '', deterministicEdit = null) {
+  const sourceText = String(deterministicEdit?.source_text || '').trim();
+  const targetText = String(deterministicEdit?.target_text || '').trim();
+  if (!sourceText || !targetText || sourceText === targetText) return null;
+  const currentContent = String(content || '');
+  if (!currentContent) return null;
+  if (currentContent.includes(sourceText)) {
+    return currentContent.replace(sourceText, targetText);
+  }
+  return replaceFieldValue(currentContent, sourceText, targetText);
+}
+
+function buildDeterministicReplaceOperation(article, blockId, deterministicEdit = null) {
+  const block = findBlock(article, blockId);
+  if (!block) return null;
+  const nextContent = applyDeterministicRewrite(block.content || '', deterministicEdit);
+  if (!nextContent || nextContent === block.content) return null;
+  return {
+    op: 'replace',
+    block_id: block.id,
+    old: block.content || '',
+    new: nextContent,
+  };
+}
+
 function buildTelemetry() {
   return {
     usages: [],
@@ -73,19 +109,50 @@ function normalizeOperation(article, operation, options = {}) {
   if (!operation || typeof operation !== 'object') throw new Error('操作结果解析失败');
   const normalized = { ...operation };
   const allowedBlockIds = Array.isArray(options.allowedBlockIds) ? options.allowedBlockIds : [];
-  const resolvedBlockId = operation.block_id;
+  const fallbackBlockId = allowedBlockIds.length === 1 ? allowedBlockIds[0] : '';
+  let resolvedBlockId = operation.block_id;
+  let rewroteBlockId = false;
 
+  if (fallbackBlockId && resolvedBlockId && resolvedBlockId !== fallbackBlockId) {
+    resolvedBlockId = fallbackBlockId;
+    rewroteBlockId = true;
+  }
   if (normalized.op !== 'insert' && !findBlock(article, resolvedBlockId)) {
-    throw new Error('BLOCK_NOT_FOUND');
+    if (fallbackBlockId && findBlock(article, fallbackBlockId)) {
+      resolvedBlockId = fallbackBlockId;
+      rewroteBlockId = true;
+    } else {
+      throw new Error('BLOCK_NOT_FOUND');
+    }
   }
   if (allowedBlockIds.length > 0 && resolvedBlockId && !allowedBlockIds.includes(resolvedBlockId)) {
-    throw new Error('AI 只能修改当前选中的块');
+    if (fallbackBlockId && findBlock(article, fallbackBlockId)) {
+      resolvedBlockId = fallbackBlockId;
+      rewroteBlockId = true;
+    } else {
+      throw new Error('AI 只能修改当前选中的块');
+    }
   }
   if (resolvedBlockId) {
     normalized.block_id = resolvedBlockId;
   }
-  if ((normalized.op === 'replace' || normalized.op === 'delete') && !normalized.old) {
-    normalized.old = findBlock(article, normalized.block_id)?.content || '';
+  const liveBlockContent = findBlock(article, normalized.block_id)?.content || '';
+  if (normalized.op === 'replace' || normalized.op === 'delete') {
+    if (rewroteBlockId) {
+      normalized.old = liveBlockContent;
+    } else if (!normalized.old || !String(normalized.old).trim()) {
+      normalized.old = liveBlockContent;
+    } else if (liveBlockContent && normalized.old !== liveBlockContent) {
+      const normalizedOld = String(normalized.old).replace(/\r\n/g, '\n').trim();
+      const normalizedLive = String(liveBlockContent).replace(/\r\n/g, '\n').trim();
+      if (
+        normalizedOld === normalizedLive
+        || normalizedLive.includes(normalizedOld)
+        || normalizedOld.includes(normalizedLive)
+      ) {
+        normalized.old = liveBlockContent;
+      }
+    }
   }
   if (typeof normalized.new === 'string') {
     normalized.new = normalized.new.replace(/\r\n/g, '\n');
@@ -546,6 +613,33 @@ async function runCanvasAgent({
     ...(Array.isArray(plan.target_block_ids) ? plan.target_block_ids : []),
     resolvedTargetLocation?.block_id || '',
   ]);
+  const deterministicEdit = plan.deterministic_edit && typeof plan.deterministic_edit === 'object'
+    ? plan.deterministic_edit
+    : null;
+
+  if (resolvedPrimaryIntent === 'edit' && deterministicEdit && Array.isArray(plan.target_block_ids) && plan.target_block_ids.length === 1) {
+    const deterministicOperation = buildDeterministicReplaceOperation(article, plan.target_block_ids[0], deterministicEdit);
+    if (deterministicOperation) {
+      const deterministicSummary = `已按当前块内容直接生成替换预览：改写 ${blockRefLabel(article, deterministicOperation.block_id)}。`;
+      return {
+        canvasMode: 'edit',
+        scopeMode: 'single',
+        targetBlockIds: [deterministicOperation.block_id],
+        operationKind: plan.operation_kind || 'rewrite',
+        helperUsed: Boolean(plan.helper_used),
+        styleContextMode: 'none',
+        operations: [deterministicOperation],
+        citations: [],
+        text: deterministicSummary,
+        focusSummary: deterministicSummary,
+        fallbackReason: null,
+        ...decisionContext,
+        usage: sumUsageRecords(telemetry.usages),
+        budget: getLastBudget(telemetry),
+        compacted: telemetry.compacted,
+      };
+    }
+  }
 
   if (resolvedPrimaryIntent === 'edit' && resolvedSourceSnapshot && resolvedWriteMode) {
     const sourceBlocks = buildSnapshotBlocks(resolvedSourceSnapshot);

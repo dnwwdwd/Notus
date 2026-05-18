@@ -3,6 +3,7 @@ const { getEmbedding } = require('./embeddings');
 const { getEffectiveConfig } = require('./config');
 const { buildFtsQuery, segmentText } = require('./tokenizer');
 const { buildImageProxyUrl } = require('./images');
+const { getVisibleDocumentLabel } = require('./documentLabels');
 
 function rrfScore(rank, k) {
   return 1 / (k + rank);
@@ -402,7 +403,7 @@ async function hybridSearch(query, opts = {}) {
       return {
         chunk_id: candidate.chunk_id,
         file_id: row.file_id,
-        file_title: row.file_title || row.file_path,
+        file_title: getVisibleDocumentLabel({ title: row.file_title, path: row.file_path }, '未命名文档'),
         file_path: row.file_path,
         content: row.content,
         type: row.type,
@@ -453,7 +454,7 @@ function searchFileMatches(db, queries = [], options = {}) {
     rows.forEach((row, index) => {
       const current = byFile.get(row.file_id) || {
         file_id: row.file_id,
-        file_title: row.file_title || row.file_path,
+        file_title: getVisibleDocumentLabel({ title: row.file_title, path: row.file_path }, '未命名文档'),
         file_path: row.file_path,
         score: 0,
         matched_queries: [],
@@ -549,6 +550,15 @@ function sortChunks(chunks = []) {
     }
     return Number(right.base_score || 0) - Number(left.base_score || 0);
   });
+}
+
+function hasTextBodyEvidence(chunk) {
+  if (!chunk) return false;
+  if (chunk.image_id && !chunk.content) return false;
+  const content = String(chunk.content || '').trim();
+  if (!content) return false;
+  if (chunk.type === 'heading' && content.length < 10) return false;
+  return content.length >= 12 || Boolean(chunk.image_id);
 }
 
 function capChunksPerFile(chunks = [], options = {}) {
@@ -811,7 +821,11 @@ async function retrieveKnowledgeContext(queryInput, opts = {}) {
 
   const sortedRankedChunks = sortChunks(rankedChunks);
   const sectionSeedChunks = sortedRankedChunks.slice(0, Math.max(topK * 2, 8));
-  const chunks = sortedRankedChunks.slice(0, topK);
+  const visibleChunks = sortedRankedChunks.filter((chunk) => {
+    if (chunk.title_match && !hasTextBodyEvidence(chunk)) return false;
+    return true;
+  });
+  const chunks = (visibleChunks.length > 0 ? visibleChunks : sortedRankedChunks).slice(0, topK);
   const sections = buildExpandedSections(db, sectionSeedChunks, {
     maxSections: Number(opts.maxSections || Math.max(topK * 2, 8)),
     maxQuotesPerSection: Number(opts.maxQuotesPerSection || 2),

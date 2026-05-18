@@ -61,6 +61,24 @@ const baseInteraction = {
 };
 
 function runTests() {
+  const customFirst = normalizeInteractionResponse(baseInteraction, {
+    response: {
+      answers: {
+        write_mode: {
+          option_id: 'append_new_blocks',
+          custom_text: '替换掉第 2 段',
+        },
+      },
+    },
+    answers: {
+      write_mode: {
+        option_id: 'append_new_blocks',
+        custom_text: '替换掉第 2 段',
+      },
+    },
+  });
+  assert.strictEqual(customFirst.answers.write_mode.value, 'replace_target');
+
   const partial = normalizeInteractionResponse(baseInteraction, {
     raw_text: '写到第 2 段后',
   });
@@ -85,11 +103,33 @@ function runTests() {
   const resumePlan = buildResumePlanFromInteraction({
     ...baseInteraction,
     response: resolved,
+  }, {
+    blocks: baseInteraction.payload.article_blocks.map((block) => ({
+      id: block.id,
+      type: block.type,
+      content: block.content,
+    })),
   });
   assert.strictEqual(resumePlan.operation_kind, 'insert');
   assert.deepStrictEqual(resumePlan.target_block_ids, ['b2']);
   assert.strictEqual(resumePlan.write_mode, 'append_new_blocks');
   assert.strictEqual(resumePlan.source_content_snapshot, '上一轮生成的正文。');
+
+  const staleTargetPlan = buildResumePlanFromInteraction({
+    ...baseInteraction,
+    response: resolved,
+  }, {
+    blocks: [
+      { id: 'b1', type: 'paragraph', content: '第一段' },
+      { id: 'b3', type: 'paragraph', content: '第三段' },
+    ],
+  });
+  assert.strictEqual(staleTargetPlan.clarify_needed, true);
+  assert.strictEqual(staleTargetPlan.clarify_reason, 'missing_target_location');
+  assert.deepStrictEqual(staleTargetPlan.missing_slots, ['target_location']);
+  assert.ok(staleTargetPlan.prefilled_answers.source_content_ref);
+  assert.ok(staleTargetPlan.prefilled_answers.write_mode);
+  assert.strictEqual(staleTargetPlan.target_block_ids.length, 0);
 
   const discussInteraction = {
     ...baseInteraction,
@@ -125,6 +165,12 @@ function runTests() {
   const discussPlan = buildResumePlanFromInteraction({
     ...discussInteraction,
     response: discussResponse,
+  }, {
+    blocks: baseInteraction.payload.article_blocks.map((block) => ({
+      id: block.id,
+      type: block.type,
+      content: block.content,
+    })),
   });
   assert.strictEqual(discussPlan.primary_intent, 'text');
   assert.strictEqual(discussPlan.intent, 'text');

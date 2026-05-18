@@ -1,5 +1,5 @@
 // TopBar — fixed 48px header with tabs + settings
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
 import { useApp } from '../../contexts/AppContext';
 import { useShortcuts } from '../../contexts/ShortcutsContext';
@@ -11,6 +11,7 @@ import { Spinner } from '../ui/Spinner';
 import { Tooltip } from '../ui/Tooltip';
 import { navigateWithFallback } from '../../utils/navigation';
 import { desktop as desktopClient } from '../../utils/platformClient';
+import { getVisibleDocumentLabel } from '../../lib/documentLabels';
 
 const HEADER_BREAKPOINTS = {
   compact: 960,
@@ -115,6 +116,7 @@ export const TopBar = ({
   const { activePage, allFiles, selectFile } = useApp();
   const { shortcuts, matchShortcut, displayShortcut } = useShortcuts();
   const { compact, iconOnly } = useHeaderWidthMode();
+  const searchInputRef = useRef(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState('');
   const tabs = [
@@ -128,6 +130,7 @@ export const TopBar = ({
     return allFiles
       .filter((file) => (
         file.path.toLowerCase().includes(keyword) ||
+        String(file.title || '').toLowerCase().includes(keyword) ||
         file.name.toLowerCase().includes(keyword)
       ))
       .slice(0, 12);
@@ -155,6 +158,16 @@ export const TopBar = ({
     setSearchOpen(false);
     setQuery('');
   }, []);
+
+  useEffect(() => {
+    if (!searchOpen) return undefined;
+
+    const frameId = window.requestAnimationFrame(() => {
+      searchInputRef.current?.focus();
+    });
+
+    return () => window.cancelAnimationFrame(frameId);
+  }, [searchOpen]);
 
   const prefetchRoute = useCallback((href) => {
     if (!href || typeof router.prefetch !== 'function') return;
@@ -186,7 +199,7 @@ export const TopBar = ({
         navigateWithFallback(router, href);
         return;
       }
-      if (router.asPath !== href && targetPage === 'files') {
+      if (router.asPath !== href) {
         navigateWithFallback(router, href, { mode: 'router' });
       }
     };
@@ -220,12 +233,13 @@ export const TopBar = ({
       <Dialog open={searchOpen} onClose={closeSearch} title="搜索文章" maxWidth={640}>
         <div style={{ display: 'grid', gap: 14 }}>
           <SearchInput
+            ref={searchInputRef}
             value={query}
             placeholder="输入标题或路径"
             onChange={(event) => setQuery(event.target.value)}
             style={{ height: 40 }}
           />
-          <div style={{ maxHeight: 360, overflow: 'auto', display: 'grid', gap: 6 }}>
+      <div style={{ maxHeight: 360, overflow: 'auto', display: 'grid', gap: 6 }}>
             {!query.trim() ? (
               <div style={{ padding: '24px 8px', textAlign: 'center', fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)' }}>
                 输入标题或路径后再开始搜索
@@ -249,7 +263,7 @@ export const TopBar = ({
                     gap: 4,
                   }}
                 >
-                  <span style={{ fontSize: 'var(--text-sm)', fontWeight: 500, color: 'var(--text-primary)' }}>{file.name}</span>
+                  <span style={{ fontSize: 'var(--text-sm)', fontWeight: 500, color: 'var(--text-primary)' }}>{getVisibleDocumentLabel(file, '未命名文档')}</span>
                   <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>{file.path}</span>
                 </button>
               ))

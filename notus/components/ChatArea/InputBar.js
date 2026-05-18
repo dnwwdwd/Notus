@@ -101,12 +101,14 @@ function MenuItem({ icon, label, hint, active, muted, onClick }) {
   );
 }
 
-const MODEL_PICKER_WIDTH = 118;
-const MODEL_MENU_WIDTH = 204;
+const MODEL_PICKER_WIDTH = 156;
+const MODEL_PICKER_COMPACT_WIDTH = 124;
+const MODEL_MENU_MIN_WIDTH = 260;
+const MODEL_MENU_MAX_WIDTH = 360;
 const MODEL_MENU_OFFSET = 3;
 const MODEL_MENU_EDGE_GAP = 8;
 
-function ModelPicker({ configs = [], selectedId, onChange, disabled }) {
+function ModelPicker({ configs = [], selectedId, onChange, disabled, compact = false }) {
   const triggerRef = useRef(null);
   const menuRef = useRef(null);
   const [open, setOpen] = useState(false);
@@ -140,7 +142,12 @@ function ModelPicker({ configs = [], selectedId, onChange, disabled }) {
     if (!trigger || typeof window === 'undefined') return;
 
     const rect = trigger.getBoundingClientRect();
-    const width = Math.min(MODEL_MENU_WIDTH, Math.max(168, window.innerWidth - MODEL_MENU_EDGE_GAP * 2));
+    const availableWidth = Math.max(180, window.innerWidth - MODEL_MENU_EDGE_GAP * 2);
+    const minWidth = Math.min(MODEL_MENU_MIN_WIDTH, availableWidth);
+    const width = Math.min(
+      Math.max(rect.width, minWidth),
+      Math.min(MODEL_MENU_MAX_WIDTH, availableWidth)
+    );
     const estimatedHeight = Math.min(
       252,
       Math.max(72, filteredOptions.length * 34 + (searchable ? 52 : 12))
@@ -194,6 +201,7 @@ function ModelPicker({ configs = [], selectedId, onChange, disabled }) {
 
   const label = selectedOption?.label || '未配置模型';
   const isDisabled = disabled || options.length === 0;
+  const triggerWidth = compact ? MODEL_PICKER_COMPACT_WIDTH : MODEL_PICKER_WIDTH;
 
   const menu = open && menuPosition ? createPortal(
     <div
@@ -276,11 +284,11 @@ function ModelPicker({ configs = [], selectedId, onChange, disabled }) {
               }}
             >
               <span style={{ display: 'grid', gap: 2, minWidth: 0 }}>
-                <span style={{ fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                <span style={{ fontSize: 13, lineHeight: 1.4, whiteSpace: 'normal', overflowWrap: 'anywhere' }}>
                   {option.label}
                 </span>
                 {option.name && option.name !== option.label ? (
-                  <span style={{ fontSize: 11, color: active ? '#C15F3C' : '#8A887F', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  <span style={{ fontSize: 11, color: active ? '#C15F3C' : '#8A887F', lineHeight: 1.35, whiteSpace: 'normal', overflowWrap: 'anywhere' }}>
                     {option.name}
                   </span>
                 ) : null}
@@ -307,9 +315,11 @@ function ModelPicker({ configs = [], selectedId, onChange, disabled }) {
           setOpen((prev) => !prev);
         }}
         style={{
-          width: MODEL_PICKER_WIDTH,
-          height: 34,
-          padding: '0 4px',
+          width: triggerWidth,
+          minWidth: triggerWidth,
+          maxWidth: triggerWidth,
+          minHeight: 34,
+          padding: '6px 10px',
           borderRadius: 10,
           border: 'none',
           background: 'transparent',
@@ -317,12 +327,10 @@ function ModelPicker({ configs = [], selectedId, onChange, disabled }) {
           display: 'inline-flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          gap: 5,
+          gap: 8,
           cursor: isDisabled ? 'not-allowed' : 'pointer',
           opacity: isDisabled ? 0.68 : 1,
-          flex: `0 0 ${MODEL_PICKER_WIDTH}px`,
-          minWidth: MODEL_PICKER_WIDTH,
-          maxWidth: MODEL_PICKER_WIDTH,
+          flex: `0 0 ${triggerWidth}px`,
           transition: 'color var(--transition-fast), transform var(--transition-fast), opacity var(--transition-fast)',
         }}
         onMouseDown={(event) => {
@@ -335,7 +343,18 @@ function ModelPicker({ configs = [], selectedId, onChange, disabled }) {
           event.currentTarget.style.transform = 'scale(1)';
         }}
       >
-        <span style={{ minWidth: 0, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12 }}>
+        <span
+          style={{
+            minWidth: 0,
+            flex: 1,
+            fontSize: 12,
+            lineHeight: 1.35,
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            textAlign: 'left',
+          }}
+        >
           {label}
         </span>
         <Icons.chevronUp
@@ -373,8 +392,13 @@ export const InputBar = ({
   const [plusMenuOpen, setPlusMenuOpen] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [cursorIndex, setCursorIndex] = useState(0);
+  const [activeMentionIndex, setActiveMentionIndex] = useState(0);
+  const [isComposing, setIsComposing] = useState(false);
+  const [dismissedMentionKey, setDismissedMentionKey] = useState('');
   const textareaRef = useRef(null);
   const shellRef = useRef(null);
+  const mentionListRef = useRef(null);
+  const mentionOptionRefs = useRef([]);
   const fileInputRef = useRef(null);
   const imageInputRef = useRef(null);
   const plusMenuRef = useRef(null);
@@ -475,13 +499,6 @@ export const InputBar = ({
     setPlusMenuOpen(false);
   };
 
-  const handleKeyDown = (event) => {
-    if (matchShortcut(event, shortcuts.chatSend.combo)) {
-      event.preventDefault();
-      handleSend();
-    }
-  };
-
   const canSend = Boolean(value.trim()) && !loading && !disabled && Boolean(selectedConfig);
   const menuPlacementStyle = { top: 'calc(100% + 8px)' };
 
@@ -492,6 +509,8 @@ export const InputBar = ({
     if (!match) return null;
 
     const mentionStart = beforeCursor.lastIndexOf('@');
+    const mentionKey = `${mentionStart}:${beforeCursor.slice(mentionStart, cursorIndex)}`;
+    if (dismissedMentionKey === mentionKey) return null;
     const query = String(match[1] || '').trim().toLowerCase();
     const options = mentionOptions
       .filter((option) => {
@@ -509,9 +528,36 @@ export const InputBar = ({
     return {
       start: mentionStart,
       end: cursorIndex,
+      key: mentionKey,
       options,
     };
-  }, [cursorIndex, mentionOptions, value]);
+  }, [cursorIndex, dismissedMentionKey, mentionOptions, value]);
+
+  useEffect(() => {
+    if (!activeMention?.options?.length) {
+      setActiveMentionIndex(0);
+      return;
+    }
+    setActiveMentionIndex((prev) => Math.min(Math.max(prev, 0), activeMention.options.length - 1));
+  }, [activeMention?.key, activeMention?.options?.length]);
+
+  useEffect(() => {
+    if (!activeMention?.options?.length) return;
+    const list = mentionListRef.current;
+    const option = mentionOptionRefs.current[activeMentionIndex];
+    if (!list || !option) return;
+
+    const optionTop = option.offsetTop;
+    const optionBottom = optionTop + option.offsetHeight;
+    const visibleTop = list.scrollTop;
+    const visibleBottom = visibleTop + list.clientHeight;
+
+    if (optionTop < visibleTop) {
+      list.scrollTo({ top: optionTop - 4, behavior: 'smooth' });
+    } else if (optionBottom > visibleBottom) {
+      list.scrollTo({ top: optionBottom - list.clientHeight + 4, behavior: 'smooth' });
+    }
+  }, [activeMention?.options?.length, activeMentionIndex]);
 
   const applyMention = (option) => {
     if (!activeMention) return;
@@ -522,6 +568,8 @@ export const InputBar = ({
     const nextCursor = activeMention.start + token.length + 1;
     setValue(nextValue);
     setCursorIndex(nextCursor);
+    setDismissedMentionKey('');
+    setActiveMentionIndex(0);
 
     window.requestAnimationFrame(() => {
       const textarea = textareaRef.current;
@@ -531,7 +579,38 @@ export const InputBar = ({
     });
   };
 
-  const narrowInput = shellWidth !== null && shellWidth < 520;
+  const handleKeyDown = (event) => {
+    if (isComposing || event.nativeEvent?.isComposing) return;
+    if (activeMention) {
+      if (event.key === 'ArrowDown' && activeMention.options.length > 0) {
+        event.preventDefault();
+        setActiveMentionIndex((prev) => (prev + 1) % activeMention.options.length);
+        return;
+      }
+      if (event.key === 'ArrowUp' && activeMention.options.length > 0) {
+        event.preventDefault();
+        setActiveMentionIndex((prev) => (prev - 1 + activeMention.options.length) % activeMention.options.length);
+        return;
+      }
+      if (event.key === 'Enter' && !event.shiftKey && activeMention.options.length > 0) {
+        event.preventDefault();
+        applyMention(activeMention.options[activeMentionIndex] || activeMention.options[0]);
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setDismissedMentionKey(activeMention.key);
+        setActiveMentionIndex(0);
+        return;
+      }
+    }
+    if (matchShortcut(event, shortcuts.chatSend.combo)) {
+      event.preventDefault();
+      handleSend();
+    }
+  };
+
+  const compactInput = shellWidth !== null && shellWidth < 560;
   const shellStyle = {
     maxWidth: 720,
     borderRadius: 18,
@@ -652,13 +731,13 @@ export const InputBar = ({
           <div style={{
             position: 'relative',
             display: 'flex',
-            alignItems: narrowInput ? 'stretch' : 'flex-end',
+            alignItems: 'flex-end',
             gap: 8,
             padding: '10px',
-            flexWrap: narrowInput ? 'wrap' : 'nowrap',
+            flexWrap: 'nowrap',
           }}>
             {showPlusMenu && (
-              <div ref={plusMenuRef} style={{ position: 'relative', order: narrowInput ? 2 : 0, flexShrink: 0 }}>
+              <div ref={plusMenuRef} style={{ position: 'relative', flexShrink: 0 }}>
                 <button
                   type="button"
                   onClick={() => {
@@ -732,10 +811,9 @@ export const InputBar = ({
             )}
 
             <div style={{
-              flex: narrowInput ? '1 0 100%' : '1 1 auto',
-              minWidth: narrowInput ? '100%' : 180,
+              flex: '1 1 auto',
+              minWidth: 0,
               position: 'relative',
-              order: narrowInput ? 1 : 0,
             }}>
               <textarea
                 ref={textareaRef}
@@ -743,10 +821,16 @@ export const InputBar = ({
                 onChange={(event) => {
                   setValue(event.target.value);
                   setCursorIndex(event.target.selectionStart || 0);
+                  setDismissedMentionKey('');
                 }}
                 onKeyDown={handleKeyDown}
                 onClick={(event) => setCursorIndex(event.currentTarget.selectionStart || 0)}
                 onKeyUp={(event) => setCursorIndex(event.currentTarget.selectionStart || 0)}
+                onCompositionStart={() => setIsComposing(true)}
+                onCompositionEnd={(event) => {
+                  setIsComposing(false);
+                  setCursorIndex(event.currentTarget.selectionStart || 0);
+                }}
                 onSelect={(event) => setCursorIndex(event.currentTarget.selectionStart || 0)}
                 onPaste={(event) => {
                   if (!showPlusMenu) return;
@@ -797,31 +881,48 @@ export const InputBar = ({
                     zIndex: 7,
                   }}
                 >
-                  {activeMention.options.length > 0 ? activeMention.options.map((option) => (
-                    <button
-                      key={option.value}
-                      type="button"
-                      onClick={() => applyMention(option)}
+                  {activeMention.options.length > 0 ? (
+                    <div
+                      ref={mentionListRef}
                       style={{
-                        width: '100%',
-                        padding: '10px 12px',
-                        borderRadius: 12,
-                        display: 'grid',
-                        gap: 4,
-                        textAlign: 'left',
-                        color: '#141413',
-                        marginBottom: 4,
+                        maxHeight: 256,
+                        overflowY: 'auto',
+                        overscrollBehavior: 'contain',
+                        paddingRight: 2,
                       }}
                     >
-                      <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                        <span style={{ fontSize: 13, fontWeight: 600, color: '#C15F3C' }}>{option.token}</span>
-                        <span style={{ fontSize: 12, color: '#6B6A65' }}>{option.label}</span>
-                      </span>
-                      <span style={{ fontSize: 12, color: '#6B6A65', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        {option.preview}
-                      </span>
-                    </button>
-                  )) : (
+                      {activeMention.options.map((option, index) => (
+                        <button
+                          key={option.value}
+                          ref={(node) => {
+                            mentionOptionRefs.current[index] = node;
+                          }}
+                          type="button"
+                          onClick={() => applyMention(option)}
+                          onMouseEnter={() => setActiveMentionIndex(index)}
+                          style={{
+                            width: '100%',
+                            padding: '10px 12px',
+                            borderRadius: 12,
+                            display: 'grid',
+                            gap: 4,
+                            textAlign: 'left',
+                            color: '#141413',
+                            marginBottom: index === activeMention.options.length - 1 ? 0 : 4,
+                            background: index === activeMentionIndex ? '#F5F0EA' : 'transparent',
+                          }}
+                        >
+                          <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                            <span style={{ fontSize: 13, fontWeight: 600, color: '#C15F3C' }}>{option.token}</span>
+                            <span style={{ fontSize: 12, color: '#6B6A65' }}>{option.label}</span>
+                          </span>
+                          <span style={{ fontSize: 12, color: '#6B6A65', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {option.preview}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
                     <div style={{ padding: '8px 10px', fontSize: 12, color: '#6B6A65' }}>
                       当前文档中没有匹配的块
                     </div>
@@ -833,13 +934,13 @@ export const InputBar = ({
             <div
               style={{
                 display: 'flex',
-                alignItems: 'center',
                 justifyContent: 'flex-end',
                 gap: 6,
-                order: narrowInput ? 2 : 0,
+                flexWrap: 'nowrap',
+                alignItems: 'center',
                 marginLeft: 'auto',
-                flex: narrowInput ? '1 1 auto' : '0 0 auto',
-                minWidth: 0,
+                flex: '0 0 auto',
+                minWidth: compactInput ? 164 : 196,
               }}
             >
               <ModelPicker
@@ -850,6 +951,7 @@ export const InputBar = ({
                   onConfigChange?.(nextValue);
                 }}
                 disabled={llmConfigs.length === 0}
+                compact={compactInput}
               />
 
               {loading ? (
@@ -860,13 +962,14 @@ export const InputBar = ({
                     width: 34,
                     height: 34,
                     borderRadius: 10,
-                    background: '#141413',
+                    background: 'var(--accent)',
                     color: '#fff',
                     display: 'inline-flex',
                     alignItems: 'center',
                     justifyContent: 'center',
                     cursor: 'pointer',
                     flexShrink: 0,
+                    boxShadow: '0 4px 14px rgba(193, 95, 60, 0.24)',
                   }}
                 >
                   <Icons.square size={14} />

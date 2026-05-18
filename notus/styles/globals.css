@@ -135,6 +135,8 @@ html, body {
   margin: 0;
   padding: 0;
   height: 100%;
+  min-width: 1360px;
+  min-height: 800px;
   background: var(--bg-primary);
   color: var(--text-primary);
   font-family: var(--font-ui);
@@ -146,6 +148,8 @@ html, body {
 
 #__next {
   height: 100%;
+  min-width: 1360px;
+  min-height: 800px;
 }
 
 button {
@@ -192,6 +196,12 @@ a {
 @keyframes blink {
   0%, 100% { opacity: 1; }
   50% { opacity: 0; }
+}
+
+@keyframes notusTypingPulse {
+  0%, 100% { opacity: 0.24; transform: translateY(0) scale(0.92); }
+  35% { opacity: 0.95; transform: translateY(-1px) scale(1); }
+  70% { opacity: 0.42; transform: translateY(0) scale(0.96); }
 }
 
 @keyframes shimmer {
@@ -288,6 +298,10 @@ a {
   margin: 0 0 1em;
 }
 
+.wysiwyg-content .ProseMirror [data-text-align="center"] {
+  text-align: center;
+}
+
 /* Strong / Em */
 .wysiwyg-content .ProseMirror strong { font-weight: 700; }
 .wysiwyg-content .ProseMirror em { font-style: italic; }
@@ -312,6 +326,142 @@ a {
   border-radius: var(--radius-sm);
   padding: 0.1em 0.35em;
   color: var(--text-primary);
+}
+
+/* Tables */
+.wysiwyg-content .ProseMirror .tableWrapper {
+  overflow-x: auto;
+  margin: 1.2em 0;
+}
+
+.wysiwyg-content .ProseMirror table {
+  width: 100%;
+  min-width: 360px;
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  box-shadow: var(--shadow-sm);
+  table-layout: fixed;
+  overflow: hidden;
+}
+
+.wysiwyg-content .ProseMirror th,
+.wysiwyg-content .ProseMirror td {
+  position: relative;
+  min-width: 80px;
+  padding: 9px 12px;
+  border-right: 1px solid var(--border-primary);
+  border-bottom: 1px solid var(--border-primary);
+  color: var(--text-primary);
+  font-size: 0.92em;
+  line-height: 1.55;
+  vertical-align: top;
+}
+
+.wysiwyg-content .ProseMirror th {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-weight: 650;
+}
+
+.wysiwyg-content .ProseMirror tr:last-child th,
+.wysiwyg-content .ProseMirror tr:last-child td {
+  border-bottom: none;
+}
+
+.wysiwyg-content .ProseMirror th:last-child,
+.wysiwyg-content .ProseMirror td:last-child {
+  border-right: none;
+}
+
+.wysiwyg-content .ProseMirror th > p,
+.wysiwyg-content .ProseMirror td > p {
+  margin: 0;
+}
+
+.wysiwyg-content .ProseMirror th > p + p,
+.wysiwyg-content .ProseMirror td > p + p {
+  margin-top: 0.5em;
+}
+
+.wysiwyg-content .ProseMirror .selectedCell::after {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  content: "";
+  pointer-events: none;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.wysiwyg-content .ProseMirror .column-resize-handle {
+  position: absolute;
+  top: 0;
+  right: -2px;
+  bottom: 0;
+  width: 4px;
+  background: var(--accent);
+  pointer-events: none;
+}
+
+.wysiwyg-content .ProseMirror.resize-cursor {
+  cursor: ew-resize;
+}
+
+/* Mathematics */
+.wysiwyg-content .ProseMirror .tiptap-mathematics-render {
+  color: var(--text-primary);
+}
+
+.wysiwyg-content .ProseMirror .tiptap-mathematics-render--editable {
+  cursor: pointer;
+  transition: background var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.wysiwyg-content .ProseMirror .tiptap-mathematics-render[data-type="inline-math"] {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 0.08em 0.18em;
+  border-radius: var(--radius-sm);
+  vertical-align: baseline;
+}
+
+.wysiwyg-content .ProseMirror .tiptap-mathematics-render--editable[data-type="inline-math"]:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 26%, transparent);
+}
+
+.wysiwyg-content .ProseMirror .tiptap-mathematics-render[data-type="block-math"] {
+  display: flex;
+  justify-content: center;
+  overflow-x: auto;
+  margin: 1.2em 0;
+  padding: 14px 18px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+}
+
+.wysiwyg-content .ProseMirror .tiptap-mathematics-render--editable[data-type="block-math"]:hover {
+  background: color-mix(in srgb, var(--accent-subtle) 72%, var(--bg-secondary));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+.wysiwyg-content .ProseMirror .block-math-inner {
+  min-width: max-content;
+}
+
+.wysiwyg-content .ProseMirror .tiptap-mathematics-render .katex {
+  font-size: 1em;
+}
+
+.wysiwyg-content .ProseMirror .tiptap-mathematics-render.block-math-error,
+.wysiwyg-content .ProseMirror .tiptap-mathematics-render.inline-math-error {
+  color: var(--danger);
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
 }
 
 /* Code blocks */
@@ -437,10 +587,162 @@ a {
   max-width: 100%;
   border-radius: var(--radius-md);
   margin: 0.5em 0;
+  box-shadow: var(--shadow-sm);
+  cursor: zoom-in;
 }
 .wysiwyg-content .ProseMirror img.ProseMirror-selectednode {
   outline: 2px solid var(--accent);
   border-radius: var(--radius-md);
+}
+
+.notus-image-preview {
+  position: fixed;
+  inset: 0;
+  z-index: 2100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 56px 88px;
+  background:
+    radial-gradient(circle at top, color-mix(in srgb, var(--accent) 12%, transparent), transparent 45%),
+    rgba(16, 12, 10, 0.82);
+  backdrop-filter: blur(10px);
+  animation: fadeIn var(--transition-normal);
+}
+
+.notus-image-preview-chrome {
+  position: absolute;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  border: 1px solid color-mix(in srgb, var(--border-primary) 70%, transparent);
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--bg-elevated) 88%, transparent);
+  box-shadow: var(--shadow-md);
+}
+
+.notus-image-preview-counter {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.notus-image-preview-hint {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.notus-image-preview-close,
+.notus-image-preview-nav {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--border-primary) 72%, transparent);
+  background: color-mix(in srgb, var(--bg-elevated) 90%, transparent);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-md);
+  transition:
+    transform var(--transition-fast),
+    background var(--transition-fast),
+    opacity var(--transition-fast);
+}
+
+.notus-image-preview-close:hover,
+.notus-image-preview-nav:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent-subtle) 84%, var(--bg-elevated));
+  transform: translateY(-1px);
+}
+
+.notus-image-preview-close:disabled,
+.notus-image-preview-nav:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.notus-image-preview-close {
+  top: 24px;
+  right: 24px;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+}
+
+.notus-image-preview-nav {
+  top: 50%;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  transform: translateY(-50%);
+}
+
+.notus-image-preview-nav.is-left {
+  left: 24px;
+}
+
+.notus-image-preview-nav.is-right {
+  right: 24px;
+}
+
+.notus-image-preview-nav.is-left:hover:not(:disabled),
+.notus-image-preview-nav.is-right:hover:not(:disabled) {
+  transform: translateY(calc(-50% - 1px));
+}
+
+.notus-image-preview-figure {
+  max-width: min(1120px, 100%);
+  max-height: 100%;
+  display: grid;
+  gap: 12px;
+  justify-items: center;
+}
+
+.notus-image-preview-image {
+  display: block;
+  max-width: 100%;
+  max-height: calc(100vh - 180px);
+  border-radius: calc(var(--radius-xl) + 2px);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.28);
+  background: color-mix(in srgb, var(--bg-elevated) 88%, transparent);
+  object-fit: contain;
+}
+
+.notus-image-preview-meta {
+  width: min(100%, 720px);
+  display: flex;
+  justify-content: center;
+}
+
+.notus-image-preview-title {
+  max-width: 100%;
+  padding: 10px 14px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--bg-elevated) 90%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-primary) 70%, transparent);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  text-align: center;
+  box-shadow: var(--shadow-sm);
+  word-break: break-word;
+}
+
+@media (max-width: 1280px) {
+  .notus-image-preview {
+    padding: 64px 72px;
+  }
+
+  .notus-image-preview-chrome {
+    gap: 8px;
+  }
+
+  .notus-image-preview-hint {
+    display: none;
+  }
 }
 
 /* Selection */

@@ -402,7 +402,18 @@ function buildCanvasQueryPlanPrompt(userInput, options = {}) {
         '如果候选块、来源类型、写入方式三者不一致，clarify_needed 必须为 true。',
       ]
       : [
-        '本轮重点是锁定目标块、内容来源和写入方式。',
+        '本轮同时负责判断主意图和锁定目标块，是请求的唯一规划入口。',
+        '意图判断规则（按优先级）：',
+        '(1) 包含"把/将 X 改为/换成/换为/替换为/替换成 Y"这类替换句式 → primary_intent=edit，operation_kind=rewrite，即使没有"修改"等动词。',
+        '(2) 含"改/改写/重写/润色/扩写/压缩/精简/删掉/删除/插入/新增/合并/调序/仿写/修改"等修改动词 → primary_intent=edit。',
+        '(3) 明显是提问、讨论、征求建议，没有具体修改目标 → primary_intent=text。',
+        '(4) 明显要分析文章结构/逻辑/风格/可读性 → primary_intent=analyze。',
+        '关键规则：不能因为"没有命中关键词"就默认 primary_intent=text，无关键词时优先考虑 edit。',
+        '意图示例：',
+        '"将 Bun 换为 Node.js" → edit + rewrite（替换句式）',
+        '"把标题改成更简洁的" → edit + rewrite（含"改"）',
+        '"这段逻辑清楚吗" → text（提问）',
+        '"扩写第二段" → edit + expand（含"扩写"）',
         '如果缺少关键槽位、候选块冲突明显、或内容指代不稳定，clarify_needed 才设为 true。',
       ];
 
@@ -434,7 +445,7 @@ function buildCanvasQueryPlanPrompt(userInput, options = {}) {
         '',
         `最近对话：\n${historyText}`,
         '',
-        '规则层主意图候选：',
+        '预处理意图候选（仅供参考，以你自己的判断为准）：',
         intentCandidateText,
         '',
         `当前文章标题：${options.articleTitle || '未命名文章'}`,

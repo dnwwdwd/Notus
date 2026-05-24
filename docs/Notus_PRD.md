@@ -576,13 +576,12 @@ async function runCanvasAgent({
 当前创作主链路不再依赖旧的多轮工具循环，而是拆成两层：
 
 1. `resolveCanvasRequest()`：
-   - 先用规则识别 `@bN / @b2-b5 / 第 N 段 / 全文 / 上一轮目标块延续 / 上一轮建议摘要延续`
-   - 对“把/将 A 改为 / 换成 / 替换为 B”这类确定性短语，先尝试在显式 `@`、最近目标块和当前候选块中做唯一命中；唯一命中时直接按编辑意图和单块改写处理，多命中时回退为结构化澄清
-   - “写一篇文章 / 写正文 / 起草文章”命中后，直接按 `primary_intent=edit + scope_mode=global` 处理，不允许默认落到 `analyze`
-   - 固定输出 `intent_candidates / primary_intent / intent_confidence / target_candidates / source_candidates / source_content_type / target_anchor / position_relation / write_action / risk_level / decision_path / decision_summary / ai_arbitration_mode`
+   - **LLM 是唯一意图决策者**：每次请求都调用一次 `canvas_query_plan` LLM（`target_resolver` 模式），由其决定 `primary_intent / operation_kind / target_refs / scope_mode / clarify_needed`；结果命中 3 分钟内存缓存（articleHash + historyDigest + userInput 三元组）
+   - LLM 调用前做无歧义词法预处理，结果作为候选上下文传入 LLM，不直接决策：`@bN / @b2-b5 / 第 N 段`（显式块引用）、`全文 / 整篇`（全局范围）
+   - 对”把/将 A 改为/换成/换为/替换为/替换成 B”这类精准替换短语，LLM 确认 `edit` 意图且目标唯一时，走 `buildDeterministicReplaceOperation` 字符串精准替换，不再额外调用 LLM 生成编辑内容
+   - 固定输出 `primary_intent / intent_confidence / target_candidates / source_candidates / source_content_type / target_anchor / position_relation / write_action / risk_level / decision_path / decision_summary / ai_arbitration_mode`
    - 兼容保留旧字段 `intent / scope_mode / target_block_ids / candidate_block_ids / operation_kind / clarify_needed / clarify_reason / missing_slots / prefilled_answers / answer_slots / summary_instruction`
-   - 规则层先产出候选，不直接一把定案；只有低置信或高风险场景才触发单次 `canvas_query_plan` helper
-   - helper 只允许受控增强，不扩张成多轮规划；高风险场景最多再做一次轻量核验
+   - LLM 调用失败时保守返回 `clarify_needed=true + reason=ai_arbitration_unavailable`，不静默 fallback 到 text
 2. `runCanvasAgent()`：
    - `clarify_needed` 优先转结构化 interaction；超过两轮或不适合结构化时退回自然语言追问
    - `text` 走流式文本回复

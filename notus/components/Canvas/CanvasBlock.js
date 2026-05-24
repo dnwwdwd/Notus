@@ -23,7 +23,9 @@ export const CanvasBlock = ({
 
   // Sync external state (e.g. AI modifies the block from parent)
   useEffect(() => {
-    if (externalState && externalState !== 'default') {
+    if (externalState === 'default') {
+      setState((prev) => (prev === 'editing' ? prev : 'default'));
+    } else if (externalState) {
       setState(externalState);
     }
   }, [externalState]);

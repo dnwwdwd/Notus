@@ -23,13 +23,16 @@ function safeJsonParse(content) {
   try {
     return JSON.parse(text);
   } catch {
-    const match = text.match(/```json\s*([\s\S]+?)```/i) || text.match(/```([\s\S]+?)```/i);
-    if (!match) return null;
-    try {
-      return JSON.parse(match[1].trim());
-    } catch {
-      return null;
+    const codeMatch = text.match(/```(?:json)?\s*([\s\S]+?)```/i);
+    if (codeMatch) {
+      try { return JSON.parse(codeMatch[1].trim()); } catch {}
     }
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start !== -1 && end > start) {
+      try { return JSON.parse(text.slice(start, end + 1)); } catch {}
+    }
+    return null;
   }
 }
 
@@ -521,7 +524,9 @@ async function executePromptedEdit({
   });
   pushReplyTelemetry(telemetry, reply);
   const parsed = safeJsonParse(reply.message?.content);
-  if (!parsed) throw new Error('操作结果解析失败');
+  if (!parsed) {
+    return { summary: 'AI 返回格式异常，请重试。', operations: [] };
+  }
   return {
     summary: String(parsed.summary || '').trim(),
     operations: normalizeOperations(article, parsed, {

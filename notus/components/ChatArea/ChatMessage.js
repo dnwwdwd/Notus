@@ -158,7 +158,7 @@ function WorkspaceDocumentSummary({ documents = [], stats = null }) {
 
 function buildLoadingSteps(retrievalStage = null) {
   if (!retrievalStage?.stage) {
-    return ['正在处理请求', '正在组织回复'];
+    return ['正在生成…'];
   }
 
   const sources = Number(retrievalStage.sources || 0);
@@ -177,13 +177,13 @@ function buildLoadingSteps(retrievalStage = null) {
       '正在整理保守回答',
     ];
   }
-  return ['正在处理请求', '正在组织回复'];
+  return ['正在生成…'];
 }
 
 function LoadingBubblePlaceholder({ retrievalStage = null }) {
   const steps = useMemo(() => buildLoadingSteps(retrievalStage), [retrievalStage]);
   const [stepIndex, setStepIndex] = useState(0);
-  const currentStep = steps[stepIndex % steps.length] || steps[0] || '正在处理请求';
+  const currentStep = steps[stepIndex % steps.length] || steps[0] || '正在生成…';
 
   useEffect(() => {
     setStepIndex(0);
@@ -213,7 +213,6 @@ function LoadingBubblePlaceholder({ retrievalStage = null }) {
           padding: '10px 14px',
           borderRadius: 16,
           background: 'color-mix(in srgb, var(--accent-subtle) 58%, var(--bg-elevated))',
-          boxShadow: '0 6px 18px rgba(20, 20, 19, 0.04)',
           color: 'var(--text-secondary)',
           fontSize: 12,
         }}
@@ -276,7 +275,6 @@ export const AiBubble = ({
         padding: '14px 16px',
         borderRadius: 18,
         background: 'var(--bg-ai-bubble)',
-        boxShadow: '0 6px 18px rgba(20, 20, 19, 0.04)',
         display: 'grid',
         gap: 12,
       }}>

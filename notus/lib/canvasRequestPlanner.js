@@ -154,7 +154,7 @@ function stripDeterministicTargetHints(text = '') {
 function extractDeterministicRewrite(userInput = '') {
   const text = stripDeterministicTargetHints(userInput);
   if (!text) return null;
-  const match = text.match(/(?:把|将)\s*(.+?)\s*(?:改为|改成|换成|替换为)\s*(.+?)(?:[。！？]|$)/);
+  const match = text.match(/(?:把|将)\s*(.+?)\s*(?:改为|改成|换成|换为|替换为|替换成)\s*(.+?)(?:[。！？]|$)/);
   if (!match) return null;
   const sourceText = normalizeDeterministicFragment(match[1]);
   const targetText = normalizeDeterministicFragment(match[2]);
@@ -391,108 +391,6 @@ function shouldCarryPreviousOperation(userInput = '', inferredOperationKind = 'r
   return /继续改|继续写|延续刚才|接着改|按刚才(?:的)?建议改|按上面(?:的)?问题改|按刚才(?:的)?问题改/.test(String(userInput || ''));
 }
 
-function inferIntentCandidates(userInput = '', options = {}) {
-  const text = String(userInput || '').trim();
-  const scores = { edit: 0, text: 0, analyze: 0 };
-  const reasons = { edit: [], text: [], analyze: [] };
-  const pushReason = (kind, score, reason) => {
-    scores[kind] += score;
-    reasons[kind].push(reason);
-  };
-
-  if (!text) {
-    pushReason('text', 2, 'empty_input');
-  }
-
-  if (/分析|评估|点评|检查|可读性|逻辑|结构|完整性|风格一致性|哪里有问题/.test(text)) {
-    pushReason('analyze', 7, 'analysis_keyword');
-  }
-  if (isDraftArticlePhrase(text)) {
-    pushReason('edit', 10, 'draft_article_keyword');
-  }
-  if (/写到文档|写入文档|写进去|写到正文|写进正文|落到文档|落到正文|放到文档|放进文档|加入文档|写到文章里/.test(text)) {
-    pushReason('edit', 9, 'write_to_document_keyword');
-  }
-  if (/改写|重写|润色|扩写|压缩|精简|删掉|删除|新增|插入|合并|交换顺序|调序|重排|统一.*语气|仿写|模仿|修改|改一下|改得|更简洁|更顺|继续改|接着改|继续润|再润一下|润一润|按刚才(?:的)?建议改|按上面(?:的)?问题改|按刚才(?:的)?问题改/.test(text)) {
-    pushReason('edit', 6, 'edit_keyword');
-  }
-  if (/^改/.test(text)) {
-    pushReason('edit', 3, 'rewrite_prefix');
-  }
-  if (/聊聊|讨论|怎么看|建议一下|是否合理|对不对|觉得.*怎么样|你觉得|帮我想想/.test(text)) {
-    pushReason('text', 6, 'discussion_keyword');
-  }
-  if (Array.isArray(options.explicitTargets) && options.explicitTargets.length > 0) {
-    pushReason('edit', 4, 'explicit_target');
-  }
-  if (options.globalPhrase) {
-    pushReason('edit', 3, 'global_phrase');
-  }
-  if (options.requestedSourceType === 'draft_text') {
-    pushReason('edit', 5, 'draft_source_reference');
-  }
-  if (options.correctionState?.preferred_primary_intent === 'edit') {
-    pushReason('edit', 8, 'recent_user_correction');
-  }
-  if (options.correctionState?.preferred_primary_intent === 'text') {
-    pushReason('text', 8, 'recent_user_correction');
-  }
-  if (options.correctionState?.preferred_primary_intent === 'analyze') {
-    pushReason('analyze', 8, 'recent_user_correction');
-  }
-
-  return ['edit', 'text', 'analyze']
-    .map((id) => ({
-      id,
-      score: scores[id],
-      reasons: reasons[id],
-    }))
-    .sort((left, right) => right.score - left.score || left.id.localeCompare(right.id));
-}
-
-function resolvePrimaryIntent(intentCandidates = []) {
-  const list = Array.isArray(intentCandidates) ? intentCandidates : [];
-  const top = list[0] || { id: 'text', score: 0 };
-  const second = list[1] || { id: 'text', score: 0 };
-  const topScore = Number(top.score || 0);
-  const secondScore = Number(second.score || 0);
-  if (topScore === 0) {
-    return {
-      primary_intent: 'text',
-      confidence: 0.4,
-      ambiguous: false,
-    };
-  }
-  const total = list.reduce((sum, item) => sum + Number(item.score || 0), 0) || 1;
-  const confidence = clamp(0.42 + ((topScore - secondScore) * 0.08) + (topScore / total * 0.2), 0.35, 0.98);
-  return {
-    primary_intent: normalizePrimaryIntent(top.id),
-    confidence,
-    ambiguous: topScore === 0 || (topScore - secondScore) <= 2,
-  };
-}
-
-function inferOperationKind(userInput = '') {
-  const text = String(userInput || '');
-  if (isDraftArticlePhrase(text)) return 'expand';
-  if (/写到文档|写入文档|写进去|写到正文|落到文档|落到正文|放到文档|加入文档/.test(text)) return 'insert';
-  if (/按刚才(?:的)?建议改|按上面(?:的)?问题改|按刚才(?:的)?问题改|继续改|接着改|延续刚才/.test(text)) return 'rewrite';
-  if (/交换顺序|调整顺序|调序|重排|换一下顺序/.test(text)) return 'reorder';
-  if (/合并|并成一段|合成一段/.test(text)) return 'merge';
-  if (/删掉|删除|去掉/.test(text)) return 'delete';
-  if (/插入|新增一段|补一段|加一段/.test(text)) return 'insert';
-  if (/扩写|展开|补充论证|补充细节/.test(text)) return 'expand';
-  if (/压缩|精简|缩短|更简洁|更短/.test(text)) return 'shrink';
-  if (/润色|统一.*语气|仿写|模仿|风格|再润一下|润一润|继续润/.test(text)) return 'polish';
-  if (/分析|评估|点评/.test(text)) return 'analyze';
-  if (/聊聊|讨论|怎么看|建议/.test(text)) return 'discuss';
-  return 'rewrite';
-}
-
-function inferOperationCandidates(userInput = '') {
-  const operationKind = inferOperationKind(userInput);
-  return unique([operationKind, operationKind === 'rewrite' ? 'polish' : '', operationKind === 'insert' ? 'rewrite' : '']).filter(Boolean);
-}
 
 function inferNeedsStyle(intent, operationKind, options = {}) {
   if (intent !== 'edit') return false;
@@ -1156,7 +1054,7 @@ function buildFinalPlan(base = {}) {
   };
   next.risk_level = normalizeRiskLevel(base.risk_level || inferRiskLevel(next));
   next.decision_summary = String(base.decision_summary || buildDecisionSummary(next)).trim();
-  next.action_candidates = Array.isArray(base.action_candidates) ? base.action_candidates : inferOperationCandidates(base.original_user_input || '');
+  next.action_candidates = Array.isArray(base.action_candidates) ? base.action_candidates : [next.operation_kind].filter(Boolean);
   return next;
 }
 
@@ -1171,14 +1069,10 @@ async function resolveCanvasRequest({
 } = {}) {
   const articleHash = buildArticleHash(article);
   const decisionPath = [`planner:${PLANNER_VERSION}`];
+
+  // ── 1. 无歧义预处理（词法提取，不做意图判断）──────────────────────────────
   const correctionState = detectCorrectionState(userInput) || extractRecentCorrectionState(conversationHistory, articleHash);
   if (correctionState) decisionPath.push('correction_state:applied');
-
-  const structuredClarifyCount = (Array.isArray(conversationHistory) ? conversationHistory : []).reduce((count, item) => {
-    if (item?.role !== 'assistant') return count;
-    const meta = item?.meta && typeof item.meta === 'object' ? item.meta : null;
-    return meta?.interaction_kind === 'clarify_card' ? count + 1 : count;
-  }, 0);
 
   const recentContext = extractRecentCanvasContext(conversationHistory);
   const followUpSummary = needsCarryPreviousSummary(userInput)
@@ -1187,402 +1081,185 @@ async function resolveCanvasRequest({
   const carryTargets = !correctionState?.wrong_target && (needsCarryPreviousTarget(userInput) || Boolean(followUpSummary));
   const explicitTargets = parseExplicitMentionIds(article, userInput);
   const recentTargetIds = carryTargets ? (recentContext?.target_block_ids || []) : [];
+
   const deterministicRewrite = extractDeterministicRewrite(userInput);
   if (deterministicRewrite) decisionPath.push('deterministic_rewrite:requested');
 
-  const sourceRef = extractSourceReference(userInput, conversationHistory, {
-    correctionState,
-  });
+  const sourceRef = extractSourceReference(userInput, conversationHistory, { correctionState });
   if (sourceRef.needed) decisionPath.push(`source_need:${sourceRef.requested_type}`);
 
-  const intentCandidates = inferIntentCandidates(userInput, {
-    explicitTargets,
-    globalPhrase: isGlobalPhrase(userInput),
-    requestedSourceType: sourceRef.requested_type,
-    correctionState,
-  });
-  const { primary_intent: inferredIntent, confidence: inferredIntentConfidence, ambiguous: ambiguousIntent } = resolvePrimaryIntent(intentCandidates);
-  let primaryIntent = inferredIntent;
-  let intentConfidence = inferredIntentConfidence;
-  if (deterministicRewrite && primaryIntent !== 'edit') {
-    primaryIntent = 'edit';
-    intentConfidence = Math.max(intentConfidence, 0.86);
-    decisionPath.push('deterministic_rewrite:intent_edit');
-  }
-  decisionPath.push(`intent:${primaryIntent}`);
-
-  const inferredOperationKind = inferOperationKind(userInput);
-  const operationKind = shouldCarryPreviousOperation(userInput, inferredOperationKind)
-    ? normalizeOperationKind(recentContext?.operation_kind || inferredOperationKind)
-    : inferredOperationKind;
-
+  // ── 2. 构建候选上下文（供 LLM 参考，不作为决策依据）─────────────────────
   const targetInfo = buildTargetCandidates(article, userInput, {
     explicitTargets,
     recentTargetIds,
     carryTargets,
     correctionState,
   });
-  let targetBlockIds = unique([
-    ...explicitTargets,
-    ...recentTargetIds,
-    ...targetInfo.resolved_ids,
-  ]);
-  let candidateBlockIds = unique(targetInfo.candidate_block_ids);
-  let targetCandidates = targetInfo.target_candidates || [];
-  let targetConfidence = targetInfo.target_confidence || 0.28;
-  const deterministicTargetInfo = refineTargetsWithDeterministicRewrite(article, deterministicRewrite, {
-    explicitTargets,
-    recentTargetIds,
-    candidateBlockIds,
+  const targetCandidates = targetInfo.target_candidates || [];
+  const candidateBlockIds = unique(targetInfo.candidate_block_ids);
+
+  // ── 3. 主 LLM 规划调用（每次请求必调）───────────────────────────────────
+  const helper = await runHelperPlanner({
+    mode: 'target_resolver',
+    userInput,
+    article,
+    conversationHistory,
+    llmConfig,
+    intentCandidates: [],
+    targetCandidates,
+    sourceCandidates: buildPlannerSourcePackages(sourceRef.candidates || []),
+    correctionState,
+    riskLevel: 'low',
+    requestedSourceType: sourceRef.requested_type,
+    decisionPath,
+    maxRetries: 1,
   });
-  if (deterministicTargetInfo.matched_block_ids.length > 0) {
-    candidateBlockIds = unique([...candidateBlockIds, ...deterministicTargetInfo.matched_block_ids]);
-    targetCandidates = unique([...deterministicTargetInfo.matched_block_ids, ...targetCandidates.map((item) => item.block_id)])
-      .map((blockId) => {
-        const existing = targetCandidates.find((item) => item.block_id === blockId);
-        if (existing) return existing;
-        return buildPlannerBlockPackage(article, blockId, 72, ['deterministic_match']);
-      })
-      .filter(Boolean);
-  }
-  if (deterministicTargetInfo.preferred_ids.length === 1) {
-    targetBlockIds = unique([
-      ...explicitTargets,
-      ...recentTargetIds,
-      ...deterministicTargetInfo.preferred_ids,
-    ]);
-    targetConfidence = Math.max(targetConfidence, 0.95);
-    decisionPath.push('deterministic_rewrite:resolved_target');
-  } else if (deterministicTargetInfo.ambiguous) {
-    decisionPath.push('deterministic_rewrite:ambiguous_target');
+
+  if (!helper) {
+    // LLM 调用失败：保守返回 clarify
+    return buildFinalPlan({
+      original_user_input: String(userInput || '').trim(),
+      intent: 'edit',
+      primary_intent: 'edit',
+      intent_confidence: 0.3,
+      target_candidates: targetCandidates,
+      target_confidence: 0.28,
+      target_block_ids: [],
+      candidate_block_ids: candidateBlockIds,
+      operation_kind: 'rewrite',
+      action_candidates: ['rewrite'],
+      needs_style: false,
+      needs_knowledge: false,
+      source_reference: sourceRef.source_reference,
+      source_candidates: sourceRef.candidates,
+      source_content_type: sourceRef.source_content_type,
+      source_confidence: 0,
+      scope_mode: 'none',
+      answer_slots: {},
+      prefilled_answers: {},
+      summary_instruction: followUpSummary,
+      correction_state: correctionState || null,
+      deterministic_edit: null,
+      clarify_needed: true,
+      clarify_reason: 'ai_arbitration_unavailable',
+      clarify_question: buildClarifyQuestion('ai_arbitration_unavailable', []),
+      clarify_render_mode: 'card',
+      missing_slots: ['primary_intent'],
+      decision_path: decisionPath,
+      ai_arbitration_mode: 'none',
+      helper_used: false,
+    });
   }
 
-  const scopeFromPhrase = isGlobalPhrase(userInput) ? 'global' : 'none';
-  let scopeMode = scopeFromPhrase;
+  decisionPath.push(`llm:${helper.primary_intent}:${helper.operation_kind}`);
+
+  // ── 4. 补全 answerSlots（词法辅助，与 LLM 结果叠加）─────────────────────
+  const resolvedTargetBlockIds = unique([
+    ...explicitTargets,
+    ...helper.target_block_ids,
+  ]);
+  let scopeMode = isGlobalPhrase(userInput) ? 'global' : normalizeScopeMode(helper.scope_mode);
   if (scopeMode !== 'global') {
-    if (targetBlockIds.length === 1) scopeMode = 'single';
-    else if (targetBlockIds.length > 1) scopeMode = 'multiple';
-    else scopeMode = 'none';
+    if (resolvedTargetBlockIds.length === 1) scopeMode = 'single';
+    else if (resolvedTargetBlockIds.length > 1) scopeMode = 'multiple';
+    else scopeMode = normalizeScopeMode(helper.scope_mode);
   }
 
   const answerSlots = {};
   if (sourceRef.answer) answerSlots.source_content_ref = sourceRef.answer;
 
-  const inferredTargetLocation = inferTargetLocation(article, userInput, targetBlockIds);
+  const inferredTargetLocation = inferTargetLocation(article, userInput, resolvedTargetBlockIds);
   if (inferredTargetLocation) answerSlots.target_location = inferredTargetLocation;
+  if (!answerSlots.target_location && helper.target_block_ids.length === 1) {
+    answerSlots.target_location = buildBlockLocationAnswer(article, helper.target_block_ids[0], {
+      position_relation: helper.position_relation || inferTargetPositionRelation(userInput) || 'after_anchor',
+    });
+  }
   if (!answerSlots.target_location && sourceRef.needed && recentContext?.target_block_ids?.length === 1 && !correctionState?.wrong_target) {
     const previousTargetLocation = buildBlockLocationAnswer(article, recentContext.target_block_ids[0], {
       position_relation: 'after_anchor',
     });
     if (previousTargetLocation) {
       answerSlots.target_location = previousTargetLocation;
-      targetBlockIds = unique([...targetBlockIds, recentContext.target_block_ids[0]]);
-      candidateBlockIds = unique([...candidateBlockIds, recentContext.target_block_ids[0]]);
-      if (scopeMode === 'none') scopeMode = 'single';
       decisionPath.push('target:carried_previous');
     }
   }
-
   const inferredWriteMode = inferWriteMode(userInput, {
     positionRelation: answerSlots.target_location?.position_relation || '',
   });
   if (inferredWriteMode) answerSlots.write_mode = inferredWriteMode;
 
-  const basePlan = buildFinalPlan({
+  // ── 5. deterministic 精准替换优化（LLM 确认 edit 意图后叠加）────────────
+  const deterministicEdit = deterministicRewrite && helper.primary_intent === 'edit' && resolvedTargetBlockIds.length === 1
+    ? deterministicRewrite
+    : null;
+  if (deterministicEdit) decisionPath.push('deterministic_rewrite:resolved');
+
+  // ── 6. 构建最终 plan ─────────────────────────────────────────────────────
+  const primaryIntent = normalizePrimaryIntent(helper.primary_intent);
+  const operationKind = normalizeOperationKind(helper.operation_kind);
+
+  const finalBase = {
     original_user_input: String(userInput || '').trim(),
     intent: primaryIntent,
     primary_intent: primaryIntent,
-    intent_confidence: intentConfidence,
-    intent_candidates: intentCandidates,
+    intent_confidence: helper.confidence || 0.8,
+    intent_candidates: [],
     target_candidates: targetCandidates,
-    target_confidence: targetConfidence,
-    target_block_ids: targetBlockIds,
-    candidate_block_ids: candidateBlockIds,
+    target_confidence: helper.confidence || 0.8,
+    target_block_ids: resolvedTargetBlockIds,
+    candidate_block_ids: unique([...candidateBlockIds, ...resolvedTargetBlockIds]),
     operation_kind: operationKind,
-    action_candidates: inferOperationCandidates(userInput),
+    action_candidates: [operationKind].filter(Boolean),
     needs_style: inferNeedsStyle(primaryIntent, operationKind, { styleMode }),
     needs_knowledge: inferNeedsKnowledge(userInput, { referenceMode, factFileIds }),
     source_reference: sourceRef.source_reference,
     source_candidates: sourceRef.candidates,
-    source_content_type: sourceRef.source_content_type,
+    source_content_type: helper.source_content_type || sourceRef.source_content_type,
     source_confidence: sourceRef.stable ? 0.92 : (sourceRef.needed ? 0.36 : 0),
     scope_mode: scopeMode,
     answer_slots: answerSlots,
     prefilled_answers: answerSlots,
     summary_instruction: followUpSummary,
     correction_state: correctionState || null,
-    deterministic_edit: deterministicRewrite && targetBlockIds.length === 1
-      ? deterministicRewrite
-      : null,
+    deterministic_edit: deterministicEdit,
     decision_path: decisionPath,
-    ai_arbitration_mode: 'none',
-    prompt_injection_flags: unique((targetCandidates || []).flatMap((item) => item.reasons.includes('prompt_injection_signal') ? ['target_candidate'] : []).concat(
-      (sourceRef.candidates || []).flatMap((item) => item.prompt_injection_flags || [])
-    )),
-  });
+    ai_arbitration_mode: helper.ai_arbitration_mode || 'target_resolver',
+    helper_used: true,
+    helper_usage: helper.usage || null,
+    helper_budget: helper.budget || null,
+    helper_compacted: Boolean(helper.compacted),
+    prompt_injection_flags: unique(
+      targetCandidates.flatMap((item) => item.reasons.includes('prompt_injection_signal') ? ['target_candidate'] : [])
+        .concat((sourceRef.candidates || []).flatMap((item) => item.prompt_injection_flags || []))
+    ),
+  };
 
-  if (primaryIntent === 'analyze' && !correctionState?.preferred_primary_intent) {
-    return buildFinalPlan({
-      ...basePlan,
-      clarify_needed: false,
-      clarify_question: '',
-      helper_used: false,
-      missing_slots: [],
-    });
-  }
-
-  if (primaryIntent === 'text' && !correctionState?.preferred_primary_intent) {
-    return buildFinalPlan({
-      ...basePlan,
-      operation_kind: 'discuss',
-      clarify_needed: false,
-      clarify_question: '',
-      helper_used: false,
-      missing_slots: [],
-    });
-  }
-
-  let clarifyReason = '';
-  let missingSlots = [];
-  let helper = null;
-  let riskValidator = null;
-
-  if (correctionState?.wrong_source) {
-    clarifyReason = 'ambiguous_content_reference';
-    missingSlots = ['source_content_ref'];
-  } else if (correctionState?.wrong_target) {
-    clarifyReason = 'ambiguous_target_block';
-    missingSlots = ['target_location'];
-  } else if (correctionState?.wrong_write_action) {
-    clarifyReason = 'ambiguous_position_relation';
-    missingSlots = ['write_mode'];
-  } else if (detectConflictingEditActions(userInput)) {
-    clarifyReason = 'conflicting_edit_actions';
-  } else if (ambiguousIntent && primaryIntent !== 'analyze' && !sourceRef.needed) {
-    clarifyReason = 'ambiguous_primary_intent';
-    missingSlots = ['primary_intent'];
-  } else if (sourceRef.needed) {
-    if (!sourceRef.stable && !answerSlots.source_content_ref) {
-      clarifyReason = 'ambiguous_content_reference';
-      missingSlots = ['source_content_ref'];
-    } else {
-      if (!answerSlots.target_location) {
-        clarifyReason = targetInfo.ambiguous || deterministicTargetInfo.ambiguous || candidateBlockIds.length > 1
-          ? 'ambiguous_target_block'
-          : 'missing_target_location';
-        missingSlots.push('target_location');
-      }
-      if (!answerSlots.write_mode) {
-        if (!clarifyReason) clarifyReason = 'missing_write_mode';
-        missingSlots.push('write_mode');
-      }
-    }
-  } else if (primaryIntent === 'edit' && scopeMode === 'none' && !['discuss', 'analyze'].includes(operationKind)) {
-    clarifyReason = targetInfo.ambiguous || deterministicTargetInfo.ambiguous || candidateBlockIds.length > 1
-      ? 'ambiguous_target_block'
-      : 'missing_target_location';
-    missingSlots = ['target_location'];
-  }
-
-  const planWithRisk = buildFinalPlan({
-    ...basePlan,
-    clarify_reason: clarifyReason,
-    missing_slots: missingSlots,
-  });
-  const riskLevel = planWithRisk.risk_level;
-
-  let helperMode = '';
-  if (clarifyReason === 'ambiguous_primary_intent' || (primaryIntent === 'edit' && intentConfidence < 0.66)) {
-    helperMode = 'intent_arbiter';
-  } else if (
-    ['ambiguous_content_reference', 'ambiguous_target_block', 'missing_target_location', 'ambiguous_position_relation'].includes(clarifyReason)
-    || (
-      riskLevel === 'high'
-      && primaryIntent === 'edit'
-      && scopeMode !== 'global'
-      && targetCandidates.length > 0
-      && targetConfidence < 0.82
-    )
-  ) {
-    helperMode = 'target_resolver';
-  }
-
-  if (helperMode) {
-    helper = await runHelperPlanner({
-      mode: helperMode,
-      userInput,
-      article,
-      conversationHistory,
-      llmConfig,
-      intentCandidates,
-      targetCandidates,
-      sourceCandidates: sourceRef.candidates,
-      correctionState,
-      riskLevel,
-      requestedSourceType: sourceRef.requested_type,
-      decisionPath,
-      maxRetries: 1,
-    });
-  }
-
-  if (helper) {
-    decisionPath.push(`helper:${helper.ai_arbitration_mode || helperMode}`);
-    if (helper.primary_intent) {
-      primaryIntent = normalizePrimaryIntent(helper.primary_intent);
-      intentConfidence = clamp(Number(helper.confidence || intentConfidence), 0.35, 0.98);
-    }
-    if (helper.target_block_ids.length > 0) {
-      targetBlockIds = helper.target_block_ids;
-      candidateBlockIds = unique([...candidateBlockIds, ...helper.candidate_block_ids, ...helper.target_block_ids]);
-      targetCandidates = unique([...helper.target_block_ids, ...candidateBlockIds]).map((blockId) => {
-        return targetCandidates.find((item) => item.block_id === blockId) || buildPlannerBlockPackage(article, blockId, 0, []);
-      }).filter(Boolean);
-      targetConfidence = clamp(Math.max(targetConfidence, helper.confidence || targetConfidence), 0.35, 0.98);
-      if (!answerSlots.target_location && helper.target_block_ids.length === 1) {
-        answerSlots.target_location = buildBlockLocationAnswer(article, helper.target_block_ids[0], {
-          position_relation: helper.position_relation || inferTargetPositionRelation(userInput) || 'after_anchor',
-        });
-      }
-      if (scopeMode === 'none' && helper.target_block_ids.length === 1) scopeMode = 'single';
-    }
-    if (!clarifyReason && helper.clarify_reason) clarifyReason = helper.clarify_reason;
-    if (missingSlots.length === 0 && Array.isArray(helper.missing_slots) && helper.missing_slots.length > 0) {
-      missingSlots = helper.missing_slots;
-    }
-  } else if (helperMode && riskLevel === 'high') {
-    clarifyReason = 'ai_arbitration_unavailable';
-    missingSlots = unique(missingSlots.length > 0 ? missingSlots : ['target_location']);
-    decisionPath.push('helper:unavailable');
-  }
-
-  const nextPlan = buildFinalPlan({
-    ...basePlan,
-    intent: primaryIntent,
-    primary_intent: primaryIntent,
-    intent_confidence: intentConfidence,
-    scope_mode: scopeMode,
-    target_block_ids: targetBlockIds,
-    candidate_block_ids: candidateBlockIds,
-    target_candidates: targetCandidates,
-    target_confidence: targetConfidence,
-    answer_slots: answerSlots,
-    prefilled_answers: answerSlots,
-    clarify_reason: clarifyReason,
-    missing_slots: missingSlots,
-    ai_arbitration_mode: helper?.ai_arbitration_mode || helperMode || 'none',
-    helper_used: Boolean(helper),
-    helper_usage: helper?.usage || null,
-    helper_budget: helper?.budget || null,
-    helper_compacted: Boolean(helper?.compacted),
-    decision_path: decisionPath,
-  });
-
-  if (nextPlan.primary_intent === 'text') {
-    return buildFinalPlan({
-      ...nextPlan,
-      intent: 'text',
-      operation_kind: 'discuss',
-      clarify_needed: false,
-      clarify_question: '',
-      missing_slots: [],
-      risk_level: 'low',
-    });
-  }
-
-  if (nextPlan.primary_intent === 'analyze') {
-    return buildFinalPlan({
-      ...nextPlan,
-      intent: 'analyze',
-      operation_kind: 'analyze',
-      clarify_needed: false,
-      clarify_question: '',
-      missing_slots: [],
-      risk_level: 'low',
-    });
-  }
-
-  if (!nextPlan.clarify_reason && nextPlan.risk_level === 'high' && nextPlan.helper_used && !nextPlan.helper_compacted) {
-    riskValidator = await runRiskValidator({
-      userInput,
-      article,
-      conversationHistory,
-      llmConfig,
-      intentCandidates,
-      targetCandidates,
-      sourceCandidates: sourceRef.candidates,
-      correctionState,
-      riskLevel: nextPlan.risk_level,
-      requestedSourceType: sourceRef.requested_type,
-      decisionPath: [...decisionPath, 'risk_validator:requested'],
-    });
-    if (riskValidator) {
-      decisionPath.push(`risk_validator:${riskValidator.ai_arbitration_mode || 'ok'}`);
-      if (!riskValidator.proceed) {
-        clarifyReason = riskValidator.clarify_reason || 'unsafe_high_risk_edit';
-        missingSlots = unique(riskValidator.missing_slots && riskValidator.missing_slots.length > 0
-          ? riskValidator.missing_slots
-          : ['target_location']);
-      }
-    } else {
-      clarifyReason = 'ai_arbitration_unavailable';
-      missingSlots = unique(missingSlots.length > 0 ? missingSlots : ['target_location']);
-      decisionPath.push('risk_validator:unavailable');
-    }
-  }
-
-  const finalPlan = buildFinalPlan({
-    ...nextPlan,
-    clarify_reason: clarifyReason,
-    missing_slots: missingSlots,
-    helper_usage: helper?.usage || riskValidator?.usage || null,
-    helper_budget: helper?.budget || riskValidator?.budget || null,
-    helper_compacted: Boolean(helper?.compacted || riskValidator?.compacted),
-    ai_arbitration_mode: riskValidator?.ai_arbitration_mode
-      ? `${nextPlan.ai_arbitration_mode}+${riskValidator.ai_arbitration_mode}`
-      : nextPlan.ai_arbitration_mode,
-    decision_path: decisionPath,
-  });
-
-  if (
-    finalPlan.risk_level === 'high'
-    && finalPlan.scope_mode !== 'global'
-    && (finalPlan.helper_compacted || finalPlan.intent_confidence < 0.68 || finalPlan.target_confidence < 0.62)
-    && !clarifyReason
-  ) {
-    clarifyReason = 'unsafe_high_risk_edit';
-    missingSlots = unique(missingSlots.length > 0 ? missingSlots : ['target_location']);
-  }
-
-  if (clarifyReason || missingSlots.length > 0) {
+  if (helper.clarify_needed) {
+    const missingSlots = helper.missing_slots || [];
+    const clarifyReason = helper.clarify_reason || 'missing_target_location';
     const normalizedMissingSlots = unique(missingSlots.length > 0 ? missingSlots : (
-      clarifyReason === 'ambiguous_primary_intent'
-        ? ['primary_intent']
-        : clarifyReason === 'ambiguous_content_reference'
-          ? ['source_content_ref']
-          : clarifyReason === 'missing_write_mode' || clarifyReason === 'ambiguous_position_relation'
-            ? ['write_mode']
+      clarifyReason === 'ambiguous_primary_intent' ? ['primary_intent']
+        : clarifyReason === 'ambiguous_content_reference' ? ['source_content_ref']
+          : clarifyReason === 'missing_write_mode' || clarifyReason === 'ambiguous_position_relation' ? ['write_mode']
             : ['target_location']
     ));
     return buildFinalPlan({
-      ...finalPlan,
+      ...finalBase,
       clarify_needed: true,
-      clarify_reason: clarifyReason || 'missing_target_location',
-      clarify_question: buildClarifyQuestion(clarifyReason || 'missing_target_location', normalizedMissingSlots),
+      clarify_reason: clarifyReason,
+      clarify_question: buildClarifyQuestion(clarifyReason, normalizedMissingSlots),
       clarify_render_mode: 'card',
       missing_slots: normalizedMissingSlots,
-      prefilled_answers: answerSlots,
-      answer_slots: answerSlots,
-      decision_summary: finalPlan.decision_summary,
     });
   }
 
   return buildFinalPlan({
-    ...finalPlan,
+    ...finalBase,
     clarify_needed: false,
+    clarify_reason: '',
     clarify_question: '',
     missing_slots: [],
-    prefilled_answers: answerSlots,
-    answer_slots: answerSlots,
   });
 }
 

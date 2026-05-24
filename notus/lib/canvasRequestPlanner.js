@@ -1189,14 +1189,34 @@ async function resolveCanvasRequest({
   });
   if (inferredWriteMode) answerSlots.write_mode = inferredWriteMode;
 
-  // ── 5. deterministic 精准替换优化（LLM 确认 edit 意图后叠加）────────────
-  const deterministicEdit = deterministicRewrite && helper.primary_intent === 'edit' && resolvedTargetBlockIds.length === 1
+  // ── 5. deterministic 精准替换优化（正则匹配后强制修正意图和目标块）────────
+  // 当正则识别到明确的"将 X 改为 Y"句式，但 LLM 误判为 text/analyze 时，强制覆盖为 edit
+  let effectivePrimaryIntent = helper.primary_intent;
+  if (deterministicRewrite && (effectivePrimaryIntent === 'text' || effectivePrimaryIntent === 'analyze')) {
+    effectivePrimaryIntent = 'edit';
+    decisionPath.push('deterministic_rewrite:intent_override');
+  }
+
+  // 当 LLM 没有返回目标块时，通过 source_text 在全文搜索包含该文本的块
+  let finalTargetBlockIds = resolvedTargetBlockIds;
+  if (deterministicRewrite && effectivePrimaryIntent === 'edit' && finalTargetBlockIds.length === 0) {
+    const refined = refineTargetsWithDeterministicRewrite(article, deterministicRewrite, {
+      explicitTargets,
+      candidateBlockIds,
+    });
+    if (refined.preferred_ids.length > 0) {
+      finalTargetBlockIds = refined.preferred_ids;
+      decisionPath.push('deterministic_rewrite:block_search_fallback');
+    }
+  }
+
+  const deterministicEdit = deterministicRewrite && effectivePrimaryIntent === 'edit' && finalTargetBlockIds.length === 1
     ? deterministicRewrite
     : null;
   if (deterministicEdit) decisionPath.push('deterministic_rewrite:resolved');
 
   // ── 6. 构建最终 plan ─────────────────────────────────────────────────────
-  const primaryIntent = normalizePrimaryIntent(helper.primary_intent);
+  const primaryIntent = normalizePrimaryIntent(effectivePrimaryIntent);
   const operationKind = normalizeOperationKind(helper.operation_kind);
 
   const finalBase = {
@@ -1207,8 +1227,8 @@ async function resolveCanvasRequest({
     intent_candidates: [],
     target_candidates: targetCandidates,
     target_confidence: helper.confidence || 0.8,
-    target_block_ids: resolvedTargetBlockIds,
-    candidate_block_ids: unique([...candidateBlockIds, ...resolvedTargetBlockIds]),
+    target_block_ids: finalTargetBlockIds,
+    candidate_block_ids: unique([...candidateBlockIds, ...finalTargetBlockIds]),
     operation_kind: operationKind,
     action_candidates: [operationKind].filter(Boolean),
     needs_style: inferNeedsStyle(primaryIntent, operationKind, { styleMode }),

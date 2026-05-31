@@ -572,6 +572,33 @@ function parseRawPrimaryIntentAnswer(question, rawText = '') {
   return null;
 }
 
+function parseStructuredGenericAnswer(question, answer = {}) {
+  const optionId = String(answer.option_id || answer.value || '').trim();
+  const customText = String(answer.custom_text || answer.text || '').trim();
+  if (question.type === 'text_input') {
+    if (!customText) return null;
+    return {
+      question_id: question.id,
+      slot: question.slot || question.id,
+      type: question.type,
+      value: customText,
+      label: question.label || question.id,
+      text: customText,
+    };
+  }
+  if (customText) {
+    return buildAnswer('custom', question, {
+      label: '自定义回答',
+      text: customText,
+    });
+  }
+  if (!optionId) return null;
+  const option = (question.options || []).find((item) => item.id === optionId) || null;
+  return buildAnswer(optionId, question, {
+    label: option?.label || optionId,
+  });
+}
+
 function textToOrdinalBlockId(articleBlocks = [], text = '') {
   const ordinalMatch = String(text || '').match(/@b(\d+)|第\s*(\d+)\s*(?:段|块)/i);
   if (!ordinalMatch) return null;
@@ -594,18 +621,8 @@ function normalizeSingleQuestionAnswer(question, answer, interaction, rawText) {
   if (question.id === 'write_mode') {
     return answer ? parseStructuredWriteModeAnswer(question, answer) : parseRawWriteModeAnswer(question, rawText);
   }
-  if (question.type === 'text_input') {
-    const text = String(answer?.text || rawText || '').trim();
-    if (!text) return null;
-    return {
-      question_id: question.id,
-      slot: question.slot || question.id,
-      type: question.type,
-      value: text,
-      label: question.label || question.id,
-      text,
-    };
-  }
+  if (answer) return parseStructuredGenericAnswer(question, answer);
+  if (question.type === 'text_input') return parseStructuredGenericAnswer(question, { text: rawText });
   return null;
 }
 
@@ -728,12 +745,20 @@ function buildInteractionAnswerSummary(interaction, normalizedResponse) {
         ? '写入位置'
         : slot === 'write_mode'
           ? '写入方式'
+          : slot === 'knowledge_subject'
+            ? '查询对象'
+            : slot === 'knowledge_scope'
+              ? '查询范围'
+              : slot === 'knowledge_time_range'
+                ? '时间范围'
+                : slot === 'knowledge_counterpart'
+                  ? '对比对象'
           : slot;
     parts.push(`${slotLabel}=${label}`);
   });
   const note = String(answers.additional_note?.text || '').trim();
   if (note) parts.push(`补充说明=${note}`);
-  return parts.length > 0 ? `已回答提问卡片：${parts.join('；')}` : '已回答提问卡片。';
+  return parts.length > 0 ? `已回答提问抽屉：${parts.join('；')}` : '已回答提问抽屉。';
 }
 
 function resolveSourceSnapshot(interaction) {

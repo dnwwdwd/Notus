@@ -386,6 +386,7 @@ export const InputBar = ({
   showPlusMenu = false,
   mentionOptions = [],
   notice = null,
+  textareaRef: externalTextareaRef = null,
 }) => {
   const [value, setValue] = useState('');
   const [attachments, setAttachments] = useState([]);
@@ -419,6 +420,18 @@ export const InputBar = ({
     el.style.height = '40px';
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
   }, [value, isEmpty]);
+
+  useEffect(() => {
+    if (!externalTextareaRef) return;
+    if (typeof externalTextareaRef === 'function') {
+      externalTextareaRef(textareaRef.current);
+      return undefined;
+    }
+    externalTextareaRef.current = textareaRef.current;
+    return () => {
+      externalTextareaRef.current = null;
+    };
+  }, [externalTextareaRef]);
 
   useEffect(() => {
     const el = shellRef.current;

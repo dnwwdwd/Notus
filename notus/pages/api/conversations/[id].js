@@ -30,7 +30,7 @@ export default function handler(req, res) {
         articleHash: String(req.query.article_hash || '').trim() || undefined,
       })
       : [];
-    const pendingInteractions = conversation.kind === 'canvas'
+    const pendingInteractions = ['canvas', 'knowledge'].includes(conversation.kind)
       ? listInteractionsByConversation(id, {
         articleHash: String(req.query.article_hash || '').trim() || undefined,
       })

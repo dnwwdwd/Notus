@@ -33,6 +33,42 @@ function runTests() {
   assert.strictEqual(article.blocks.length, 3);
   assert.strictEqual(article.blocks[0].content, '第一段');
 
+  const longContent = [
+    '长文本块开头',
+    ...Array.from({ length: 120 }).map((_, index) => `第 ${index + 1} 行内容`),
+    '长文本块结尾',
+  ].join('\n');
+  const longArticle = {
+    title: '长文本应用测试',
+    blocks: [
+      { id: 'b1', type: 'paragraph', content: longContent },
+    ],
+  };
+  const longSuccess = applyOperations(longArticle, [
+    {
+      op: 'replace',
+      block_id: 'b1',
+      old: longContent,
+      new: longContent.replace('第 60 行内容', '第 60 行内容（已修改）'),
+    },
+  ]);
+  assert.strictEqual(longSuccess.success, true);
+  assert.strictEqual(longSuccess.article.blocks[0].content.includes('第 59 行内容'), true);
+  assert.strictEqual(longSuccess.article.blocks[0].content.includes('第 60 行内容（已修改）'), true);
+  assert.strictEqual(longSuccess.article.blocks[0].content.includes('第 61 行内容'), true);
+
+  const staleLong = applyOperations(longArticle, [
+    {
+      op: 'replace',
+      block_id: 'b1',
+      old: '长文本块开头\n[已按上下文预算截断]',
+      new: '不会应用',
+    },
+  ]);
+  assert.strictEqual(staleLong.success, false);
+  assert.strictEqual(staleLong.error, 'OLD_MISMATCH');
+  assert.strictEqual(longArticle.blocks[0].content, longContent);
+
   console.log('canvas operations tests passed');
 }
 

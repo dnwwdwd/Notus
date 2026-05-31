@@ -182,12 +182,11 @@ export const CanvasBlock = ({
       {state === 'processing' ? (
         <span style={{ color: 'var(--text-tertiary)', fontStyle: 'italic' }}>AI 正在为你重写这一段…</span>
       ) : state === 'editing' ? (
-        <>
+        <div style={{ display: 'grid', gap: 8 }}>
           <textarea
             ref={textareaRef}
             value={editContent}
             onChange={handleTextareaChange}
-            onBlur={saveEdit}
             onKeyDown={handleKeyDown}
             style={{
               width: '100%',
@@ -204,7 +203,39 @@ export const CanvasBlock = ({
               margin: 0,
             }}
           />
-        </>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <button
+              type="button"
+              onClick={discardEdit}
+              style={{
+                height: 28,
+                padding: '0 10px',
+                borderRadius: 'var(--radius-md)',
+                color: 'var(--text-secondary)',
+                background: 'var(--bg-elevated)',
+                border: '1px solid var(--border-subtle)',
+                fontSize: 'var(--text-xs)',
+              }}
+            >
+              取消编辑
+            </button>
+            <button
+              type="button"
+              onClick={saveEdit}
+              style={{
+                height: 28,
+                padding: '0 10px',
+                borderRadius: 'var(--radius-md)',
+                color: 'var(--text-on-accent)',
+                background: 'var(--accent)',
+                fontSize: 'var(--text-xs)',
+                fontWeight: 500,
+              }}
+            >
+              完成
+            </button>
+          </div>
+        </div>
       ) : (
         <div
           style={{ whiteSpace: 'pre-wrap', cursor: 'text' }}

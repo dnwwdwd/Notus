@@ -246,6 +246,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const deferredSearchQuery = useDeferredValue(searchQuery);
+  const [activeTocKey, setActiveTocKey] = useState('');
 
   const [createMode, setCreateMode] = useState(null);
   const [newName, setNewName] = useState('');
@@ -258,6 +259,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
   const [renameName, setRenameName] = useState('');
   const [renameSubmitting, setRenameSubmitting] = useState(false);
   const contextMenuRef = useRef(null);
+  const [hydrated, setHydrated] = useState(false);
 
   const [importOpen, setImportOpen] = useState(false);
   const [importResultOpen, setImportResultOpen] = useState(false);
@@ -279,6 +281,10 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
   useEffect(() => {
     if (tocDisabled) setActiveTab('tree');
   }, [tocDisabled]);
+
+  useEffect(() => {
+    setHydrated(true);
+  }, []);
 
   useEffect(() => {
     if (!sidebarCollapsed) return undefined;
@@ -427,6 +433,13 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
   }, [importFailedResults, selectedImportFiles]);
 
   const currentPage = ['files', 'knowledge', 'canvas'].includes(active) ? active : (activePage || 'files');
+
+  useEffect(() => {
+    const activeItem = (Array.isArray(tocItems) ? tocItems : []).find((item) => item?.active);
+    if (activeItem) {
+      setActiveTocKey(`${activeItem.text || ''}:${activeItem.level || ''}`);
+    }
+  }, [tocItems]);
 
   const handleSelectFile = (file) => {
     const action = () => {
@@ -1351,26 +1364,39 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
               </div>
             ) : tocItems.map((t, i) => {
               const pad = 12 + t.level * 14;
+              const tocKey = `${t.text || ''}:${t.level || ''}`;
+              const selected = Boolean(t.active || activeTocKey === tocKey);
               return (
                 <div
                   key={i}
-                  onClick={() => t.onJump?.()}
+                  onClick={() => {
+                    setActiveTocKey(tocKey);
+                    t.onJump?.();
+                  }}
                   style={{
                     height: 28,
                     display: 'flex',
                     alignItems: 'center',
                     padding: `0 10px 0 ${pad}px`,
                     fontSize: 'var(--text-sm)',
-                    color: t.active ? 'var(--accent)' : 'var(--text-secondary)',
-                    fontWeight: t.active ? 500 : 400,
+                    color: selected ? 'var(--accent)' : 'var(--text-secondary)',
+                    fontWeight: selected ? 500 : 400,
+                    background: selected ? 'var(--accent-subtle)' : 'transparent',
                     position: 'relative',
                     cursor: 'pointer',
-                    transition: 'color var(--transition-fast)',
+                    transition: 'background var(--transition-fast), color var(--transition-fast)',
+                    borderRadius: '0 var(--radius-sm) var(--radius-sm) 0',
                   }}
-                  onMouseEnter={(e) => e.currentTarget.style.color = 'var(--text-primary)'}
-                  onMouseLeave={(e) => e.currentTarget.style.color = t.active ? 'var(--accent)' : 'var(--text-secondary)'}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = selected ? 'var(--accent-subtle)' : 'var(--bg-hover)';
+                    e.currentTarget.style.color = selected ? 'var(--accent)' : 'var(--text-primary)';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = selected ? 'var(--accent-subtle)' : 'transparent';
+                    e.currentTarget.style.color = selected ? 'var(--accent)' : 'var(--text-secondary)';
+                  }}
                 >
-                  {t.active && (
+                  {selected && (
                     <div style={{ position: 'absolute', left: 6, top: 6, bottom: 6, width: 2, background: 'var(--accent)', borderRadius: 1 }} />
                   )}
                   <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -1380,7 +1406,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
               );
             })}
           </div>
-        ) : loadingFiles && !hasLoadedFilesOnce && files.length === 0 ? (
+        ) : !hydrated || (loadingFiles && !hasLoadedFilesOnce && files.length === 0) ? (
           <div style={{ padding: '20px 16px', fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)' }}>
             正在读取文件树…
           </div>

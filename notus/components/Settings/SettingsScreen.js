@@ -958,11 +958,7 @@ const About = () => {
           </div>
         </div>
       </div>
-      <div
-        style={{
-          border: '1px solid var(--border-subtle)',
-        }}
-      >
+      <div>
         当前版本专注本地知识库问答、块级创作协作和桌面工作区体验。
       </div>
     </div>

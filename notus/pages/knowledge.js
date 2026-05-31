@@ -4,6 +4,7 @@ import dynamic from 'next/dynamic';
 import { useRouter } from 'next/router';
 import { Shell } from '../components/Layout/Shell';
 import { EditorToolbar } from '../components/Editor/EditorToolbar';
+import { ClarifyDrawer } from '../components/ChatArea/ClarifyDrawer';
 import { UserBubble, AiBubble } from '../components/ChatArea/ChatMessage';
 import { ConversationDrawer } from '../components/ChatArea/ConversationDrawer';
 import { InputBar } from '../components/ChatArea/InputBar';
@@ -126,6 +127,34 @@ function buildConversationListUrl() {
   return `/api/conversations?${params.toString()}`;
 }
 
+function upsertInteraction(list = [], interaction = null) {
+  if (!interaction?.id) return list;
+  const next = Array.isArray(list) ? [...list] : [];
+  const index = next.findIndex((item) => Number(item.id) === Number(interaction.id));
+  if (interaction.status === 'answered' || interaction.status === 'cancelled') {
+    if (index >= 0) next.splice(index, 1);
+    return next.sort((left, right) => Number(left.id || 0) - Number(right.id || 0));
+  }
+  if (index >= 0) next[index] = interaction;
+  else next.push(interaction);
+  return next.sort((left, right) => Number(left.id || 0) - Number(right.id || 0));
+}
+
+function upsertMessage(list = [], message = null) {
+  if (!message?.id) return list;
+  const next = Array.isArray(list) ? [...list] : [];
+  const index = next.findIndex((item) => String(item.id) === String(message.id));
+  if (index >= 0) next[index] = message;
+  else next.push(message);
+  return next;
+}
+
+function shouldHideInteractionSummaryMessage(message) {
+  if (message?.role !== 'user') return false;
+  const meta = message?.meta && typeof message.meta === 'object' ? message.meta : {};
+  return Boolean(meta.interaction_id && meta.interaction_resolution_status);
+}
+
 export default function KnowledgePage() {
   const router = useRouter();
   const toast = useToast();
@@ -150,6 +179,9 @@ export default function KnowledgePage() {
   const [conversationList, setConversationList] = useState([]);
   const [conversationListLoading, setConversationListLoading] = useState(false);
   const [, setConversationDraft] = useState(true);
+  const [pendingInteractions, setPendingInteractions] = useState([]);
+  const [interactionSubmittingId, setInteractionSubmittingId] = useState(null);
+  const [clarifyDrawerPhase, setClarifyDrawerPhase] = useState('expanded-question');
   const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
   const [docLoading, setDocLoading] = useState(false);
   const [docError, setDocError] = useState(null);
@@ -169,6 +201,7 @@ export default function KnowledgePage() {
   const hiddenDocFrontmatterRef = useRef('');
   const chatEndRef = useRef(null);
   const requestControllerRef = useRef(null);
+  const inputTextareaRef = useRef(null);
   const layoutChangeCountRef = useRef(0);
   const persistedLayoutLeftPercentRef = useRef(null);
 
@@ -460,7 +493,7 @@ export default function KnowledgePage() {
     setDocSaveState('dirty');
   }, []);
 
-  const readSse = async (response, onEvent) => {
+  const readSse = useCallback(async (response, onEvent) => {
     if (!response.body) throw new Error('接口没有返回可读取的流');
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -481,7 +514,7 @@ export default function KnowledgePage() {
       const line = buffer.split('\n').find((item) => item.startsWith('data:'));
       if (line) onEvent(JSON.parse(line.slice(5)));
     }
-  };
+  }, []);
 
   const fetchConversationList = useCallback(async () => {
     const response = await fetch(buildConversationListUrl());
@@ -505,12 +538,193 @@ export default function KnowledgePage() {
     } catch {}
   }, [fetchConversationList]);
 
+  const focusKnowledgeInput = useCallback(() => {
+    window.requestAnimationFrame(() => {
+      inputTextareaRef.current?.focus?.();
+    });
+  }, []);
+
+  const respondToInteraction = useCallback(async (interaction, body, options = {}) => {
+    if (!interaction?.id) return null;
+    if (options.setSubmitting !== false) setInteractionSubmittingId(interaction.id);
+    try {
+      const response = await fetch(`/api/interactions/${interaction.id}/respond`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...body,
+          schema_version: interaction.schema_version,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        if (payload.interaction) {
+          setPendingInteractions((prev) => upsertInteraction(prev, payload.interaction));
+        }
+        throw new Error(payload.error || '回答提问抽屉失败');
+      }
+      if (payload.interaction) {
+        setPendingInteractions((prev) => upsertInteraction(prev, payload.interaction));
+      }
+      if (payload.answer_message) {
+        const mappedMessage = mapConversationMessages([payload.answer_message], 'knowledge')[0] || null;
+        if (mappedMessage) {
+          setMessages((prev) => upsertMessage(prev, mappedMessage));
+        }
+      }
+      if (payload.interaction?.conversation_id) {
+        setActiveConversationId(Number(payload.interaction.conversation_id));
+        setConversationDraft(false);
+        refreshConversationListOnly(Number(payload.interaction.conversation_id));
+      }
+      return payload;
+    } finally {
+      if (options.setSubmitting !== false) setInteractionSubmittingId(null);
+    }
+  }, [refreshConversationListOnly]);
+
+  const cancelInteraction = useCallback(async (interaction, options = {}) => {
+    if (!interaction?.id) return null;
+    try {
+      return await respondToInteraction(interaction, { action: 'cancel' }, { setSubmitting: false });
+    } catch (cancelError) {
+      if (!options.silent) {
+        toast(cancelError.message || '关闭提问抽屉失败', 'error');
+      }
+      throw cancelError;
+    }
+  }, [respondToInteraction, toast]);
+
+  const runInteractionResume = useCallback(async (interaction, llmConfigId = selectedLlmConfigId) => {
+    if (!interaction?.id || !llmConfigId) {
+      if (!llmConfigId) {
+        toast('请先在模型配置中新增并测试至少一个 LLM 配置', 'warning');
+      }
+      return;
+    }
+
+    requestControllerRef.current?.abort();
+    const controller = new AbortController();
+    requestControllerRef.current = controller;
+    setError(null);
+    setLoading(true);
+    setRetrievalStage({ stage: 'searching', sources: 0 });
+    setStreamText('');
+
+    try {
+      let answer = '';
+      let citations = [];
+      let documents = [];
+      let documentStats = null;
+      let sourceCount = 0;
+      let assistantMeta = null;
+      let resolvedConversationId = activeConversationId;
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          conversation_id: activeConversationId || undefined,
+          interaction_id: interaction.id,
+          llm_config_id: llmConfigId,
+          active_file_id: activeFile?.id || null,
+          reference_mode: referenceMode,
+          reference_file_ids: referenceMode === 'manual' ? manualReferenceFileIds : undefined,
+        }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || '继续检索失败');
+      }
+
+      await readSse(response, (event) => {
+        if (event.conversation_id) {
+          resolvedConversationId = Number(event.conversation_id);
+        }
+        if (event.type === 'chunks') {
+          documents = Array.isArray(event.documents) ? event.documents : [];
+          documentStats = event.document_stats || null;
+          setRetrievalStage(buildAnswerStage(event));
+        } else if (event.type === 'assistant_meta') {
+          assistantMeta = event;
+          documentStats = event.document_stats || documentStats;
+          if (event.interaction) {
+            setPendingInteractions((prev) => upsertInteraction(prev, event.interaction));
+          }
+          if (event.answer_mode === 'clarify_needed') {
+            setRetrievalStage(null);
+          }
+        } else if (event.type === 'token') {
+          answer += event.text || '';
+          setStreamText(answer);
+          setRetrievalStage(null);
+        } else if (event.type === 'citations') {
+          citations = event.citations || [];
+          sourceCount = Number(event.source_count || event.citations?.length || 0);
+        } else if (event.type === 'done') {
+          const finalMeta = event.meta || assistantMeta;
+          documentStats = event.document_stats || finalMeta?.document_stats || documentStats;
+          if (event.interaction) {
+            setPendingInteractions((prev) => upsertInteraction(prev, event.interaction));
+          }
+          setMessages((prev) => upsertMessage(prev, {
+            id: event.message_id || Date.now(),
+            role: 'assistant',
+            content: answer,
+            citations,
+            documents,
+            documentStats,
+            sourceCount: Number(event.source_count || finalMeta?.source_count || sourceCount || citations.length || 0),
+            meta: finalMeta,
+            answerMode: event.answer_mode || finalMeta?.answer_mode || null,
+          }));
+          if (resolvedConversationId) {
+            setActiveConversationId(resolvedConversationId);
+            setConversationDraft(false);
+            refreshConversationListOnly(resolvedConversationId);
+          }
+          setStreamText('');
+          setLoading(false);
+        } else if (event.type === 'error') {
+          const nextError = new Error(event.error || '继续检索失败');
+          nextError.conversationId = event.conversation_id ? Number(event.conversation_id) : resolvedConversationId;
+          throw nextError;
+        }
+      });
+    } catch (resumeError) {
+      if (resumeError.name !== 'AbortError') {
+        if (resumeError.conversationId) {
+          setActiveConversationId(Number(resumeError.conversationId));
+          setConversationDraft(false);
+          refreshConversationListOnly(Number(resumeError.conversationId));
+        }
+        setError(resumeError.message || '继续检索失败');
+      }
+      setLoading(false);
+      setRetrievalStage(null);
+    } finally {
+      if (requestControllerRef.current === controller) {
+        requestControllerRef.current = null;
+      }
+    }
+  }, [
+    activeConversationId,
+    activeFile?.id,
+    manualReferenceFileIds,
+    readSse,
+    referenceMode,
+    refreshConversationListOnly,
+    selectedLlmConfigId,
+    toast,
+  ]);
+
   const handleNewConversation = useCallback(() => {
     requestControllerRef.current?.abort();
     clearActiveCitationState();
     setActiveConversationId(null);
     setConversationDraft(true);
     setMessages([]);
+    setPendingInteractions([]);
     setStreamText('');
     setError(null);
     setLoading(false);
@@ -526,6 +740,7 @@ export default function KnowledgePage() {
     try {
       const payload = await fetchConversationDetail(conversationId);
       setMessages(mapConversationMessages(payload.messages, 'knowledge'));
+      setPendingInteractions(Array.isArray(payload.pending_interactions) ? payload.pending_interactions : []);
       setActiveConversationId(Number(conversationId));
       setConversationDraft(false);
       setStreamText('');
@@ -557,12 +772,14 @@ export default function KnowledgePage() {
         setActiveConversationId(null);
         setConversationDraft(true);
         setMessages([]);
+        setPendingInteractions([]);
       } catch (loadError) {
         if (cancelled) return;
         setConversationList([]);
         setActiveConversationId(null);
         setConversationDraft(true);
         setMessages([]);
+        setPendingInteractions([]);
         toast(loadError.message || '读取对话历史失败', 'error');
       } finally {
         if (!cancelled) {
@@ -580,6 +797,13 @@ export default function KnowledgePage() {
     if (!llmConfigId) {
       toast('请先在模型配置中新增并测试至少一个 LLM 配置', 'warning');
       return;
+    }
+
+    const currentInteraction = [...pendingInteractions].reverse().find((item) => ['pending', 'failed', 'stale'].includes(item.status)) || null;
+    if (currentInteraction && clarifyDrawerPhase === 'collapsed') {
+      try {
+        await cancelInteraction(currentInteraction, { silent: true });
+      } catch {}
     }
 
     requestControllerRef.current?.abort();
@@ -633,6 +857,9 @@ export default function KnowledgePage() {
         } else if (event.type === 'assistant_meta') {
           assistantMeta = event;
           documentStats = event.document_stats || documentStats;
+          if (event.interaction) {
+            setPendingInteractions((prev) => upsertInteraction(prev, event.interaction));
+          }
           if (event.answer_mode === 'clarify_needed') {
             setRetrievalStage(null);
           }
@@ -646,20 +873,20 @@ export default function KnowledgePage() {
         } else if (event.type === 'done') {
           const finalMeta = event.meta || assistantMeta;
           documentStats = event.document_stats || finalMeta?.document_stats || documentStats;
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: event.message_id || Date.now(),
-              role: 'assistant',
-              content: answer,
-              citations,
-              documents,
-              documentStats,
-              sourceCount: Number(event.source_count || finalMeta?.source_count || sourceCount || citations.length || 0),
-              meta: finalMeta,
-              answerMode: event.answer_mode || finalMeta?.answer_mode || null,
-            },
-          ]);
+          if (event.interaction) {
+            setPendingInteractions((prev) => upsertInteraction(prev, event.interaction));
+          }
+          setMessages((prev) => upsertMessage(prev, {
+            id: event.message_id || Date.now(),
+            role: 'assistant',
+            content: answer,
+            citations,
+            documents,
+            documentStats,
+            sourceCount: Number(event.source_count || finalMeta?.source_count || sourceCount || citations.length || 0),
+            meta: finalMeta,
+            answerMode: event.answer_mode || finalMeta?.answer_mode || null,
+          }));
           if (resolvedConversationId) {
             setActiveConversationId(resolvedConversationId);
             setConversationDraft(false);
@@ -694,7 +921,43 @@ export default function KnowledgePage() {
     }
   };
 
-  const isEmpty = messages.length === 0 && !loading;
+  const activeClarifyInteraction = loading
+    ? null
+    : ([...pendingInteractions].reverse().find((item) => item.status === 'pending')
+      || [...pendingInteractions].reverse().find((item) => item.status === 'failed')
+      || [...pendingInteractions].reverse().find((item) => item.status === 'stale')
+      || null);
+  const hiddenInteractionIds = new Set(
+    pendingInteractions
+      .filter((item) => item && ['pending', 'failed', 'stale'].includes(item.status))
+      .map((item) => String(item.id))
+  );
+  const visibleMessages = messages.filter((msg) => {
+    if (shouldHideInteractionSummaryMessage(msg)) return false;
+    if (msg.role !== 'assistant') return true;
+    const meta = msg.meta && typeof msg.meta === 'object' ? msg.meta : {};
+    const retryInteractionId = String(meta.retry_interaction_id || '');
+    if (meta.retry_available && hiddenInteractionIds.has(retryInteractionId)) {
+      return false;
+    }
+    return true;
+  });
+  const isEmpty = visibleMessages.length === 0 && !loading;
+
+  const handleClarifyDrawerSubmit = useCallback(async (interaction, answers) => {
+    try {
+      const payload = await respondToInteraction(interaction, { response: { answers } });
+      if (!payload?.should_continue) return;
+      await runInteractionResume(payload.interaction || interaction, selectedLlmConfigId);
+    } catch (submitError) {
+      toast(submitError.message || '回答提问抽屉失败', 'error');
+    }
+  }, [respondToInteraction, runInteractionResume, selectedLlmConfigId, toast]);
+
+  const handleRetryInteraction = useCallback(async (interaction) => {
+    if (!interaction?.id) return;
+    await runInteractionResume(interaction, selectedLlmConfigId);
+  }, [runInteractionResume, selectedLlmConfigId]);
   const aiState = deriveAiReadiness({
     appStatus,
     appStatusLoading,
@@ -704,6 +967,8 @@ export default function KnowledgePage() {
   });
   const aiUiState = useStableAiReadiness(aiState);
   const aiReady = aiUiState.ready;
+  const knowledgeInputDisabled = !aiReady
+    || (Boolean(activeClarifyInteraction) && clarifyDrawerPhase !== 'collapsed');
   const aiLockDescription = aiState.reason === 'llm'
     ? '先完成 LLM 和 Embedding 配置后，知识库问答才会开放。'
     : aiState.reason === 'embedding'
@@ -717,6 +982,10 @@ export default function KnowledgePage() {
     message: '当前文章还有未保存修改。你可以先保存再继续跳转，也可以直接离开并丢弃这次编辑。',
   });
   const navigationGuard = activeFile && docSaveState === 'dirty' ? unsavedGuard.request : undefined;
+
+  useEffect(() => {
+    setClarifyDrawerPhase('expanded-question');
+  }, [activeClarifyInteraction?.id]);
 
   const getDocumentFindRoot = useCallback(() => getEditorRoot(editor), [editor]);
 
@@ -992,7 +1261,7 @@ export default function KnowledgePage() {
                 </div>
               ) : (
                 <>
-                  {messages.map((msg) =>
+                  {visibleMessages.map((msg) =>
                     msg.role === 'user'
                       ? <UserBubble key={msg.id}>{msg.content}</UserBubble>
                       : (
@@ -1040,9 +1309,47 @@ export default function KnowledgePage() {
             llmConfigs={llmConfigs}
             selectedConfigId={selectedLlmConfigId}
             onConfigChange={setSelectedLlmConfigId}
-            disabled={!aiReady}
+            disabled={knowledgeInputDisabled}
             showPlusMenu={false}
+            textareaRef={inputTextareaRef}
           />
+          {activeClarifyInteraction ? (
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                zIndex: 10,
+                pointerEvents: 'none',
+                display: 'flex',
+                flexDirection: 'column',
+                justifyContent: 'flex-end',
+              }}
+            >
+              <div
+                style={{
+                  padding: '56px 12px 12px',
+                  background: 'linear-gradient(180deg, rgba(247, 244, 238, 0) 0%, var(--bg-primary) 28%)',
+                  pointerEvents: 'none',
+                  position: 'relative',
+                  zIndex: 1,
+                }}
+              >
+                <div style={{ pointerEvents: 'auto' }}>
+                  <ClarifyDrawer
+                    interaction={activeClarifyInteraction}
+                    onSubmit={handleClarifyDrawerSubmit}
+                    onRetry={handleRetryInteraction}
+                    onCancel={(interaction) => { void cancelInteraction(interaction); }}
+                    onPhaseChange={setClarifyDrawerPhase}
+                    onFocusInput={focusKnowledgeInput}
+                    submitting={interactionSubmittingId === Number(activeClarifyInteraction?.id)}
+                    submitLabel={activeClarifyInteraction?.payload?.submit_label || '开始检索'}
+                    retryLabel="重试"
+                  />
+                </div>
+              </div>
+            </div>
+          ) : null}
           <ConversationDrawer
             open={historyDrawerOpen}
             onClose={() => setHistoryDrawerOpen(false)}

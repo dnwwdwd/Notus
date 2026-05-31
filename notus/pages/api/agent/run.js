@@ -369,7 +369,7 @@ export default async function handler(req, res) {
 
   if (interactionId && !interaction) {
     return res.status(404).json({
-      error: '提问卡片不存在',
+      error: '提问抽屉不存在',
       code: 'INTERACTION_NOT_FOUND',
       request_id: context.request_id,
     });
@@ -378,7 +378,7 @@ export default async function handler(req, res) {
   if (isInteractionResume) {
     if (!['answered', 'failed'].includes(interaction.status)) {
       return res.status(409).json({
-        error: interaction.status === 'stale' ? '文章已变化，需要重新确认' : '提问卡片还没有完成回答',
+        error: interaction.status === 'stale' ? '文章已变化，需要重新确认' : '提问抽屉还没有完成回答',
         code: interaction.status === 'stale' ? 'INTERACTION_STALE' : 'INTERACTION_NOT_READY',
         request_id: context.request_id,
       });

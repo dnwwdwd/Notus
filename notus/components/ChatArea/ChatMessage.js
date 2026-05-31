@@ -271,23 +271,17 @@ export const AiBubble = ({
       )}
     </div>
     {hasBodyChildren ? (
-      <div style={{
-        padding: '14px 16px',
-        borderRadius: 18,
-        background: 'var(--bg-ai-bubble)',
-        display: 'grid',
-        gap: 12,
-      }}>
+      <>
         {retrievalStage && !showLoadingBubble ? (
-          <RetrievalStatus stage={retrievalStage.stage} sources={retrievalStage.sources} embedded />
+          <RetrievalStatus stage={retrievalStage.stage} sources={retrievalStage.sources} />
         ) : null}
         {text !== undefined
           ? (showLoadingBubble ? <LoadingBubblePlaceholder retrievalStage={retrievalStage} /> : <StreamingText text={text} streaming={streaming} />)
-          : <div style={{ fontSize: 'var(--text-sm)', lineHeight: 1.7 }}>{children}</div>}
+          : (children ? <div style={{ fontSize: 'var(--text-sm)', lineHeight: 1.7 }}>{children}</div> : null)}
         {text !== undefined && children}
         {assistantNote ? (
           <div style={{
-            paddingTop: 2,
+            marginTop: 8,
             fontSize: 12,
             color: 'var(--text-secondary)',
             lineHeight: 1.7,
@@ -297,8 +291,8 @@ export const AiBubble = ({
         ) : null}
         <WorkspaceDocumentSummary documents={documents} stats={documentStats} />
         {citations && citations.length > 0 && (
-          <div style={{ display: 'grid', gap: 8 }}>
-            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
+          <div style={{ marginTop: 12 }}>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', marginBottom: 8 }}>
               {(Number(sourceCount) > 0 ? Number(sourceCount) : citations.length)} 个来源
             </div>
             {citations.map((c, i) => (
@@ -317,7 +311,7 @@ export const AiBubble = ({
             ))}
           </div>
         )}
-      </div>
+      </>
     ) : null}
   </div>
   );

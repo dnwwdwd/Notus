@@ -70,7 +70,7 @@ export function DocumentFindBar({
         <div style={{ minWidth: 56, textAlign: 'center', fontSize: 'var(--text-xs)', color: 'var(--text-secondary)' }}>
           {query.trim()
             ? (total > 0 ? `${Math.min(current + 1, total)} / ${total}` : '0 / 0')
-            : '输入关键词'}
+            : ''}
         </div>
 
         <button
@@ -116,9 +116,6 @@ export function DocumentFindBar({
         >
           <Icons.x size={14} />
         </button>
-      </div>
-      <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', padding: '0 2px' }}>
-        搜索当前文档内容，回车或按钮切换匹配项，`Esc` 关闭。
       </div>
     </div>
   );

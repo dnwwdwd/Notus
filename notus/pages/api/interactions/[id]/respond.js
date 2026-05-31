@@ -41,18 +41,18 @@ function buildCorrectionStateFromResponse(interaction, normalizedResponse) {
 
 function buildStatusError(status) {
   if (status === 'answered') {
-    return { code: 'INTERACTION_ALREADY_ANSWERED', message: '这张提问卡片已经回答过了' };
+    return { code: 'INTERACTION_ALREADY_ANSWERED', message: '这张提问抽屉已经回答过了' };
   }
   if (status === 'stale') {
-    return { code: 'INTERACTION_STALE', message: '文章已经变化，需要重新确认这张提问卡片' };
+    return { code: 'INTERACTION_STALE', message: '文章已经变化，需要重新确认这张提问抽屉' };
   }
   if (status === 'cancelled') {
-    return { code: 'INTERACTION_CANCELLED', message: '这张提问卡片已经失效' };
+    return { code: 'INTERACTION_CANCELLED', message: '这张提问抽屉已经失效' };
   }
   if (status === 'failed') {
-    return { code: 'INTERACTION_NOT_PENDING', message: '这张提问卡片已经进入失败状态，请直接重试生成预览' };
+    return { code: 'INTERACTION_NOT_PENDING', message: '这张提问抽屉已经进入失败状态，请直接重试生成预览' };
   }
-  return { code: 'INTERACTION_NOT_PENDING', message: '这张提问卡片当前不可继续回答' };
+  return { code: 'INTERACTION_NOT_PENDING', message: '这张提问抽屉当前不可继续回答' };
 }
 
 export default function handler(req, res) {
@@ -74,8 +74,34 @@ export default function handler(req, res) {
   const interaction = getInteractionById(interactionId);
   if (!interaction) {
     return res.status(404).json({
-      error: '提问卡片不存在',
+      error: '提问抽屉不存在',
       code: 'INTERACTION_NOT_FOUND',
+      request_id: context.request_id,
+    });
+  }
+
+  const { action } = req.body || {};
+  if (action === 'cancel') {
+    if (['answered', 'cancelled'].includes(interaction.status)) {
+      const statusError = buildStatusError(interaction.status);
+      return res.status(409).json({
+        error: statusError.message,
+        code: statusError.code,
+        interaction,
+        request_id: context.request_id,
+      });
+    }
+    const cancelledInteraction = updateInteraction(interaction.id, {
+      status: 'cancelled',
+      answeredAt: null,
+    });
+    return res.status(200).json({
+      interaction: cancelledInteraction,
+      answer_message: null,
+      resolution_status: 'cancelled',
+      normalized_response: null,
+      should_continue: false,
+      resume_payload: null,
       request_id: context.request_id,
     });
   }
@@ -93,7 +119,7 @@ export default function handler(req, res) {
   const { response, raw_text: rawText, article, article_hash: articleHash, schema_version: schemaVersion } = req.body || {};
   if (schemaVersion && Number(schemaVersion) !== Number(interaction.schema_version)) {
     return res.status(409).json({
-      error: '提问卡片版本已经变化，请刷新后重试',
+      error: '提问抽屉版本已经变化，请刷新后重试',
       code: 'INTERACTION_SCHEMA_MISMATCH',
       interaction,
       request_id: context.request_id,

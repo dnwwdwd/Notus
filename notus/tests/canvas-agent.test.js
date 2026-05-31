@@ -103,6 +103,17 @@ async function runTests() {
         userInput: '请分析这篇文章的结构和逻辑',
         article: buildParagraphArticle(4),
         conversationHistory: [],
+        forcedPlan: {
+          intent: 'analyze',
+          primary_intent: 'analyze',
+          scope_mode: 'none',
+          target_block_ids: [],
+          operation_kind: 'analyze',
+          helper_used: false,
+          needs_style: false,
+          needs_knowledge: false,
+          clarify_needed: false,
+        },
       });
       assert.strictEqual(result.canvasMode, 'text');
       assert.strictEqual(result.fallbackReason, 'analysis_disabled');
@@ -154,11 +165,90 @@ async function runTests() {
             },
           },
         ],
+        forcedPlan: {
+          intent: 'edit',
+          primary_intent: 'edit',
+          scope_mode: 'single',
+          target_block_ids: ['b2'],
+          operation_kind: 'polish',
+          helper_used: false,
+          needs_style: true,
+          needs_knowledge: false,
+          clarify_needed: false,
+          summary_instruction: '先把第二段压紧，再补一个例子。',
+        },
       });
       const lastMessage = String(capturedPrompt?.[capturedPrompt.length - 1]?.content || '');
       assert.ok(lastMessage.includes('额外要求：先把第二段压紧，再补一个例子。'));
       assert.strictEqual(result.operationKind, 'polish');
       assert.strictEqual(result.focusSummary, '已按上一轮建议生成修改。');
+    } finally {
+      restore();
+    }
+  }
+
+  {
+    let capturedPrompt = null;
+    const longContent = [
+      '开头内容用于确认目标块没有被截断。',
+      ...Array.from({ length: 90 }).map((_, index) => `第 ${index + 1} 行正文保持不变。`),
+      '结尾内容用于确认目标块仍是完整全文。',
+    ].join('\n');
+    const article = {
+      title: '长块文章',
+      blocks: [
+        { id: 'b1', type: 'paragraph', content: '前一段上下文' },
+        { id: 'b2', type: 'paragraph', content: longContent },
+        { id: 'b3', type: 'paragraph', content: '后一段上下文' },
+      ],
+    };
+    const { agent, restore } = withMockedCanvasAgent({
+      completeChat: async (prompt) => {
+        capturedPrompt = prompt;
+        return {
+          message: {
+            content: JSON.stringify({
+              summary: '已局部调整长块。',
+              operations: [
+                {
+                  op: 'replace',
+                  block_id: 'b2',
+                  old: longContent,
+                  new: longContent.replace('第 45 行正文保持不变。', '第 45 行正文已调整。'),
+                },
+              ],
+            }),
+          },
+        };
+      },
+    });
+    try {
+      const result = await agent.runCanvasAgent({
+        userInput: '把 @b2 第 45 行改得更准确',
+        article,
+        conversationHistory: [],
+        forcedPlan: {
+          intent: 'edit',
+          primary_intent: 'edit',
+          scope_mode: 'single',
+          target_block_ids: ['b2'],
+          operation_kind: 'rewrite',
+          helper_used: false,
+          needs_style: false,
+          needs_knowledge: false,
+          clarify_needed: false,
+        },
+      });
+      const promptText = capturedPrompt.map((message) => message.content).join('\n');
+      const blockSnapshots = parseBlockSnapshotsFromPrompt(capturedPrompt);
+      const targetSnapshot = blockSnapshots.find((block) => block.id === 'b2');
+      assert.ok(promptText.includes('replace.new 必须是目标块修改后的完整全文'));
+      assert.ok(promptText.includes('未修改的文字、换行、列表顺序和标点必须逐字保留'));
+      assert.strictEqual(targetSnapshot.content, longContent);
+      assert.strictEqual(result.operations[0].old, longContent);
+      assert.ok(result.operations[0].new.includes('第 44 行正文保持不变。'));
+      assert.ok(result.operations[0].new.includes('第 45 行正文已调整。'));
+      assert.ok(result.operations[0].new.includes('第 46 行正文保持不变。'));
     } finally {
       restore();
     }
@@ -247,6 +337,17 @@ async function runTests() {
         userInput: '请统一全文语气，保持原意不变',
         article,
         conversationHistory: [],
+        forcedPlan: {
+          intent: 'edit',
+          primary_intent: 'edit',
+          scope_mode: 'global',
+          target_block_ids: [],
+          operation_kind: 'rewrite',
+          helper_used: false,
+          needs_style: true,
+          needs_knowledge: false,
+          clarify_needed: false,
+        },
       }, (event) => events.push(event));
       assert.strictEqual(result.canvasMode, 'edit');
       assert.strictEqual(result.scopeMode, 'global');
@@ -276,6 +377,17 @@ async function runTests() {
         userInput: '请统一全文语气，保持原意不变',
         article: buildParagraphArticle(25),
         conversationHistory: [],
+        forcedPlan: {
+          intent: 'edit',
+          primary_intent: 'edit',
+          scope_mode: 'global',
+          target_block_ids: [],
+          operation_kind: 'rewrite',
+          helper_used: false,
+          needs_style: false,
+          needs_knowledge: false,
+          clarify_needed: false,
+        },
       });
       assert.strictEqual(result.canvasMode, 'clarify');
       assert.strictEqual(result.fallbackReason, 'global_edit_call_limit');

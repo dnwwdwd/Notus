@@ -478,7 +478,7 @@ async function hybridSearch(query, opts)
 
 其中：
 
-- `query_plan` 固定包含 `intent / clarity_score / ambiguity_flags / clarify_needed / clarify_question / rewrite_strategy`
+- `query_plan` 固定包含 `intent / clarity_score / ambiguity_flags / clarify_needed / clarify_question / clarify_reason / clarify_intro / clarify_questions / clarify_render_mode / rewrite_strategy`
 - `sections[i]` 除正文和 quotes 外，还包含 `evidence_sentences`
 - `stats` 至少包含 `chunk_count / section_count / file_count / section_file_count / matched_file_count / best_score / top_score_gap`
 
@@ -537,7 +537,7 @@ function buildCanvasAnalysisPrompt(input)
 - `weak_evidence` 只能写可确认部分和解释性补充
 - `conflicting_evidence` 不能把冲突来源合并成单一结论
 
-`clarify_needed` 和 `no_evidence` 由服务端直接模板化返回，不走主回答 Prompt。
+`clarify_needed` 和 `no_evidence` 由服务端直接模板化返回，不走主回答 Prompt。知识库命中 `clarify_needed` 时，服务端会直接创建 `conversation_interactions` 记录，并把抽屉需要的结构化问题、引导语和状态元信息通过 SSE 一并返回。
 
 ### 4.6 `lib/watcher.js`
 
@@ -628,7 +628,7 @@ function normalizeInteractionResponse(interaction, input)
 function buildResumePlanFromInteraction(interaction)
 ```
 
-新增 `conversation_interactions` 作为创作页结构化提问持久化表，核心字段：
+复用 `conversation_interactions` 作为知识库页与创作页共用的结构化提问持久化表，核心字段：
 
 - `conversation_id`
 - `message_id`
@@ -660,7 +660,8 @@ function buildResumePlanFromInteraction(interaction)
 - 回答成功后必须追加一条 `user` 摘要消息，不使用 `tool` 角色
 - `normalizeInteractionResponse()` 要支持 `primary_intent`；当回答为 `text / analyze` 时，不再继续要求 `source_content_ref / target_location / write_mode`
 - `buildResumePlanFromInteraction()` 必须能直接恢复 `primary_intent / target_anchor / position_relation / write_action / decision_summary / correction_state`
-- 执行续跑前必须再次校验 `article_hash` 与 `source_content_digest`
+- 创作页续跑前必须再次校验 `article_hash` 与 `source_content_digest`
+- 知识库页续跑前必须再次校验当前检索范围 hash，并通过 `buildKnowledgeClarifiedQuery()` 把原问题与结构化答案拼成 clarified query
 ### 4.10 `lib/diff.js`
 
 ```javascript
@@ -760,7 +761,7 @@ POST /api/search                     Body: { query, topK? } → { chunks }
                                      }
 
 POST /api/chat                       Body: {
-                                       conversation_id?, query, model?,
+                                       conversation_id?, query?, interaction_id?, model?,
                                        active_file_id?, reference_mode?, reference_file_ids?
                                      }
                                      → SSE:
@@ -772,6 +773,8 @@ POST /api/chat                       Body: {
                                          clarity_score, ambiguity_flags, rerank_applied,
                                          weak_evidence_reason, conflict_summary,
                                          retrieval_stats, clarify_question,
+                                         clarify_reason?, clarify_intro?,
+                                         interaction?,
                                          helper_call_type, helper_call_triggered,
                                          helper_call_cache_hit, helper_call_latency_ms,
                                          helper_call_failed, fallback_reason }
@@ -779,14 +782,14 @@ POST /api/chat                       Body: {
                                        { type: 'citations', citations }   // citations 支持图片字段
                                        { type: 'usage', usage, budget, compacted }
                                        { type: 'done', conversation_id, message_id,
-                                         answer_mode, confidence, meta,
+                                         answer_mode, confidence, meta, interaction?,
                                          usage?, budget?, compacted? }
                                        { type: 'error', error, conversation_id?, request_id }
 ```
 
 严格 RAG：
 
-- `clarify_needed`：只返回追问，不检索，不调用主回答模型
+- `clarify_needed`：只返回引导语和结构化抽屉，不检索，不调用主回答模型
 - `no_evidence`：直接模板化返回“未找到足够证据”
 - `weak_evidence`：允许保守回答，但不能新增事实结论
 
@@ -869,7 +872,7 @@ DELETE /api/conversations/:id
 - 知识库页默认只按 `kind=knowledge` 读取全局历史，不再用 `file_id` 分桶。
 - 创作页会话默认按 `kind=canvas + file_id` 读取；`draft_key` 仅保留给旧数据兼容与迁移。
 - 画布会话详情会附带 `pending_operation_sets`，前端刷新后可恢复全部未应用预览。
-- 画布会话详情还会附带 `pending_interactions`，前端刷新后可恢复 `pending / stale / failed` 提问卡片；`pending / failed` 卡片在前端以右侧 AI 面板底部列表抽屉形式恢复，不再内联到消息流。结构化澄清应始终返回卡片抽屉，不因多轮澄清降级成纯文本追问。
+- 知识库与画布会话详情都会附带 `pending_interactions`，前端刷新后可恢复 `pending / stale / failed` 提问抽屉；抽屉继续以底部抽屉形式恢复，不再把 interaction 摘要用户消息和 retry 助手消息重新露回消息流。
 
 ### 5.8 设置
 
@@ -923,7 +926,7 @@ POST /api/settings/test              Body: { kind: 'embedding'|'llm', config }
 
 知识库问答当前采用“查询规划 + 多路召回 + 章节证据扩展”：
 
-- 查询规划：结合最近若干轮 `user + assistant` 历史，生成更适合检索的独立问题、扩写问题、关键词和标题线索，并固定输出 `clarity_score / ambiguity_flags / clarify_needed / clarify_question / rewrite_strategy`
+- 查询规划：结合最近若干轮 `user + assistant` 历史，生成更适合检索的独立问题、扩写问题、关键词和标题线索，并固定输出 `clarity_score / ambiguity_flags / clarify_needed / clarify_question / clarify_reason / clarify_intro / clarify_questions / clarify_render_mode / rewrite_strategy`
 - 文件级命中：先用 `files_fts` 找文档标题和路径
 - chunk 级混合检索：对多个 query variant 并行执行向量召回、FTS 召回与图片向量召回
 - 章节证据扩展：命中 seed chunk 后，补齐同 heading 下的邻近 chunk，合并为可直接回答的 section 证据包
@@ -978,6 +981,8 @@ function applyOperation(article, op) {
 补充约束：
 
 - AI 返回 `replace / delete` 操作时，如果 `old` 缺失，必须回填为目标块当前真实内容
+- 生成 `replace` 操作时，目标块必须以完整正文进入编辑 Prompt；邻近块可以裁剪，但目标块不能裁剪，否则大文本块的 `old` 会与真实内容不一致
+- `replace.new` 必须表示目标块修改后的完整全文，局部修改时未修改部分必须逐字保留，不能只返回修改片段
 - 如果模型返回的 `old` 只是目标块正文的裁剪片段、只存在换行差异，或与当前块内容存在明确包含关系，应在服务端归一到当前块真实内容后再进入最终比对，避免用户未改文档也触发 `OLD_MISMATCH`
 - 若最终仍因文章内容变化而返回 `OLD_MISMATCH`，前端应把该预览标记为过期，并提示用户重新生成，而不是直接暴露底层错误码
 
@@ -1188,10 +1193,13 @@ exec node server.js
 
 - M2-01 App Shell（TopBar + Sidebar + Layout）
   - TopBar 顶部保存按钮统一承载 `saving / dirty / saved` 三种状态；其中 `dirty` 必须使用红色文字和红色边框，明确提示当前内容尚未保存
-  - 文件页、知识库页、创作页在当前内容为 `dirty` 时，从侧边栏、顶部搜索或页内切换到其他文档前都必须先触发同一套未保存确认弹窗；确认保存或放弃后，才允许继续跳转
+  - 文件页、知识库页、创作页在当前内容为 `dirty` 时，从侧边栏、顶部搜索或页内切换到其他文档前都必须先触发同一套未保存确认弹窗；确认保存或放弃后，才允许继续跳转；弹窗底部不显示“取消”按钮，关闭弹窗则保持当前页面不跳转
+  - 文档内容搜索浮层只显示输入、匹配计数、上下切换和关闭，不显示额外说明文案或空关键词提示
+  - 侧边栏大纲项点击后必须立即进入选中视觉状态，并保留背景、左侧指示条和选中文字色，直到外部 active 状态更新或用户点击其他大纲项
   - 创作页对 `?fileId=` 的处理必须避免“旧 query 把新选中文档写回去”的状态循环；切换中的目标文档只有在文章内容真正切到目标文件后，才能释放路由同步保护
   - 侧边栏“新建文件后自动打开”必须复用与普通点文件相同的页面级切换入口；当页面存在未保存守卫或创作页路由保护时，不能在共享上下文里直接 `selectFile`
   - 文件页、知识库页、创作页在同页切换 `fileId` 时都必须触发路由更新；知识库页和创作页的同页切文档也应显示统一的全局 `PageTransitionOverlay`
+  - 创作块编辑态必须持续保留，textarea 失焦不能自动保存或退出；只允许 `Mod+Enter` / “完成”保存，`Esc` / “取消编辑”放弃当前块编辑
 - M2-02 FileTree 组件 + `/api/files/*` API
   - 前端所有可见文档标签统一优先 `title`，其次显示去掉 `.md` 的文件名，最后才使用占位文案；禁止显示 `article_xxx`、`notus_xxx`、裸 `fileId` 这类技术标识
   - 侧边栏显式重命名属于强制改名操作；若目标文件已存在，整次重命名必须失败，不能覆盖已有文件
@@ -1244,7 +1252,7 @@ exec node server.js
 
 ### M5 体验打磨 & 部署
 
-- M5-01 设置页（模型/个性化/存储/快捷键/关于 + 校验流程；LLM 预算字段持久化但不在卡片中展示）
+- M5-01 设置页（模型/个性化/存储/快捷键/关于 + 校验流程；LLM 预算字段持久化但不在卡片中展示；关于页版本说明文案使用纯文本展示，不保留外层边框）
 - M5-02 CommandPalette（cmdk）
   - 顶部全局文章搜索弹层打开后，搜索输入框必须自动聚焦，保证鼠标或快捷键唤起后都能直接输入，不需要再额外点击一次
 - M5-03 快捷键绑定

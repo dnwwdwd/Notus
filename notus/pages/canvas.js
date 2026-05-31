@@ -6,10 +6,10 @@ import { useRouter } from 'next/router';
 import { Shell } from '../components/Layout/Shell';
 import { CanvasBlock, AddBlockButton } from '../components/Canvas/CanvasBlock';
 import { UserBubble, AiBubble } from '../components/ChatArea/ChatMessage';
+import { ClarifyDrawer } from '../components/ChatArea/ClarifyDrawer';
 import { ConversationDrawer } from '../components/ChatArea/ConversationDrawer';
 import { InputBar } from '../components/ChatArea/InputBar';
 import { BatchOperationCard } from '../components/AIPanel/BatchOperationCard';
-import { ClarifyInteractionCard } from '../components/AIPanel/ClarifyInteractionCard';
 import { ResizableLayout } from '../components/ui/ResizableLayout';
 import { DropdownSelect } from '../components/ui/DropdownSelect';
 import { DocumentFindBar } from '../components/ui/DocumentFindBar';
@@ -193,6 +193,12 @@ function upsertMessage(list = [], message = null) {
   if (index >= 0) next[index] = message;
   else next.push(message);
   return next;
+}
+
+function shouldHideInteractionSummaryMessage(message) {
+  if (message?.role !== 'user') return false;
+  const meta = message?.meta && typeof message.meta === 'object' ? message.meta : {};
+  return Boolean(meta.interaction_id && meta.interaction_resolution_status);
 }
 
 function mapSingleConversationMessage(message, kind = 'canvas') {
@@ -455,6 +461,7 @@ export default function CanvasPage() {
   const chatEndRef = useRef(null);
   const requestControllerRef = useRef(null);
   const canvasContentRef = useRef(null);
+  const inputTextareaRef = useRef(null);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
 
   const [article, setArticle] = useState(null);
@@ -470,6 +477,7 @@ export default function CanvasPage() {
   const [pendingOperationSets, setPendingOperationSets] = useState([]);
   const [pendingInteractions, setPendingInteractions] = useState([]);
   const [interactionSubmittingId, setInteractionSubmittingId] = useState(null);
+  const [clarifyDrawerPhase, setClarifyDrawerPhase] = useState('expanded-question');
   const [styleSource, setStyleSource] = useState('auto');
   const [manualStyleFileIds, setManualStyleFileIds] = useState([]);
   const [selectedLlmConfigId, setSelectedLlmConfigId] = useState(null);
@@ -683,8 +691,11 @@ export default function CanvasPage() {
     ? null
     : ([...pendingInteractions].reverse().find((item) => item.status === 'pending')
       || [...pendingInteractions].reverse().find((item) => item.status === 'failed')
+      || [...pendingInteractions].reverse().find((item) => item.status === 'stale')
       || null);
-  const canvasInputDisabled = !aiReady || !canvasConversationEnabled || Boolean(activeClarifyInteraction);
+  const canvasInputDisabled = !aiReady
+    || !canvasConversationEnabled
+    || (Boolean(activeClarifyInteraction) && clarifyDrawerPhase !== 'collapsed');
 
   const unsavedGuard = useUnsavedChangesGuard({
     isDirty: saveState === 'dirty',
@@ -697,6 +708,10 @@ export default function CanvasPage() {
   useEffect(() => {
     dirtyStateRef.current = saveState === 'dirty';
   }, [saveState]);
+
+  useEffect(() => {
+    setClarifyDrawerPhase('expanded-question');
+  }, [activeClarifyInteraction?.id]);
 
   const documentFind = useDocumentFind({
     enabled: Boolean(article),
@@ -1174,6 +1189,12 @@ export default function CanvasPage() {
     }
   }, [activeConversationId, refreshConversationListOnly, toast]);
 
+  const focusCanvasInput = useCallback(() => {
+    window.requestAnimationFrame(() => {
+      inputTextareaRef.current?.focus?.();
+    });
+  }, []);
+
   const respondToInteraction = useCallback(async (interaction, body, options = {}) => {
     if (!interaction?.id) return null;
     if (options.setSubmitting !== false) setInteractionSubmittingId(interaction.id);
@@ -1192,7 +1213,7 @@ export default function CanvasPage() {
         if (payload.interaction) {
           setPendingInteractions((prev) => upsertInteraction(prev, payload.interaction));
         }
-        throw new Error(payload.error || '回答提问卡片失败');
+        throw new Error(payload.error || '回答提问抽屉失败');
       }
 
       if (payload.interaction) {
@@ -1214,6 +1235,18 @@ export default function CanvasPage() {
       if (options.setSubmitting !== false) setInteractionSubmittingId(null);
     }
   }, [article, blocks, refreshConversationListOnly]);
+
+  const cancelInteraction = useCallback(async (interaction, options = {}) => {
+    if (!interaction?.id) return null;
+    try {
+      return await respondToInteraction(interaction, { action: 'cancel' }, { setSubmitting: false });
+    } catch (error) {
+      if (!options.silent) {
+        toast(error.message || '关闭提问抽屉失败', 'error');
+      }
+      throw error;
+    }
+  }, [respondToInteraction, toast]);
 
   const runInteractionResume = useCallback(async (interaction, llmConfigId = selectedLlmConfigId) => {
     if (!interaction?.id) return;
@@ -1240,7 +1273,7 @@ export default function CanvasPage() {
         await runInteractionResume(payload.interaction || interaction, selectedLlmConfigId);
       }
     } catch (error) {
-      toast(error.message || '回答提问卡片失败', 'error');
+      toast(error.message || '回答提问抽屉失败', 'error');
     }
   }, [respondToInteraction, runInteractionResume, selectedLlmConfigId, toast]);
 
@@ -1298,36 +1331,10 @@ export default function CanvasPage() {
       return;
     }
 
-    const activePendingInteraction = [...pendingInteractions].reverse().find((item) => item.status === 'pending') || null;
-    if (activePendingInteraction) {
+    if (activeClarifyInteraction && clarifyDrawerPhase === 'collapsed') {
       try {
-        const payload = await respondToInteraction(activePendingInteraction, { raw_text: query });
-        if (payload?.resolution_status === 'failed') {
-          await executeAgentRun({
-            conversation_id: activeConversationId || undefined,
-            user_input: query,
-            llm_config_id: llmConfigId,
-            active_file_id: activeFile?.id || null,
-            article: { ...article, blocks },
-            style_mode: styleSource,
-            style_file_ids: styleSource === 'manual' ? manualStyleFileIds : undefined,
-          }, {
-            optimisticUserMessage: query,
-          });
-          return;
-        }
-        if (payload?.resolution_status === 'partial') {
-          toast('已记录这次回答，还缺少剩余信息。', 'info');
-          return;
-        }
-        if (payload?.should_continue && payload.resume_payload) {
-          await runInteractionResume(payload.interaction || activePendingInteraction, llmConfigId);
-        }
-        return;
-      } catch (error) {
-        toast(error.message || '回答提问卡片失败', 'error');
-        return;
-      }
+        await cancelInteraction(activeClarifyInteraction, { silent: true });
+      } catch {}
     }
 
     try {
@@ -1351,9 +1358,9 @@ export default function CanvasPage() {
     blocks,
     executeAgentRun,
     manualStyleFileIds,
-    pendingInteractions,
-    respondToInteraction,
-    runInteractionResume,
+    activeClarifyInteraction,
+    cancelInteraction,
+    clarifyDrawerPhase,
     selectedLlmConfigId,
     styleSource,
     toast,
@@ -1362,7 +1369,6 @@ export default function CanvasPage() {
   const handleRetryInteraction = useCallback(async (interaction) => {
     if (!interaction?.id) return;
     try {
-      setPendingInteractions((prev) => prev.filter((item) => Number(item.id) !== Number(interaction.id)));
       await runInteractionResume(interaction, selectedLlmConfigId);
     } catch {}
   }, [runInteractionResume, selectedLlmConfigId]);
@@ -1404,6 +1410,7 @@ export default function CanvasPage() {
       });
       const payload = await response.json();
       if (!response.ok || !payload.success) {
+        const errorCode = payload?.code || payload?.error || '';
         if (payload?.operation_set_status) {
           setPendingOperationSets((prev) => prev.map((item) => (
             Number(item.id) === Number(operationSet?.id)
@@ -1411,10 +1418,16 @@ export default function CanvasPage() {
               : item
           )));
         }
-        if (payload?.error === 'OLD_MISMATCH') {
+        if (errorCode === 'OLD_MISMATCH') {
           throw new Error('这组预览对应的原文已经变化，请重新生成后再应用');
         }
-        throw new Error(payload.error || '应用修改失败');
+        if (errorCode === 'ARTICLE_STALE') {
+          throw new Error('文章内容已经变化，请重新生成预览后再应用');
+        }
+        if (errorCode === 'FILE_STALE') {
+          throw new Error('Markdown 文件已经变化，请重新加载后再应用预览');
+        }
+        throw new Error(payload.error || payload.code || '应用修改失败');
       }
       const nextArticle = payload.article
         ? {
@@ -1465,17 +1478,14 @@ export default function CanvasPage() {
   }, {});
   const hiddenInteractionIds = new Set(
     pendingInteractions
-      .filter((item) => item && ['pending', 'failed'].includes(item.status))
+      .filter((item) => item && ['pending', 'failed', 'stale'].includes(item.status))
       .map((item) => String(item.id))
   );
   const visibleMessages = messages.filter((msg) => {
+    if (shouldHideInteractionSummaryMessage(msg)) return false;
     if (msg.role !== 'assistant') return true;
     const meta = msg.meta && typeof msg.meta === 'object' ? msg.meta : {};
-    const interactionId = String(meta.interaction_id || '');
     const retryInteractionId = String(meta.retry_interaction_id || '');
-    if (meta.interaction_kind === 'clarify_card' && hiddenInteractionIds.has(interactionId)) {
-      return false;
-    }
     if (meta.retry_available && hiddenInteractionIds.has(retryInteractionId)) {
       return false;
     }
@@ -1502,6 +1512,301 @@ export default function CanvasPage() {
     );
   }
 
+  const canvasEditorPanel = (
+    <div
+      style={{ overflow: 'auto', background: 'var(--bg-primary)', height: '100%', position: 'relative', minHeight: 0 }}
+      ref={canvasContentRef}
+    >
+      <DocumentFindBar
+        open={documentFind.open}
+        query={documentFind.query}
+        total={documentFind.total}
+        current={documentFind.currentIndex}
+        onChange={documentFind.setQuery}
+        onPrev={documentFind.prev}
+        onNext={documentFind.next}
+        onClose={documentFind.close}
+      />
+      <div style={{ maxWidth: 720, margin: '0 auto', padding: '40px 32px 80px' }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 4 }}>
+          <h1 style={{
+            fontFamily: 'var(--font-editor)',
+            fontSize: 'var(--text-3xl)',
+            fontWeight: 700,
+            margin: 0,
+            flex: 1,
+          }} data-canvas-title="true">
+            {articleTitleLabel}
+          </h1>
+        </div>
+        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', marginBottom: 28 }}>
+          {loadingSourceFile ? '正在载入文章内容…' : `${saveState === 'saving' ? '正在保存' : saveState === 'dirty' ? '尚未保存' : '已保存'} · ${blocks.length} 个块`}
+        </div>
+
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+          <SortableContext items={blocks.map((block) => block.id)} strategy={verticalListSortingStrategy}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              {blocks.map((block, i) => (
+                <SortableCanvasItem
+                  key={block.id}
+                  block={block}
+                  index={i}
+                  state={highlightedBlockIds.has(block.id) ? 'modified' : 'default'}
+                  onAI={handleBlockAI}
+                  onDelete={handleDeleteBlock}
+                  onContentChange={handleContentChange}
+                />
+              ))}
+              <AddBlockButton onClick={handleAddBlock} />
+            </div>
+          </SortableContext>
+        </DndContext>
+      </div>
+    </div>
+  );
+
+  const canvasAssistantPanel = (
+    <div style={{
+      borderLeft: '1px solid var(--border-primary)',
+      background: 'var(--bg-primary)',
+      display: 'flex',
+      flexDirection: 'column',
+      height: '100%',
+      minHeight: 0,
+      minWidth: 0,
+      position: 'relative',
+    }}>
+      <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-subtle)', flexShrink: 0, display: 'grid', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap', minWidth: 0 }}>
+            <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>风格来源</div>
+            {[
+              { value: 'auto', label: '自动匹配' },
+              { value: 'manual', label: '手动指定' },
+            ].map((mode) => (
+              <button
+                key={mode.value}
+                onClick={() => setStyleSource(mode.value)}
+                style={{
+                  height: 26,
+                  padding: '0 10px',
+                  background: styleSource === mode.value ? 'var(--accent-subtle)' : 'transparent',
+                  border: `1px solid ${styleSource === mode.value ? 'color-mix(in srgb, var(--accent) 35%, var(--border-primary))' : 'var(--border-subtle)'}`,
+                  borderRadius: 'var(--radius-md)',
+                  fontSize: 11,
+                  color: styleSource === mode.value ? 'var(--accent)' : 'var(--text-secondary)',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  transition: 'all var(--transition-fast)',
+                }}
+              >
+                {mode.label}
+              </button>
+            ))}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6, marginLeft: 'auto', flexShrink: 0 }}>
+            <Tooltip content="查看历史对话">
+              <span style={{ display: 'inline-flex' }}>
+                <IconButton
+                  label="查看历史对话"
+                  size={30}
+                  active={historyDrawerOpen}
+                  disabled={!canvasConversationEnabled || loading || conversationListLoading}
+                  onClick={() => setHistoryDrawerOpen(true)}
+                >
+                  {conversationListLoading ? <Spinner size={13} /> : <Icons.clock size={14} />}
+                </IconButton>
+              </span>
+            </Tooltip>
+            <Tooltip content="新建对话">
+              <span style={{ display: 'inline-flex' }}>
+                <IconButton
+                  label="新建对话"
+                  size={30}
+                  disabled={!canvasConversationEnabled || loading}
+                  onClick={handleNewConversation}
+                >
+                  <Icons.plus size={14} />
+                </IconButton>
+              </span>
+            </Tooltip>
+          </div>
+        </div>
+
+        {styleSource === 'manual' && (
+          <>
+            <DropdownSelect
+              value=""
+              options={styleFileOptions}
+              onChange={(nextValue) => {
+                if (!nextValue) return;
+                setManualStyleFileIds((prev) => (
+                  prev.includes(nextValue)
+                    ? prev.filter((fileId) => fileId !== nextValue)
+                    : [...prev, nextValue]
+                ));
+              }}
+              isOptionSelected={(option) => manualStyleFileIds.includes(option.value)}
+              closeOnSelect={false}
+              renderValue={() => (manualStyleFileIds.length > 0 ? `已选 ${manualStyleFileIds.length} 篇风格文章` : '添加风格参考文章')}
+              renderOption={(option, active) => `${option.label}${active ? ' · 已选' : ''}`}
+              searchable
+              placeholder="添加风格参考文章"
+              searchPlaceholder="按标题或路径搜索文章"
+              emptyText="没有可选文章"
+            />
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {selectedStyleFiles.length > 0 ? selectedStyleFiles.map((file) => (
+                <button
+                  key={file.id}
+                  type="button"
+                  onClick={() => setManualStyleFileIds((prev) => prev.filter((fileId) => fileId !== file.id))}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                >
+                  <Badge tone="accent">{getVisibleDocumentLabel(file, '未命名文档')} ×</Badge>
+                </button>
+              )) : (
+                <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
+                  选择 1 篇或多篇文章，AI 会优先参考这些内容的表达方式。
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+
+      <div style={{ flex: 1, overflow: 'auto', padding: '8px 16px', minHeight: 0 }}>
+        {!canvasConversationEnabled && (
+          <div style={{ padding: '32px 0', display: 'flex', justifyContent: 'center' }}>
+            <div style={{
+              maxWidth: 420,
+              padding: '18px 20px',
+              borderRadius: 'var(--radius-lg)',
+              background: 'var(--bg-elevated)',
+              border: '1px solid var(--border-primary)',
+              boxShadow: 'var(--shadow-sm)',
+              display: 'grid',
+              gap: 10,
+            }}>
+              <div style={{ fontSize: 'var(--text-sm)', fontWeight: 600, color: 'var(--text-primary)' }}>
+                当前是未保存的大纲草稿
+              </div>
+              <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', lineHeight: 1.7 }}>
+                先保存为正式文档，再继续 AI 改写、查看历史对话，并把后续创作会话稳定绑定到这篇文章。
+              </div>
+              <div>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={() => { void handleSaveArticle(); }}
+                  disabled={saveState !== 'dirty' || savingArticle}
+                >
+                  {savingArticle ? '正在保存…' : '保存后继续'}
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+        {canvasConversationEnabled && visibleMessages.length === 0 && !loading && (
+          <div style={{ padding: '32px 0', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: 'var(--text-sm)' }}>
+            <div style={{ marginTop: 8 }}>向 AI 发送指令，如：<br />「让 @b2 更简洁」或「为第 3 段加上例子」</div>
+          </div>
+        )}
+        {visibleMessages.map((msg) => (
+          msg.role === 'user'
+            ? <UserBubble key={msg.id}>{msg.content}</UserBubble>
+            : (
+              <AiBubble key={msg.id} text={msg.content}>
+                {msg.meta?.show_decision_summary && msg.meta?.decision_summary ? (
+                  <DecisionSummaryCard summary={msg.meta.decision_summary} />
+                ) : null}
+                {msg.meta?.operation_set_id && pendingOperationSetById[String(msg.meta.operation_set_id)] ? (
+                  <BatchOperationCard
+                    operationSet={pendingOperationSetById[String(msg.meta.operation_set_id)]}
+                    blocks={blocks}
+                    onApply={handleApplyOperationSet}
+                    onCancel={handleCancelOperationSet}
+                  />
+                ) : msg.meta?.show_decision_summary && msg.meta?.canvas_mode === 'edit' ? (
+                  <CorrectionChipBar
+                    onSelect={handleDecisionCorrection}
+                    disabled={loading}
+                  />
+                ) : null}
+              </AiBubble>
+            )
+        ))}
+        {loading && <AiBubble text={streamText} streaming />}
+        <div ref={chatEndRef} />
+      </div>
+
+      <InputBar
+        isEmpty={canvasConversationEnabled && visibleMessages.length === 0 && !loading}
+        placeholder={canvasConversationEnabled ? '例如：让 @b2 更简洁，或为第 3 段加一个例子…' : '先保存当前大纲为文档，再继续 AI 改写…'}
+        onSend={handleSend}
+        onStop={() => requestControllerRef.current?.abort()}
+        loading={loading}
+        injectedValue={aiInjected}
+        llmConfigs={llmConfigs}
+        selectedConfigId={selectedLlmConfigId}
+        onConfigChange={setSelectedLlmConfigId}
+        disabled={canvasInputDisabled}
+        showPlusMenu={false}
+        mentionOptions={[{ value: '__all__', token: '@全文', label: '全文', preview: '对整篇文章生效', searchText: '全文 整篇 整文' }, ...mentionOptions]}
+        textareaRef={inputTextareaRef}
+      />
+      {activeClarifyInteraction ? (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 10,
+            pointerEvents: 'none',
+            display: 'flex',
+            flexDirection: 'column',
+            justifyContent: 'flex-end',
+          }}
+        >
+          <div
+            style={{
+              padding: '56px 12px 12px',
+              background: 'linear-gradient(180deg, rgba(247, 244, 238, 0) 0%, var(--bg-primary) 28%)',
+              pointerEvents: 'none',
+              position: 'relative',
+              zIndex: 1,
+            }}
+          >
+            <div style={{ pointerEvents: 'auto' }}>
+              <ClarifyDrawer
+                interaction={activeClarifyInteraction}
+                onSubmit={handleInteractionCardSubmit}
+                onRetry={handleRetryInteraction}
+                onCancel={(interaction) => { void cancelInteraction(interaction); }}
+                onPhaseChange={setClarifyDrawerPhase}
+                onFocusInput={focusCanvasInput}
+                submitting={interactionSubmittingId === Number(activeClarifyInteraction?.id)}
+                submitLabel={activeClarifyInteraction?.payload?.submit_label || '开始生成预览'}
+                retryLabel="重试"
+                narrow
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
+      <ConversationDrawer
+        open={historyDrawerOpen}
+        onClose={() => setHistoryDrawerOpen(false)}
+        conversations={conversationList}
+        activeConversationId={activeConversationId}
+        loading={conversationListLoading}
+        emptyText="暂无历史对话"
+        onSelect={handleConversationSelect}
+      />
+    </div>
+  );
+
   // ── Canvas editor ──
   return (
     <Shell
@@ -1524,287 +1829,8 @@ export default function CanvasPage() {
           leftPercent={canvasLayoutLeftPercent}
           onLeftPercentChange={handleCanvasLayoutChange}
           onLeftPercentCommit={handleCanvasLayoutCommit}
-          left={
-        <div style={{ overflow: 'auto', background: 'var(--bg-primary)', height: '100%', position: 'relative', minHeight: 0 }} ref={canvasContentRef}>
-          <DocumentFindBar
-            open={documentFind.open}
-            query={documentFind.query}
-            total={documentFind.total}
-            current={documentFind.currentIndex}
-            onChange={documentFind.setQuery}
-            onPrev={documentFind.prev}
-            onNext={documentFind.next}
-            onClose={documentFind.close}
-          />
-          <div style={{ maxWidth: 720, margin: '0 auto', padding: '40px 32px 80px' }}>
-            {/* Title bar */}
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 4 }}>
-              <h1 style={{
-                fontFamily: 'var(--font-editor)',
-                fontSize: 'var(--text-3xl)',
-                fontWeight: 700,
-                margin: 0,
-                flex: 1,
-              }} data-canvas-title="true">
-                {articleTitleLabel}
-              </h1>
-            </div>
-            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', marginBottom: 28 }}>
-              {loadingSourceFile ? '正在载入文章内容…' : `${saveState === 'saving' ? '正在保存' : saveState === 'dirty' ? '尚未保存' : '已保存'} · ${blocks.length} 个块`}
-            </div>
-
-            {/* Blocks */}
-            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-              <SortableContext items={blocks.map((block) => block.id)} strategy={verticalListSortingStrategy}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                  {blocks.map((block, i) => (
-                    <SortableCanvasItem
-                      key={block.id}
-                      block={block}
-                      index={i}
-                      state={highlightedBlockIds.has(block.id) ? 'modified' : 'default'}
-                      onAI={handleBlockAI}
-                      onDelete={handleDeleteBlock}
-                      onContentChange={handleContentChange}
-                    />
-                  ))}
-                  <AddBlockButton onClick={handleAddBlock} />
-                </div>
-              </SortableContext>
-            </DndContext>
-          </div>
-        </div>
-        }
-        right={
-        <div style={{
-          borderLeft: '1px solid var(--border-primary)',
-          background: 'var(--bg-primary)',
-          display: 'flex', flexDirection: 'column',
-          height: '100%',
-          minHeight: 0,
-          minWidth: 0,
-          position: 'relative',
-        }}>
-          <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-subtle)', flexShrink: 0, display: 'grid', gap: 8 }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap', minWidth: 0 }}>
-                <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>风格来源</div>
-                {[
-                  { value: 'auto', label: '自动匹配' },
-                  { value: 'manual', label: '手动指定' },
-                ].map((mode) => (
-                  <button
-                    key={mode.value}
-                    onClick={() => setStyleSource(mode.value)}
-                    style={{
-                      height: 26,
-                      padding: '0 10px',
-                      background: styleSource === mode.value ? 'var(--accent-subtle)' : 'transparent',
-                      border: `1px solid ${styleSource === mode.value ? 'color-mix(in srgb, var(--accent) 35%, var(--border-primary))' : 'var(--border-subtle)'}`,
-                      borderRadius: 'var(--radius-md)',
-                      fontSize: 11,
-                      color: styleSource === mode.value ? 'var(--accent)' : 'var(--text-secondary)',
-                      cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 4,
-                      transition: 'all var(--transition-fast)',
-                    }}
-                  >
-                    {mode.label}
-                  </button>
-                ))}
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6, marginLeft: 'auto', flexShrink: 0 }}>
-                <Tooltip content="查看历史对话">
-                  <span style={{ display: 'inline-flex' }}>
-                    <IconButton
-                      label="查看历史对话"
-                      size={30}
-                      active={historyDrawerOpen}
-                      disabled={!canvasConversationEnabled || loading || conversationListLoading}
-                      onClick={() => setHistoryDrawerOpen(true)}
-                    >
-                      {conversationListLoading ? <Spinner size={13} /> : <Icons.clock size={14} />}
-                    </IconButton>
-                  </span>
-                </Tooltip>
-                <Tooltip content="新建对话">
-                  <span style={{ display: 'inline-flex' }}>
-                    <IconButton
-                      label="新建对话"
-                      size={30}
-                      disabled={!canvasConversationEnabled || loading}
-                      onClick={handleNewConversation}
-                    >
-                      <Icons.plus size={14} />
-                    </IconButton>
-                  </span>
-                </Tooltip>
-              </div>
-            </div>
-
-            {styleSource === 'manual' && (
-              <>
-                <DropdownSelect
-                  value=""
-                  options={styleFileOptions}
-                  onChange={(nextValue) => {
-                    if (!nextValue) return;
-                    setManualStyleFileIds((prev) => (
-                      prev.includes(nextValue)
-                        ? prev.filter((fileId) => fileId !== nextValue)
-                        : [...prev, nextValue]
-                    ));
-                  }}
-                  isOptionSelected={(option) => manualStyleFileIds.includes(option.value)}
-                  closeOnSelect={false}
-                  renderValue={() => (manualStyleFileIds.length > 0 ? `已选 ${manualStyleFileIds.length} 篇风格文章` : '添加风格参考文章')}
-                  renderOption={(option, active) => `${option.label}${active ? ' · 已选' : ''}`}
-                  searchable
-                  placeholder="添加风格参考文章"
-                  searchPlaceholder="按标题或路径搜索文章"
-                  emptyText="没有可选文章"
-                />
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  {selectedStyleFiles.length > 0 ? selectedStyleFiles.map((file) => (
-                    <button
-                      key={file.id}
-                      type="button"
-                      onClick={() => setManualStyleFileIds((prev) => prev.filter((fileId) => fileId !== file.id))}
-                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
-                    >
-                      <Badge tone="accent">{getVisibleDocumentLabel(file, '未命名文档')} ×</Badge>
-                    </button>
-                  )) : (
-                    <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
-                      选择 1 篇或多篇文章，AI 会优先参考这些内容的表达方式。
-                    </div>
-                  )}
-                </div>
-              </>
-            )}
-          </div>
-
-          <div style={{ flex: 1, overflow: 'auto', padding: '8px 16px', minHeight: 0 }}>
-            {!canvasConversationEnabled && (
-              <div style={{ padding: '32px 0', display: 'flex', justifyContent: 'center' }}>
-                <div style={{
-                  maxWidth: 420,
-                  padding: '18px 20px',
-                  borderRadius: 'var(--radius-lg)',
-                  background: 'var(--bg-elevated)',
-                  border: '1px solid var(--border-primary)',
-                  boxShadow: 'var(--shadow-sm)',
-                  display: 'grid',
-                  gap: 10,
-                }}>
-                  <div style={{ fontSize: 'var(--text-sm)', fontWeight: 600, color: 'var(--text-primary)' }}>
-                    当前是未保存的大纲草稿
-                  </div>
-                  <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', lineHeight: 1.7 }}>
-                    先保存为正式文档，再继续 AI 改写、查看历史对话，并把后续创作会话稳定绑定到这篇文章。
-                  </div>
-                  <div>
-                    <Button
-                      variant="primary"
-                      size="sm"
-                      onClick={() => { void handleSaveArticle(); }}
-                      disabled={saveState !== 'dirty' || savingArticle}
-                    >
-                      {savingArticle ? '正在保存…' : '保存后继续'}
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            )}
-            {canvasConversationEnabled && visibleMessages.length === 0 && !loading && (
-              <div style={{ padding: '32px 0', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: 'var(--text-sm)' }}>
-                <div style={{ marginTop: 8 }}>向 AI 发送指令，如：<br />「让 @b2 更简洁」或「为第 3 段加上例子」</div>
-              </div>
-            )}
-            {visibleMessages.map((msg) => (
-              msg.role === 'user'
-                ? <UserBubble key={msg.id}>{msg.content}</UserBubble>
-                : (
-                  <AiBubble key={msg.id} text={msg.content}>
-                    {msg.meta?.show_decision_summary && msg.meta?.decision_summary ? (
-                      <DecisionSummaryCard summary={msg.meta.decision_summary} />
-                    ) : null}
-                    {msg.meta?.operation_set_id && pendingOperationSetById[String(msg.meta.operation_set_id)] ? (
-                      <BatchOperationCard
-                        operationSet={pendingOperationSetById[String(msg.meta.operation_set_id)]}
-                        blocks={blocks}
-                        onApply={handleApplyOperationSet}
-                        onCancel={handleCancelOperationSet}
-                      />
-                    ) : msg.meta?.show_decision_summary && msg.meta?.canvas_mode === 'edit' ? (
-                      <CorrectionChipBar
-                        onSelect={handleDecisionCorrection}
-                        disabled={loading}
-                      />
-                    ) : null}
-                  </AiBubble>
-                )
-            ))}
-            {loading && <AiBubble text={streamText} streaming />}
-            <div ref={chatEndRef} />
-          </div>
-
-          <InputBar
-            isEmpty={canvasConversationEnabled && visibleMessages.length === 0 && !loading}
-            placeholder={canvasConversationEnabled ? '例如：让 @b2 更简洁，或为第 3 段加一个例子…' : '先保存当前大纲为文档，再继续 AI 改写…'}
-            onSend={handleSend}
-            onStop={() => requestControllerRef.current?.abort()}
-            loading={loading}
-            injectedValue={aiInjected}
-            llmConfigs={llmConfigs}
-            selectedConfigId={selectedLlmConfigId}
-            onConfigChange={setSelectedLlmConfigId}
-            disabled={canvasInputDisabled}
-            showPlusMenu={false}
-            mentionOptions={[{ value: '__all__', token: '@全文', label: '全文', preview: '对整篇文章生效', searchText: '全文 整篇 整文' }, ...mentionOptions]}
-          />
-          {activeClarifyInteraction ? (
-            <div
-              style={{
-                position: 'absolute',
-                left: 0,
-                right: 0,
-                bottom: 0,
-                zIndex: 10,
-                pointerEvents: 'none',
-              }}
-            >
-              <div
-                style={{
-                  padding: '56px 12px 12px',
-                  background: 'linear-gradient(180deg, rgba(247, 244, 238, 0) 0%, var(--bg-primary) 28%)',
-                  pointerEvents: 'none',
-                }}
-              >
-                <div style={{ pointerEvents: 'auto' }}>
-                  <ClarifyInteractionCard
-                    interaction={activeClarifyInteraction}
-                    onSubmit={handleInteractionCardSubmit}
-                    onRetry={handleRetryInteraction}
-                    submitting={interactionSubmittingId === Number(activeClarifyInteraction?.id)}
-                  />
-                </div>
-              </div>
-            </div>
-          ) : null}
-          <ConversationDrawer
-            open={historyDrawerOpen}
-            onClose={() => setHistoryDrawerOpen(false)}
-            conversations={conversationList}
-            activeConversationId={activeConversationId}
-            loading={conversationListLoading}
-            emptyText="暂无历史对话"
-            onSelect={handleConversationSelect}
-          />
-        </div>
-        }
+          left={canvasEditorPanel}
+          right={canvasAssistantPanel}
         />
         {outlineLoading && (
           <div

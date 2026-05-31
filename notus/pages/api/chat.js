@@ -19,6 +19,18 @@ const {
   touchConversation,
   updateConversationScopes,
 } = require('../../lib/conversations');
+const { getFileById } = require('../../lib/files');
+const { getVisibleDocumentLabel } = require('../../lib/documentLabels');
+const {
+  createInteraction,
+  getInteractionById,
+  updateInteraction,
+} = require('../../lib/conversationInteractions');
+const {
+  buildKnowledgeClarifiedQuery,
+  buildKnowledgeInteractionHash,
+  buildKnowledgeInteractionPayload,
+} = require('../../lib/knowledgeClarify');
 const {
   resolveCombinedScopeFileIds,
   scopeFromLegacyReference: buildRetrievalScopeFromLegacy,
@@ -206,6 +218,20 @@ function createKnowledgePromptController({
   };
 }
 
+function buildPendingInteractionResponse(payload = {}) {
+  const prefilledAnswers = payload.prefilled_answers && typeof payload.prefilled_answers === 'object'
+    ? payload.prefilled_answers
+    : {};
+  const missingSlots = (Array.isArray(payload.questions) ? payload.questions : [])
+    .map((question) => question?.id)
+    .filter(Boolean);
+  return {
+    answers: { ...prefilledAnswers },
+    missing_slots: missingSlots,
+    resolution_status: Object.keys(prefilledAnswers).length > 0 ? 'partial' : 'failed',
+  };
+}
+
 export default async function handler(req, res) {
   const context = createRequestContext(req, res, '/api/chat');
   const logger = createLogger(context);
@@ -225,8 +251,25 @@ export default async function handler(req, res) {
     active_file_id: activeFileId,
     reference_mode: referenceMode,
     reference_file_ids: referenceFileIds = [],
+    interaction_id: interactionId,
   } = req.body || {};
-  if (!query) return res.status(400).json({ error: 'query is required', code: 'QUERY_REQUIRED', request_id: context.request_id });
+  let interaction = interactionId ? getInteractionById(interactionId) : null;
+  const isInteractionResume = Boolean(interaction?.id);
+  const requestedQuery = String(query || '').trim();
+  if (!requestedQuery && !isInteractionResume) {
+    return res.status(400).json({ error: 'query is required', code: 'QUERY_REQUIRED', request_id: context.request_id });
+  }
+  if (interactionId && !interaction) {
+    return res.status(404).json({ error: '提问抽屉不存在', code: 'INTERACTION_NOT_FOUND', request_id: context.request_id });
+  }
+  if (isInteractionResume && !['answered', 'failed'].includes(interaction.status)) {
+    return res.status(409).json({
+      error: interaction.status === 'stale' ? '当前澄清抽屉已经失效，请重新发起问题' : '当前澄清抽屉还没有完成回答',
+      code: interaction.status === 'stale' ? 'INTERACTION_STALE' : 'INTERACTION_NOT_READY',
+      interaction,
+      request_id: context.request_id,
+    });
+  }
 
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -239,14 +282,21 @@ export default async function handler(req, res) {
       throw new Error('所选 LLM 配置不存在');
     }
 
+    const originalQuery = isInteractionResume
+      ? String(interaction?.payload?.original_user_input || '').trim()
+      : requestedQuery;
+    const resolvedQuery = isInteractionResume
+      ? buildKnowledgeClarifiedQuery(interaction)
+      : requestedQuery;
+
     conversation = ensureConversation({
-      conversationId,
+      conversationId: isInteractionResume ? interaction.conversation_id : conversationId,
       kind: 'knowledge',
-      title: query,
+      title: originalQuery || resolvedQuery,
       fileId: null,
     });
     let retrievalScope = conversation.retrieval_scope || { type: 'all' };
-    if (referenceMode !== undefined) {
+    if (!isInteractionResume && referenceMode !== undefined) {
       retrievalScope = buildRetrievalScopeFromLegacy({ referenceMode, referenceFileIds });
       conversation = updateConversationScopes(conversation.id, { retrieval_scope: retrievalScope }) || conversation;
     }
@@ -257,6 +307,22 @@ export default async function handler(req, res) {
     );
     const scopedFileIds = scopeResolution.fileIds;
     const restrictToScope = scopeResolution.restrictToFileIds;
+    const effectiveReferenceMode = restrictToScope ? 'manual' : 'auto';
+    const currentScopeHash = buildKnowledgeInteractionHash({
+      activeFileId,
+      fileIds: scopedFileIds,
+      restrictToFileIds: restrictToScope,
+      referenceMode: effectiveReferenceMode,
+    });
+    if (isInteractionResume && interaction.article_hash && interaction.article_hash !== currentScopeHash) {
+      interaction = updateInteraction(interaction.id, { status: 'stale' });
+      return res.status(409).json({
+        error: '当前检索范围已经变化，需要重新确认',
+        code: 'INTERACTION_STALE',
+        interaction,
+        request_id: context.request_id,
+      });
+    }
     const featureConfig = getEffectiveConfig();
     const features = {
       enableClarify: Boolean(featureConfig.knowledgeEnableClarify),
@@ -265,39 +331,65 @@ export default async function handler(req, res) {
       enableConflictMode: Boolean(featureConfig.knowledgeEnableConflictMode),
     };
     const conversationHistory = getConversationHistory(conversation.id, { limit: 12 });
-    appendConversationMessage({
-      conversationId: conversation.id,
-      role: 'user',
-      content: query,
-    });
-    touchConversation(conversation.id);
+    if (!isInteractionResume) {
+      appendConversationMessage({
+        conversationId: conversation.id,
+        role: 'user',
+        content: requestedQuery,
+      });
+      touchConversation(conversation.id);
+    }
 
     const helperContext = buildKnowledgeHelperContext({
       conversationId: conversation.id,
-      query,
+      query: resolvedQuery,
       history: conversationHistory,
       activeFileId,
-      referenceMode: restrictToScope ? 'manual' : 'auto',
+      referenceMode: effectiveReferenceMode,
       referenceFileIds: scopedFileIds,
     });
     const helperPressureHigh = llmConfig
       ? isPromptNearCompactionThreshold(
-        [...conversationHistory, { role: 'user', content: query }],
+        [...conversationHistory, ...(isInteractionResume ? [] : [{ role: 'user', content: requestedQuery }])],
         llmConfig,
         { model, taskType: 'knowledge_answer', ratio: 0.9 }
       )
       : false;
 
-    const queryPlan = await buildKnowledgeQueryPlan({
-      query,
+    let queryPlan = await buildKnowledgeQueryPlan({
+      query: resolvedQuery,
       history: conversationHistory,
       llmConfig: llmConfig || null,
       model,
       allowLlmRewrite: !helperPressureHigh,
-      enableClarify: features.enableClarify,
+      enableClarify: isInteractionResume ? false : features.enableClarify,
       cacheContext: helperContext,
     });
-    const effectiveQuery = queryPlan.standalone_query || query;
+    const activeFile = activeFileId ? getFileById(activeFileId) : null;
+    const activeFileLabel = activeFile ? getVisibleDocumentLabel(activeFile, '当前文档') : '';
+    if (features.enableClarify && queryPlan.clarify_needed && !isInteractionResume) {
+      const clarifyPayload = buildKnowledgeInteractionPayload({
+        query: requestedQuery,
+        queryPlan: {
+          ...queryPlan,
+          query: requestedQuery,
+        },
+        activeFileId,
+        activeFileLabel,
+        fileIds: scopedFileIds,
+        restrictToFileIds: restrictToScope,
+        referenceMode: effectiveReferenceMode,
+        history: conversationHistory,
+      });
+      queryPlan = {
+        ...queryPlan,
+        clarify_reason: clarifyPayload.clarify_reason || '',
+        clarify_intro: clarifyPayload.clarify_intro || '',
+        clarify_questions: clarifyPayload.questions || [],
+        clarify_render_mode: 'card',
+      };
+    }
+    const effectiveQuery = queryPlan.standalone_query || resolvedQuery;
     let helperTelemetry = {
       helper_call_type: queryPlan.helper_call_type || '',
       helper_call_triggered: Boolean(queryPlan.helper_call_triggered),
@@ -309,7 +401,7 @@ export default async function handler(req, res) {
 
     logger.info('chat.query_plan.resolved', {
       conversation_id: conversation.id,
-      query,
+      query: resolvedQuery,
       intent: queryPlan.intent,
       is_follow_up: queryPlan.is_follow_up,
       standalone_query: queryPlan.standalone_query,
@@ -320,6 +412,7 @@ export default async function handler(req, res) {
       clarity_score: queryPlan.clarity_score,
       ambiguity_flags: queryPlan.ambiguity_flags,
       clarify_needed: queryPlan.clarify_needed,
+      clarify_reason: queryPlan.clarify_reason || '',
       helper_call_type: helperTelemetry.helper_call_type,
       helper_call_triggered: helperTelemetry.helper_call_triggered,
       helper_call_cache_hit: helperTelemetry.helper_call_cache_hit,
@@ -328,7 +421,31 @@ export default async function handler(req, res) {
       fallback_reason: helperTelemetry.fallback_reason,
     });
 
-    if (features.enableClarify && queryPlan.clarify_needed) {
+    if (features.enableClarify && queryPlan.clarify_needed && !isInteractionResume) {
+      const payload = buildKnowledgeInteractionPayload({
+        query: requestedQuery,
+        queryPlan: {
+          ...queryPlan,
+          query: requestedQuery,
+        },
+        activeFileId,
+        activeFileLabel,
+        fileIds: scopedFileIds,
+        restrictToFileIds: restrictToScope,
+        referenceMode: effectiveReferenceMode,
+        history: conversationHistory,
+      });
+      const pendingResponse = buildPendingInteractionResponse(payload);
+      let clarifyInteraction = createInteraction({
+        conversationId: conversation.id,
+        kind: 'clarify_card',
+        source: 'knowledge',
+        status: 'pending',
+        reasonCode: queryPlan.clarify_reason || 'clarify_needed',
+        articleHash: currentScopeHash,
+        payload,
+        response: pendingResponse,
+      });
       const answerMeta = {
         answer_mode: 'clarify_needed',
         confidence: 0.12,
@@ -339,11 +456,17 @@ export default async function handler(req, res) {
         conflict_summary: '',
         retrieval_stats: null,
         clarify_question: queryPlan.clarify_question,
+        clarify_reason: queryPlan.clarify_reason || '',
+        clarify_intro: queryPlan.clarify_intro || '',
+        interaction_id: clarifyInteraction.id,
+        interaction_kind: 'clarify_card',
+        question_count: payload.questions.length,
         ...helperTelemetry,
       };
-      const answer = buildClarifyResponse(queryPlan);
+      const answer = queryPlan.clarify_intro || buildClarifyResponse(queryPlan);
       send(res, {
         type: 'assistant_meta',
+        interaction: clarifyInteraction,
         ...answerMeta,
       });
       send(res, { type: 'token', text: answer });
@@ -356,6 +479,7 @@ export default async function handler(req, res) {
         meta: answerMeta,
       });
       touchConversation(conversation.id);
+      clarifyInteraction = updateInteraction(clarifyInteraction.id, { messageId });
       send(res, {
         type: 'done',
         conversation_id: conversation.id,
@@ -363,13 +487,14 @@ export default async function handler(req, res) {
         answer_mode: answerMeta.answer_mode,
         confidence: answerMeta.confidence,
         meta: answerMeta,
+        interaction: clarifyInteraction,
       });
       return res.end();
     }
 
     const knowledgeContext = await retrieveKnowledgeContext({
       ...queryPlan,
-      query,
+      query: resolvedQuery,
     }, {
       topK: 5,
       activeFileId,
@@ -378,7 +503,7 @@ export default async function handler(req, res) {
     });
     Object.assign(knowledgeContext, await retrieveWorkspaceDocuments({
       ...queryPlan,
-      query,
+      query: resolvedQuery,
     }, {
       knowledgeContext,
       maxDocuments: 5,
@@ -406,7 +531,7 @@ export default async function handler(req, res) {
       && shouldTriggerKnowledgeRerank(queryPlan, knowledgeContext)
     ) {
       const promptPressureHigh = isPromptNearCompactionThreshold(
-        buildKnowledgeQAPrompt(query, knowledgeContext, {
+        buildKnowledgeQAPrompt(resolvedQuery, knowledgeContext, {
           history: conversationHistory,
           effectiveQuery,
           answerMode: 'grounded',
@@ -416,7 +541,7 @@ export default async function handler(req, res) {
       );
       if (!promptPressureHigh) {
         rerankResult = await maybeRerankKnowledgeSections({
-          query,
+          query: resolvedQuery,
           queryPlan,
           knowledgeContext,
           llmConfig,
@@ -454,12 +579,16 @@ export default async function handler(req, res) {
       documents: documentSummaries,
       document_stats: documentStats,
       clarify_question: '',
+      ...(isInteractionResume ? {
+        interaction_id: interaction.id,
+        interaction_kind: 'clarify_card',
+      } : {}),
       ...helperTelemetry,
     };
 
     logger.info('chat.retrieval.completed', {
       conversation_id: conversation.id,
-      query,
+      query: resolvedQuery,
       matched_files: matchedFiles,
       rewrite_queries: rewriteQueries,
       seed_count: seedCount,
@@ -514,7 +643,7 @@ export default async function handler(req, res) {
       send(res, { type: 'token', text: answer });
     } else {
       const promptController = createKnowledgePromptController({
-        query,
+        query: resolvedQuery,
         effectiveQuery,
         conversationHistory,
         knowledgeContext,
@@ -545,6 +674,9 @@ export default async function handler(req, res) {
       citations,
       source_count: citationSummary.citation_count,
     });
+    if (isInteractionResume && interaction) {
+      interaction = updateInteraction(interaction.id, { status: 'answered' });
+    }
     const messageId = appendConversationMessage({
       conversationId: conversation.id,
       role: 'assistant',
@@ -565,12 +697,59 @@ export default async function handler(req, res) {
       source_count: citationSummary.citation_count,
       document_stats: documentStats,
       meta: answerMeta,
+      interaction: isInteractionResume ? interaction : null,
     });
   } catch (error) {
+    if (isInteractionResume && interaction) {
+      interaction = updateInteraction(interaction.id, { status: 'failed' });
+      const assistantMessage = '继续检索失败，请重试。';
+      const assistantMeta = {
+        answer_mode: 'clarify_needed',
+        confidence: 0,
+        clarity_score: 0,
+        ambiguity_flags: [],
+        rerank_applied: false,
+        weak_evidence_reason: '',
+        conflict_summary: '',
+        retrieval_stats: null,
+        clarify_question: '',
+        fallback_reason: 'clarify_resume_failed',
+        interaction_id: interaction.id,
+        interaction_kind: 'clarify_card',
+        retry_interaction_id: interaction.id,
+        retry_available: true,
+      };
+      const messageId = appendConversationMessage({
+        conversationId: conversation.id,
+        role: 'assistant',
+        content: assistantMessage,
+        citations: [],
+        meta: assistantMeta,
+      });
+      touchConversation(conversation.id);
+      send(res, {
+        type: 'assistant_meta',
+        conversation_id: conversation.id,
+        message_id: messageId,
+        assistant_message: assistantMessage,
+        interaction,
+        ...assistantMeta,
+      });
+      send(res, {
+        type: 'done',
+        conversation_id: conversation.id,
+        message_id: messageId,
+        answer_mode: assistantMeta.answer_mode,
+        confidence: assistantMeta.confidence,
+        meta: assistantMeta,
+        interaction,
+      });
+      return res.end();
+    }
     logger.error('chat.failed', {
       error,
       conversation_id: conversation?.id || null,
-      query,
+      query: requestedQuery || interaction?.payload?.original_user_input || '',
     });
     send(res, {
       type: 'error',

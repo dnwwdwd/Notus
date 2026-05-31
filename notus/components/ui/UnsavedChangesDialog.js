@@ -18,7 +18,6 @@ export function UnsavedChangesDialog({
       maxWidth={520}
       footer={(
         <>
-          <Button variant="ghost" onClick={onCancel} disabled={saving}>取消</Button>
           <Button variant="secondary" onClick={onDiscard} disabled={saving}>不保存离开</Button>
           <Button variant="primary" loading={saving} onClick={onSave}>保存并继续</Button>
         </>

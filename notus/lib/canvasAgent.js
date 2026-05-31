@@ -205,6 +205,16 @@ function trimBlocks(blocks = [], tokenBudget = 220) {
   }));
 }
 
+function trimContextBlocksPreservingTargets(blocks = [], targetBlockIds = [], tokenBudget = 220) {
+  const targets = new Set(normalizeStringArray(targetBlockIds));
+  return (Array.isArray(blocks) ? blocks : []).map((block) => ({
+    ...block,
+    content: targets.has(String(block.id || ''))
+      ? String(block.content || '')
+      : trimTextToTokenBudget(block.content || '', tokenBudget),
+  }));
+}
+
 function getEditableBlocks(article) {
   return (Array.isArray(article?.blocks) ? article.blocks : []).filter((block) => STYLE_ELIGIBLE_TYPES.has(block.type));
 }
@@ -867,7 +877,7 @@ async function runCanvasAgent({
     const allOperations = [];
     let summary = '';
     for (let index = 0; index < batches.length; index += 1) {
-      const batch = trimBlocks(batches[index], 180);
+      const batch = batches[index];
       if (typeof onStream === 'function') {
         onStream({
           type: 'batch_progress',
@@ -927,7 +937,11 @@ async function runCanvasAgent({
     return buildClarifyResult('你想改哪一段？可以直接说“@b2”或“全文”。', plan, telemetry, 'no_target_block');
   }
 
-  const promptBlocks = trimBlocks(selectNeighborContext(article, targetBlockIds, plan.scope_mode === 'single' ? 5 : 8), 200);
+  const promptBlocks = trimContextBlocksPreservingTargets(
+    selectNeighborContext(article, targetBlockIds, plan.scope_mode === 'single' ? 5 : 8),
+    targetBlockIds,
+    200
+  );
   const result = await executePromptedEdit({
     userInput: resolvedUserInput,
     article,

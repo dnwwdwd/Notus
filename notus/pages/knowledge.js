@@ -34,11 +34,17 @@ import {
   attachCitationHighlight,
   clearCitationHighlights,
   getEditorRoot,
+  getEditorScrollContainer,
   observePersistentCitationHighlight,
   getQueryValue,
   previewFromLines,
   retryFocusCitationTarget,
 } from '../utils/documentNavigation';
+import {
+  readViewPosition,
+  restoreEditorViewPosition,
+  writeEditorViewPosition,
+} from '../utils/viewPosition';
 import { mapConversationMessages } from '../utils/conversations';
 import { readApiResponse } from '../utils/http';
 import { navigateWithFallback } from '../utils/navigation';
@@ -178,6 +184,7 @@ export default function KnowledgePage() {
   const [activeConversationId, setActiveConversationId] = useState(null);
   const [conversationList, setConversationList] = useState([]);
   const [conversationListLoading, setConversationListLoading] = useState(false);
+  const [deletingConversationId, setDeletingConversationId] = useState(null);
   const [, setConversationDraft] = useState(true);
   const [pendingInteractions, setPendingInteractions] = useState([]);
   const [interactionSubmittingId, setInteractionSubmittingId] = useState(null);
@@ -199,6 +206,8 @@ export default function KnowledgePage() {
   const docContentRef = useRef('');
   const persistedDocContentRef = useRef('');
   const hiddenDocFrontmatterRef = useRef('');
+  const restoreDocPositionRef = useRef(false);
+  const saveDocPositionFrameRef = useRef(null);
   const chatEndRef = useRef(null);
   const requestControllerRef = useRef(null);
   const inputTextareaRef = useRef(null);
@@ -362,6 +371,7 @@ export default function KnowledgePage() {
         docContentRef.current = nextContent;
         persistedDocContentRef.current = nextContent;
         hiddenDocFrontmatterRef.current = hiddenFrontmatter || '';
+        restoreDocPositionRef.current = true;
         setDocLoading(false);
       })
       .catch((loadError) => {
@@ -430,6 +440,57 @@ export default function KnowledgePage() {
       }
     );
   }, [activeFile?.id, clearPendingCitation, docContent, docError, docLoading, editor, editorReadyFileId, pendingCitation, toast]);
+
+  useEffect(() => {
+    if (!editor || !activeFile?.id || docLoading || docError) return undefined;
+    const container = getEditorScrollContainer(editor);
+    if (!container) return undefined;
+    const hasPendingCitationNav = Number(pendingCitation?.fileId) === activeFile.id;
+
+    if (restoreDocPositionRef.current && !hasPendingCitationNav && readViewPosition('knowledge', activeFile.id)) {
+      const frameId = window.requestAnimationFrame(() => {
+        restoreEditorViewPosition('knowledge', activeFile.id, container);
+        restoreDocPositionRef.current = false;
+      });
+      return () => window.cancelAnimationFrame(frameId);
+    }
+
+    restoreDocPositionRef.current = false;
+    return undefined;
+  }, [activeFile?.id, docContent, docError, docLoading, editor, pendingCitation]);
+
+  useEffect(() => {
+    if (!editor || !activeFile?.id || docLoading || docError) return undefined;
+    const container = getEditorScrollContainer(editor);
+    if (!container) return undefined;
+
+    const savePosition = () => {
+      if (!activeFile?.id) return;
+      writeEditorViewPosition('knowledge', activeFile.id, container);
+    };
+
+    const handleScroll = () => {
+      if (saveDocPositionFrameRef.current) {
+        window.cancelAnimationFrame(saveDocPositionFrameRef.current);
+      }
+      saveDocPositionFrameRef.current = window.requestAnimationFrame(() => {
+        savePosition();
+        saveDocPositionFrameRef.current = null;
+      });
+    };
+
+    container.addEventListener('scroll', handleScroll, { passive: true });
+    window.addEventListener('beforeunload', savePosition);
+    return () => {
+      container.removeEventListener('scroll', handleScroll);
+      window.removeEventListener('beforeunload', savePosition);
+      if (saveDocPositionFrameRef.current) {
+        window.cancelAnimationFrame(saveDocPositionFrameRef.current);
+        saveDocPositionFrameRef.current = null;
+      }
+      savePosition();
+    };
+  }, [activeFile?.id, docError, docLoading, editor]);
 
   useEffect(() => {
     if (!editor || !activeFile?.id) return;
@@ -731,6 +792,38 @@ export default function KnowledgePage() {
     setRetrievalStage(null);
     setHistoryDrawerOpen(false);
   }, [clearActiveCitationState]);
+
+  const handleConversationDelete = useCallback(async (conversationId) => {
+    const normalizedConversationId = Number(conversationId);
+    if (!Number.isFinite(normalizedConversationId) || deletingConversationId) return;
+    setDeletingConversationId(normalizedConversationId);
+    requestControllerRef.current?.abort();
+    try {
+      const response = await fetch(`/api/conversations/${normalizedConversationId}`, { method: 'DELETE' });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || '删除历史对话失败');
+      }
+      if (Number(activeConversationId) === normalizedConversationId) {
+        clearActiveCitationState();
+        setActiveConversationId(null);
+        setConversationDraft(true);
+        setMessages([]);
+        setPendingInteractions([]);
+        setStreamText('');
+        setError(null);
+        setLoading(false);
+        setRetrievalStage(null);
+      }
+      const rows = await fetchConversationList();
+      setConversationList(rows);
+      toast('历史对话已删除', 'success');
+    } catch (deleteError) {
+      toast(deleteError.message || '删除历史对话失败', 'error');
+    } finally {
+      setDeletingConversationId(null);
+    }
+  }, [activeConversationId, clearActiveCitationState, deletingConversationId, fetchConversationList, toast]);
 
   const handleConversationSelect = useCallback(async (conversationId) => {
     if (!conversationId || loading) return;
@@ -1358,6 +1451,8 @@ export default function KnowledgePage() {
             loading={conversationListLoading}
             emptyText="暂无历史对话"
             onSelect={handleConversationSelect}
+            onDelete={handleConversationDelete}
+            deletingConversationId={deletingConversationId}
           />
           {aiUiState.showLockedState && (
             <AiLockedState

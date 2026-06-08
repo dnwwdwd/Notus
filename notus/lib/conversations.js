@@ -65,6 +65,14 @@ function getConversation(id) {
   return toConversationRow(db.prepare('SELECT * FROM conversations WHERE id = ?').get(conversationId));
 }
 
+function deleteConversation(id) {
+  const conversation = getConversation(id);
+  if (!conversation) return false;
+  const db = getDb();
+  db.prepare('DELETE FROM conversations WHERE id = ?').run(conversation.id);
+  return true;
+}
+
 function listConversations({ kind = null, fileId, draftKey, limit = 20 } = {}) {
   const db = getDb();
   const conditions = [];
@@ -323,6 +331,7 @@ module.exports = {
   appendConversationMessage,
   ensureConversation,
   getConversation,
+  deleteConversation,
   getConversationMessageById,
   getConversationMessages,
   getConversationHistory,

@@ -1,10 +1,10 @@
 const { ensureRuntime } = require('../../../lib/runtime');
 const { createLogger, createRequestContext } = require('../../../lib/logger');
 const {
+  deleteConversation,
   getConversation,
   getConversationMessages,
 } = require('../../../lib/conversations');
-const { getDb } = require('../../../lib/db');
 const { listOperationSetsByConversation } = require('../../../lib/canvasOperationSets');
 const { listInteractionsByConversation } = require('../../../lib/conversationInteractions');
 
@@ -60,7 +60,10 @@ export default function handler(req, res) {
   }
 
   if (req.method === 'DELETE') {
-    getDb().prepare('DELETE FROM conversations WHERE id = ?').run(id);
+    const deleted = deleteConversation(id);
+    if (!deleted) {
+      return res.status(404).json({ error: 'Conversation not found', code: 'CONVERSATION_NOT_FOUND', request_id: context.request_id });
+    }
     return res.status(204).end();
   }
 

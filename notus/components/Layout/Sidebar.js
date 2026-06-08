@@ -223,6 +223,8 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
   const importDirectoryInputRef = useRef(null);
   const searchInputRef = useRef(null);
   const createNameInputRef = useRef(null);
+  const scrollContainerRef = useRef(null);
+  const saveScrollFrameRef = useRef(null);
   const {
     activePage,
     files,
@@ -235,14 +237,18 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
     activeFileId,
     activeFile,
     sidebarCollapsed,
+    sidebarActiveTab,
+    sidebarScrollByTab,
     selectFile,
+    setSidebarActiveTab,
+    setSidebarScroll,
     toggleSidebarCollapsed,
     createFile,
     createFolder,
     refreshFiles,
   } = useApp();
 
-  const [activeTab, setActiveTab] = useState('tree');
+  const activeTab = sidebarActiveTab === 'toc' && !tocDisabled ? 'toc' : 'tree';
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const deferredSearchQuery = useDeferredValue(searchQuery);
@@ -260,6 +266,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
   const [renameSubmitting, setRenameSubmitting] = useState(false);
   const contextMenuRef = useRef(null);
   const [hydrated, setHydrated] = useState(false);
+  const sidebarScrollByTabRef = useRef(sidebarScrollByTab);
 
   const [importOpen, setImportOpen] = useState(false);
   const [importResultOpen, setImportResultOpen] = useState(false);
@@ -277,10 +284,6 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
   const [exportQuery, setExportQuery] = useState('');
   const [selectedExportIds, setSelectedExportIds] = useState(new Set());
   const [exporting, setExporting] = useState(false);
-
-  useEffect(() => {
-    if (tocDisabled) setActiveTab('tree');
-  }, [tocDisabled]);
 
   useEffect(() => {
     setHydrated(true);
@@ -317,6 +320,10 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
   }, [router.asPath]);
 
   useEffect(() => {
+    sidebarScrollByTabRef.current = sidebarScrollByTab;
+  }, [sidebarScrollByTab]);
+
+  useEffect(() => {
     if (!createMode) return undefined;
     const timer = window.setTimeout(() => {
       createNameInputRef.current?.focus?.();
@@ -331,11 +338,42 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
 
   const handleActivateTab = useCallback((nextTab) => {
     if (nextTab === 'toc' && tocDisabled) return;
-    setActiveTab(nextTab);
+    setSidebarActiveTab(nextTab);
     if (sidebarCollapsed) {
       toggleSidebarCollapsed();
     }
-  }, [sidebarCollapsed, tocDisabled, toggleSidebarCollapsed]);
+  }, [setSidebarActiveTab, sidebarCollapsed, tocDisabled, toggleSidebarCollapsed]);
+
+  const restoreSidebarScroll = useCallback(() => {
+    if (sidebarCollapsed) return;
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    const targetTop = Number(sidebarScrollByTabRef.current?.[activeTab]) || 0;
+    const frameId = window.requestAnimationFrame(() => {
+      if (scrollContainerRef.current) {
+        scrollContainerRef.current.scrollTop = targetTop;
+      }
+    });
+    return () => window.cancelAnimationFrame(frameId);
+  }, [activeTab, sidebarCollapsed]);
+
+  useEffect(() => () => {
+    if (saveScrollFrameRef.current) {
+      window.cancelAnimationFrame(saveScrollFrameRef.current);
+      saveScrollFrameRef.current = null;
+    }
+  }, []);
+
+  const handleSidebarScroll = useCallback((event) => {
+    const scrollTop = event.currentTarget.scrollTop;
+    if (saveScrollFrameRef.current) {
+      window.cancelAnimationFrame(saveScrollFrameRef.current);
+    }
+    saveScrollFrameRef.current = window.requestAnimationFrame(() => {
+      setSidebarScroll(activeTab, scrollTop);
+      saveScrollFrameRef.current = null;
+    });
+  }, [activeTab, setSidebarScroll]);
 
   const handleContextRename = useCallback(() => {
     if (!contextMenu) return;
@@ -435,6 +473,10 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
   const currentPage = ['files', 'knowledge', 'canvas'].includes(active) ? active : (activePage || 'files');
 
   useEffect(() => {
+    return restoreSidebarScroll();
+  }, [activePage, activeTab, flat.length, hasLoadedFilesOnce, loadingFiles, restoreSidebarScroll, tocItems?.length]);
+
+  useEffect(() => {
     const activeItem = (Array.isArray(tocItems) ? tocItems : []).find((item) => item?.active);
     if (activeItem) {
       setActiveTocKey(`${activeItem.text || ''}:${activeItem.level || ''}`);
@@ -496,7 +538,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
   };
 
   const handleOpenImportDialog = () => {
-    setActiveTab('tree');
+    handleActivateTab('tree');
     setImportOpen(true);
     setImportResultOpen(false);
     setImportParentPath(extractParentPath(activeFile?.path));
@@ -507,7 +549,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
   };
 
   const handleOpenExportDialog = () => {
-    setActiveTab('tree');
+    handleActivateTab('tree');
     setExportOpen(true);
     setExportQuery('');
     setSelectedExportIds(new Set(activeFileId ? [activeFileId] : []));
@@ -1244,7 +1286,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
         <button
           title="搜索文件"
           onClick={() => {
-            setActiveTab('tree');
+            handleActivateTab('tree');
             setSearchOpen((prev) => {
               const next = !prev;
               if (!next) setSearchQuery('');
@@ -1296,7 +1338,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
           onClick={() => {
             setCreateMode('file');
             setParentPath(extractParentPath(activeFile?.path));
-            setActiveTab('tree');
+            handleActivateTab('tree');
           }}
           style={{ width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', borderRadius: 'var(--radius-sm)' }}
           onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-hover)'}
@@ -1311,7 +1353,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
           onClick={() => {
             setCreateMode('folder');
             setParentPath(extractParentPath(activeFile?.path));
-            setActiveTab('tree');
+            handleActivateTab('tree');
           }}
           style={{ width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', borderRadius: 'var(--radius-sm)' }}
           onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-hover)'}
@@ -1355,7 +1397,11 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
       )}
 
       {!sidebarCollapsed && (
-      <div style={{ flex: 1, overflow: 'auto', paddingTop: 6 }}>
+      <div
+        ref={scrollContainerRef}
+        onScroll={handleSidebarScroll}
+        style={{ flex: 1, overflow: 'auto', paddingTop: 6 }}
+      >
         {activeTab === 'toc' ? (
           <div style={{ padding: '4px 0' }}>
             {!tocItems || tocItems.length === 0 ? (

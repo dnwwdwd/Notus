@@ -22,6 +22,11 @@ import {
   previewFromLines,
   retryFocusCitationTarget,
 } from '../../utils/documentNavigation';
+import {
+  readViewPosition,
+  restoreEditorViewPosition,
+  writeEditorViewPosition,
+} from '../../utils/viewPosition';
 import { getVisibleDocumentLabel } from '../../lib/documentLabels';
 import { mergeEditorVisibleMarkdown, splitEditorVisibleMarkdown } from '../../lib/markdownMeta';
 
@@ -59,6 +64,8 @@ export default function FilesPage() {
   const persistedContentRef = useRef('');
   const hiddenFrontmatterRef = useRef('');
   const pendingNavRef = useRef(null);
+  const restorePositionRef = useRef(false);
+  const savePositionFrameRef = useRef(null);
 
   const [editor, setEditor] = useState(null);      // Tiptap editor instance
   const [content, setContent] = useState('');       // markdown string
@@ -124,6 +131,7 @@ export default function FilesPage() {
         contentRef.current = nextContent;
         persistedContentRef.current = nextContent;
         hiddenFrontmatterRef.current = hiddenFrontmatter || '';
+        restorePositionRef.current = true;
         setLoading(false);
       })
       .catch((loadError) => {
@@ -218,7 +226,14 @@ export default function FilesPage() {
     if (!router.isReady || !editor || !activeFile?.id) return;
 
     const requestedFileId = Number(getQueryValue(router.query.fileId));
-    const hasQueryNav = Number.isFinite(requestedFileId) && requestedFileId === activeFile.id;
+    const hasQueryNav = Number.isFinite(requestedFileId)
+      && requestedFileId === activeFile.id
+      && (
+        getQueryValue(router.query.lineStart)
+        || getQueryValue(router.query.lineEnd)
+        || getQueryValue(router.query.preview)
+        || getQueryValue(router.query.headingPath)
+      );
     const hasPendingHashNav = Boolean(pendingNavRef.current);
     const hasPendingCitationNav = Number(pendingCitation?.fileId) === activeFile.id;
 
@@ -269,6 +284,69 @@ export default function FilesPage() {
       }
     );
   }, [activeFile?.id, clearPendingCitation, content, editor, pendingCitation, router]);
+
+  useEffect(() => {
+    if (!router.isReady || !editor || !activeFile?.id || loading || error) return undefined;
+    const container = getEditorScrollContainer(editor);
+    if (!container) return undefined;
+
+    const requestedFileId = Number(getQueryValue(router.query.fileId));
+    const hasQueryNav = Number.isFinite(requestedFileId)
+      && requestedFileId === activeFile.id
+      && (
+        getQueryValue(router.query.lineStart)
+        || getQueryValue(router.query.lineEnd)
+        || getQueryValue(router.query.preview)
+        || getQueryValue(router.query.headingPath)
+      );
+    const hasPendingHashNav = Boolean(pendingNavRef.current);
+    const hasPendingCitationNav = Number(pendingCitation?.fileId) === activeFile.id;
+    const skipRestore = hasQueryNav || hasPendingHashNav || hasPendingCitationNav;
+
+    if (restorePositionRef.current && !skipRestore && readViewPosition('files', activeFile.id)) {
+      const frameId = window.requestAnimationFrame(() => {
+        restoreEditorViewPosition('files', activeFile.id, container);
+        restorePositionRef.current = false;
+      });
+      return () => window.cancelAnimationFrame(frameId);
+    }
+
+    restorePositionRef.current = false;
+    return undefined;
+  }, [activeFile?.id, content, editor, error, loading, pendingCitation, router.isReady, router.query.fileId, router.query.headingPath, router.query.lineEnd, router.query.lineStart, router.query.preview]);
+
+  useEffect(() => {
+    if (!editor || !activeFile?.id || loading || error) return undefined;
+    const container = getEditorScrollContainer(editor);
+    if (!container) return undefined;
+
+    const savePosition = () => {
+      if (!activeFile?.id) return;
+      writeEditorViewPosition('files', activeFile.id, container);
+    };
+
+    const handleScroll = () => {
+      if (savePositionFrameRef.current) {
+        window.cancelAnimationFrame(savePositionFrameRef.current);
+      }
+      savePositionFrameRef.current = window.requestAnimationFrame(() => {
+        savePosition();
+        savePositionFrameRef.current = null;
+      });
+    };
+
+    container.addEventListener('scroll', handleScroll, { passive: true });
+    window.addEventListener('beforeunload', savePosition);
+    return () => {
+      container.removeEventListener('scroll', handleScroll);
+      window.removeEventListener('beforeunload', savePosition);
+      if (savePositionFrameRef.current) {
+        window.cancelAnimationFrame(savePositionFrameRef.current);
+        savePositionFrameRef.current = null;
+      }
+      savePosition();
+    };
+  }, [activeFile?.id, editor, error, loading]);
 
   const handleSave = useCallback(async (nextContent = contentRef.current) => {
     if (!activeFileId) return false;

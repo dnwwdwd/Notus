@@ -343,6 +343,12 @@ db.exec(`
   - read_scope / retrieval_scope / write_scope / style_scope
   - 当前任务、交互卡片、批量预览、最近决策摘要
 
+前端工作区本地状态层
+  - activeFileId / activePage
+  - openFolders / sidebarCollapsed
+  - sidebarActiveTab / sidebarScrollByTab
+  - files / knowledge / canvas 浏览位置锚点
+
 工作区工具层
   - search_knowledge / read_file / get_style_context
   - ask_user / preview_edit_article
@@ -873,6 +879,8 @@ DELETE /api/conversations/:id
 - 创作页会话默认按 `kind=canvas + file_id` 读取；`draft_key` 仅保留给旧数据兼容与迁移。
 - 画布会话详情会附带 `pending_operation_sets`，前端刷新后可恢复全部未应用预览。
 - 知识库与画布会话详情都会附带 `pending_interactions`，前端刷新后可恢复 `pending / stale / failed` 提问抽屉；抽屉继续以底部抽屉形式恢复，不再把 interaction 摘要用户消息和 retry 助手消息重新露回消息流。
+- 删除会话前需要确认会话存在；不存在返回 `404 CONVERSATION_NOT_FOUND`，删除成功返回 `204`。数据库外键负责级联删除 `messages`、`canvas_operation_sets` 和 `conversation_interactions`。
+- 历史抽屉删除当前会话后，知识库页回到新对话空态；创作页回到当前文章的新对话空态，并保留文章块内容和未保存状态。
 
 ### 5.8 设置
 
@@ -893,6 +901,19 @@ POST /api/settings/test              Body: { kind: 'embedding'|'llm', config }
 - `layout.knowledge_left_percent`：知识库页左侧编辑区宽度百分比
 - `layout.canvas_left_percent`：创作页左侧画布区宽度百分比
 - `editor.title_filename_binding_enabled`：标题与文件名双向绑定开关，默认 `false`
+
+### 5.9 前端工作区本地状态
+
+浏览器本地状态不进入服务端数据库，统一存储在 `localStorage`：
+
+- `notus-workspace-state`：保存 `activeFileId / activePage / openFolders / sidebarCollapsed / pendingCitation / sidebarActiveTab / sidebarScrollByTab`
+- `sidebarActiveTab` 只允许 `tree | toc`；当前页面没有大纲时 UI 临时显示 `tree`，但不覆盖用户在文件页留下的 `toc` 偏好
+- `sidebarScrollByTab` 分别保存文件树和大纲滚动位置，侧边栏展开、跨页返回和 tab 切换后恢复对应位置
+- `notus-view-position-v1`：保存文件页、知识库页和创作页浏览位置，键分别为 `files:file:<id>`、`knowledge:file:<id>`、`canvas:file:<id>`
+- 文件页与知识库页保存 Tiptap 滚动容器 `scrollTop` 和当前可见文本锚点；恢复时优先按文本锚点定位，找不到再回退到 `scrollTop`
+- 创作页保存当前可见 block 的 `blockId`、块内相对偏移和 `scrollTop`；恢复时优先按 `[data-canvas-block-id]` 定位，找不到再回退到 `scrollTop`
+- `pendingCitation`、URL 行号 / 预览参数和 hash 行号属于显式定位，优先级高于历史浏览位置
+- AI 聊天滚动位置不保存，继续维持自动滚到最新消息
 
 ---
 
@@ -983,6 +1004,8 @@ function applyOperation(article, op) {
 - AI 返回 `replace / delete` 操作时，如果 `old` 缺失，必须回填为目标块当前真实内容
 - 生成 `replace` 操作时，目标块必须以完整正文进入编辑 Prompt；邻近块可以裁剪，但目标块不能裁剪，否则大文本块的 `old` 会与真实内容不一致
 - `replace.new` 必须表示目标块修改后的完整全文，局部修改时未修改部分必须逐字保留，不能只返回修改片段
+- 编辑 Prompt 必须包含短示例说明“只改一句也要输出整块 new”，并在无法保证完整 `old/new` 时返回空 `operations`
+- 规划器 Prompt 不得使用“无关键词时优先 edit”这类过强规则；缺少明确修改动词时，只有显式块引用、上一轮编辑建议承接、写入/替换/应用到正文等表达可偏向 `edit`，普通讨论应保持 `text`
 - 如果模型返回的 `old` 只是目标块正文的裁剪片段、只存在换行差异，或与当前块内容存在明确包含关系，应在服务端归一到当前块真实内容后再进入最终比对，避免用户未改文档也触发 `OLD_MISMATCH`
 - 若最终仍因文章内容变化而返回 `OLD_MISMATCH`，前端应把该预览标记为过期，并提示用户重新生成，而不是直接暴露底层错误码
 
@@ -1200,6 +1223,8 @@ exec node server.js
   - 侧边栏“新建文件后自动打开”必须复用与普通点文件相同的页面级切换入口；当页面存在未保存守卫或创作页路由保护时，不能在共享上下文里直接 `selectFile`
   - 文件页、知识库页、创作页在同页切换 `fileId` 时都必须触发路由更新；知识库页和创作页的同页切文档也应显示统一的全局 `PageTransitionOverlay`
   - 创作块编辑态必须持续保留，textarea 失焦不能自动保存或退出；只允许 `Mod+Enter` / “完成”保存，`Esc` / “取消编辑”放弃当前块编辑
+  - 侧边栏文件树 / 大纲 tab、两个 tab 各自滚动位置、文件页 / 知识库页文档区浏览位置和创作页块区浏览位置都必须持久化；从其他页面返回后应恢复原本的工作区状态
+  - 显式定位优先级必须高于历史浏览位置：`pendingCitation`、`?fileId + lineStart/preview/headingPath`、`#Lx-Ly` 都不能被旧滚动位置覆盖
 - M2-02 FileTree 组件 + `/api/files/*` API
   - 前端所有可见文档标签统一优先 `title`，其次显示去掉 `.md` 的文件名，最后才使用占位文案；禁止显示 `article_xxx`、`notus_xxx`、裸 `fileId` 这类技术标识
   - 侧边栏显式重命名属于强制改名操作；若目标文件已存在，整次重命名必须失败，不能覆盖已有文件

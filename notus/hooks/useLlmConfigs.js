@@ -29,7 +29,7 @@ function writeCachedConfigs(nextState) {
 }
 
 export function useLlmConfigs() {
-  const [state, setState] = useState(() => readCachedConfigs() || {
+  const [state, setState] = useState({
     configs: [],
     activeConfigId: null,
     loading: true,
@@ -60,8 +60,12 @@ export function useLlmConfigs() {
 
   useEffect(() => {
     let cancelled = false;
+    const cached = readCachedConfigs();
+    if (cached) {
+      setState(cached);
+    }
 
-    refresh({ forceLoading: !readCachedConfigs() }).catch(() => {
+    refresh({ forceLoading: !cached }).catch(() => {
       if (cancelled) return;
       setState((prev) => ({ ...prev, loading: false }));
     });

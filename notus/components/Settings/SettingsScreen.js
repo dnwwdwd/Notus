@@ -320,21 +320,7 @@ const ModelConfig = () => {
 
   return (
     <div>
-      <div style={{ fontSize: 'var(--text-xl)', fontWeight: 600, marginBottom: 6 }}>模型配置</div>
-      <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', marginBottom: 20 }}>
-        Embedding 继续单独配置；所有对话模型统一通过卡片管理，并保存在服务端。
-      </div>
-      <div style={{
-        marginBottom: 20,
-        padding: '10px 12px',
-        borderRadius: 'var(--radius-md)',
-        background: 'var(--bg-secondary)',
-        color: 'var(--text-secondary)',
-        fontSize: 'var(--text-sm)',
-        lineHeight: 1.6,
-      }}>
-        启用文档级上下文后，知识库问答会把命中的 Markdown 正文从本地文件系统读取后发送给所选对话模型；回答下方会显示本次读取了哪些文件。
-      </div>
+      <div style={{ fontSize: 'var(--text-xl)', fontWeight: 600, marginBottom: 28 }}>模型配置</div>
 
       <div style={{ marginBottom: 32 }}>
         <div style={{ fontSize: 'var(--text-base)', fontWeight: 600, marginBottom: 16, paddingBottom: 8, borderBottom: '1px solid var(--border-subtle)' }}>
@@ -397,7 +383,6 @@ const ModelConfig = () => {
       <div style={{ marginBottom: 32 }}>
         <LlmConfigCardsSection
           title="LLM 配置"
-          subtitle="知识库问答与 AI 创作会直接读取这里保存的已测试模型配置。"
         />
       </div>
     </div>

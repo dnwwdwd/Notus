@@ -1,5 +1,8 @@
 // Shared app-level state: file tree, active file selection, file creation
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import workspaceState from '../utils/workspaceState';
+
+const { normalizeWorkspaceState } = workspaceState;
 
 export const AppContext = createContext(null);
 const FILE_TREE_CACHE_KEY = 'notus-file-tree-cache';
@@ -9,6 +12,8 @@ const DEFAULT_WORKSPACE_STATE = {
   activePage: 'files',
   openFolders: [],
   sidebarCollapsed: false,
+  sidebarActiveTab: 'tree',
+  sidebarScrollByTab: { tree: 0, toc: 0 },
   pendingCitation: null,
 };
 
@@ -80,25 +85,6 @@ function writeCachedTree(tree) {
   } catch {}
 }
 
-function normalizeWorkspaceState(value = {}) {
-  const activeFileId = Number(value.activeFileId);
-  return {
-    activeFileId: Number.isFinite(activeFileId) && activeFileId > 0 ? activeFileId : null,
-    activePage: ['files', 'knowledge', 'canvas'].includes(value.activePage) ? value.activePage : 'files',
-    openFolders: Array.isArray(value.openFolders) ? [...new Set(value.openFolders.map((item) => String(item || '')).filter(Boolean))] : [],
-    sidebarCollapsed: Boolean(value.sidebarCollapsed),
-    pendingCitation: value.pendingCitation && typeof value.pendingCitation === 'object'
-      ? {
-        fileId: Number(value.pendingCitation.fileId) || null,
-        preview: String(value.pendingCitation.preview || ''),
-        headingPath: String(value.pendingCitation.headingPath || ''),
-        lineStart: Number(value.pendingCitation.lineStart) || null,
-        lineEnd: Number(value.pendingCitation.lineEnd) || null,
-      }
-      : null,
-  };
-}
-
 function readWorkspaceState() {
   if (typeof window === 'undefined') return DEFAULT_WORKSPACE_STATE;
   try {
@@ -116,37 +102,81 @@ function writeWorkspaceState(nextState) {
 }
 
 export function AppProvider({ children }) {
-  const initialWorkspaceState = useMemo(() => readWorkspaceState(), []);
-  const [files, setFiles] = useState(() => readCachedTree());
-  const [loadingFiles, setLoadingFiles] = useState(() => readCachedTree().length === 0);
-  const [hasLoadedFilesOnce, setHasLoadedFilesOnce] = useState(() => readCachedTree().length > 0);
+  const initialWorkspaceState = DEFAULT_WORKSPACE_STATE;
+  const [files, setFiles] = useState([]);
+  const [loadingFiles, setLoadingFiles] = useState(true);
+  const [hasLoadedFilesOnce, setHasLoadedFilesOnce] = useState(false);
 
   // In-memory file content cache (fileId → markdown string)
   const contentCache = useRef(new Map());
   const filesRef = useRef(files);
+  const workspaceHydratedRef = useRef(false);
   const activeFileIdRef = useRef(initialWorkspaceState.activeFileId);
   const activePageRef = useRef(initialWorkspaceState.activePage);
   const openFoldersRef = useRef(new Set(initialWorkspaceState.openFolders));
   const sidebarCollapsedRef = useRef(initialWorkspaceState.sidebarCollapsed);
+  const sidebarActiveTabRef = useRef(initialWorkspaceState.sidebarActiveTab);
+  const sidebarScrollByTabRef = useRef(initialWorkspaceState.sidebarScrollByTab);
   const pendingCitationRef = useRef(initialWorkspaceState.pendingCitation);
   const [openFolders, setOpenFolders] = useState(() => new Set(initialWorkspaceState.openFolders));
   const [activeFileId, setActiveFileId] = useState(initialWorkspaceState.activeFileId);
   const [activeFile, setActiveFile] = useState(null);
   const [activePage, setActivePage] = useState(initialWorkspaceState.activePage);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(initialWorkspaceState.sidebarCollapsed);
+  const [sidebarActiveTab, setSidebarActiveTab] = useState(initialWorkspaceState.sidebarActiveTab);
+  const [sidebarScrollByTab, setSidebarScrollByTab] = useState(() => ({
+    tree: Number(initialWorkspaceState.sidebarScrollByTab?.tree) || 0,
+    toc: Number(initialWorkspaceState.sidebarScrollByTab?.toc) || 0,
+  }));
   const [pendingCitation, setPendingCitation] = useState(initialWorkspaceState.pendingCitation);
 
   const persistWorkspaceState = useCallback((patch = {}) => {
-    const nextState = normalizeWorkspaceState({
-      activeFileId: activeFileIdRef.current,
-      activePage: activePageRef.current,
-      openFolders: [...openFoldersRef.current],
-      sidebarCollapsed: sidebarCollapsedRef.current,
-      pendingCitation: pendingCitationRef.current,
-      ...patch,
-    });
+    const baseState = workspaceHydratedRef.current
+      ? {
+        activeFileId: activeFileIdRef.current,
+        activePage: activePageRef.current,
+        openFolders: [...openFoldersRef.current],
+        sidebarCollapsed: sidebarCollapsedRef.current,
+        sidebarActiveTab: sidebarActiveTabRef.current,
+        sidebarScrollByTab: sidebarScrollByTabRef.current,
+        pendingCitation: pendingCitationRef.current,
+      }
+      : readWorkspaceState();
+    const nextState = normalizeWorkspaceState({ ...baseState, ...patch });
     writeWorkspaceState(nextState);
     return nextState;
+  }, []);
+
+  useEffect(() => {
+    const cachedTree = readCachedTree();
+    const nextWorkspaceState = readWorkspaceState();
+
+    if (cachedTree.length > 0) {
+      filesRef.current = cachedTree;
+      setFiles(cachedTree);
+      setLoadingFiles(false);
+      setHasLoadedFilesOnce(true);
+    }
+
+    activeFileIdRef.current = nextWorkspaceState.activeFileId;
+    activePageRef.current = nextWorkspaceState.activePage;
+    openFoldersRef.current = new Set(nextWorkspaceState.openFolders);
+    sidebarCollapsedRef.current = nextWorkspaceState.sidebarCollapsed;
+    sidebarActiveTabRef.current = nextWorkspaceState.sidebarActiveTab;
+    sidebarScrollByTabRef.current = nextWorkspaceState.sidebarScrollByTab;
+    pendingCitationRef.current = nextWorkspaceState.pendingCitation;
+    workspaceHydratedRef.current = true;
+
+    setActiveFileId(nextWorkspaceState.activeFileId);
+    setActivePage(nextWorkspaceState.activePage);
+    setOpenFolders(new Set(nextWorkspaceState.openFolders));
+    setSidebarCollapsed(nextWorkspaceState.sidebarCollapsed);
+    setSidebarActiveTab(nextWorkspaceState.sidebarActiveTab);
+    setSidebarScrollByTab({
+      tree: Number(nextWorkspaceState.sidebarScrollByTab?.tree) || 0,
+      toc: Number(nextWorkspaceState.sidebarScrollByTab?.toc) || 0,
+    });
+    setPendingCitation(nextWorkspaceState.pendingCitation);
   }, []);
 
   useEffect(() => {
@@ -168,6 +198,14 @@ export function AppProvider({ children }) {
   useEffect(() => {
     sidebarCollapsedRef.current = sidebarCollapsed;
   }, [sidebarCollapsed]);
+
+  useEffect(() => {
+    sidebarActiveTabRef.current = sidebarActiveTab;
+  }, [sidebarActiveTab]);
+
+  useEffect(() => {
+    sidebarScrollByTabRef.current = sidebarScrollByTab;
+  }, [sidebarScrollByTab]);
 
   useEffect(() => {
     pendingCitationRef.current = pendingCitation;
@@ -272,6 +310,26 @@ export function AppProvider({ children }) {
   const setSidebarCollapsedState = useCallback((collapsed) => {
     setSidebarCollapsed(Boolean(collapsed));
     persistWorkspaceState({ sidebarCollapsed: Boolean(collapsed) });
+  }, [persistWorkspaceState]);
+
+  const setSidebarActiveTabState = useCallback((tab) => {
+    const nextTab = tab === 'toc' ? 'toc' : 'tree';
+    setSidebarActiveTab(nextTab);
+    persistWorkspaceState({ sidebarActiveTab: nextTab });
+  }, [persistWorkspaceState]);
+
+  const setSidebarScrollState = useCallback((tab, scrollTop) => {
+    const nextTab = tab === 'toc' ? 'toc' : 'tree';
+    const nextScrollTop = Math.max(Number(scrollTop) || 0, 0);
+    setSidebarScrollByTab((prev) => {
+      const next = {
+        tree: Number(prev.tree) || 0,
+        toc: Number(prev.toc) || 0,
+      };
+      next[nextTab] = nextScrollTop;
+      persistWorkspaceState({ sidebarScrollByTab: next });
+      return next;
+    });
   }, [persistWorkspaceState]);
 
   const toggleSidebarCollapsed = useCallback(() => {
@@ -406,12 +464,16 @@ export function AppProvider({ children }) {
         activeFileId,
         activeFile,
         sidebarCollapsed,
+        sidebarActiveTab,
+        sidebarScrollByTab,
         pendingCitation,
         workspaceState: {
           activeFileId,
           activePage,
           openFolders: [...openFolders],
           sidebarCollapsed,
+          sidebarActiveTab,
+          sidebarScrollByTab,
           pendingCitation,
         },
         refreshFiles,
@@ -419,6 +481,8 @@ export function AppProvider({ children }) {
         clearPendingCitation,
         setActiveWorkspacePage,
         setSidebarCollapsed: setSidebarCollapsedState,
+        setSidebarActiveTab: setSidebarActiveTabState,
+        setSidebarScroll: setSidebarScrollState,
         toggleSidebarCollapsed,
         setPendingCitation: setPendingCitationState,
         createFile,

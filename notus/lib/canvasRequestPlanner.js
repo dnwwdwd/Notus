@@ -391,6 +391,24 @@ function shouldCarryPreviousOperation(userInput = '', inferredOperationKind = 'r
   return /继续改|继续写|延续刚才|接着改|按刚才(?:的)?建议改|按上面(?:的)?问题改|按刚才(?:的)?问题改/.test(String(userInput || ''));
 }
 
+function looksLikeDiscussionRequest(userInput = '') {
+  const text = String(userInput || '').trim();
+  if (!text) return false;
+  return /你觉得|怎么看|怎么样|如何评价|评价一下|给点意见|有什么建议|有哪些建议|哪里有问题|有没有问题|是否清楚|逻辑清楚吗|表达清楚吗|读起来|可读性|帮我看看|看看这段/.test(text);
+}
+
+function hasExplicitEditSignal(userInput = '', context = {}) {
+  const text = String(userInput || '').trim();
+  if (!text) return false;
+  if (context.deterministicRewrite) return true;
+  if (context.sourceRef?.needed) return true;
+  if (needsCarryPreviousSummary(text)) return true;
+  if (/按(?:刚才|上面|之前)(?:的)?(?:建议|问题|方案|要求)(?:改|调整|处理|优化)/.test(text)) return true;
+  if (/(?:把|将).+(?:改为|改成|换成|换为|替换为|替换成)/.test(text)) return true;
+  if (/改|改写|重写|润色|扩写|压缩|精简|删掉|删除|去掉|插入|新增|合并|调序|仿写|修改|调整|优化|替换|覆盖|写入|写到文档|写进文档|写进去|放进正文|应用到正文|生成到文档/.test(text)) return true;
+  return false;
+}
+
 
 function inferNeedsStyle(intent, operationKind, options = {}) {
   if (intent !== 'edit') return false;
@@ -1192,9 +1210,20 @@ async function resolveCanvasRequest({
   // ── 5. deterministic 精准替换优化（正则匹配后强制修正意图和目标块）────────
   // 当正则识别到明确的"将 X 改为 Y"句式，但 LLM 误判为 text/analyze 时，强制覆盖为 edit
   let effectivePrimaryIntent = helper.primary_intent;
+  let discussionTextOverride = false;
   if (deterministicRewrite && (effectivePrimaryIntent === 'text' || effectivePrimaryIntent === 'analyze')) {
     effectivePrimaryIntent = 'edit';
     decisionPath.push('deterministic_rewrite:intent_override');
+  }
+  if (
+    !deterministicRewrite
+    && effectivePrimaryIntent === 'edit'
+    && looksLikeDiscussionRequest(userInput)
+    && !hasExplicitEditSignal(userInput, { explicitTargets, deterministicRewrite, sourceRef })
+  ) {
+    effectivePrimaryIntent = 'text';
+    discussionTextOverride = true;
+    decisionPath.push('discussion_intent:text_override');
   }
 
   // 当 LLM 没有返回目标块时，通过 source_text 在全文搜索包含该文本的块
@@ -1217,7 +1246,18 @@ async function resolveCanvasRequest({
 
   // ── 6. 构建最终 plan ─────────────────────────────────────────────────────
   const primaryIntent = normalizePrimaryIntent(effectivePrimaryIntent);
-  const operationKind = normalizeOperationKind(helper.operation_kind);
+  const operationKind = primaryIntent === 'text'
+    ? 'discuss'
+    : normalizeOperationKind(helper.operation_kind);
+  const outputTargetBlockIds = discussionTextOverride
+    ? explicitTargets
+    : finalTargetBlockIds;
+  const outputScopeMode = discussionTextOverride && outputTargetBlockIds.length === 0
+    ? 'none'
+    : scopeMode;
+  const outputAnswerSlots = discussionTextOverride && explicitTargets.length === 0
+    ? Object.fromEntries(Object.entries(answerSlots).filter(([key]) => key !== 'target_location' && key !== 'write_mode'))
+    : answerSlots;
 
   const finalBase = {
     original_user_input: String(userInput || '').trim(),
@@ -1227,8 +1267,8 @@ async function resolveCanvasRequest({
     intent_candidates: [],
     target_candidates: targetCandidates,
     target_confidence: helper.confidence || 0.8,
-    target_block_ids: finalTargetBlockIds,
-    candidate_block_ids: unique([...candidateBlockIds, ...finalTargetBlockIds]),
+    target_block_ids: outputTargetBlockIds,
+    candidate_block_ids: unique([...candidateBlockIds, ...outputTargetBlockIds]),
     operation_kind: operationKind,
     action_candidates: [operationKind].filter(Boolean),
     needs_style: inferNeedsStyle(primaryIntent, operationKind, { styleMode }),
@@ -1237,9 +1277,9 @@ async function resolveCanvasRequest({
     source_candidates: sourceRef.candidates,
     source_content_type: helper.source_content_type || sourceRef.source_content_type,
     source_confidence: sourceRef.stable ? 0.92 : (sourceRef.needed ? 0.36 : 0),
-    scope_mode: scopeMode,
-    answer_slots: answerSlots,
-    prefilled_answers: answerSlots,
+    scope_mode: outputScopeMode,
+    answer_slots: outputAnswerSlots,
+    prefilled_answers: outputAnswerSlots,
     summary_instruction: followUpSummary,
     correction_state: correctionState || null,
     deterministic_edit: deterministicEdit,
@@ -1255,7 +1295,7 @@ async function resolveCanvasRequest({
     ),
   };
 
-  if (helper.clarify_needed) {
+  if (helper.clarify_needed && !discussionTextOverride) {
     const missingSlots = helper.missing_slots || [];
     const clarifyReason = helper.clarify_reason || 'missing_target_location';
     const normalizedMissingSlots = unique(missingSlots.length > 0 ? missingSlots : (

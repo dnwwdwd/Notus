@@ -34,6 +34,11 @@ import { deriveAiReadiness } from '../utils/aiReadiness';
 import { mapConversationMessages } from '../utils/conversations';
 import { readApiResponse } from '../utils/http';
 import { navigateWithFallback } from '../utils/navigation';
+import {
+  readViewPosition,
+  restoreCanvasViewPosition,
+  writeCanvasViewPosition,
+} from '../utils/viewPosition';
 
 const RECENT_ITEMS = [
   { title: '关于慢的意义', sub: '草稿 · 5 个块 · 2 小时前' },
@@ -305,7 +310,7 @@ function SortableCanvasItem({ block, index, state, onAI, onDelete, onContentChan
   };
 
   return (
-    <div ref={setNodeRef} style={style}>
+    <div ref={setNodeRef} style={style} data-canvas-block-id={block.id}>
       <CanvasBlock
         idx={index + 1}
         blockId={block.id}
@@ -472,6 +477,7 @@ export default function CanvasPage() {
   const [activeConversationId, setActiveConversationId] = useState(null);
   const [conversationList, setConversationList] = useState([]);
   const [conversationListLoading, setConversationListLoading] = useState(false);
+  const [deletingConversationId, setDeletingConversationId] = useState(null);
   const [, setConversationDraft] = useState(true);
   const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
   const [pendingOperationSets, setPendingOperationSets] = useState([]);
@@ -493,6 +499,8 @@ export default function CanvasPage() {
   const dirtyStateRef = useRef(false);
   const pendingRouteFileIdRef = useRef(null);
   const hiddenArticleFrontmatterRef = useRef('');
+  const restoreCanvasPositionRef = useRef(false);
+  const saveCanvasPositionFrameRef = useRef(null);
   const articleFileId = Number(article?.fileId || article?.file_id) || null;
   const canvasConversationEnabled = Boolean(articleFileId);
   const conversationScopeKey = !article
@@ -780,6 +788,7 @@ export default function CanvasPage() {
     });
     hiddenArticleFrontmatterRef.current = payload?.hidden_frontmatter || payload?.hiddenFrontmatter || '';
     setBlocks(Array.isArray(payload?.blocks) ? payload.blocks : []);
+    restoreCanvasPositionRef.current = true;
     setActiveConversationId(null);
     setConversationDraft(true);
     setMessages([]);
@@ -986,6 +995,38 @@ export default function CanvasPage() {
     setLoading(false);
     setHistoryDrawerOpen(false);
   }, [articleFileId]);
+
+  const handleConversationDelete = useCallback(async (conversationId) => {
+    const normalizedConversationId = Number(conversationId);
+    if (!Number.isFinite(normalizedConversationId) || deletingConversationId) return;
+    setDeletingConversationId(normalizedConversationId);
+    requestControllerRef.current?.abort();
+    try {
+      const response = await fetch(`/api/conversations/${normalizedConversationId}`, { method: 'DELETE' });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || '删除历史对话失败');
+      }
+      if (Number(activeConversationId) === normalizedConversationId) {
+        setActiveConversationId(null);
+        setConversationDraft(true);
+        setMessages([]);
+        setPendingOperationSets([]);
+        setPendingInteractions([]);
+        setAiInjected('');
+        setStreamText('');
+        setLoading(false);
+        setHistoryDrawerOpen(false);
+      }
+      const rows = await fetchConversationList();
+      setConversationList(rows);
+      toast('历史对话已删除', 'success');
+    } catch (deleteError) {
+      toast(deleteError.message || '删除历史对话失败', 'error');
+    } finally {
+      setDeletingConversationId(null);
+    }
+  }, [activeConversationId, deletingConversationId, fetchConversationList, toast]);
 
   useEffect(() => {
     if (!article || !articleFileId) {
@@ -1372,6 +1413,54 @@ export default function CanvasPage() {
       await runInteractionResume(interaction, selectedLlmConfigId);
     } catch {}
   }, [runInteractionResume, selectedLlmConfigId]);
+
+  useEffect(() => {
+    if (!articleFileId || !canvasContentRef.current || loadingSourceFile) return undefined;
+    const container = canvasContentRef.current;
+    const hasPendingRoute = Boolean(pendingRouteFileIdRef.current);
+    if (restoreCanvasPositionRef.current && !hasPendingRoute && readViewPosition('canvas', articleFileId)) {
+      const frameId = window.requestAnimationFrame(() => {
+        restoreCanvasViewPosition(articleFileId, container);
+        restoreCanvasPositionRef.current = false;
+      });
+      return () => window.cancelAnimationFrame(frameId);
+    }
+
+    restoreCanvasPositionRef.current = false;
+    return undefined;
+  }, [articleFileId, blocks, loadingSourceFile]);
+
+  useEffect(() => {
+    if (!articleFileId || !canvasContentRef.current || loadingSourceFile) return undefined;
+    const container = canvasContentRef.current;
+
+    const savePosition = () => {
+      if (!articleFileId) return;
+      writeCanvasViewPosition(articleFileId, container);
+    };
+
+    const handleScroll = () => {
+      if (saveCanvasPositionFrameRef.current) {
+        window.cancelAnimationFrame(saveCanvasPositionFrameRef.current);
+      }
+      saveCanvasPositionFrameRef.current = window.requestAnimationFrame(() => {
+        savePosition();
+        saveCanvasPositionFrameRef.current = null;
+      });
+    };
+
+    container.addEventListener('scroll', handleScroll, { passive: true });
+    window.addEventListener('beforeunload', savePosition);
+    return () => {
+      container.removeEventListener('scroll', handleScroll);
+      window.removeEventListener('beforeunload', savePosition);
+      if (saveCanvasPositionFrameRef.current) {
+        window.cancelAnimationFrame(saveCanvasPositionFrameRef.current);
+        saveCanvasPositionFrameRef.current = null;
+      }
+      savePosition();
+    };
+  }, [articleFileId, loadingSourceFile]);
 
   // Canvas block AI button → populate InputBar
   const handleBlockAI = useCallback((blockId) => {
@@ -1803,6 +1892,8 @@ export default function CanvasPage() {
         loading={conversationListLoading}
         emptyText="暂无历史对话"
         onSelect={handleConversationSelect}
+        onDelete={handleConversationDelete}
+        deletingConversationId={deletingConversationId}
       />
     </div>
   );

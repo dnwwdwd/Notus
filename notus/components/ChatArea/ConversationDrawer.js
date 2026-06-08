@@ -1,5 +1,7 @@
+import { useState } from 'react';
 import { Icons } from '../ui/Icons';
 import { Spinner } from '../ui/Spinner';
+import { ConfirmDialog } from '../ui/Dialog';
 import { getConversationTitle } from '../../utils/conversations';
 
 export function ConversationDrawer({
@@ -10,8 +12,12 @@ export function ConversationDrawer({
   loading = false,
   emptyText = '暂无历史对话',
   onSelect,
+  onDelete,
+  deletingConversationId = null,
 }) {
+  const [pendingDelete, setPendingDelete] = useState(null);
   if (!open) return null;
+  const pendingDeleteTitle = getConversationTitle(pendingDelete);
 
   return (
     <div
@@ -102,57 +108,114 @@ export function ConversationDrawer({
             const active = Number(conversation.id) === Number(activeConversationId);
             const title = getConversationTitle(conversation);
             const preview = String(conversation.preview || '').trim();
+            const deleting = Number(deletingConversationId) === Number(conversation.id);
 
             return (
-              <button
+              <div
                 key={conversation.id}
-                type="button"
-                onClick={() => onSelect?.(conversation.id, conversation)}
                 style={{
                   width: '100%',
-                  padding: '12px 12px 11px',
+                  padding: '10px 10px 10px 12px',
                   borderRadius: 'var(--radius-lg)',
                   border: `1px solid ${active ? 'color-mix(in srgb, var(--accent) 30%, var(--border-primary))' : 'var(--border-subtle)'}`,
                   background: active ? 'var(--accent-subtle)' : 'var(--bg-primary)',
                   color: active ? 'var(--accent)' : 'var(--text-primary)',
                   textAlign: 'left',
                   display: 'grid',
-                  gap: 6,
-                  cursor: 'pointer',
+                  gridTemplateColumns: 'minmax(0, 1fr) 28px',
+                  columnGap: 8,
+                  alignItems: 'start',
+                  cursor: 'default',
                   transition: 'background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast)',
                 }}
               >
-                <div
+                <button
+                  type="button"
+                  onClick={() => onSelect?.(conversation.id, conversation)}
                   style={{
-                    fontSize: 'var(--text-sm)',
-                    fontWeight: 600,
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
+                    minWidth: 0,
+                    display: 'grid',
+                    gap: 6,
+                    textAlign: 'left',
+                    background: 'transparent',
+                    color: 'inherit',
+                    cursor: 'pointer',
+                    padding: 0,
+                    border: 0,
                   }}
                 >
-                  {title}
-                </div>
-                {preview && preview !== title && (
                   <div
                     style={{
-                      fontSize: 'var(--text-xs)',
-                      color: active ? 'var(--accent)' : 'var(--text-tertiary)',
-                      lineHeight: 1.6,
-                      display: '-webkit-box',
-                      WebkitLineClamp: 2,
-                      WebkitBoxOrient: 'vertical',
+                      fontSize: 'var(--text-sm)',
+                      fontWeight: 600,
                       overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
                     }}
                   >
-                    {preview}
+                    {title}
                   </div>
-                )}
-              </button>
+                  {preview && preview !== title && (
+                    <div
+                      style={{
+                        fontSize: 'var(--text-xs)',
+                        color: active ? 'var(--accent)' : 'var(--text-tertiary)',
+                        lineHeight: 1.6,
+                        display: '-webkit-box',
+                        WebkitLineClamp: 2,
+                        WebkitBoxOrient: 'vertical',
+                        overflow: 'hidden',
+                      }}
+                    >
+                      {preview}
+                    </div>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  aria-label={`删除历史对话 ${title}`}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (deleting) return;
+                    setPendingDelete(conversation);
+                  }}
+                  disabled={deleting}
+                  style={{
+                    width: 28,
+                    height: 28,
+                    borderRadius: 'var(--radius-sm)',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: deleting ? 'var(--text-tertiary)' : 'var(--danger)',
+                    opacity: deleting ? 0.45 : 0.86,
+                    cursor: deleting ? 'not-allowed' : 'pointer',
+                    border: 0,
+                    padding: 0,
+                    background: 'transparent',
+                  }}
+                >
+                  {deleting ? <Spinner size={13} /> : <Icons.trash size={13} />}
+                </button>
+              </div>
             );
           })}
         </div>
       </div>
+      <ConfirmDialog
+        open={Boolean(pendingDelete)}
+        onClose={() => setPendingDelete(null)}
+        onConfirm={() => {
+          if (!pendingDelete) return;
+          onDelete?.(pendingDelete.id, pendingDelete);
+          setPendingDelete(null);
+        }}
+        title="删除历史对话"
+        message={`确定删除“${pendingDeleteTitle}”吗？这条对话中的消息和待处理记录也会一起删除。`}
+        confirmLabel="删除"
+        danger
+      />
     </div>
   );
 }

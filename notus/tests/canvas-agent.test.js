@@ -244,6 +244,9 @@ async function runTests() {
       const targetSnapshot = blockSnapshots.find((block) => block.id === 'b2');
       assert.ok(promptText.includes('replace.new 必须是目标块修改后的完整全文'));
       assert.ok(promptText.includes('未修改的文字、换行、列表顺序和标点必须逐字保留'));
+      assert.ok(promptText.includes('目标块必须按完整正文处理；非目标块只用于理解上下文'));
+      assert.ok(promptText.includes('用户只要求修改第二句时'));
+      assert.ok(promptText.includes('如果无法保证 old/new 是完整目标块全文'));
       assert.strictEqual(targetSnapshot.content, longContent);
       assert.strictEqual(result.operations[0].old, longContent);
       assert.ok(result.operations[0].new.includes('第 44 行正文保持不变。'));

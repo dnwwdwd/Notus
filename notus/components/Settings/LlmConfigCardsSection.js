@@ -75,9 +75,6 @@ function ConfigCard({ item, onEdit, onDelete, onSetDefault, compact = false }) {
             {item.is_active ? <Badge tone="accent">默认配置</Badge> : null}
             {item.api_key_set ? <Badge tone="success">已保存密钥</Badge> : <Badge tone="warning">待补密钥</Badge>}
           </div>
-            <div style={{ fontSize: compact ? 12 : 'var(--text-sm)', color: 'var(--text-secondary)', lineHeight: 1.65 }}>
-              直接连接你自己的模型服务，不经过中间代理。
-            </div>
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0, flexWrap: 'wrap' }}>
@@ -101,34 +98,13 @@ function ConfigCard({ item, onEdit, onDelete, onSetDefault, compact = false }) {
           <div style={{ fontSize: compact ? 12 : 'var(--text-sm)', color: 'var(--text-primary)', wordBreak: 'break-all' }}>{item.base_url}</div>
         </div>
       </div>
-
-      {item.is_active ? (
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            padding: compact ? '10px 12px' : '11px 13px',
-            borderRadius: 14,
-            background: 'rgba(193,95,60,0.06)',
-            border: '1px solid var(--border-subtle)',
-          }}
-        >
-          <span style={{ color: 'var(--accent)', display: 'inline-flex' }}>
-            <Icons.sparkles size={14} />
-          </span>
-          <div style={{ fontSize: compact ? 12 : 'var(--text-sm)', color: 'var(--text-secondary)', minWidth: 0 }}>
-            当前知识库和创作页默认使用这套模型配置。
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }
 
 export function LlmConfigCardsSection({
   title = 'LLM 配置',
-  subtitle = '通过配置卡片管理所有可用的大模型接入。',
+  subtitle = '',
   onStateChange,
   compact = false,
 }) {
@@ -146,10 +122,6 @@ export function LlmConfigCardsSection({
   const resolvedProvider = useMemo(
     () => inferLlmProvider({ baseUrl: draft.baseUrl, model: draft.model }),
     [draft.baseUrl, draft.model]
-  );
-  const resolvedProviderLabel = useMemo(
-    () => resolveLlmProviderLabel(resolvedProvider),
-    [resolvedProvider]
   );
 
   useEffect(() => {
@@ -310,7 +282,9 @@ export function LlmConfigCardsSection({
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, marginBottom: compact ? 14 : 18 }}>
         <div>
           <div style={{ fontSize: compact ? 'var(--text-base)' : 'var(--text-xl)', fontWeight: 600, marginBottom: 6 }}>{title}</div>
-          <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', lineHeight: 1.6 }}>{subtitle}</div>
+          {subtitle ? (
+            <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', lineHeight: 1.6 }}>{subtitle}</div>
+          ) : null}
         </div>
         <Button variant="primary" onClick={openCreate}>新增配置</Button>
       </div>
@@ -403,10 +377,6 @@ export function LlmConfigCardsSection({
               masked
               placeholder={draft.apiKeySet ? '已保存，留空则继续使用当前密钥' : 'sk-...'}
             />
-          </div>
-
-          <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', lineHeight: 1.7 }}>
-            系统会根据 Base URL 和模型名自动识别兼容厂商，当前识别为：{resolvedProviderLabel}。
           </div>
 
           <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--text-sm)', color: 'var(--text-primary)' }}>

@@ -28,6 +28,11 @@ function runTests() {
   assert.ok(sidebar.includes('setActiveTocKey(tocKey)'));
   assert.ok(sidebar.includes('var(--accent-subtle)'));
 
+  const conversationDrawer = read('components/ChatArea/ConversationDrawer.js');
+  assert.ok(conversationDrawer.includes('ConfirmDialog'));
+  assert.ok(conversationDrawer.includes('Icons.trash'));
+  assert.ok(conversationDrawer.includes('onDelete?.(pendingDelete.id, pendingDelete)'));
+
   console.log('ui bug regressions tests passed');
 }
 

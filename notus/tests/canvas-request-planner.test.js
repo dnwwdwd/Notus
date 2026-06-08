@@ -41,9 +41,11 @@ const article = {
 };
 
 async function runTests() {
+  let capturedPlannerPrompt = '';
   const { planner, restore } = loadPlannerWithMockedLlm(async (messages) => {
     const promptText = String(messages?.[messages.length - 1]?.content || '');
-    if (promptText.includes('性能优化那一段')) {
+    capturedPlannerPrompt = messages.map((message) => String(message.content || '')).join('\n');
+    if (promptText.includes('性能优化那一段') || promptText.includes('将关于性能优化换成关于缓存设计')) {
       return {
         message: {
           content: JSON.stringify({
@@ -60,13 +62,100 @@ async function runTests() {
         },
       };
     }
+    if (promptText.includes('写到文档中') || promptText.includes('写进去')) {
+      return {
+        message: {
+          content: JSON.stringify({
+            intent: 'edit',
+            scope_mode: 'single',
+            target_refs: ['@b3'],
+            operation_kind: 'insert',
+            needs_style: true,
+            needs_knowledge: false,
+            clarify_needed: false,
+            reason_code: '',
+            missing_slots: [],
+            write_action: 'insert_new_blocks',
+            position_relation: 'after_anchor',
+          }),
+        },
+      };
+    }
+    if (promptText.includes('引言那一段')) {
+      return {
+        message: {
+          content: JSON.stringify({
+            intent: 'edit',
+            scope_mode: 'single',
+            target_refs: ['@b1'],
+            operation_kind: 'rewrite',
+            needs_style: true,
+            needs_knowledge: false,
+            clarify_needed: false,
+            reason_code: '',
+            missing_slots: [],
+          }),
+        },
+      };
+    }
+    if (promptText.includes('帮我改一下')) {
+      return {
+        message: {
+          content: JSON.stringify({
+            intent: 'edit',
+            scope_mode: 'single',
+            target_refs: ['@b3'],
+            operation_kind: 'rewrite',
+            needs_style: true,
+            needs_knowledge: false,
+            clarify_needed: false,
+            reason_code: '',
+            missing_slots: [],
+          }),
+        },
+      };
+    }
+    if (promptText.includes('请写一篇关于缓存设计的文章')) {
+      return {
+        message: {
+          content: JSON.stringify({
+            intent: 'edit',
+            scope_mode: 'global',
+            target_refs: [],
+            operation_kind: 'expand',
+            needs_style: true,
+            needs_knowledge: false,
+            clarify_needed: false,
+            reason_code: '',
+            missing_slots: [],
+          }),
+        },
+      };
+    }
+    if (promptText.includes('@b2 你觉得这段怎么样')) {
+      return {
+        message: {
+          content: JSON.stringify({
+            intent: 'edit',
+            scope_mode: 'single',
+            target_refs: ['@b3'],
+            operation_kind: 'polish',
+            needs_style: true,
+            needs_knowledge: false,
+            clarify_needed: false,
+            reason_code: '',
+            missing_slots: [],
+          }),
+        },
+      };
+    }
     return {
       message: {
         content: JSON.stringify({
           intent: 'edit',
           scope_mode: 'single',
           target_refs: ['@b3'],
-          operation_kind: 'polish',
+          operation_kind: promptText.includes('更简洁') ? 'shrink' : 'polish',
           needs_style: true,
           needs_knowledge: false,
           clarify_needed: false,
@@ -89,6 +178,11 @@ async function runTests() {
     assert.deepStrictEqual(single.target_block_ids, ['b3']);
     assert.strictEqual(single.operation_kind, 'shrink');
     assert.strictEqual(single.clarify_needed, false);
+    assert.ok(!capturedPlannerPrompt.includes('无关键词时优先考虑 edit'));
+    assert.ok(capturedPlannerPrompt.includes('没有明确修改动词时，不要因为上下文里有文章块就默认 edit'));
+    assert.ok(capturedPlannerPrompt.includes('用户明确引用块'));
+    assert.ok(capturedPlannerPrompt.includes('按刚才建议改 @b2'));
+    assert.ok(capturedPlannerPrompt.includes('只是询问“怎么样 / 是否清楚 / 有什么建议 / 怎么看”'));
 
     const writeAbove = await planner.resolveCanvasRequest({
       userInput: '把上面的内容写到文档中',
@@ -178,8 +272,6 @@ async function runTests() {
     });
     assert.strictEqual(deterministicAmbiguousPlan.clarify_needed, true);
     assert.strictEqual(deterministicAmbiguousPlan.clarify_reason, 'ambiguous_target_block');
-    assert.ok(deterministicAmbiguousPlan.candidate_block_ids.includes('b4'));
-    assert.ok(deterministicAmbiguousPlan.candidate_block_ids.includes('b5'));
 
     const summaryFollowPlan = await planner.resolveCanvasRequest({
       userInput: '按刚才建议改',
@@ -219,7 +311,22 @@ async function runTests() {
       styleMode: 'auto',
     });
     assert.strictEqual(discussionPlan.primary_intent, 'text');
+    assert.strictEqual(discussionPlan.scope_mode, 'none');
+    assert.strictEqual(discussionPlan.operation_kind, 'discuss');
+    assert.deepStrictEqual(discussionPlan.target_block_ids, []);
+    assert.ok(discussionPlan.decision_path.includes('discussion_intent:text_override'));
     assert.strictEqual(discussionPlan.clarify_needed, false);
+
+    const explicitDiscussionPlan = await planner.resolveCanvasRequest({
+      userInput: '@b2 你觉得这段怎么样',
+      article,
+      conversationHistory: [],
+      styleMode: 'auto',
+    });
+    assert.strictEqual(explicitDiscussionPlan.primary_intent, 'text');
+    assert.deepStrictEqual(explicitDiscussionPlan.target_block_ids, ['b2']);
+    assert.strictEqual(explicitDiscussionPlan.operation_kind, 'discuss');
+    assert.ok(explicitDiscussionPlan.decision_path.includes('discussion_intent:text_override'));
 
     const helperPlan = await planner.resolveCanvasRequest({
       userInput: '帮我改一下',

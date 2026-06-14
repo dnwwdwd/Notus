@@ -69,10 +69,20 @@ if [ "${LZC_BUILD_IN_CONTAINER:-0}" != "1" ]; then
         mkdir -p "$TMP_ROOT/src"
         tar -C /workspace \
           --exclude=.git \
+          --exclude=.claude \
+          --exclude=.idea \
           --exclude=lzc-dist \
+          --exclude=web-dist \
+          --exclude=node_modules \
           --exclude=notus/node_modules \
           --exclude=notus/.next \
+          --exclude=desktop/dist \
+          --exclude=desktop/resources/notus \
+          --exclude=logs \
+          --exclude=notes \
+          --exclude=notus.db \
           --exclude=notus-local-test.lpk \
+          --exclude='*.lpk' \
           -cf - . | tar -C "$TMP_ROOT/src" -xf -
         cd "$TMP_ROOT/src"
         LZC_BUILD_IN_CONTAINER=1 sh lzc/build-package.sh

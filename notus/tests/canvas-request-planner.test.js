@@ -264,6 +264,25 @@ async function runTests() {
     assert.strictEqual(deterministicSinglePlan.deterministic_edit.source_text, '第二段主体内容');
     assert.strictEqual(deterministicSinglePlan.deterministic_edit.target_text, '新的第二段主体内容');
 
+    const deterministicWithoutVerbPrefixPlan = await planner.resolveCanvasRequest({
+      userInput: '@b4 SQLite 换为 HBase',
+      article: {
+        ...article,
+        blocks: article.blocks.map((block) => (
+          block.id === 'b4'
+            ? { ...block, content: '技术选型：SQLite，当前用于本地索引。' }
+            : block
+        )),
+      },
+      conversationHistory: [],
+      styleMode: 'auto',
+    });
+    assert.strictEqual(deterministicWithoutVerbPrefixPlan.clarify_needed, false);
+    assert.deepStrictEqual(deterministicWithoutVerbPrefixPlan.target_block_ids, ['b4']);
+    assert.ok(deterministicWithoutVerbPrefixPlan.deterministic_edit);
+    assert.strictEqual(deterministicWithoutVerbPrefixPlan.deterministic_edit.source_text, 'SQLite');
+    assert.strictEqual(deterministicWithoutVerbPrefixPlan.deterministic_edit.target_text, 'HBase');
+
     const deterministicAmbiguousPlan = await planner.resolveCanvasRequest({
       userInput: '将关于性能优化换成关于缓存设计',
       article,

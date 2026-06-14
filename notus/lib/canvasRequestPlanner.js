@@ -154,7 +154,7 @@ function stripDeterministicTargetHints(text = '') {
 function extractDeterministicRewrite(userInput = '') {
   const text = stripDeterministicTargetHints(userInput);
   if (!text) return null;
-  const match = text.match(/(?:把|将)\s*(.+?)\s*(?:改为|改成|换成|换为|替换为|替换成)\s*(.+?)(?:[。！？]|$)/);
+  const match = text.match(/(?:(?:把|将)\s*)?(.+?)\s*(?:改为|改成|换成|换为|替换为|替换成)\s*(.+?)(?:[。！？]|$)/);
   if (!match) return null;
   const sourceText = normalizeDeterministicFragment(match[1]);
   const targetText = normalizeDeterministicFragment(match[2]);
@@ -1172,10 +1172,9 @@ async function resolveCanvasRequest({
   decisionPath.push(`llm:${helper.primary_intent}:${helper.operation_kind}`);
 
   // ── 4. 补全 answerSlots（词法辅助，与 LLM 结果叠加）─────────────────────
-  const resolvedTargetBlockIds = unique([
-    ...explicitTargets,
-    ...helper.target_block_ids,
-  ]);
+  const resolvedTargetBlockIds = explicitTargets.length > 0
+    ? explicitTargets
+    : unique(helper.target_block_ids);
   let scopeMode = isGlobalPhrase(userInput) ? 'global' : normalizeScopeMode(helper.scope_mode);
   if (scopeMode !== 'global') {
     if (resolvedTargetBlockIds.length === 1) scopeMode = 'single';

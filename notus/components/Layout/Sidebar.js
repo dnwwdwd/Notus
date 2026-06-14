@@ -252,8 +252,6 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const deferredSearchQuery = useDeferredValue(searchQuery);
-  const [activeTocKey, setActiveTocKey] = useState('');
-
   const [createMode, setCreateMode] = useState(null);
   const [newName, setNewName] = useState('');
   const [parentPath, setParentPath] = useState('');
@@ -475,13 +473,6 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
   useEffect(() => {
     return restoreSidebarScroll();
   }, [activePage, activeTab, flat.length, hasLoadedFilesOnce, loadingFiles, restoreSidebarScroll, tocItems?.length]);
-
-  useEffect(() => {
-    const activeItem = (Array.isArray(tocItems) ? tocItems : []).find((item) => item?.active);
-    if (activeItem) {
-      setActiveTocKey(`${activeItem.text || ''}:${activeItem.level || ''}`);
-    }
-  }, [tocItems]);
 
   const handleSelectFile = (file) => {
     const action = () => {
@@ -1410,21 +1401,21 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
               </div>
             ) : tocItems.map((t, i) => {
               const pad = 12 + t.level * 14;
-              const tocKey = `${t.text || ''}:${t.level || ''}`;
-              const selected = Boolean(t.active || activeTocKey === tocKey);
+              const selected = Boolean(t.active);
               return (
-                <div
+                <button
+                  type="button"
                   key={i}
-                  onClick={() => {
-                    setActiveTocKey(tocKey);
-                    t.onJump?.();
-                  }}
+                  onClick={() => t.onJump?.()}
                   style={{
+                    width: '100%',
                     height: 28,
                     display: 'flex',
                     alignItems: 'center',
                     padding: `0 10px 0 ${pad}px`,
+                    border: 'none',
                     fontSize: 'var(--text-sm)',
+                    textAlign: 'left',
                     color: selected ? 'var(--accent)' : 'var(--text-secondary)',
                     fontWeight: selected ? 500 : 400,
                     background: selected ? 'var(--accent-subtle)' : 'transparent',
@@ -1443,12 +1434,12 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
                   }}
                 >
                   {selected && (
-                    <div style={{ position: 'absolute', left: 6, top: 6, bottom: 6, width: 2, background: 'var(--accent)', borderRadius: 1 }} />
+                    <span style={{ position: 'absolute', left: 6, top: 6, bottom: 6, width: 2, background: 'var(--accent)', borderRadius: 1 }} />
                   )}
                   <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {t.text}
                   </span>
-                </div>
+                </button>
               );
             })}
           </div>

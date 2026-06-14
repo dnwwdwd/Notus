@@ -52,12 +52,13 @@ export function AiLockedState({
     </div>
   );
 
-  if (variant === 'modal') {
+  if (variant === 'modal' || variant === 'panel') {
+    const panelOnly = variant === 'panel';
     return (
       <div
         style={{
-          position: 'fixed',
-          top: 48,
+          position: panelOnly ? 'absolute' : 'fixed',
+          top: panelOnly ? 0 : 48,
           left: 0,
           right: 0,
           bottom: 0,

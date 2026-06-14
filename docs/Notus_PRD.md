@@ -584,7 +584,7 @@ async function runCanvasAgent({
 1. `resolveCanvasRequest()`：
    - **LLM 是唯一意图决策者**：每次请求都调用一次 `canvas_query_plan` LLM（`target_resolver` 模式），由其决定 `primary_intent / operation_kind / target_refs / scope_mode / clarify_needed`；结果命中 3 分钟内存缓存（articleHash + historyDigest + userInput 三元组）
    - LLM 调用前做无歧义词法预处理，结果作为候选上下文传入 LLM，不直接决策：`@bN / @b2-b5 / 第 N 段`（显式块引用）、`全文 / 整篇`（全局范围）
-   - 对”把/将 A 改为/换成/换为/替换为/替换成 B”这类精准替换短语，LLM 确认 `edit` 意图且目标唯一时，走 `buildDeterministicReplaceOperation` 字符串精准替换，不再额外调用 LLM 生成编辑内容
+   - 对”把/将 A 改为/换成/换为/替换为/替换成 B”以及省略前缀的 `A 改为 B / A 换为 B` 这类精准替换短语，LLM 确认 `edit` 意图且目标唯一时，走 `buildDeterministicReplaceOperation` 字符串精准替换，不再额外调用 LLM 生成编辑内容
    - 固定输出 `primary_intent / intent_confidence / target_candidates / source_candidates / source_content_type / target_anchor / position_relation / write_action / risk_level / decision_path / decision_summary / ai_arbitration_mode`
    - 兼容保留旧字段 `intent / scope_mode / target_block_ids / candidate_block_ids / operation_kind / clarify_needed / clarify_reason / missing_slots / prefilled_answers / answer_slots / summary_instruction`
    - LLM 调用失败时保守返回 `clarify_needed=true + reason=ai_arbitration_unavailable`，不静默 fallback 到 text
@@ -594,6 +594,7 @@ async function runCanvasAgent({
    - `analyze` 走文章分析文本回复
    - `edit` 走单块 / 多块 / 全文分批执行器
    - 当 `deterministic_edit + 单块唯一命中` 同时成立时，执行器可直接构造同块 `replace` 预览，不再额外调用 LLM
+   - 编辑模型返回非 JSON 或混合文本时，执行器对前端继续返回 `{ summary: 'AI 返回格式异常，请重试。', operations: [] }`；同时写入 `canvas.operation_json.invalid` warning 日志，记录 `scope_mode / operation_kind / allowed_block_ids / raw_content_preview`
    - 对“把上面的内容写到文档中”这类已冻结来源内容的请求，优先用来源快照直接构造写入预览，不重新生成同一段正文
    - 续跑 interaction 前必须基于最新 `article.blocks` 重新校验 `target_block_id`；如果块已不存在，返回新的 `clarify_needed`，只要求重新确认位置，不允许继续硬跑到 `BLOCK_NOT_FOUND`
    - 助手结果会额外回传 `primary_intent / intent_confidence / risk_level / decision_summary / ai_arbitration_mode / source_content_type / target_anchor / position_relation / write_action / correction_state / show_decision_summary`
@@ -909,9 +910,10 @@ POST /api/settings/test              Body: { kind: 'embedding'|'llm', config }
 - `notus-workspace-state`：保存 `activeFileId / activePage / openFolders / sidebarCollapsed / pendingCitation / sidebarActiveTab / sidebarScrollByTab`
 - `sidebarActiveTab` 只允许 `tree | toc`；当前页面没有大纲时 UI 临时显示 `tree`，但不覆盖用户在文件页留下的 `toc` 偏好
 - `sidebarScrollByTab` 分别保存文件树和大纲滚动位置，侧边栏展开、跨页返回和 tab 切换后恢复对应位置
-- `notus-view-position-v1`：保存文件页、知识库页和创作页浏览位置，键分别为 `files:file:<id>`、`knowledge:file:<id>`、`canvas:file:<id>`
-- 文件页与知识库页保存 Tiptap 滚动容器 `scrollTop` 和当前可见文本锚点；恢复时优先按文本锚点定位，找不到再回退到 `scrollTop`
-- 创作页保存当前可见 block 的 `blockId`、块内相对偏移和 `scrollTop`；恢复时优先按 `[data-canvas-block-id]` 定位，找不到再回退到 `scrollTop`
+- `notus-view-position-v1`：保留 `files:file:<id>`、`knowledge:file:<id>`、`canvas:file:<id>` 页面级记录，并新增 `document:file:<id>` 作为同一文档跨页面共享的最近位置；恢复时按 `updatedAt` 选择较新的记录
+- 文件页与知识库页保存 Tiptap 滚动容器的 `scrollTop / scrollProgress`、当前可见文本锚点及其 `viewportOffset`；恢复时优先按文本锚点定位，找不到再按滚动进度回退
+- 创作页保存当前可见 block 的 `blockId`、正文文本、`viewportOffset` 和 `scrollProgress`；编辑器与创作块之间允许通过正文文本互相匹配
+- 普通滚动仅在停止 `240ms` 后保存；`routeChangeStart / beforeunload / pagehide` 同步写入。恢复未完成时禁止初始化滚动覆盖共享位置
 - `pendingCitation`、URL 行号 / 预览参数和 hash 行号属于显式定位，优先级高于历史浏览位置
 - AI 聊天滚动位置不保存，继续维持自动滚到最新消息
 
@@ -1218,12 +1220,13 @@ exec node server.js
   - TopBar 顶部保存按钮统一承载 `saving / dirty / saved` 三种状态；其中 `dirty` 必须使用红色文字和红色边框，明确提示当前内容尚未保存
   - 文件页、知识库页、创作页在当前内容为 `dirty` 时，从侧边栏、顶部搜索或页内切换到其他文档前都必须先触发同一套未保存确认弹窗；确认保存或放弃后，才允许继续跳转；弹窗底部不显示“取消”按钮，关闭弹窗则保持当前页面不跳转
   - 文档内容搜索浮层只显示输入、匹配计数、上下切换和关闭，不显示额外说明文案或空关键词提示
-  - 侧边栏大纲项点击后必须立即进入选中视觉状态，并保留背景、左侧指示条和选中文字色，直到外部 active 状态更新或用户点击其他大纲项
+  - 文件页与知识库页都必须提供 H1-H6 大纲；大纲项使用真实标题 active 状态，点击后即时设置精确滚动位置并更新选中视觉，切换文件树 / 大纲 tab 后不得恢复旧选中项
   - 创作页对 `?fileId=` 的处理必须避免“旧 query 把新选中文档写回去”的状态循环；切换中的目标文档只有在文章内容真正切到目标文件后，才能释放路由同步保护
   - 侧边栏“新建文件后自动打开”必须复用与普通点文件相同的页面级切换入口；当页面存在未保存守卫或创作页路由保护时，不能在共享上下文里直接 `selectFile`
   - 文件页、知识库页、创作页在同页切换 `fileId` 时都必须触发路由更新；知识库页和创作页的同页切文档也应显示统一的全局 `PageTransitionOverlay`
   - 创作块编辑态必须持续保留，textarea 失焦不能自动保存或退出；只允许 `Mod+Enter` / “完成”保存，`Esc` / “取消编辑”放弃当前块编辑
-  - 侧边栏文件树 / 大纲 tab、两个 tab 各自滚动位置、文件页 / 知识库页文档区浏览位置和创作页块区浏览位置都必须持久化；从其他页面返回后应恢复原本的工作区状态
+  - 侧边栏文件树 / 大纲 tab、两个 tab 各自滚动位置必须持久化；文件页、知识库页和创作页既保留页面级位置，又共享同一文档的最近阅读位置，从其他页面进入时恢复最新位置
+  - AI 未就绪时，知识库锁定层只能覆盖右侧问答面板，不能阻断左侧文章编辑区、文件树或大纲
   - 显式定位优先级必须高于历史浏览位置：`pendingCitation`、`?fileId + lineStart/preview/headingPath`、`#Lx-Ly` 都不能被旧滚动位置覆盖
 - M2-02 FileTree 组件 + `/api/files/*` API
   - 前端所有可见文档标签统一优先 `title`，其次显示去掉 `.md` 的文件名，最后才使用占位文案；禁止显示 `article_xxx`、`notus_xxx`、裸 `fileId` 这类技术标识

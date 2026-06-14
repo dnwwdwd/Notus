@@ -130,11 +130,11 @@ LLM 调用前，系统先做以下词法提取，结果作为 LLM 的候选上�
 
 - `@b2` / `@b2-b5` / `第 N 段` → 显式块引用（`parseExplicitMentionIds`）
 - `全文 / 整篇` → 全局范围标记（`isGlobalPhrase`）
-- `把 X 换为 Y` / `将 X 改成 Y` → 精准替换提取（`extractDeterministicRewrite`），支持把 `Bun 技术栈` 拆成 `field_name=技术栈 / source_text=Bun`
+- `把 X 换为 Y` / `将 X 改成 Y` / `X 换为 Y` / `X 改为 Y` → 精准替换提取（`extractDeterministicRewrite`），支持把 `Bun 技术栈` 拆成 `field_name=技术栈 / source_text=Bun`
 
 ### 5.4 deterministic 精准替换优化
 
-当用户输入命中 `把/将 X 改为/换成/换为/替换为/替换成 Y` 句式，且目标块唯一时，走字符串直接替换路径（`buildDeterministicReplaceOperation`），不再调用 LLM 生成编辑内容，精准只替换匹配的词或字段值。字段值场景会优先在同一行内替换，例如 `技术栈：Bun` 或 `| 技术栈 | Bun |` 只把 `Bun` 改成目标值。
+当用户输入命中 `把/将 X 改为/换成/换为/替换为/替换成 Y`，或者省略前缀的 `X 换为 Y / X 改为 Y` 句式，且目标块唯一时，走字符串直接替换路径（`buildDeterministicReplaceOperation`），不再调用 LLM 生成编辑内容，精准只替换匹配的词或字段值。字段值场景会优先在同一行内替换，例如 `技术栈：Bun` 或 `| 技术栈 | Bun |` 只把 `Bun` 改成目标值。
 
 如果同一旧值命中多个块，系统会返回澄清卡片要求用户确认目标位置，不使用 LLM 返回的无关目标块。
 
@@ -178,6 +178,7 @@ LLM 调用前，系统先做以下词法提取，结果作为 LLM 的候选上�
 - 再生成一组 `operations`
 - 目标块必须完整进入编辑 Prompt；邻近块可以裁剪但只能作为上下文
 - `replace.old` 和 `replace.new` 都必须是完整目标块全文；局部修改也不能只返回修改片段，无法保证完整时返回空 `operations`
+- 如果编辑模型没有返回合法 JSON，执行器仍向前端返回“AI 返回格式异常，请重试。”并停止应用，但服务端会额外写入 `canvas.operation_json.invalid` warning 日志，保留原始返回摘要用于排查
 
 简单操作优先走规则化，减少 LLM 调用：
 
@@ -283,11 +284,13 @@ SSE 过程会返回：
 
 ### 8.2 创作块区浏览位置
 
-创作页左侧块区会按 `canvas:file:<id>` 保存浏览位置：
+创作页左侧块区会写入 `canvas:file:<id>` 页面级记录，并同步更新 `document:file:<id>` 文档级最近位置：
 
 - 每个可排序块外层带有 `data-canvas-block-id`。
-- 保存当前可见 block id、块内相对偏移和滚动位置。
-- 普通跨页返回时优先按 block id 恢复，找不到 block 时回退到 `scrollTop`。
+- 保存当前可见 block id、正文文本、视口内偏移和滚动进度。
+- 从文件页或知识库页进入时，可以用正文文本匹配对应创作块；从创作页返回编辑器时也可用块正文匹配标题或段落。
+- 普通滚动停止 `240ms` 后保存；切页开始、刷新或关闭页面时同步写入。恢复完成前不会写入初始化顶部位置。
+- 普通跨页返回时优先按 block id 或正文锚点恢复，找不到锚点时回退到滚动进度。
 - 右侧 AI 聊天区不保存滚动位置，继续自动滚到最新消息。
 
 ---

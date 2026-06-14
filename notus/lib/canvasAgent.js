@@ -1,6 +1,7 @@
 const { getEffectiveConfig } = require('./config');
 const { retrieveKnowledgeContext } = require('./retrieval');
 const { completeChat, streamChat } = require('./llm');
+const { createLogger } = require('./logger');
 const {
   buildHistorySummary,
   sanitizeKnowledgeSections,
@@ -16,6 +17,8 @@ const {
   sumUsageRecords,
   trimTextToTokenBudget,
 } = require('./llmBudget');
+
+const canvasAgentLogger = createLogger({ module: 'canvasAgent' });
 
 function safeJsonParse(content) {
   if (!content) return null;
@@ -535,6 +538,14 @@ async function executePromptedEdit({
   pushReplyTelemetry(telemetry, reply);
   const parsed = safeJsonParse(reply.message?.content);
   if (!parsed) {
+    canvasAgentLogger.warn('canvas.operation_json.invalid', {
+      task_type: 'operation_json',
+      scope_mode: scopeMode || 'none',
+      operation_kind: operationKind || '',
+      allowed_block_ids: targetBlockIds,
+      article_title: String(article?.title || '').slice(0, 120),
+      raw_content_preview: String(reply.message?.content || '').slice(0, 800),
+    });
     return { summary: 'AI 返回格式异常，请重试。', operations: [] };
   }
   return {

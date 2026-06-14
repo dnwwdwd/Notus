@@ -1,5 +1,5 @@
 // /files — File management + WYSIWYG markdown editor (Tiptap)
-import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import { useRouter } from 'next/router';
 import { Shell } from '../../components/Layout/Shell';
@@ -12,18 +12,18 @@ import { Icons } from '../../components/ui/Icons';
 import { useToast } from '../../components/ui/Toast';
 import { useApp } from '../../contexts/AppContext';
 import { useDocumentFind } from '../../hooks/useDocumentFind';
+import { useEditorToc } from '../../hooks/useEditorToc';
 import { useUnsavedChangesGuard } from '../../hooks/useUnsavedChangesGuard';
 import {
   getEditorRoot,
   getEditorScrollContainer,
   getQueryValue,
-  getHeadingLevel,
-  normalizeText,
   previewFromLines,
   retryFocusCitationTarget,
 } from '../../utils/documentNavigation';
 import {
   readViewPosition,
+  retryRestoreViewPosition,
   restoreEditorViewPosition,
   writeEditorViewPosition,
 } from '../../utils/viewPosition';
@@ -37,24 +37,6 @@ const WysiwygEditor = dynamic(
   { ssr: false, loading: () => <SkeletonText lines={7} /> }
 );
 
-const TOC_HEADING_SELECTOR = 'h1,h2,h3,h4,h5,h6';
-
-function collectHeadingItemsFromEditor(editorInstance) {
-  if (!editorInstance?.state?.doc) return [];
-
-  const headings = [];
-  editorInstance.state.doc.descendants((node) => {
-    if (node.type?.name !== 'heading') return true;
-    headings.push({
-      level: Math.max((Number(node.attrs?.level) || 1) - 1, 0),
-      text: normalizeText(node.textContent),
-    });
-    return true;
-  });
-
-  return headings.filter((item) => item.text);
-}
-
 export default function FilesPage() {
   const router = useRouter();
   const toast = useToast();
@@ -65,7 +47,7 @@ export default function FilesPage() {
   const hiddenFrontmatterRef = useRef('');
   const pendingNavRef = useRef(null);
   const restorePositionRef = useRef(false);
-  const savePositionFrameRef = useRef(null);
+  const savePositionTimerRef = useRef(null);
 
   const [editor, setEditor] = useState(null);      // Tiptap editor instance
   const [content, setContent] = useState('');       // markdown string
@@ -73,8 +55,6 @@ export default function FilesPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [showIndexToast, setShowIndexToast] = useState(false);
-  const [tocHeadings, setTocHeadings] = useState([]);
-  const [activeHeadingIndex, setActiveHeadingIndex] = useState(-1);
 
   const loadFile = useCallback(async (fileId) => {
     // Check in-memory cache first for instant navigation
@@ -157,70 +137,10 @@ export default function FilesPage() {
     window.history.replaceState(null, '', window.location.pathname + window.location.search);
   }, []);
 
-  const jumpToHeading = useCallback((index) => {
-    if (!editor) return;
-    const container = getEditorScrollContainer(editor);
-    const root = getEditorRoot(editor);
-    const headings = root ? [...root.querySelectorAll(TOC_HEADING_SELECTOR)] : [];
-    const target = headings[index];
-    if (!container || !target) return;
-    container.scrollTo({ top: Math.max(target.offsetTop - 48, 0), behavior: 'smooth' });
-  }, [editor]);
-
-  const syncTocHeadings = useCallback(() => {
-    if (!editor) {
-      setTocHeadings([]);
-      setActiveHeadingIndex(-1);
-      return false;
-    }
-
-    const headings = collectHeadingItemsFromEditor(editor);
-
-    setTocHeadings(headings);
-    return headings.length > 0;
-  }, [editor]);
-
-  useEffect(() => {
-    if (!editor) {
-      setTocHeadings([]);
-      return undefined;
-    }
-    const frameId = window.requestAnimationFrame(() => {
-      syncTocHeadings();
-    });
-    return () => window.cancelAnimationFrame(frameId);
-  }, [content, editor, syncTocHeadings]);
-
-  useEffect(() => {
-    if (!editor) return undefined;
-    const container = getEditorScrollContainer(editor);
-    const root = getEditorRoot(editor);
-    if (!container || !root) return undefined;
-
-    const syncActiveHeading = () => {
-      const nextRoot = getEditorRoot(editor);
-      const headings = nextRoot ? [...nextRoot.querySelectorAll(TOC_HEADING_SELECTOR)] : [];
-      if (headings.length === 0) {
-        setActiveHeadingIndex(-1);
-        return;
-      }
-
-      const threshold = container.scrollTop + 96;
-      let nextIndex = 0;
-      headings.forEach((heading, index) => {
-        if (heading.offsetTop <= threshold) nextIndex = index;
-      });
-      setActiveHeadingIndex(nextIndex);
-    };
-
-    syncActiveHeading();
-    container.addEventListener('scroll', syncActiveHeading, { passive: true });
-    window.addEventListener('resize', syncActiveHeading);
-    return () => {
-      container.removeEventListener('scroll', syncActiveHeading);
-      window.removeEventListener('resize', syncActiveHeading);
-    };
-  }, [editor, tocHeadings]);
+  const tocItems = useEditorToc({
+    editor,
+    contentVersion: `${activeFileId || 'none'}:${content}`,
+  });
 
   useEffect(() => {
     if (!router.isReady || !editor || !activeFile?.id) return;
@@ -304,11 +224,14 @@ export default function FilesPage() {
     const skipRestore = hasQueryNav || hasPendingHashNav || hasPendingCitationNav;
 
     if (restorePositionRef.current && !skipRestore && readViewPosition('files', activeFile.id)) {
-      const frameId = window.requestAnimationFrame(() => {
-        restoreEditorViewPosition('files', activeFile.id, container);
-        restorePositionRef.current = false;
-      });
-      return () => window.cancelAnimationFrame(frameId);
+      return retryRestoreViewPosition(
+        () => restoreEditorViewPosition('files', activeFile.id, container),
+        {
+          onComplete: () => {
+            restorePositionRef.current = false;
+          },
+        }
+      );
     }
 
     restorePositionRef.current = false;
@@ -321,32 +244,45 @@ export default function FilesPage() {
     if (!container) return undefined;
 
     const savePosition = () => {
-      if (!activeFile?.id) return;
+      if (!activeFile?.id || restorePositionRef.current) return;
       writeEditorViewPosition('files', activeFile.id, container);
     };
 
     const handleScroll = () => {
-      if (savePositionFrameRef.current) {
-        window.cancelAnimationFrame(savePositionFrameRef.current);
+      if (savePositionTimerRef.current) {
+        window.clearTimeout(savePositionTimerRef.current);
       }
-      savePositionFrameRef.current = window.requestAnimationFrame(() => {
-        savePosition();
-        savePositionFrameRef.current = null;
-      });
+      savePositionTimerRef.current = window.setTimeout(savePosition, 240);
     };
 
-    container.addEventListener('scroll', handleScroll, { passive: true });
-    window.addEventListener('beforeunload', savePosition);
-    return () => {
-      container.removeEventListener('scroll', handleScroll);
-      window.removeEventListener('beforeunload', savePosition);
-      if (savePositionFrameRef.current) {
-        window.cancelAnimationFrame(savePositionFrameRef.current);
-        savePositionFrameRef.current = null;
+    const flushPosition = () => {
+      if (savePositionTimerRef.current) {
+        window.clearTimeout(savePositionTimerRef.current);
+        savePositionTimerRef.current = null;
       }
       savePosition();
     };
-  }, [activeFile?.id, editor, error, loading]);
+
+    const handlePageHide = () => {
+      flushPosition();
+    };
+
+    container.addEventListener('scroll', handleScroll, { passive: true });
+    router.events.on('routeChangeStart', flushPosition);
+    window.addEventListener('beforeunload', flushPosition);
+    window.addEventListener('pagehide', handlePageHide);
+    return () => {
+      container.removeEventListener('scroll', handleScroll);
+      router.events.off('routeChangeStart', flushPosition);
+      window.removeEventListener('beforeunload', flushPosition);
+      window.removeEventListener('pagehide', handlePageHide);
+      if (savePositionTimerRef.current) {
+        window.clearTimeout(savePositionTimerRef.current);
+        savePositionTimerRef.current = null;
+      }
+      savePosition();
+    };
+  }, [activeFile?.id, editor, error, loading, router.events]);
 
   const handleSave = useCallback(async (nextContent = contentRef.current) => {
     if (!activeFileId) return false;
@@ -420,15 +356,6 @@ export default function FilesPage() {
     selector: 'h1,h2,h3,h4,h5,h6,p,li,blockquote,pre,td,th',
     contentVersion: `${activeFileId || 'none'}:${content}`,
   });
-
-  const tocItems = useMemo(
-    () => tocHeadings.map((item, index) => ({
-      ...item,
-      active: index === activeHeadingIndex,
-      onJump: () => jumpToHeading(index),
-    })),
-    [activeHeadingIndex, jumpToHeading, tocHeadings]
-  );
 
   return (
     <Shell

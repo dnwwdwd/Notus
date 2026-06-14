@@ -11,6 +11,7 @@ function runTests() {
   const toolbarSource = read('components/Editor/EditorToolbar.js');
   const tooltipSource = read('components/ui/Tooltip.js');
   const filesPageSource = read('pages/files/index.js');
+  const editorTocSource = read('hooks/useEditorToc.js');
 
   [
     'function getClipboardImageFile',
@@ -48,6 +49,7 @@ function runTests() {
     );
   });
 
+  assert.ok(filesPageSource.includes('useEditorToc({'));
   [
     "const TOC_HEADING_SELECTOR = 'h1,h2,h3,h4,h5,h6';",
     'querySelectorAll(TOC_HEADING_SELECTOR)',
@@ -55,8 +57,8 @@ function runTests() {
     'Number(node.attrs?.level)',
   ].forEach((snippet) => {
     assert.ok(
-      filesPageSource.includes(snippet),
-      `files/index.js should include ${snippet} for H1-H6 TOC support`
+      editorTocSource.includes(snippet),
+      `useEditorToc.js should include ${snippet} for H1-H6 TOC support`
     );
   });
 

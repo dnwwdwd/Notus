@@ -148,7 +148,23 @@ function getEditorRoot(editor) {
 }
 
 function getEditorScrollContainer(editor) {
-  return getEditorRoot(editor)?.closest('.wysiwyg-root') || null;
+  const editorRoot = getEditorRoot(editor);
+  const editorContainer = editorRoot?.closest('.wysiwyg-root') || null;
+  if (
+    editorRoot?.isConnected
+    && editorContainer
+    && editorRoot.getClientRects().length > 0
+  ) {
+    return editorContainer;
+  }
+
+  if (typeof document !== 'undefined') {
+    const visibleRoot = [...document.querySelectorAll('.wysiwyg-root .tiptap.ProseMirror')]
+      .find((candidate) => candidate.getClientRects().length > 0);
+    if (visibleRoot) return visibleRoot.closest('.wysiwyg-root');
+  }
+
+  return editorContainer;
 }
 
 function getHeadingLevel(node) {

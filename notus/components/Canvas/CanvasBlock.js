@@ -185,6 +185,7 @@ export const CanvasBlock = ({
         <div style={{ display: 'grid', gap: 8 }}>
           <textarea
             ref={textareaRef}
+            data-canvas-block-content="true"
             value={editContent}
             onChange={handleTextareaChange}
             onKeyDown={handleKeyDown}
@@ -238,6 +239,7 @@ export const CanvasBlock = ({
         </div>
       ) : (
         <div
+          data-canvas-block-content="true"
           style={{ whiteSpace: 'pre-wrap', cursor: 'text' }}
           onDoubleClick={() => setState('editing')}
         >

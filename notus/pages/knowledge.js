@@ -26,6 +26,7 @@ import { useAppStatus } from '../contexts/AppStatusContext';
 import { useLlmConfigs } from '../hooks/useLlmConfigs';
 import { useStableAiReadiness } from '../hooks/useStableAiReadiness';
 import { useDocumentFind } from '../hooks/useDocumentFind';
+import { useEditorToc } from '../hooks/useEditorToc';
 import { useUnsavedChangesGuard } from '../hooks/useUnsavedChangesGuard';
 import { deriveAiReadiness } from '../utils/aiReadiness';
 import { getVisibleDocumentLabel } from '../lib/documentLabels';
@@ -42,6 +43,7 @@ import {
 } from '../utils/documentNavigation';
 import {
   readViewPosition,
+  retryRestoreViewPosition,
   restoreEditorViewPosition,
   writeEditorViewPosition,
 } from '../utils/viewPosition';
@@ -207,7 +209,7 @@ export default function KnowledgePage() {
   const persistedDocContentRef = useRef('');
   const hiddenDocFrontmatterRef = useRef('');
   const restoreDocPositionRef = useRef(false);
-  const saveDocPositionFrameRef = useRef(null);
+  const saveDocPositionTimerRef = useRef(null);
   const chatEndRef = useRef(null);
   const requestControllerRef = useRef(null);
   const inputTextareaRef = useRef(null);
@@ -448,11 +450,14 @@ export default function KnowledgePage() {
     const hasPendingCitationNav = Number(pendingCitation?.fileId) === activeFile.id;
 
     if (restoreDocPositionRef.current && !hasPendingCitationNav && readViewPosition('knowledge', activeFile.id)) {
-      const frameId = window.requestAnimationFrame(() => {
-        restoreEditorViewPosition('knowledge', activeFile.id, container);
-        restoreDocPositionRef.current = false;
-      });
-      return () => window.cancelAnimationFrame(frameId);
+      return retryRestoreViewPosition(
+        () => restoreEditorViewPosition('knowledge', activeFile.id, container),
+        {
+          onComplete: () => {
+            restoreDocPositionRef.current = false;
+          },
+        }
+      );
     }
 
     restoreDocPositionRef.current = false;
@@ -465,32 +470,45 @@ export default function KnowledgePage() {
     if (!container) return undefined;
 
     const savePosition = () => {
-      if (!activeFile?.id) return;
+      if (!activeFile?.id || restoreDocPositionRef.current) return;
       writeEditorViewPosition('knowledge', activeFile.id, container);
     };
 
     const handleScroll = () => {
-      if (saveDocPositionFrameRef.current) {
-        window.cancelAnimationFrame(saveDocPositionFrameRef.current);
+      if (saveDocPositionTimerRef.current) {
+        window.clearTimeout(saveDocPositionTimerRef.current);
       }
-      saveDocPositionFrameRef.current = window.requestAnimationFrame(() => {
-        savePosition();
-        saveDocPositionFrameRef.current = null;
-      });
+      saveDocPositionTimerRef.current = window.setTimeout(savePosition, 240);
     };
 
-    container.addEventListener('scroll', handleScroll, { passive: true });
-    window.addEventListener('beforeunload', savePosition);
-    return () => {
-      container.removeEventListener('scroll', handleScroll);
-      window.removeEventListener('beforeunload', savePosition);
-      if (saveDocPositionFrameRef.current) {
-        window.cancelAnimationFrame(saveDocPositionFrameRef.current);
-        saveDocPositionFrameRef.current = null;
+    const flushPosition = () => {
+      if (saveDocPositionTimerRef.current) {
+        window.clearTimeout(saveDocPositionTimerRef.current);
+        saveDocPositionTimerRef.current = null;
       }
       savePosition();
     };
-  }, [activeFile?.id, docError, docLoading, editor]);
+
+    const handlePageHide = () => {
+      flushPosition();
+    };
+
+    container.addEventListener('scroll', handleScroll, { passive: true });
+    router.events.on('routeChangeStart', flushPosition);
+    window.addEventListener('beforeunload', flushPosition);
+    window.addEventListener('pagehide', handlePageHide);
+    return () => {
+      container.removeEventListener('scroll', handleScroll);
+      router.events.off('routeChangeStart', flushPosition);
+      window.removeEventListener('beforeunload', flushPosition);
+      window.removeEventListener('pagehide', handlePageHide);
+      if (saveDocPositionTimerRef.current) {
+        window.clearTimeout(saveDocPositionTimerRef.current);
+        saveDocPositionTimerRef.current = null;
+      }
+      savePosition();
+    };
+  }, [activeFile?.id, docError, docLoading, editor, router.events]);
 
   useEffect(() => {
     if (!editor || !activeFile?.id) return;
@@ -1088,6 +1106,10 @@ export default function KnowledgePage() {
     selector: 'h1,h2,h3,h4,h5,h6,p,li,blockquote,pre,td,th',
     contentVersion: `${activeFile?.id || 'none'}:${docContent}`,
   });
+  const tocItems = useEditorToc({
+    editor: editorOpen ? editor : null,
+    contentVersion: `${activeFile?.id || 'none'}:${docContent}`,
+  });
 
   const handleCitationClick = useCallback((citation, selection = null) => {
     const fileId = Number(citation?.file_id);
@@ -1120,7 +1142,8 @@ export default function KnowledgePage() {
       saveState={activeFile ? docSaveState : undefined}
       onSave={activeFile ? handleDocSave : undefined}
       saveDisabled={!activeFile || docSaveState !== 'dirty'}
-      tocDisabled
+      tocDisabled={!activeFile || !editorOpen}
+      tocItems={tocItems}
       requestAction={navigationGuard}
       navigateOnFileSelect={false}
     >
@@ -1456,7 +1479,7 @@ export default function KnowledgePage() {
           />
           {aiUiState.showLockedState && (
             <AiLockedState
-              variant="modal"
+              variant="panel"
               title="知识库功能尚未解锁"
               description={aiLockDescription}
               onAction={() => navigateWithFallback(router, '/settings/model')}

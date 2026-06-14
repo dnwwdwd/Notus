@@ -1,7 +1,7 @@
 # Notus 项目进度
 
-> 最后更新：2026-06-01
-> 对应文档：`docs/Notus_PDD.md` / `docs/Notus_PRD.md` / `docs/Notus_UI_Guide.md` / `docs/Notus_Business_Logic_Upgrade.md` / `docs/Notus_Desktop_Roadmap.md`
+> 最后更新：2026-06-14
+> 对应文档：`docs/Notus_PDD.md` / `docs/Notus_PRD.md` / `docs/Notus_UI_Guide.md` / `docs/Notus_Business_Logic_Upgrade.md` / `docs/Notus_Desktop_Roadmap.md` / `docs/Notus_Release_Notes.md`
 
 ---
 
@@ -37,11 +37,11 @@
 
 | 子任务 | 文件 | 状态 | 备注 |
 |--------|------|------|------|
-| M2-01 App Shell（TopBar + Sidebar + Shell） | `components/Layout/` | ✅ | Shell 已同步全局 `activePage`；侧边栏折叠、文件树展开、文件树 / 大纲 tab 与各 tab 滚动位置现已持久化 |
-| M2-02 FileTree 组件（前端交互） | `components/Layout/Sidebar.js` `contexts/AppContext.js` `pages/api/files/` | ✅ | 已接真实文件系统与 SQLite；新建文件无需输入 `.md` 后缀，索引告警不再阻断文件创建；搜索已加 `useDeferredValue` 防抖；已添加右键上下文菜单（重命名/删除），并支持在开启设置项后将侧边栏重命名反向同步到正文首个 H1；文件页文档浏览位置按文本锚点恢复 |
+| M2-01 App Shell（TopBar + Sidebar + Shell） | `components/Layout/` | ✅ | Shell 已同步全局 `activePage`；侧边栏折叠、文件树展开、文件树 / 大纲 tab 与各 tab 滚动位置现已持久化；知识库页已开放文章大纲 |
+| M2-02 FileTree 组件（前端交互） | `components/Layout/Sidebar.js` `contexts/AppContext.js` `pages/api/files/` | ✅ | 已接真实文件系统与 SQLite；新建文件无需输入 `.md` 后缀，索引告警不再阻断文件创建；搜索已加 `useDeferredValue` 防抖；已添加右键上下文菜单（重命名/删除），并支持在开启设置项后将侧边栏重命名反向同步到正文首个 H1；同一文档可在文件、知识库、创作页恢复最近阅读位置 |
 | M2-03 WYSIWYG Markdown 编辑器 | `components/Editor/WysiwygEditor.js` `components/Editor/EditorToolbar.js` | ✅ | Tiptap + Markdown 双向转换；支持标题、链接、加粗、斜体、下划线、列表、任务列表、引用、代码块、分隔线、图片；代码块已接入 lowlight 语法高亮与语言选择；工具栏底部添加橙色脉冲条以指示未保存状态 |
 | M2-04 MarkdownRenderer | `components/Editor/MarkdownPreview.js` | ✅ | remark-gfm，待接入 rehype-katex |
-| M2-05 TocTree | `components/Layout/Sidebar.js` `pages/files/index.js` | ✅ | TOC 从 markdown heading 提取并渲染；已支持点击跳转与滚动联动高亮 |
+| M2-05 TocTree | `components/Layout/Sidebar.js` `hooks/useEditorToc.js` `pages/files/index.js` `pages/knowledge.js` | ✅ | 文件页和知识库页共用真实 H1-H6 大纲；支持点击精确跳转、滚动联动高亮和 tab 往返后的正确选中状态 |
 | M2-06 URL hash 来源跳转 + 高亮淡出 | `pages/files/index.js` `components/ui/SourceCard.js` | ✅ | 来源卡片已支持按 fileId + lineStart/lineEnd 跳转并高亮淡出；已补充 `#L24-L28` hash 格式解析（mount 时读 `window.location.hash`，清理后注入现有滚动流程）与 Tiptap 光标定位（`posAtDOM` + `setTextSelection`） |
 | M2-07 批量导入/导出 + SSE 进度 | `pages/api/files/` `components/Layout/Sidebar.js` | ✅ | 已完成 `/api/files/import` `/api/files/export`；导入支持 50MB 请求体、保存/索引阶段进度、逐文件告警与请求 ID |
 | M2-08 `/indexing` 页面 | `pages/indexing.js` | ✅ | 已接 `/api/index/status` 与 `/api/index/rebuild` SSE，支持真实进度、当前文件、失败项与重新构建；顶部已常驻显示"已索引 N / 总数"统计与失败数警示 |
@@ -56,7 +56,7 @@
 | M3-02 jieba-wasm 集成 + FTS 分词 | `lib/tokenizer.js` | ✅ | 已改为应用层分词，不再依赖 SQLite 自定义 tokenizer |
 | M3-03 `lib/prompt.js` 知识库 Prompt | `lib/prompt.js` | ✅ | 已补齐 `clarify_needed / grounded / weak_evidence / conflicting_evidence / no_evidence` 五种回答模式的提示约束，并新增条件 rerank Prompt |
 | M3-04 `/api/chat` SSE 流式 | `pages/api/chat.js` | ✅ | 已接真实检索、对话存储、查询规划与 LLM 流式输出；新增澄清直返、`no_evidence` 模板化直返、单次 helper 护栏、`assistant_meta` 回传与消息 meta 落库；已增加文档级上下文读取和 `documents/document_stats` 元信息 |
-| M3-05 ChatArea + SourceCard 组件 | `components/ChatArea/` `components/ui/SourceCard.js` | ✅ | 知识库页已支持”无文件时仅问答，选中文件后显示左侧编辑器”的分屏模式；前端现改为消费 `assistant_meta / done.meta` 展示真实回答模式、来源说明和本次读取的 Markdown 文档摘要；AI 回复开始后会立即渲染无边框气泡内等待态，检索状态在 loading 气泡内按步骤切换，来源卡片与当前文档标题统一使用可读标签；左侧文档区浏览位置已持久化，显式来源定位优先 |
+| M3-05 ChatArea + SourceCard 组件 | `components/ChatArea/` `components/ui/SourceCard.js` | ✅ | 知识库页已支持”无文件时仅问答，选中文件后显示左侧编辑器”的分屏模式；前端现改为消费 `assistant_meta / done.meta` 展示真实回答模式、来源说明和本次读取的 Markdown 文档摘要；AI 回复开始后会立即渲染无边框气泡内等待态，检索状态在 loading 气泡内按步骤切换，来源卡片与当前文档标题统一使用可读标签；左侧文档区与其他工作页共享最近阅读位置，AI 未就绪时文章和大纲仍可使用 |
 | M3-06 多模型切换 Select | `components/ChatArea/InputBar.js` | ✅ | UI 与 `/api/chat` 的 `model` 参数已打通；模型选择框固定在底部输入栏右下角，触发器单行缩略，菜单项展示完整模型名 |
 | M3-07 知识库参考来源手动指定 | `pages/knowledge.js` `pages/api/chat.js` `lib/retrieval.js` | ✅ | 已接 file id 过滤、当前文档优先召回、章节聚合与证据不足兜底；来源卡片留在知识库页并定位左侧编辑器 |
 
@@ -72,7 +72,7 @@
 | M4-04 旧 intent 链路清理 | `pages/api/agent/intent.js` `lib/agent.js` | ✅ | 旧的独立 intent 接口和 legacy Canvas 工具循环已移除，当前只保留内置请求规划主链路 |
 | M4-05 大纲生成 `/api/agent/outline` SSE | `pages/api/agent/outline.js` `lib/prompt.js` | ✅ | 已接 LLM 大纲生成，并改为复用 `getStyleContext()`，让大纲和改写共用同一套风格上下文 |
 | M4-06 Agent 运行 `/api/agent/run` SSE | `pages/api/agent/run.js` | ✅ | 已升级为返回 `thinking/token/batch_start/batch_progress/batch_done/assistant_meta/operation/done`；创作聊天现支持批量预览持久化、刷新恢复、全文分批执行，以及 Canvas 专用日志观测 |
-| M4-07 CanvasBlock 组件 | `components/Canvas/CanvasBlock.js` `pages/canvas.js` | ✅ | 6 状态完整；双击进入 textarea 内联编辑；已接 dnd-kit 拖拽排序；快捷键提示已从界面隐藏，配置移入设置页；已添加 30s 自动保存（dirty 状态下计时，保存中/保存成功时重置）；创作块区浏览位置按 block id 与块内偏移恢复 |
+| M4-07 CanvasBlock 组件 | `components/Canvas/CanvasBlock.js` `pages/canvas.js` | ✅ | 6 状态完整；双击进入 textarea 内联编辑；已接 dnd-kit 拖拽排序；快捷键提示已从界面隐藏，配置移入设置页；已添加 30s 自动保存（dirty 状态下计时，保存中/保存成功时重置）；创作块区可按 block id 或正文锚点与文件页、知识库页互相恢复位置 |
 | M4-08 AIPanel + 批量预览恢复 | `components/AIPanel/BatchOperationCard.js` `pages/canvas.js` | ✅ | 已支持整组预览、整组应用/取消、刷新恢复全部未应用预览、文章变更后 `stale` 提示；AIPanel 继续保留后台自动事实补充 + 前台风格来源配置；历史会话抽屉支持二次确认删除 |
 | M4-09 新建创作入口页 | `pages/canvas.js` CanvasEntry | ✅ | 话题输入 + 最近列表全部可点击，"从空白开始"按钮可用；侧边栏选中文件后会在当前页基于该文章进入创作；新主题内容可保存为 Markdown 并索引 |
 | M4-10 编辑器"AI 创作"按钮 | `components/Editor/EditorToolbar.js` | ✅ | 点击跳转 /canvas |
@@ -116,7 +116,7 @@
 - 知识库问答继续保持单索引架构，不做摘要层级索引；每轮请求最多只允许“辅助 1 次 + 主回答 1 次”，且 `clarify_needed` 与 `no_evidence` 不调用主回答模型。
 - 知识库页与创作页的 AI 回复等待态统一放回 AI 气泡区；知识库检索状态在 loading 气泡内动态切换；输入栏生成中只保留停止按钮。
 - 知识库页与创作页的澄清交互已统一为设计稿 `ClarifyDrawer`：知识库页改为结构化澄清抽屉，创作页改为答完先回顾再继续生成预览；两页都会隐藏 interaction 摘要用户消息与 retry 助手消息。
-- 侧边栏文件树 / 大纲 tab、各 tab 滚动位置，以及文件页 / 知识库页文档区和创作页块区浏览位置已持久化；显式来源定位和 URL 行号定位优先于历史位置。
+- 侧边栏文件树 / 大纲 tab 与各 tab 滚动位置已持久化；文件页、知识库页和创作页共享同一文档的最近阅读位置，普通滚动停止后再保存，切页时同步写入；显式来源定位和 URL 行号定位优先。
 - 知识库页与创作页历史抽屉支持删除整条会话；删除当前会话后回到新对话空态，创作页保留当前文章块内容和未保存状态。
 - 文件页、知识库页与创作页的可见文档标题统一优先显示标题或去掉 `.md` 的文件名，不再暴露 `article_xxx`、`notus_xxx`、裸 `fileId` 等内部标识。
 - 文件页与知识库页新增可选的标题与文件名双向绑定；默认关闭，开启后按正文首个可见 H1 在保存或侧边栏显式重命名时同步标题与文件名。

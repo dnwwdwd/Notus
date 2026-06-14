@@ -22,6 +22,7 @@ export const DropdownSelect = ({
   placement = 'auto',
   isOptionSelected,
   closeOnSelect = true,
+  menuZIndex = 2100,
 }) => {
   const triggerRef = useRef(null);
   const menuRef = useRef(null);
@@ -113,7 +114,7 @@ export const DropdownSelect = ({
         border: '1px solid var(--border-primary)',
         borderRadius: 'var(--radius-md)',
         boxShadow: 'var(--shadow-lg)',
-        zIndex: 1300,
+        zIndex: menuZIndex,
         overflow: 'hidden',
         transformOrigin: menuPosition.placement === 'top' ? 'bottom left' : 'top left',
         ...menuStyle,

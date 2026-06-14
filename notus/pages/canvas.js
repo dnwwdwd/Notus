@@ -36,6 +36,7 @@ import { readApiResponse } from '../utils/http';
 import { navigateWithFallback } from '../utils/navigation';
 import {
   readViewPosition,
+  retryRestoreViewPosition,
   restoreCanvasViewPosition,
   writeCanvasViewPosition,
 } from '../utils/viewPosition';
@@ -500,7 +501,7 @@ export default function CanvasPage() {
   const pendingRouteFileIdRef = useRef(null);
   const hiddenArticleFrontmatterRef = useRef('');
   const restoreCanvasPositionRef = useRef(false);
-  const saveCanvasPositionFrameRef = useRef(null);
+  const saveCanvasPositionTimerRef = useRef(null);
   const articleFileId = Number(article?.fileId || article?.file_id) || null;
   const canvasConversationEnabled = Boolean(articleFileId);
   const conversationScopeKey = !article
@@ -1417,13 +1418,15 @@ export default function CanvasPage() {
   useEffect(() => {
     if (!articleFileId || !canvasContentRef.current || loadingSourceFile) return undefined;
     const container = canvasContentRef.current;
-    const hasPendingRoute = Boolean(pendingRouteFileIdRef.current);
-    if (restoreCanvasPositionRef.current && !hasPendingRoute && readViewPosition('canvas', articleFileId)) {
-      const frameId = window.requestAnimationFrame(() => {
-        restoreCanvasViewPosition(articleFileId, container);
-        restoreCanvasPositionRef.current = false;
-      });
-      return () => window.cancelAnimationFrame(frameId);
+    if (restoreCanvasPositionRef.current && readViewPosition('canvas', articleFileId)) {
+      return retryRestoreViewPosition(
+        () => restoreCanvasViewPosition(articleFileId, container),
+        {
+          onComplete: () => {
+            restoreCanvasPositionRef.current = false;
+          },
+        }
+      );
     }
 
     restoreCanvasPositionRef.current = false;
@@ -1435,32 +1438,45 @@ export default function CanvasPage() {
     const container = canvasContentRef.current;
 
     const savePosition = () => {
-      if (!articleFileId) return;
+      if (!articleFileId || restoreCanvasPositionRef.current) return;
       writeCanvasViewPosition(articleFileId, container);
     };
 
     const handleScroll = () => {
-      if (saveCanvasPositionFrameRef.current) {
-        window.cancelAnimationFrame(saveCanvasPositionFrameRef.current);
+      if (saveCanvasPositionTimerRef.current) {
+        window.clearTimeout(saveCanvasPositionTimerRef.current);
       }
-      saveCanvasPositionFrameRef.current = window.requestAnimationFrame(() => {
-        savePosition();
-        saveCanvasPositionFrameRef.current = null;
-      });
+      saveCanvasPositionTimerRef.current = window.setTimeout(savePosition, 240);
     };
 
-    container.addEventListener('scroll', handleScroll, { passive: true });
-    window.addEventListener('beforeunload', savePosition);
-    return () => {
-      container.removeEventListener('scroll', handleScroll);
-      window.removeEventListener('beforeunload', savePosition);
-      if (saveCanvasPositionFrameRef.current) {
-        window.cancelAnimationFrame(saveCanvasPositionFrameRef.current);
-        saveCanvasPositionFrameRef.current = null;
+    const flushPosition = () => {
+      if (saveCanvasPositionTimerRef.current) {
+        window.clearTimeout(saveCanvasPositionTimerRef.current);
+        saveCanvasPositionTimerRef.current = null;
       }
       savePosition();
     };
-  }, [articleFileId, loadingSourceFile]);
+
+    const handlePageHide = () => {
+      flushPosition();
+    };
+
+    container.addEventListener('scroll', handleScroll, { passive: true });
+    router.events.on('routeChangeStart', flushPosition);
+    window.addEventListener('beforeunload', flushPosition);
+    window.addEventListener('pagehide', handlePageHide);
+    return () => {
+      container.removeEventListener('scroll', handleScroll);
+      router.events.off('routeChangeStart', flushPosition);
+      window.removeEventListener('beforeunload', flushPosition);
+      window.removeEventListener('pagehide', handlePageHide);
+      if (saveCanvasPositionTimerRef.current) {
+        window.clearTimeout(saveCanvasPositionTimerRef.current);
+        saveCanvasPositionTimerRef.current = null;
+      }
+      savePosition();
+    };
+  }, [articleFileId, loadingSourceFile, router.events]);
 
   // Canvas block AI button → populate InputBar
   const handleBlockAI = useCallback((blockId) => {

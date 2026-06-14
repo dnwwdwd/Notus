@@ -24,9 +24,13 @@ function runTests() {
   assert.ok(canvasBlock.includes('完成'));
 
   const sidebar = read('components/Layout/Sidebar.js');
-  assert.ok(sidebar.includes('activeTocKey'));
-  assert.ok(sidebar.includes('setActiveTocKey(tocKey)'));
+  assert.ok(!sidebar.includes('activeTocKey'));
+  assert.ok(sidebar.includes('const selected = Boolean(t.active);'));
   assert.ok(sidebar.includes('var(--accent-subtle)'));
+
+  const dropdownSelect = read('components/ui/DropdownSelect.js');
+  assert.ok(dropdownSelect.includes('menuZIndex = 2100'));
+  assert.ok(dropdownSelect.includes('zIndex: menuZIndex'));
 
   const conversationDrawer = read('components/ChatArea/ConversationDrawer.js');
   assert.ok(conversationDrawer.includes('ConfirmDialog'));

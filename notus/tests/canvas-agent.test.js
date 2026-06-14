@@ -8,6 +8,7 @@ function withMockedCanvasAgent(mocks = {}) {
     retrieval: require.resolve('../lib/retrieval'),
     style: require.resolve('../lib/style'),
     planner: require.resolve('../lib/canvasRequestPlanner'),
+    logger: require.resolve('../lib/logger'),
   };
 
   const originals = Object.fromEntries(
@@ -55,6 +56,20 @@ function withMockedCanvasAgent(mocks = {}) {
       STYLE_ELIGIBLE_TYPES: new Set(['paragraph', 'list', 'blockquote']),
     },
   };
+  require.cache[modulePaths.logger] = {
+    id: modulePaths.logger,
+    filename: modulePaths.logger,
+    loaded: true,
+    exports: {
+      createLogger: mocks.createLogger || (() => ({
+        child() { return this; },
+        debug() {},
+        info() {},
+        warn() {},
+        error() {},
+      })),
+    },
+  };
 
   const agent = require('../lib/canvasAgent');
 
@@ -92,6 +107,60 @@ function parseBlockSnapshotsFromPrompt(prompt = []) {
 }
 
 async function runTests() {
+  {
+    const warnings = [];
+    const article = {
+      title: '测试文章',
+      blocks: [
+        { id: 'b1', type: 'paragraph', content: '技术选型：SQLite，当前用于本地索引。' },
+      ],
+    };
+    const { agent, restore } = withMockedCanvasAgent({
+      createLogger: () => ({
+        child() { return this; },
+        debug() {},
+        info() {},
+        warn(event, payload) {
+          warnings.push({ event, payload });
+        },
+        error() {},
+      }),
+      completeChat: async () => ({
+        message: {
+          content: '我建议直接把 SQLite 换成 HBase，然后再补充索引差异说明。',
+        },
+      }),
+    });
+    try {
+      const result = await agent.runCanvasAgent({
+        userInput: '@b1 SQLite 换为 HBase',
+        article,
+        conversationHistory: [],
+        forcedPlan: {
+          intent: 'edit',
+          primary_intent: 'edit',
+          scope_mode: 'single',
+          target_block_ids: ['b1'],
+          operation_kind: 'rewrite',
+          helper_used: false,
+          needs_style: false,
+          needs_knowledge: false,
+          clarify_needed: false,
+        },
+      });
+      assert.strictEqual(result.text, 'AI 返回格式异常，请重试。');
+      assert.deepStrictEqual(result.operations, []);
+      assert.strictEqual(warnings.length, 1);
+      assert.strictEqual(warnings[0].event, 'canvas.operation_json.invalid');
+      assert.strictEqual(warnings[0].payload.scope_mode, 'single');
+      assert.strictEqual(warnings[0].payload.operation_kind, 'rewrite');
+      assert.deepStrictEqual(warnings[0].payload.allowed_block_ids, ['b1']);
+      assert.ok(warnings[0].payload.raw_content_preview.includes('SQLite 换成 HBase'));
+    } finally {
+      restore();
+    }
+  }
+
   {
     const { agent, restore } = withMockedCanvasAgent({
       streamChat: async () => {

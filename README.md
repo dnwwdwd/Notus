@@ -122,8 +122,7 @@ npm run dist:lpk
 ## 桌面端说明
 
 - 桌面端当前新增运行时系统级快捷键 `Command+K` / `Ctrl+K`，可在应用仍在运行时唤起主窗口并直接打开搜索。
-- 应用完全退出后，当前版本不支持通过快捷键重新启动应用。
-- macOS 默认分发两种 `dmg`：Intel 设备下载 `x64`，Apple Silicon 设备下载 `arm64`。
+- 支持 Windows 和 Mac 平台下载，Apple Silicon 设备下载 `arm64`（Intel 设备暂不支持）。
 - `npm run dist:desktop` 是按当前主机环境打包的通用入口，不保证一次生成全部架构产物。
 - 跨平台或跨架构打包是否可用，取决于当前打包环境与 `electron-builder` 的限制。
 

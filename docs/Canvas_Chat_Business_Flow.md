@@ -399,3 +399,10 @@ SSE 过程会返回：
 4. 主动提问抽屉现在同时存在于创作页和知识库页，但知识库页只收集检索必要信息，不接入创作规划器的主意图与写入槽位。
 5. 回答卡片后仍只生成预览，不会自动把内容直接写回文档。
 6. 轻量纠偏入口只在系统已经形成较明确判断时出现，不是常驻模式切换器，也不替代正常意图识别。
+# 2026-06-19 Agent Workspace 更新
+
+- 创作页整页改为 Notus Agent Workspace，不再常驻旧块画布和右侧聊天分栏。
+- 当前文档内容会在前端转换为 article blocks 后提交给 /api/agent/run；无当前文档时会先创建一篇 AI 创作草稿。
+- thinking / batch_start / batch_progress / batch_done / assistant_meta / done 会映射为工具过程和文件变更卡片。
+- 变更详情弹窗展示 operation old/new 内容；应用修改后通过 /api/agent/apply 生成新 article，再保存回当前 Markdown 文件。
+- 输入框会随请求携带当前模型、联网搜索状态、搜索服务商和附件元数据；联网搜索当前只记录配置状态，不参与真实外部搜索。

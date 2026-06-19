@@ -186,7 +186,7 @@
 
 用户在底部 `InputBar` 提交问题时，前端先检查：
 
-1. 是否存在已测试通过的 LLM 配置。
+1. 是否存在可用的 LLM 配置。
 2. 页面当前是否处于可发送状态。
 3. 如果有旧请求在进行，先 `abort`。
 
@@ -536,6 +536,7 @@ rerank 只接收最多 8 个 section，并返回：
 
 从 2026-04-30 起，知识库页发送前会先读取当前 LLM 配置中的：
 
+- `api_protocol`
 - `context_window_tokens`
 - `max_output_tokens`
 
@@ -624,7 +625,7 @@ rerank 只接收最多 8 个 section，并返回：
 
 如果证据足够：
 
-1. 服务端根据 `llm_config_id` 解析出当前 LLM 运行配置。
+1. 服务端根据 `llm_config_id` 解析出当前 LLM 运行配置，包括 OpenAI API / Anthropic 兼容协议。
 2. 根据该配置的上下文预算组装 Prompt。
 3. 如有必要，先自动 compact 历史和证据包。
 4. 调用 `streamChat(...)` 开始流式生成。
@@ -736,3 +737,9 @@ rerank 只接收最多 8 个 section，并返回：
 知识库页 chat 当前真实业务流可以收束成一句话：
 
 用户在右侧发问后，系统会基于最近有限历史和当前轮即时 RAG 检索组织答案，并把结果连同来源卡片写回全局知识库会话；当用户点击来源时，页面留在知识库页内部直接展开左侧文档并完成原文定位与持续高亮。
+# 2026-06-19 Agent Workspace 更新
+
+- 知识库页整页改为 Notus Agent Workspace，不再保留旧的左右分栏聊天布局。
+- 用户消息仍通过 /api/chat 进入知识库问答链路，继续使用查询规划、知识库检索、证据判断、SSE 流式回答和引用来源。
+- 前端将 chunks / assistant_meta / token / citations / done 映射为工具过程、Notus Agent 回复正文和来源展示。
+- 输入框会随请求携带当前模型、联网搜索状态、搜索服务商和附件元数据；联网搜索当前只记录配置状态，不参与真实外部搜索。

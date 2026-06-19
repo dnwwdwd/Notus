@@ -91,6 +91,7 @@ export default async function handler(req, res) {
       const selectedLlmConfig = llmConfigId ? getLlmConfigById(llmConfigId, { includeSecret: true }) : null;
       const resolvedConfig = {
         provider: config.provider || selectedLlmConfig?.provider || base.llmProvider,
+        api_protocol: config.api_protocol || selectedLlmConfig?.api_protocol || base.llmApiProtocol,
         model: config.model || selectedLlmConfig?.model || base.llmModel,
         api_key: config.api_key || selectedLlmConfig?.api_key || base.llmApiKey,
         base_url: config.base_url || selectedLlmConfig?.base_url || base.llmBaseUrl,
@@ -102,6 +103,7 @@ export default async function handler(req, res) {
         config: {
           ...base,
           llmProvider: resolvedConfig.provider,
+          llmApiProtocol: resolvedConfig.api_protocol,
           llmModel: resolvedConfig.model,
           llmApiKey: resolvedConfig.api_key,
           llmBaseUrl: resolvedConfig.base_url,

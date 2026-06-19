@@ -251,6 +251,9 @@ export default async function handler(req, res) {
     active_file_id: activeFileId,
     reference_mode: referenceMode,
     reference_file_ids: referenceFileIds = [],
+    webSearchEnabled = false,
+    searchProvider = null,
+    attachments = [],
     interaction_id: interactionId,
   } = req.body || {};
   let interaction = interactionId ? getInteractionById(interactionId) : null;
@@ -336,6 +339,15 @@ export default async function handler(req, res) {
         conversationId: conversation.id,
         role: 'user',
         content: requestedQuery,
+        meta: {
+          web_search_enabled: Boolean(webSearchEnabled),
+          search_provider: searchProvider || null,
+          attachments: Array.isArray(attachments) ? attachments.map((item) => ({
+            name: item?.name || '',
+            type: item?.type || '',
+            size: item?.size || 0,
+          })).filter((item) => item.name) : [],
+        },
       });
       touchConversation(conversation.id);
     }

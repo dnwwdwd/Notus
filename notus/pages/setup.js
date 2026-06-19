@@ -225,11 +225,11 @@ const Step1 = ({
           </div>
         </div>
 
-        <div style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.94) 0%, var(--bg-elevated) 100%)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-xl)', boxShadow: 'var(--shadow-sm)', padding: 18 }}>
+        <div style={{ padding: '4px 0 0' }}>
           <LlmConfigCardsSection
             compact
             title="LLM 配置"
-            subtitle="问答和创作页会读取这里保存的模型配置。新增或修改接入信息后，必须先测试通过才能保存。"
+            subtitle="问答和创作页会读取这里保存的模型配置。"
             onStateChange={onLlmStateChange}
           />
         </div>

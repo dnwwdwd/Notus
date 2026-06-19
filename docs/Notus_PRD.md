@@ -19,7 +19,7 @@
 | 中文分词 | jieba-wasm（应用层分词，失败时回退简化分词） |
 | 文件监听 | chokidar（usePolling:true, interval:3000ms, awaitWriteFinish） |
 | Embedding | 用户在设置页手动填写 Base URL、模型名与 API Key；设置页与 `/setup` 第 1 步首次进入时表单先以空态呈现，读取到服务端已保存配置后回填 Base URL 与模型名，API Key 不回显，仅通过“已保存，留空不修改”占位提示反映状态；系统根据 Base URL 和模型名自动识别兼容厂商，可选文本或多模态，开启 `EMBEDDING_MULTIMODAL_ENABLED` 后为图片建立向量 |
-| LLM | 用户在设置页手动填写 Base URL、模型名与 API Key；系统根据 Base URL 和模型名自动识别兼容厂商，流式输出；设置页需说明文档级上下文会把命中 Markdown 正文发送给所选对话模型 |
+| LLM | 用户在设置页手动填写 Base URL、模型名与 API Key，并在新增/编辑弹窗选择兼容协议：`OpenAI API` 或 `Anthropic`；默认协议为 `OpenAI API`，历史配置按 `OpenAI API` 迁移；系统根据 Base URL 和模型名自动识别 Provider name，流式输出；LLM 配置保存不要求先测试连通性，知识库页与创作页以输入框模型下拉框当前选择作为全局模型选择 |
 | 运行平台 | Web + Electron 桌面端主线，保留对懒猫运行时的代码兼容；业务层统一依赖平台中间层解析路径与能力 |
 
 **不用 TypeScript / App Router / shadcn-ui / Python sidecar** —— 减少复杂度、减少 AI 自动生成时的路由混淆、不依赖默认主题。
@@ -708,15 +708,16 @@ GET  /api/health                     → { status, version, runtime, tokenizer, 
 GET  /api/setup/status               → {
                                        configured, completed, indexed_files, total_files,
                                        notes_dir, model_configured, indexed,
-                                       embedding_provider, embedding_multimodal_enabled, llm_provider
+                                       embedding_provider, embedding_multimodal_enabled,
+                                       llm_provider, llm_api_protocol
                                      }
 POST /api/setup/complete             Body: {
                                        notes_dir?,
                                        embedding_provider?, embedding_model?, embedding_dim?, embedding_api_key?,
                                        embedding_multimodal_enabled?,
-                                       llm_provider?, llm_model?, llm_api_key?
+                                       llm_provider?, llm_api_protocol?, llm_model?, llm_api_key?
                                      }
-                                     → { ok, notes_dir, embedding_provider, llm_provider }
+                                     → { ok, notes_dir, embedding_provider, llm_provider, llm_api_protocol }
 ```
 
 ### 5.2 文件管理
@@ -890,7 +891,7 @@ GET  /api/settings                   → { notes_dir, assets_dir, setup_complete
 PUT  /api/settings                   Body: {
                                        notes_dir?, assets_dir?, setup_completed?,
                                        embedding?: { provider?, model?, dim?, multimodal_enabled?, base_url?, api_key? },
-                                       llm?: { provider?, model?, base_url?, api_key? },
+                                       llm?: { provider?, api_protocol?, model?, base_url?, api_key? },
                                        editor?: { title_filename_binding_enabled? },
                                        layout?: { knowledge_left_percent?, canvas_left_percent? }
                                      }
@@ -1062,6 +1063,7 @@ EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 
 # LLM
 LLM_PROVIDER=qwen
+LLM_API_PROTOCOL=openai              # openai | anthropic
 LLM_MODEL=qwen-max
 LLM_API_KEY=
 LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
@@ -1314,3 +1316,9 @@ exec node server.js
 ---
 
 **Notus PRD v2.1 · 配合 Notus PDD v2.0 使用**
+# 2026-06-19 Agent Workspace 技术口径
+
+- 新增共享 AgentWorkspace 前端组件，知识库页和创作页分别传入 /api/chat 与 /api/agent/run 的业务请求函数。
+- 新增 /api/settings/search-providers，用 settings 表保存搜索启用状态、当前服务商、调用模式、结果数和 API Key；响应只返回 api_key_set，不返回明文密钥。
+- /api/chat 与 /api/agent/run 接受 webSearchEnabled、searchProvider、attachments 和 modelConfigId 兼容字段，并将联网状态、服务商和附件元数据写入消息 meta。
+- 创作页进入 Agent Workspace 后，会将当前 Markdown 文档拆为 article blocks；应用 operation set 后通过 /api/agent/apply 得到新 article，再写回 /api/files/[id]。

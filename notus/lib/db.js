@@ -136,6 +136,7 @@ function migrateRegularTables(database) {
   });
 
   const llmConfigColumns = [
+    ['api_protocol', "TEXT NOT NULL DEFAULT 'openai'"],
     ['context_window_tokens', `INTEGER NOT NULL DEFAULT ${DEFAULT_CONTEXT_WINDOW_TOKENS}`],
     ['max_output_tokens', `INTEGER NOT NULL DEFAULT ${DEFAULT_MAX_OUTPUT_TOKENS}`],
   ];
@@ -468,6 +469,7 @@ function initDb() {
         id                   INTEGER PRIMARY KEY AUTOINCREMENT,
         name                 TEXT NOT NULL,
         provider             TEXT NOT NULL,
+        api_protocol         TEXT NOT NULL DEFAULT 'openai',
         model                TEXT NOT NULL,
         base_url             TEXT NOT NULL,
         api_key              TEXT NOT NULL,

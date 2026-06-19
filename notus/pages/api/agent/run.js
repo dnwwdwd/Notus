@@ -331,6 +331,9 @@ export default async function handler(req, res) {
     fact_file_ids: factFileIds = [],
     style_mode: styleMode = 'auto',
     style_file_ids: styleFileIds = [],
+    webSearchEnabled = false,
+    searchProvider = null,
+    attachments = [],
     interaction_id: interactionId,
     user_meta: userMeta = null,
   } = req.body || {};
@@ -435,6 +438,13 @@ export default async function handler(req, res) {
       meta: {
         ...(userMeta && typeof userMeta === 'object' ? userMeta : {}),
         article_hash: articleHash,
+        web_search_enabled: Boolean(webSearchEnabled),
+        search_provider: searchProvider || null,
+        attachments: Array.isArray(attachments) ? attachments.map((item) => ({
+          name: item?.name || '',
+          type: item?.type || '',
+          size: item?.size || 0,
+        })).filter((item) => item.name) : [],
       },
     });
     touchConversation(conversation.id);

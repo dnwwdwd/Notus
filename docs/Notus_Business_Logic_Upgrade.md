@@ -254,3 +254,8 @@
 - `notus/lib/canvasRequestPlanner.js`：主要重构
 - `notus/lib/prompt.js`：`target_resolver` 模式 prompt 更新
 - 性能：每次请求多一次 LLM 规划调用，命中 3min 缓存时无额外开销
+# 2026-06-19 Agent Workspace 调整
+
+- 知识库页和创作页的前端承载方式统一为 Agent Workspace；底层知识库检索、创作规划、operation set 和文件保存链路继续复用现有实现。
+- 工具过程不新增通用 Agent Loop，而是由现有 SSE 事件映射：知识库映射检索和回答，创作映射 thinking、batch 进度和修改预览。
+- 搜索服务商进入配置保存阶段，当前请求会携带联网状态和服务商，但不调用真实外部搜索。

@@ -7,7 +7,6 @@ const { getActiveLlmConfig, listLlmConfigs } = require('../../../lib/llmConfigs'
 const { deriveLlmConfigBudgetFields } = require('../../../lib/llmBudget');
 const {
   buildEmbeddingFingerprint,
-  buildLlmFingerprint,
   consumeConnectivityVerificationToken,
 } = require('../../../lib/connectivityVerification');
 
@@ -65,6 +64,7 @@ function publicSettings() {
     },
     llm: {
       provider: config.llmProvider,
+      api_protocol: config.llmApiProtocol,
       model: config.llmModel,
       base_url: config.llmBaseUrl,
       context_window_tokens: config.llmContextWindowTokens,
@@ -207,25 +207,8 @@ export default function handler(req, res) {
       const derivedBudget = deriveLlmConfigBudgetFields({
         model: nextLlmModel,
       });
-      const llmFingerprint = buildLlmFingerprint({
-        provider: body.llm.provider || previousConfig.llmProvider,
-        model: nextLlmModel,
-        base_url: body.llm.base_url !== undefined ? body.llm.base_url : previousConfig.llmBaseUrl,
-        api_key: body.llm.api_key || previousConfig.llmApiKey,
-      });
-      const llmVerified = consumeConnectivityVerificationToken({
-        token: body.llm.verification_token,
-        kind: 'llm',
-        fingerprint: llmFingerprint,
-      });
-      if (!llmVerified) {
-        return res.status(400).json({
-          error: 'LLM 配置必须先测试连通性并使用当前测试结果保存',
-          code: 'CONNECTIVITY_TEST_REQUIRED',
-          request_id: context.request_id,
-        });
-      }
       if (body.llm.provider) nextValues.llm_provider = body.llm.provider;
+      if (body.llm.api_protocol) nextValues.llm_api_protocol = body.llm.api_protocol;
       if (body.llm.model) nextValues.llm_model = body.llm.model;
       if (body.llm.base_url !== undefined) nextValues.llm_base_url = body.llm.base_url;
       if (body.llm.api_key) nextValues.llm_api_key = body.llm.api_key;

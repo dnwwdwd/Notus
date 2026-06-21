@@ -208,15 +208,29 @@
 
 模型不负责推断这些范围。旧的 `reference_mode / fact_file_ids / style_mode / style_file_ids` 进入服务端后会转换为会话 scope。
 
-第一阶段工作区工具包括：
+当前 Agentic Loop 工作区工具包括：
 
 - `search_knowledge`
 - `read_file`
-- `get_style_context`
-- `ask_user`
-- `preview_edit_article`
+- `create_note`
+- `preview_patch_files`
+- `analyze_folder`
+- `check_links`
 
-其中 `preview_edit_article` 只生成预览，不直接写 Markdown；真正落盘仍由保存接口完成。
+其中 `preview_patch_files` 只生成文件级 patch 预览，不直接写 Markdown；创建预览前会把空白差异下的唯一近似 `old` 对齐到当前文件精确片段，无法唯一匹配时返回明确错误。真正落盘由 `/api/agent/loop/apply` 完成，并在写入后触发增量索引。删除文件、重命名、移动和系统命令不作为当前 Agent 能力开放。
+
+### 8.5 Agentic Loop 任务安全边界
+
+创作页主输入和知识库页写作类任务会创建 `agent_sessions`。创作页默认自动应用，发送后直接创建 session；切换为手动确认时才先显示任务确认卡。每次 Loop 开始前先完成 `agent_snapshots`；写入类工具必须经过 `validateWrite()` 校验授权路径、授权操作和 session token。知识库页普通问答不创建 Loop session，继续走 `/api/chat`。
+
+任务运行中会记录 `agent_run_logs`，并检测以下异常：
+
+- 超过硬轮数上限。
+- 同一工具连续失败。
+- 重复工具结果造成死循环。
+- 连续无工具调用导致无进展。
+
+任务支持整体回滚：快照内的修改文件会恢复为任务开始前内容，Agent 新建文件会按创建时 hash 做冲突检测，确认未被外部修改后再删除。
 
 ---
 
@@ -254,8 +268,9 @@
 - `notus/lib/canvasRequestPlanner.js`：主要重构
 - `notus/lib/prompt.js`：`target_resolver` 模式 prompt 更新
 - 性能：每次请求多一次 LLM 规划调用，命中 3min 缓存时无额外开销
-# 2026-06-19 Agent Workspace 调整
+# 2026-06-20 Agent 聊天 UI 修正
 
-- 知识库页和创作页的前端承载方式统一为 Agent Workspace；底层知识库检索、创作规划、operation set 和文件保存链路继续复用现有实现。
-- 工具过程不新增通用 Agent Loop，而是由现有 SSE 事件映射：知识库映射检索和回答，创作映射 thinking、batch 进度和修改预览。
-- 搜索服务商进入配置保存阶段，当前请求会携带联网状态和服务商，但不调用真实外部搜索。
+- 知识库页和创作页保留原有业务主区域：知识库文档预览/编辑、创作块画布、文章分片预览和批量修改预览不移除。
+- AgentWorkspace 仅作为右侧聊天面板承载聊天消息、工具过程、底部输入框和文件变更详情；底层知识库检索、创作规划、operation set 和文件保存链路继续复用现有实现。
+- 工具过程由现有 SSE 事件映射：知识库映射检索和回答，创作映射 thinking、batch 进度和修改预览。
+- 搜索服务商配置进入设置菜单；当前请求会携带联网状态和服务商，但不调用真实外部搜索。

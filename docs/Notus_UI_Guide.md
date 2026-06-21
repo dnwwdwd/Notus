@@ -376,7 +376,7 @@ Sticky 底部，bg:--bg-elevated, padding:--space-3 --space-4, border-top:1px --
 
 | 状态 | 表现 |
 |------|------|
-| 空态（无对话） | EmptyState：✨(48x48 opacity:0.3), "输入问题，从你的知识库中获取答案", 下方 3 个 suggestion chip(ghost Button sm, 如 "我最近写了什么?") |
+| 空态（无对话） | EmptyState：✨(48x48 opacity:0.3), "输入问题，从你的知识库中获取答案"；输入框上方不展示预制问题列表 |
 | 历史会话 | 顶部 icon button 打开 `ConversationDrawer`；抽屉宽 `min(360px, calc(100vw - 32px))`，标题“历史对话”，当前会话高亮；每条会话右侧有删除 icon，点击后二次确认；切换左侧文档时不重置当前聊天历史 |
 | 索引未完成 | EmptyState：⏳, "知识库正在建立索引", ProgressBar |
 | 模型未就绪 | AI 区整块锁定：半透明遮罩 + 居中卡片，提示先完成 LLM 与 Embedding 配置，并提供 [前往设置] |
@@ -416,7 +416,7 @@ Sticky 底部，bg:--bg-elevated, padding:--space-3 --space-4, border-top:1px --
 
 **分栏宽度：** 画布区与右侧 AI 面板之间支持拖拽调宽，并记住上次宽度。左侧创作块区与文件页、知识库页共享同一文档的最近阅读位置，返回时优先按 block id 或正文锚点恢复。
 
-**输入栏：** 同知识库 InputBar，支持 `@b2` 引用块号（`@` 触发当前文档块 autocomplete popup，并插入块引用）；候选列表支持 `ArrowUp / ArrowDown / Enter / Esc`，中文输入法组合态不抢键；模型选择器固定在右下角发送/停止按钮左侧，trigger 单行省略，菜单项展示完整模型名；生成中输入栏只保留停止按钮。`v1` 不展示 `+` 附件入口。系统后台只把相关块包、少量最近历史和请求内摘要送入模型；若当前只是未保存的大纲草稿，则输入栏整体禁用，并显示“先保存当前大纲为文档”的引导文案。
+**输入栏：** 同知识库 InputBar，支持 `@b2` 引用块号（`@` 触发当前文档块 autocomplete popup，并插入块引用）；候选列表支持 `ArrowUp / ArrowDown / Enter / Esc`，中文输入法组合态不抢键；创作页额外在左下角展示“自动应用 / 手动确认”下拉框，trigger 为暖白工具按钮，自动应用态使用 wand 图标和浅橙底，手动确认态使用 eye 图标和透明底；菜单向上弹出，白底 16px 圆角、轻阴影、当前项带 check。模型选择器固定在右下角发送/停止按钮左侧，trigger 单行省略，菜单项展示完整模型名；生成中输入栏只保留停止按钮。`v1` 不展示 `+` 附件入口。系统后台只把相关块包、少量最近历史和请求内摘要送入模型；若当前只是未保存的大纲草稿，则输入栏整体禁用，并显示“先保存当前大纲为文档”的引导文案。
 
 **提问抽屉：** 当结构化澄清仍需要用户确认时，提问抽屉会固定在右侧 AI 面板底部，覆盖原输入栏。抽屉使用列表状态布局，只保留标题、状态、问题、选项、自定义输入和按钮，不在消息流里再次内联渲染抽屉或重试块；最后一题不会自动续跑，而是先进入回顾态，用户确认后再继续生成预览。
 
@@ -469,11 +469,11 @@ Canvas 无文章时显示，居中 max-width:480px mt:20vh：
 
 ### 8.2 Settings Nav
 
-六项：模型配置、个性化、存储、日志、快捷键、关于。每行 h:36px --text-sm，激活态 bg:--accent-subtle color:--accent font-weight:500。
+七项：模型配置、搜索配置、个性化、存储、日志、快捷键、关于。每行 h:36px --text-sm，激活态 bg:--accent-subtle color:--accent font-weight:500。
 
 ### 8.3 模型配置
 
-Embedding 模型（Base URL Input + 模型名 Input + API Key Input + 维度只读）+ LLM 配置朴素列表（名称 / Provider name / 模型 / Base URL）+ 创建或编辑表单（兼容协议 Select + Base URL Input + 模型名 Input + API Key Input）+ [保存]
+Embedding 模型（Base URL Input + 模型名 Input + API Key Input + 多模态向量开关）+ LLM 配置朴素列表（名称 / Provider name / 模型 / Base URL）+ 创建或编辑表单（兼容协议 Select + 配置名称 Input + Base URL Input + 模型名 Input + API Key Input）+ [保存]
 
 **API Key 字段状态：**
 
@@ -486,23 +486,27 @@ Embedding 模型（Base URL Input + 模型名 Input + API Key Input + 维度只�
 
 **Embedding 测试连接按钮：** 默认 secondary → 测试中 loading → 成功 Toast + 按钮闪绿 → 失败 Toast + 按钮闪红
 
-**模型配置输入：** 不暴露 Provider 选择器和模型候选下拉；用户手动填写 Base URL、模型名称和 API Key，Embedding 维度在测试后自动确认。LLM 新增/编辑弹窗额外提供兼容协议下拉框，选项为 `OpenAI API` 与 `Anthropic`，默认 `OpenAI API`。模型配置页不展示解释性段落、默认配置说明条或弹窗自动识别说明句；LLM 列表不展示密钥状态、默认配置提示或兼容协议，保存 LLM 配置不要求先测试连通性。
+**模型配置输入：** 不暴露 Provider 选择器和模型候选下拉；用户手动填写 Base URL、模型名称和 API Key，Embedding 维度在测试后由后端记录，不在页面中单独展示。LLM 新增/编辑弹窗额外提供兼容协议下拉框，选项为 `OpenAI API` 与 `Anthropic`，默认 `OpenAI API`。模型配置页和引导页使用设计稿暖色单栏卡片风格：内容宽度约 672px，白色卡片、#E5E3D8 边框、#FDFCFB 次级背景、#D97757 强调色；LLM 弹窗宽度约 448px，列表只展示 Provider name 一次，不展示密钥状态、默认配置提示或兼容协议，保存 LLM 配置不要求先测试连通性。
+
+### 8.4 搜索配置
+
+搜索配置作为设置菜单项展示，不在聊天顶部提供入口。页面使用设计稿单栏白色卡片：启用联网搜索开关、服务商 tab、调用模式、每次返回结果数 range、API Key 输入框、取消和保存按钮。API Key 不明文回显，只通过后端返回的保存状态决定占位提示。
 
 **预算字段：** `context_window_tokens` 与 `max_output_tokens` 继续保存在后端，供运行时预算控制使用，但设置页与引导页卡片不直接展示。
 
-### 8.4 个性化
+### 8.5 个性化
 
 只展示功能名与开关，不展示说明性文字。“标题与文件名双向绑定”默认关闭；开启后，仅文件页和知识库页会在手动保存时按正文首个可见 H1 同步文件名，并在侧边栏显式重命名时反向同步首个 H1；创作页不参与这项联动。
 
-### 8.5 快捷键
+### 8.6 快捷键
 
 快捷键设置页展示当前已绑定操作，并支持重绑定常用操作。界面内默认不直接展示快捷键提示，统一在该页维护。
 
-### 8.6 存储
+### 8.7 存储
 
 笔记目录只读 + 索引状态(Badge) + [重建索引](ConfirmDialog 确认后 loading + ProgressBar) + [清除索引](danger ConfirmDialog)
 
-### 8.7 关于
+### 8.8 关于
 
 顶部保留 Logo、产品名、版本号和一句定位说明；“当前版本专注本地知识库问答、块级创作协作和桌面工作区体验。”这段文案使用普通正文文本直出，不保留边框、背景、阴影、圆角或额外内边距。
 
@@ -521,7 +525,7 @@ Embedding 模型（Base URL Input + 模型名 Input + API Key Input + 维度只�
 
 ### 9.2 初始化引导页 `/setup`
 
-全屏居中；Step 1 使用更宽的双栏容器（约 max-width:1180px），Step 2/3 约 max-width:760px，无 Shell。三步流程：
+全屏居中；Step 1 使用设计稿暖色单栏模型配置卡片，Step 2/3 约 max-width:760px，无 Shell。三步流程：
 
 | Step | 内容 | 可跳过 |
 |------|------|--------|
@@ -706,6 +710,8 @@ bg:--danger-subtle radius:--radius-md padding:--space-2 --space-3。✕(--danger
 
 从右侧滑入的历史对话抽屉。宽 `min(360px, calc(100vw - 32px))`，顶部固定标题栏 + 关闭按钮，列表项使用圆角卡片，高亮当前会话，空态文案“暂无历史对话”。每条会话右侧提供删除 icon，点击后打开 `ConfirmDialog`，确认前不触发会话选择。
 
+每条会话右侧同时提供导出 icon，点击后直接下载 Markdown 文件；导出按钮不触发会话选择，导出进行中显示小号 Spinner。
+
 ### 11.28 PageTransitionOverlay
 
 全局固定浮层。背景为暖色半透明渐变 + 轻微模糊，顶部 3px accent 进度条，中心显示 Notus Logo；进入 AI 页面时 180ms 淡入，随后平滑退出，不阻塞点击。
@@ -747,14 +753,24 @@ bg:--danger-subtle radius:--radius-md padding:--space-2 --space-3。✕(--danger
 | 3 | `/files` | 文件管理 | 有 | 默认页，编辑器 |
 | 4 | `/knowledge` | 知识库问答 | 有 | 左侧文档 + 右侧 AI 对话 |
 | 5 | `/canvas` | AI 创作画布 | 有 | 块画布 + 风格来源 / 对话 |
-| 6 | `/settings` | 设置 | 有 | 模型/存储/快捷键/关于 |
+| 6 | /settings | 设置 | 有 | 模型/搜索/存储/快捷键/关于 |
 | 7 | `/indexing` | 索引进度 | 有 | 批量索引可视化 |
 | 8 | `/*` | 404 | 有 | 未匹配路由 |
 | 9 | — | 错误页 | 无 | 不可恢复错误 |
-# 2026-06-19 Agent Workspace 页面口径
 
-- 知识库页和创作页统一使用 Notus Agent Workspace：暖白页面底色、白色输入卡片、低饱和棕橙强调色、轻阴影和 16px 以上圆角。
-- 顶部栏左侧显示“模型配置”“搜索配置”，中间显示 Notus Agent Workspace，右侧显示当前业务模式和搜索配置状态。
-- 底部输入框固定在页面底部，支持附件、联网开关、搜索服务商选择、模型选择、发送和停止。
+# 2026-06-20 Agent 聊天 UI 修正口径
+
+- 知识库页和创作页保留原有业务布局：知识库页继续常驻文档预览/编辑区，创作页继续常驻块画布、文章分片和批量修改预览能力。
+- 只将右侧聊天区域按 Notus-design-draft/notus-agent.html 还原：暖白背景、白色输入卡片、低饱和棕橙强调色、轻阴影和 16px 以上圆角。
+- 聊天顶部不显示“Notus Agent Workspace”，也不显示“模型配置”“搜索配置”按钮。
+- 底部输入框固定在右侧聊天面板底部，支持附件、联网开关、搜索服务商选择、模型选择、发送和停止；输入框上方不展示预制问题按钮。
 - AI 回复使用 Notus Agent 头像、标题、工具过程和正文直排；工具过程可展开查看 detail / input / result。
-- 模型配置和搜索配置在 Agent Workspace 内部切换，不跳转到旧设置页；配置页使用白色大卡片和分组表单。
+- AI 回复正文使用 Markdown 富文本渲染，流式输出时保留光标，支持 GFM、数学公式、代码高亮、表格、引用和链接。
+- 工具过程按 `notus-agent.html` 复刻：顶部状态图标单独占一行；步骤区以 `#E5E3D8` 细分隔线开头；步骤行为 32px 左右高度、4px 水平间距、8px 圆角 hover 浅灰背景；展开后内容左侧缩进 25px 并加竖线，说明文字 13.5px / 1.75，工具卡片背景 `#F9F9F8`、8px 圆角、12px 内边距；chevron 展开旋转 90°。
+- 工具过程运行态使用圆环持续旋转，不使用 refresh 图标；失败态使用 warn，完成态使用 check。
+- 文件变更卡片使用 `#F9F9F8` 背景、16px 圆角、16px 内边距、圆形白底文件图标；撤销按钮为白底细描边，“查看详情”为 `#D97757` 实底按钮，均保留按下缩放和可见键盘焦点。
+- 模型配置在设置页和引导页展示；搜索配置作为设置菜单项展示，不在聊天顶部切换。
+- Agentic Loop 任务确认卡只在手动确认模式或知识库写作类任务中显示在消息列表上方：白色圆角卡片、左侧 wand 图标、目标摘要、允许写入路径 textarea、检索次数输入框，以及“取消 / 开始执行”按钮。创作页默认自动应用模式不显示这张卡片。
+- Agentic Loop 会话状态卡显示 session id、执行轮数、状态和原因；达到硬上限时展示“继续 10 轮”，所有非空会话都可显示“回滚任务”。
+- 文件级预览沿用 OperationSetCard 与 DiffDialog；当 operation set 含 `patches` 时，详情标题显示文件路径，正文 diff 展示 `old/new`。
+- 普通知识问答不显示任务确认卡；创作页主输入默认直接进入 Agentic Loop 并自动应用文件预览，也可切换为手动确认后显示任务确认卡；知识库页写作类任务仍先显示任务确认卡。

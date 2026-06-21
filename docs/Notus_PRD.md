@@ -18,8 +18,8 @@
 | 全文检索 | SQLite FTS5（应用层预分词写入 `search_text`） |
 | 中文分词 | jieba-wasm（应用层分词，失败时回退简化分词） |
 | 文件监听 | chokidar（usePolling:true, interval:3000ms, awaitWriteFinish） |
-| Embedding | 用户在设置页手动填写 Base URL、模型名与 API Key；设置页与 `/setup` 第 1 步首次进入时表单先以空态呈现，读取到服务端已保存配置后回填 Base URL 与模型名，API Key 不回显，仅通过“已保存，留空不修改”占位提示反映状态；系统根据 Base URL 和模型名自动识别兼容厂商，可选文本或多模态，开启 `EMBEDDING_MULTIMODAL_ENABLED` 后为图片建立向量 |
-| LLM | 用户在设置页手动填写 Base URL、模型名与 API Key，并在新增/编辑弹窗选择兼容协议：`OpenAI API` 或 `Anthropic`；默认协议为 `OpenAI API`，历史配置按 `OpenAI API` 迁移；系统根据 Base URL 和模型名自动识别 Provider name，流式输出；LLM 配置保存不要求先测试连通性，知识库页与创作页以输入框模型下拉框当前选择作为全局模型选择 |
+| Embedding | 用户在设置页手动填写 Base URL、模型名与 API Key；设置页与 /setup 第 1 步首次进入时表单先以空态呈现，读取到服务端已保存配置后只回填 Base URL 与模型名，API Key 不明文回显，也不展示“已保存密钥”类提示；系统根据 Base URL 和模型名自动识别兼容厂商，可选文本或多模态，测试通过后在后端记录向量维度并用于索引 |
+| LLM | 用户在设置页手动填写 Base URL、模型名与 API Key，并在新增/编辑弹窗选择兼容协议：OpenAI API 或 Anthropic；默认协议为 OpenAI API，历史配置按 OpenAI API 迁移；系统根据 Base URL 和模型名自动识别 Provider name，流式输出；LLM 配置保存不要求先测试连通性，设置页和引导页使用 notus-agent.html 的暖白单栏卡片、朴素列表和 448px 表单弹窗样式，知识库页与创作页以输入框模型下拉框当前选择作为全局模型选择 |
 | 运行平台 | Web + Electron 桌面端主线，保留对懒猫运行时的代码兼容；业务层统一依赖平台中间层解析路径与能力 |
 
 **不用 TypeScript / App Router / shadcn-ui / Python sidecar** —— 减少复杂度、减少 AI 自动生成时的路由混淆、不依赖默认主题。
@@ -75,6 +75,10 @@ Notus/
 │   │   ├── canvasRequestPlanner.js # 创作请求规划
 │   │   ├── canvasAgent.js          # 创作执行器
 │   │   ├── canvasOperationSets.js  # 批量预览持久化
+│   │   ├── agentSession.js         # Agentic Loop 会话、权限、快照和回滚
+│   │   ├── agentTools.js           # Agentic Loop 工具集
+│   │   ├── agentLoop.js            # Agentic Loop 主循环
+│   │   ├── agentLoopPrompt.js      # Agentic Loop Prompt 模板
 │   │   ├── diff.js                 # str_replace 引擎 + diff 计算
 │   │   └── config.js               # 环境变量读取
 │   ├── components/
@@ -296,15 +300,63 @@ CREATE TABLE IF NOT EXISTS style_profile (
 CREATE TABLE IF NOT EXISTS canvas_operation_sets (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  agent_session_id INTEGER REFERENCES agent_sessions(id) ON DELETE SET NULL,
   file_id         INTEGER REFERENCES files(id) ON DELETE SET NULL,
   message_id      INTEGER REFERENCES messages(id) ON DELETE SET NULL,
   article_hash    TEXT NOT NULL,
   mode            TEXT NOT NULL,
-  operations_json TEXT NOT NULL,
+  operations_json TEXT NOT NULL,                 -- 旧块级 operation set
+  pathes_json     TEXT,                          -- Agentic Loop 文件级 patches；字段名按已确认口径保留 pathes_json
   status          TEXT NOT NULL DEFAULT 'pending',
   expires_at      DATETIME,
   created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS agent_sessions (
+  id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+  conversation_id        INTEGER REFERENCES conversations(id) ON DELETE SET NULL,
+  status                 TEXT NOT NULL DEFAULT 'pending',
+  goal                   TEXT NOT NULL,
+  authorized_paths       TEXT NOT NULL DEFAULT '[]',
+  authorized_ops         TEXT NOT NULL DEFAULT '["modify","create"]',
+  created_files          TEXT NOT NULL DEFAULT '[]',
+  loop_count             INTEGER NOT NULL DEFAULT 0,
+  soft_limit             INTEGER NOT NULL DEFAULT 15,
+  hard_limit             INTEGER NOT NULL DEFAULT 30,
+  search_knowledge_limit INTEGER,
+  tool_call_counts       TEXT NOT NULL DEFAULT '{}',
+  consecutive_fails      TEXT NOT NULL DEFAULT '{}',
+  last_tool_results      TEXT NOT NULL DEFAULT '{}',
+  messages_checkpoint    TEXT,
+  checkpoint_tool_use_id TEXT,
+  waiting_since          TEXT,
+  session_token          TEXT UNIQUE NOT NULL,
+  expires_at             TEXT,
+  created_at             TEXT DEFAULT (datetime('now')),
+  updated_at             TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS agent_snapshots (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id   INTEGER NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+  file_path    TEXT NOT NULL,
+  content      TEXT NOT NULL,
+  file_hash    TEXT NOT NULL,
+  created_at   TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS agent_run_logs (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id   INTEGER NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+  loop_index   INTEGER NOT NULL,
+  tool_name    TEXT,
+  tool_input   TEXT,
+  tool_result  TEXT,
+  thinking     TEXT,
+  status       TEXT NOT NULL DEFAULT 'success',
+  duration_ms  INTEGER,
+  created_at   TEXT DEFAULT (datetime('now'))
 );
 ```
 
@@ -330,7 +382,7 @@ db.exec(`
 
 ### 4.0 工作区 Agent 目标分层
 
-当前版本的知识库问答和创作画布已经具备工作区 Agent 的基础能力。第一阶段已完成会话范围、文档级上下文、索引元数据和工具层骨架；后续仍会继续扩展多文件任务和文件管理类工具。
+当前版本的知识库问答和创作画布已经接入工作区 Agent 基础能力：创作页主输入统一进入 Agentic Loop，并在输入框提供“自动应用 / 手动确认”模式选择；知识库页普通问答继续走 `/api/chat`，写作类任务按保守关键词规则进入 Agentic Loop。Loop 会话在开始执行前创建快照，写入前做系统层权限校验，并支持任务级回滚。旧 `/api/agent/run` 保留为历史兼容接口，不作为创作页主入口。
 
 ```
 用户界面层
@@ -350,11 +402,8 @@ db.exec(`
   - files / knowledge / canvas 浏览位置锚点
 
 工作区工具层
-  - search_knowledge / read_file / get_style_context
-  - ask_user / preview_edit_article
-  - create_note / rename_file / move_file
-  - update_frontmatter / preview_patch_files
-  - rename_file / move_file / merge_notes / split_note
+  - search_knowledge / read_file
+  - create_note / preview_patch_files
   - analyze_folder / check_links
 
 执行与审查层
@@ -362,9 +411,10 @@ db.exec(`
   - 多文件批量预览
   - 高风险操作确认
   - 应用后自动索引
+  - 任务级快照与回滚
 ```
 
-短期内不要求一次性实现完整多文件工具，但新的 Agent 能力必须能归入上述分层，避免继续把产品做成单纯聊天或单文件改写。
+当前工具集不开放删除、重命名、移动或系统命令能力；删除在任意 Agentic Loop 写入校验路径下都会被拒绝。
 
 ### 4.1 `lib/db.js`
 
@@ -554,6 +604,8 @@ function startWatcher()  // chokidar 监听 NOTES_DIR
 配置 `{ usePolling: true, interval: 3000, awaitWriteFinish: { stabilityThreshold: 1500, pollInterval: 500 } }`。监听 `add`/`change` → `indexFile`；`unlink` → `removeFile`。
 
 ### 4.7 创作执行链路
+
+创作页主输入默认使用自动应用模式：发送后直接调用 `/api/agent/loop/start`，不展示任务确认卡；输入框左下角的“自动应用 / 手动确认”下拉框只在创作页展示，并持久化到浏览器本机。手动确认模式下，前端仍先展示任务确认卡，让用户确认 `authorized_paths` 与 `search_knowledge_limit` 后再调用 `/api/agent/loop/start`。旧 `/api/agent/run` + `/api/agent/apply` 只保留历史兼容，不再作为当前主流程。
 
 ```javascript
 async function resolveCanvasRequest({
@@ -810,7 +862,7 @@ POST /api/agent/outline              Body: { topic }
                                        { type: 'done', citations }
                                        { type: 'error', error }
 
-POST /api/agent/run                  Body: {
+POST /api/agent/run                  Body: {                 // 历史兼容，不作为创作页主入口
                                        conversation_id?, user_input,
                                        article: Article,
                                        user_meta?,
@@ -830,11 +882,35 @@ POST /api/agent/run                  Body: {
                                        { type: 'done', conversation_id, message_id, citations, assistant_message, assistant_meta, operation_set?, interaction? }
                                        { type: 'error', error, conversation_id? }
 
-POST /api/agent/apply                Body:
+POST /api/agent/apply                Body:                   // 历史兼容，不作为 Agentic Loop 应用入口
                                      { article: Article, operation }
                                      | { article: Article, operations: Operation[], operation_set_id? }
                                      | { action: 'cancel', operation_set_id }
                                      → { success, article?, error?, applied_count, failed_at, operation_set_status }
+
+POST /api/agent/loop/start           Body:
+                                     { goal, conversation_id?, active_file_id?, authorized_paths, authorized_ops?, search_knowledge_limit?, llm_config_id }
+                                     | { session_id, session_token, llm_config_id }
+                                     → SSE:
+                                       { type: 'session_created' | 'session_resumed', session_id, conversation_id }
+                                       { type: 'snapshot_done', snapshot_count }
+                                       { type: 'loop_start', loop_index }
+                                       { type: 'thinking', text, loop_index }
+                                       { type: 'tool_start', tool_name, tool_input_summary, loop_index }
+                                       { type: 'tool_done', tool_name, result_summary, failed, loop_index }
+                                       { type: 'waiting_preview_confirm', operation_set_id, loop_index }
+                                       { type: 'loop_done', reason, loop_index }
+                                       { type: 'error', error, code }
+
+POST /api/agent/loop/apply           Body:
+                                     { session_id, session_token, operation_set_id, action: 'apply' }
+                                     | { session_id, session_token, operation_set_id?, action: 'reject' }
+                                     | { session_id, session_token, action: 'extend', extra_loops? }
+                                     → { success, changed_files?, conflict?, conflicting_files?, new_hard_limit? }
+
+POST /api/agent/loop/cancel          Body: { session_id } → { success }
+GET  /api/agent/sessions/:id         → { session, run_logs, snapshots_count, operation_sets }
+POST /api/agent/sessions/:id/rollback Body: { force? } → { success, restored_count, conflicts? }
 
 POST /api/interactions/:id/respond   Body:
                                      { response? | raw_text?, article, schema_version }
@@ -873,7 +949,7 @@ POST /api/articles/save              Body: { article, path? } → 保存为本�
 ```
 GET    /api/conversations            ?kind=knowledge|canvas&file_id?&draft_key?&limit? → Array<Conversation>
 POST   /api/conversations            Body: { title?, kind?, file_id?, draft_key? } → Conversation
-GET    /api/conversations/:id        → { ...conversation, messages, pending_operation_sets, pending_interactions }
+GET    /api/conversations/:id        → { ...conversation, messages, pending_operation_sets, pending_interactions, agent_sessions }
 DELETE /api/conversations/:id
 ```
 
@@ -881,6 +957,7 @@ DELETE /api/conversations/:id
 - 创作页会话默认按 `kind=canvas + file_id` 读取；`draft_key` 仅保留给旧数据兼容与迁移。
 - 画布会话详情会附带 `pending_operation_sets`，前端刷新后可恢复全部未应用预览。
 - 知识库与画布会话详情都会附带 `pending_interactions`，前端刷新后可恢复 `pending / stale / failed` 提问抽屉；抽屉继续以底部抽屉形式恢复，不再把 interaction 摘要用户消息和 retry 助手消息重新露回消息流。
+- 会话详情会附带同一 conversation 下的 `agent_sessions` 导出数据，每个 session 包含运行状态、快照数量、`agent_run_logs` 工具日志和关联修改预览，但不返回 session token。
 - 删除会话前需要确认会话存在；不存在返回 `404 CONVERSATION_NOT_FOUND`，删除成功返回 `204`。数据库外键负责级联删除 `messages`、`canvas_operation_sets` 和 `conversation_interactions`。
 - 历史抽屉删除当前会话后，知识库页回到新对话空态；创作页回到当前文章的新对话空态，并保留文章块内容和未保存状态。
 
@@ -971,20 +1048,15 @@ POST /api/settings/test              Body: { kind: 'embedding'|'llm', config }
 
 ### 6.4 创作 Agent 工具链
 
-创作页当前不再以“9 个显式工具循环”作为主路径，而是固定走：
+创作 Agent 当前主流程为 Agentic Loop：
 
-1. 请求规划
-2. 风格上下文获取
-3. 事实补充（可选）
-4. 单块 / 多块 / 全文编辑执行
-5. 批量预览持久化
+1. 创作页主输入按当前执行模式创建 `agent_sessions`：自动应用模式直接启动，手动确认模式先展示任务确认卡；Loop 按 LLM 工具调用自主执行多轮，工具包括 `search_knowledge`、`read_file`、`create_note`、`preview_patch_files`、`analyze_folder`、`check_links`。
+2. 写入前置：每次 Loop 开始前先写入 `agent_snapshots`；`create_note` 与 `preview_patch_files` 必须通过 `validateWrite()`；删除操作始终拒绝。
+3. 预览与应用：`preview_patch_files` 在单轮内必须是唯一工具调用；创建 operation set 前会对 `old` 文本做精确匹配、首尾裁剪匹配和空白折叠后的唯一匹配，匹配成功后使用当前文件中的精确片段写入文件级 patches；patches 存入 `canvas_operation_sets.pathes_json`。自动应用模式下，前端在用户仍停留在当前页面和当前对话时自动调用 `/api/agent/loop/apply` 并续跑；手动确认模式下，用户点击应用后再续跑。
+4. 异常终止：软上限提醒、硬上限暂停、连续工具失败、重复工具结果死循环、连续无工具无进展都会结束或暂停本次任务。
+5. 回滚：任务可以整体回滚，覆盖快照内被修改文件和 Agent 新建文件；新建文件会记录创建时 hash，回滚前发现外部修改时返回冲突，不直接删除。
 
-运行时约束：
-
-- 单次请求最多 1 次规划 helper
-- 风格上下文最多获取 1 次
-- 全文编辑固定分批执行
-- 文本回复和文章分析复用现有 `streamChat()` 输出 `token`
+Agentic Loop 的 LLM 调用适配 OpenAI-compatible `tool_calls` 和 Anthropic `tool_use/tool_result` 两种协议；system prompt 继续接入 `getStyleContext()` 产生的风格画像和相关原文摘录。
 
 ### 6.5 str_replace 引擎
 
@@ -1263,6 +1335,7 @@ exec node server.js
 - M3-06 多模型切换下拉（支持搜索）
 - 知识库页与创作页在流式回复开始后，都必须立即渲染 AI 气泡占位；首 token 到来前使用固定占位的柔和三点等待态，避免布局跳动。知识库检索状态必须进入 AI loading 气泡内部，按“分析问题 / 检索笔记 / 找到证据 / 组织答案”等步骤动态切换，不作为独立状态条固定在回复外部
 - 输入框生成中只保留停止按钮；真正的“AI 正在回复”反馈只能放在 AI 回复气泡区，不能继续放在输入框内部
+- AgentWorkspace 输入框上方不得展示预制问题列表；知识库页和创作页都只保留直接输入、附件、联网搜索、搜索商选择、模型选择和发送/停止控件
 - AI 回复气泡本体不显示边框；来源卡片、状态徽标等内部组件可按自身语义保留必要边界
   - 模型选择器必须固定在输入框右下角发送/停止按钮左侧；触发器在窄宽度下单行 `ellipsis` 缩略显示，菜单项仍展示完整模型名
 
@@ -1273,7 +1346,7 @@ exec node server.js
 - M4-03 `lib/style.js` + `lib/canvasRequestPlanner.js` + `lib/canvasAgent.js`
 - M4-04 旧 intent / legacy agent 清理
 - M4-05 大纲生成 `/api/agent/outline` SSE
-- M4-06 Agent 运行 `/api/agent/run` SSE
+- M4-06 Agentic Loop 运行 `/api/agent/loop/start` SSE
 - M4-07 CanvasBlock 组件（6 状态）+ dnd-kit 拖拽
 - M4-08 AIPanel（后台事实补充 + 风格来源 + 对话 + 批量预览恢复）
 - M4-09 新建创作入口页
@@ -1282,7 +1355,7 @@ exec node server.js
 
 ### M5 体验打磨 & 部署
 
-- M5-01 设置页（模型/个性化/存储/快捷键/关于 + 校验流程；LLM 预算字段持久化但不在卡片中展示；关于页版本说明文案使用纯文本展示，不保留外层边框）
+- M5-01 设置页（模型/搜索/个性化/存储/快捷键/关于 + 校验流程；LLM 预算字段持久化但不在卡片中展示；关于页版本说明文案使用纯文本展示，不保留外层边框）
 - M5-02 CommandPalette（cmdk）
   - 顶部全局文章搜索弹层打开后，搜索输入框必须自动聚焦，保证鼠标或快捷键唤起后都能直接输入，不需要再额外点击一次
 - M5-03 快捷键绑定
@@ -1316,9 +1389,22 @@ exec node server.js
 ---
 
 **Notus PRD v2.1 · 配合 Notus PDD v2.0 使用**
-# 2026-06-19 Agent Workspace 技术口径
+# 2026-06-20 Agent 聊天 UI 技术口径
 
-- 新增共享 AgentWorkspace 前端组件，知识库页和创作页分别传入 /api/chat 与 /api/agent/run 的业务请求函数。
+- 共享 AgentWorkspace 前端组件改为右侧聊天面板，不再整页替换知识库页和创作页；页面业务主区域继续使用原有文档编辑、块画布和批量预览组件。
 - 新增 /api/settings/search-providers，用 settings 表保存搜索启用状态、当前服务商、调用模式、结果数和 API Key；响应只返回 api_key_set，不返回明文密钥。
-- /api/chat 与 /api/agent/run 接受 webSearchEnabled、searchProvider、attachments 和 modelConfigId 兼容字段，并将联网状态、服务商和附件元数据写入消息 meta。
-- 创作页进入 Agent Workspace 后，会将当前 Markdown 文档拆为 article blocks；应用 operation set 后通过 /api/agent/apply 得到新 article，再写回 /api/files/[id]。
+- /api/chat 与 AgentWorkspace 输入框接受 webSearchEnabled、searchProvider、attachments 和 modelConfigId 兼容字段，并将联网状态、服务商和附件元数据写入消息 meta。
+- 创作页主输入在自动应用模式下直接进入 `/api/agent/loop/start`，手动确认模式下先生成 `pendingAgentTask`；应用文件级预览通过 `/api/agent/loop/apply` 完成，成功后携带 `session_id` 续跑。
+- 搜索配置进入设置菜单 /settings/search；聊天顶部不再提供模型配置和搜索配置入口。
+- AgentWorkspace 不再接收或渲染 suggestions，避免输入框上方出现预制问题列表。
+- `AgentWorkspace.ToolChain` 以 `notus-agent.html` 为视觉基准：外层为顶部状态图标 + border-top 步骤列表；步骤行使用 button 控制折叠状态，`aria-expanded` 暴露展开状态，运行态使用圆环持续旋转，不使用 refresh 图标；失败态使用警示图标，完成态使用 check；展开区使用左侧细线、13.5px 说明文本、浅色工具卡片、monospace input/result 和三点等待态。
+- 创作页 `/canvas` 在 `/api/agent/loop/start` SSE 过程中累计 `session_created / snapshot_done / loop_start / thinking / tool_start / tool_done / waiting_preview_confirm / loop_done` 对应的工具步骤，写入最终 assistant message 的 `toolSteps`，历史会话中不丢失中间步骤。
+- AgentWorkspace 的已完成 AI 消息和流式 AI 消息都通过 `StreamingText` 渲染，保持 Markdown、GFM、数学公式和代码高亮一致。
+
+# 2026-06-19 Agentic Loop 技术口径
+
+- 创作页和知识库页继续复用 AgentWorkspace 输入入口；创作页主输入默认直接进入 `/api/agent/loop/start`，也可切换为手动确认后再进入；知识库页写作类任务进入 `/api/agent/loop/start`，普通问答继续走 `/api/chat`。
+- `canvas_operation_sets` 新增可空 `agent_session_id` 与 `pathes_json`；旧 `operations_json` 继续服务块级 operation set，新文件级 patch 使用 `{ file_path, old, new }` 存入 `pathes_json`。
+- Agentic Loop 新增 `agent_sessions`、`agent_snapshots`、`agent_run_logs`；任务开始前必须完成快照，写入走 `validateWrite()`，删除能力不开放。
+- `lib/agentTools.js` 提供六个工具：`search_knowledge`、`read_file`、`create_note`、`preview_patch_files`、`analyze_folder`、`check_links`。`preview_patch_files` 单轮唯一，创建预览前会先把空白差异下的唯一近似 `old` 对齐到当前文件精确片段；应用前再次校验快照 hash 与 `old` 文本。
+- `lib/agentLoop.js` 负责多轮工具调用、context 压缩、LLM 429 退避、SSE 断开取消、软/硬轮数上限、连续失败、重复结果和无进展检测。

@@ -13,7 +13,9 @@ export function ConversationDrawer({
   emptyText = '暂无历史对话',
   onSelect,
   onDelete,
+  onExport,
   deletingConversationId = null,
+  exportingConversationId = null,
 }) {
   const [pendingDelete, setPendingDelete] = useState(null);
   if (!open) return null;
@@ -109,6 +111,7 @@ export function ConversationDrawer({
             const title = getConversationTitle(conversation);
             const preview = String(conversation.preview || '').trim();
             const deleting = Number(deletingConversationId) === Number(conversation.id);
+            const exporting = Number(exportingConversationId) === Number(conversation.id);
 
             return (
               <div
@@ -122,7 +125,7 @@ export function ConversationDrawer({
                   color: active ? 'var(--accent)' : 'var(--text-primary)',
                   textAlign: 'left',
                   display: 'grid',
-                  gridTemplateColumns: 'minmax(0, 1fr) 28px',
+                  gridTemplateColumns: onExport ? 'minmax(0, 1fr) 28px 28px' : 'minmax(0, 1fr) 28px',
                   columnGap: 8,
                   alignItems: 'start',
                   cursor: 'default',
@@ -171,6 +174,36 @@ export function ConversationDrawer({
                     </div>
                   )}
                 </button>
+                {onExport ? (
+                  <button
+                    type="button"
+                    aria-label={`导出历史对话 ${title}`}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      if (exporting) return;
+                      onExport(conversation.id, conversation);
+                    }}
+                    disabled={exporting}
+                    title="导出对话"
+                    style={{
+                      width: 28,
+                      height: 28,
+                      borderRadius: 'var(--radius-sm)',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color: exporting ? 'var(--text-tertiary)' : 'var(--text-secondary)',
+                      opacity: exporting ? 0.45 : 0.88,
+                      cursor: exporting ? 'not-allowed' : 'pointer',
+                      border: 0,
+                      padding: 0,
+                      background: 'transparent',
+                    }}
+                  >
+                    {exporting ? <Spinner size={13} /> : <Icons.download size={13} />}
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   aria-label={`删除历史对话 ${title}`}

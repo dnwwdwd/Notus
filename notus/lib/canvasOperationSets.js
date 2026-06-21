@@ -16,6 +16,14 @@ function normalizeStatus(value, fallback = 'pending') {
   return fallback;
 }
 
+function hasColumn(database, table, column) {
+  try {
+    return database.prepare(`PRAGMA table_info(${table})`).all().some((row) => row.name === column);
+  } catch {
+    return false;
+  }
+}
+
 function normalizeMode(value) {
   const normalized = String(value || '').trim().toLowerCase();
   return normalized || 'single';
@@ -31,16 +39,28 @@ function parseOperations(value) {
   }
 }
 
+function parsePatches(value) {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 function formatRow(row) {
   if (!row) return null;
   return {
     id: Number(row.id),
     conversation_id: normalizeNullablePositiveInt(row.conversation_id),
+    agent_session_id: normalizeNullablePositiveInt(row.agent_session_id),
     file_id: normalizeNullablePositiveInt(row.file_id),
     message_id: normalizeNullablePositiveInt(row.message_id),
     article_hash: String(row.article_hash || ''),
     mode: normalizeMode(row.mode),
     operations: parseOperations(row.operations_json),
+    patches: parsePatches(row.pathes_json),
     status: normalizeStatus(row.status),
     expires_at: row.expires_at || null,
     created_at: row.created_at || null,
@@ -75,34 +95,57 @@ function cleanupExpiredOperationSets(database = getDb()) {
 
 function createOperationSet({
   conversationId,
+  conversation_id: snakeConversationId,
+  agentSessionId = null,
+  agent_session_id: snakeAgentSessionId = null,
   fileId = null,
+  file_id: snakeFileId = null,
   messageId = null,
   articleHash,
   mode = 'single',
   operations = [],
+  patches = [],
   status = 'pending',
   expireDays = DEFAULT_EXPIRE_DAYS,
 } = {}) {
   const database = getDb();
   cleanupExpiredOperationSets(database);
-  const normalizedConversationId = normalizeNullablePositiveInt(conversationId);
+  const normalizedConversationId = normalizeNullablePositiveInt(conversationId || snakeConversationId);
   if (!normalizedConversationId) throw new Error('conversation_id is required');
   const serializedOperations = JSON.stringify(Array.isArray(operations) ? operations : []);
+  const serializedPatches = JSON.stringify(Array.isArray(patches) ? patches : []);
+  const columns = [];
+  const placeholders = [];
+  const params = [];
+  const pushColumn = (column, value, placeholder = '?') => {
+    columns.push(column);
+    placeholders.push(placeholder);
+    if (placeholder === '?') params.push(value);
+  };
+
+  pushColumn('conversation_id', normalizedConversationId);
+  if (hasColumn(database, 'canvas_operation_sets', 'agent_session_id')) {
+    pushColumn('agent_session_id', normalizeNullablePositiveInt(agentSessionId || snakeAgentSessionId));
+  }
+  pushColumn('file_id', normalizeNullablePositiveInt(fileId || snakeFileId));
+  pushColumn('message_id', normalizeNullablePositiveInt(messageId));
+  pushColumn('article_hash', String(articleHash || ''));
+  pushColumn('mode', normalizeMode(mode));
+  pushColumn('operations_json', serializedOperations);
+  if (hasColumn(database, 'canvas_operation_sets', 'pathes_json')) pushColumn('pathes_json', serializedPatches);
+  pushColumn('status', normalizeStatus(status));
+  columns.push('expires_at');
+  placeholders.push("datetime('now', ?)");
+  params.push(`+${Math.max(1, Number(expireDays) || DEFAULT_EXPIRE_DAYS)} days`);
+  columns.push('updated_at');
+  placeholders.push("datetime('now')");
+
   const result = database.prepare(`
     INSERT INTO canvas_operation_sets (
-      conversation_id, file_id, message_id, article_hash, mode, operations_json, status, expires_at, updated_at
+      ${columns.join(', ')}
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', ?), datetime('now'))
-  `).run(
-    normalizedConversationId,
-    normalizeNullablePositiveInt(fileId),
-    normalizeNullablePositiveInt(messageId),
-    String(articleHash || ''),
-    normalizeMode(mode),
-    serializedOperations,
-    normalizeStatus(status),
-    `+${Math.max(1, Number(expireDays) || DEFAULT_EXPIRE_DAYS)} days`
-  );
+    VALUES (${placeholders.join(', ')})
+  `).run(...params);
   return getOperationSetById(result.lastInsertRowid);
 }
 
@@ -146,6 +189,10 @@ function updateOperationSet(id, updates = {}) {
   if (Object.prototype.hasOwnProperty.call(updates, 'operations')) {
     sets.push('operations_json = ?');
     params.push(JSON.stringify(Array.isArray(updates.operations) ? updates.operations : []));
+  }
+  if (Object.prototype.hasOwnProperty.call(updates, 'patches') && hasColumn(database, 'canvas_operation_sets', 'pathes_json')) {
+    sets.push('pathes_json = ?');
+    params.push(JSON.stringify(Array.isArray(updates.patches) ? updates.patches : []));
   }
   if (sets.length === 0) return getOperationSetById(normalizedId);
   sets.push("updated_at = datetime('now')");
@@ -194,12 +241,32 @@ function listOperationSetsByConversation(conversationId, options = {}) {
   return rows.map(formatRow);
 }
 
+function listOperationSetsBySession(sessionId, options = {}) {
+  const database = getDb();
+  cleanupExpiredOperationSets(database);
+  if (!hasColumn(database, 'canvas_operation_sets', 'agent_session_id')) return [];
+  const normalizedSessionId = normalizeNullablePositiveInt(sessionId);
+  if (!normalizedSessionId) return [];
+  const statuses = Array.isArray(options.statuses) && options.statuses.length > 0
+    ? options.statuses.map((item) => normalizeStatus(item)).filter(Boolean)
+    : ['pending', 'stale', 'applied', 'cancelled'];
+  const rows = database.prepare(`
+    SELECT *
+    FROM canvas_operation_sets
+    WHERE agent_session_id = ?
+      AND status IN (${statuses.map(() => '?').join(',')})
+    ORDER BY created_at ASC, id ASC
+  `).all(normalizedSessionId, ...statuses);
+  return rows.map(formatRow);
+}
+
 module.exports = {
   ACTIVE_STATUSES,
   computeArticleHash,
   createOperationSet,
   getOperationSetById,
   listOperationSetsByConversation,
+  listOperationSetsBySession,
   markConversationOperationSetsStale,
   markOperationSetStatus,
   updateOperationSet,

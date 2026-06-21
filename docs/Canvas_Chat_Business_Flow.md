@@ -1,7 +1,7 @@
 # 创作页 Chat 全流程业务文档
 
-> 更新时间：2026-05-02  
-> 适用范围：`/canvas` 当前真实实现的大纲生成、创作对话、风格仿写、批量预览恢复与全文分批改写链路
+> 更新时间：2026-06-21
+> 适用范围：`/canvas` 当前真实实现的大纲生成、Agentic Loop 创作任务、风格仿写、文件级预览、应用续跑与回滚链路
 
 ---
 
@@ -20,7 +20,9 @@
 
 ## 2. 当前产品口径
 
-- 创作页仍然是“围绕当前文章做协作编辑”的工作台，不是开放式通用聊天页。
+- 创作页仍然是“围绕当前文章做协作编辑”的工作台；右侧主输入入口默认使用 Agentic Loop 自动应用模式，发送后直接调用 `/api/agent/loop/start`，不再把创作页主输入发送到旧的 `/api/agent/run`。
+- 输入框左下角提供“自动应用 / 手动确认”下拉框，仅在创作页展示，选择值持久化到浏览器本机。自动应用模式跳过任务确认卡；手动确认模式才显示任务确认卡。
+- 当前文章改写、整篇生成/重写、新建笔记、文件夹分析、链接检查等任务都通过 Agentic Loop 执行；自动应用模式使用当前文章路径和默认检索次数，手动确认模式允许用户在任务卡中修改 `authorized_paths` 与 `search_knowledge_limit`。
 - 大纲可以先生成，但必须保存为正式文档后，才能继续稳定对话和应用 AI 改写。
 - 事实参考继续走后台自动补充，前台不单独展示事实来源配置。
 - 风格来源前台只保留：
@@ -41,8 +43,12 @@
 ### 后端 API
 
 - [outline.js](/Users/hejiajun/Documents/lzc_projects/Notus/notus/pages/api/agent/outline.js)
-- [run.js](/Users/hejiajun/Documents/lzc_projects/Notus/notus/pages/api/agent/run.js)
-- [apply.js](/Users/hejiajun/Documents/lzc_projects/Notus/notus/pages/api/agent/apply.js)
+- [run.js](/Users/hejiajun/Documents/lzc_projects/Notus/notus/pages/api/agent/run.js)（历史兼容，不作为创作页主输入入口）
+- [apply.js](/Users/hejiajun/Documents/lzc_projects/Notus/notus/pages/api/agent/apply.js)（历史兼容，不作为 Agentic Loop 应用入口）
+- [loop/start.js](/Users/hejiajun/Documents/lzc_projects/Notus/notus/pages/api/agent/loop/start.js)
+- [loop/apply.js](/Users/hejiajun/Documents/lzc_projects/Notus/notus/pages/api/agent/loop/apply.js)
+- [sessions/[id].js](/Users/hejiajun/Documents/lzc_projects/Notus/notus/pages/api/agent/sessions/[id].js)
+- [sessions/[id]/rollback.js](/Users/hejiajun/Documents/lzc_projects/Notus/notus/pages/api/agent/sessions/[id]/rollback.js)
 - [[id].js](/Users/hejiajun/Documents/lzc_projects/Notus/notus/pages/api/conversations/[id].js)
 
 ### 核心库
@@ -51,6 +57,10 @@
 - [canvasRequestPlanner.js](/Users/hejiajun/Documents/lzc_projects/Notus/notus/lib/canvasRequestPlanner.js)
 - [canvasAgent.js](/Users/hejiajun/Documents/lzc_projects/Notus/notus/lib/canvasAgent.js)
 - [canvasOperationSets.js](/Users/hejiajun/Documents/lzc_projects/Notus/notus/lib/canvasOperationSets.js)
+- [agentSession.js](/Users/hejiajun/Documents/lzc_projects/Notus/notus/lib/agentSession.js)
+- [agentTools.js](/Users/hejiajun/Documents/lzc_projects/Notus/notus/lib/agentTools.js)
+- [agentLoop.js](/Users/hejiajun/Documents/lzc_projects/Notus/notus/lib/agentLoop.js)
+- [agentLoopPrompt.js](/Users/hejiajun/Documents/lzc_projects/Notus/notus/lib/agentLoopPrompt.js)
 - [diff.js](/Users/hejiajun/Documents/lzc_projects/Notus/notus/lib/diff.js)
 
 ---
@@ -206,6 +216,22 @@ SSE 过程会返回：
 - `batch_progress`
 - `batch_done`
 
+### 6.6 主输入 Agentic Loop
+
+创作页右侧主输入收到用户请求后，不直接进入旧块级执行器，而是先读取创作页输入框里的执行方式。
+
+- 自动应用：默认模式。前端直接启动 Agentic Loop，不展示任务确认卡；默认授权路径优先使用当前文章路径。
+- 手动确认：展示任务确认卡，用户可以修改授权路径和检索次数后再启动。
+
+启动后前端调用 `/api/agent/loop/start`，服务端会：
+
+1. 创建 `agent_sessions`，保存目标、授权路径、授权操作和检索次数上限。
+2. 在执行前写入 `agent_snapshots`。
+3. 通过 Agent Loop 多轮调用 `search_knowledge / read_file / create_note / preview_patch_files / analyze_folder / check_links`。
+4. `preview_patch_files` 生成后暂停为 `waiting_confirm`，前端展示文件级 patch 预览。
+5. 自动应用模式会在页面仍停留在当前对话时自动调用 `/api/agent/loop/apply` 写入文件，再调用 `/api/agent/loop/start` 续跑；手动确认模式则等待用户点击应用。
+6. 任务完成、取消或失败后，可通过 `/api/agent/sessions/:id/rollback` 恢复快照并删除未被外部修改的新建文件。
+
 ---
 
 ## 7. 预览与应用链路
@@ -230,6 +256,8 @@ SSE 过程会返回：
 - `article_hash`
 - `mode`
 - `operations_json`
+- `agent_session_id`：Agentic Loop 生成的预览关联任务会话，旧数据可为空
+- `pathes_json`：Agentic Loop 文件级 patches，JS 内部仍使用 `patches` 命名
 - `status`
 - `expires_at`
 
@@ -242,13 +270,17 @@ SSE 过程会返回：
 
 ### 7.4 应用
 
-前端点击“应用全部修改”时：
+Agentic Loop 生成文件级预览后，前端按创作页执行方式处理：
 
-1. 调用 `/api/agent/apply`
-2. 后端执行 `applyOperations()`
-3. 任一操作出现 `OLD_MISMATCH`、`BLOCK_NOT_FOUND` 或 `NO_CHANGES`，整组回滚
-4. 只有 `changed_count > 0` 且最终文章内容确实变化时，才将 operation set 标记为 `applied`
-5. 如果没有实际修改，前端保留预览并提示用户重新生成，不显示应用成功
+- 自动应用：如果用户仍停留在当前页面和当前对话，前端自动调用应用接口；如果应用请求尚未发出就离开页面、关闭页面或切换当前对话，则不再写入。
+- 手动确认：前端保留预览卡和详情弹窗，等待用户点击“应用修改”。
+
+应用时：
+
+1. 调用 `/api/agent/loop/apply`，携带 `session_id`、`session_token` 和 `operation_set_id`。
+2. 后端按任务快照与 `old` 文本做冲突校验，通过后写入 Markdown 文件；生成预览前，`preview_patch_files` 会先把空白差异下的唯一近似 `old` 对齐到当前文件精确片段，无法唯一匹配时才返回明确错误。
+3. 前端刷新当前文章内容和文件树状态。
+4. 成功后再次调用 `/api/agent/loop/start`，携带同一个 `session_id + session_token` 续跑，直到任务完成或进入可处理的暂停状态。
 
 ### 7.5 取消与过期
 
@@ -264,6 +296,7 @@ SSE 过程会返回：
 
 - `pending_operation_sets`
 - `pending_interactions`
+- `agent_sessions`：用于导出 Agent Loop 运行记录，包含工具日志、思考文本、快照数量和修改预览集合，不包含 session token
 
 前端刷新后会：
 
@@ -282,7 +315,11 @@ SSE 过程会返回：
 4. 如果删除的是当前会话，创作页清空右侧消息、待应用预览和待回答抽屉，回到当前文章的新对话空态。
 5. 删除当前会话不会清空左侧文章块，也不会改变当前未保存状态。
 
-### 8.2 创作块区浏览位置
+### 8.2 导出历史会话
+
+创作页历史抽屉中的每条会话都提供导出图标。点击后前端读取 `/api/conversations/:id`，生成 Markdown 文件，内容包括用户消息、AI 消息、引用、消息 meta、Agent session、工具调用日志、思考文本、快照数量和修改预览集合。导出不会修改对话状态，也不会触发会话切换。
+
+### 8.3 创作块区浏览位置
 
 创作页左侧块区会写入 `canvas:file:<id>` 页面级记录，并同步更新 `document:file:<id>` 文档级最近位置：
 
@@ -338,8 +375,8 @@ SSE 过程会返回：
 2. 最后一题答完后先进入回顾态，允许回到前题修改
 3. 用户点击“开始生成预览”后，前端才调用 `POST /api/interactions/:id/respond`
 4. 后端把结构化答案写入 `response_json`，并追加一条 `user` 摘要消息；摘要消息的 `meta` 同时会写入当前文章范围内的短时纠错状态
-5. 如果答案已经足够，前端再调用 `/api/agent/run`
-6. 系统继续只生成 `operation_set` 预览，不会自动把修改写回文档
+5. 如果答案已经足够，前端按当前创作页执行方式继续：自动应用模式直接调用 `/api/agent/loop/start`，手动确认模式重新生成 Agentic Loop 任务确认卡
+6. 自动应用模式会在预览生成后自动写入并续跑；手动确认模式继续只生成预览，等待用户确认
 
 ### 9.4 回答失败或文章变化
 
@@ -354,55 +391,45 @@ SSE 过程会返回：
 
 ## 10. SSE 协议
 
-### `/api/agent/run`
+### `/api/agent/loop/start`
 
-当前会返回：
+当前创作页主输入消费以下 SSE 事件：
 
+- `session_created` / `session_resumed`
+- `snapshot_done`
+- `loop_start` / `soft_limit_notice`
 - `thinking`
-- `token`
-- `batch_start`
-- `batch_progress`
-- `batch_done`
-- `assistant_meta`
-- `interaction_request`
-- `operation`
-- `done`
-- `error`
+- `tool_start` / `tool_done`
+- `waiting_preview_confirm`
+- `loop_done`
+- `cancelled` / `error`
 
-其中：
+这些事件会映射到 AgentWorkspace 的任务状态卡、工具过程、流式思考文本和文件级预览卡。
 
-- `assistant_meta` 负责把 `operation_set_id`、`scope_mode`、`target_block_ids`、`last_focus_summary`、`fallback_reason`，以及 `primary_intent / risk_level / decision_summary / ai_arbitration_mode / source_content_type / target_anchor / position_relation / write_action / correction_state / show_decision_summary` 回给前端
-- `interaction_request` 负责把结构化提问抽屉完整下发给前端
-- `done` 负责回传最终 assistant message、citations 和 budget/usage
+### `/api/agent/loop/apply`
 
-### `/api/agent/apply`
+当前用于三类动作：
 
-当前兼容：
-
-- `{ operation }`
-- `{ operations }`
-- `{ action: "cancel" }`
-
-返回补充字段：
-
-- `applied_count`
-- `failed_at`
-- `operation_set_status`
+- `{ session_id, session_token, action: "apply", operation_set_id }`：应用文件级预览。
+- `{ session_id, session_token, action: "reject", operation_set_id }`：撤销预览并取消本次任务。
+- `{ session_id, session_token, action: "extend", extra_loops }`：硬上限暂停后继续执行。
 
 ---
 
 ## 11. 当前边界
 
-1. 旧的 `/api/agent/intent` 和 legacy Canvas agent 已移除，当前只保留请求规划器 + 执行器主链路。
+1. 旧的 `/api/agent/run` 与 `/api/agent/apply` 文件仍保留用于历史兼容；创作页主输入不再调用它们。
 2. 首版不做风格别名表、术语映射和自动学习同义词。
 3. 全文改写不会自动无限放宽范围，超过硬上限时必须要求用户缩小范围。
 4. 主动提问抽屉现在同时存在于创作页和知识库页，但知识库页只收集检索必要信息，不接入创作规划器的主意图与写入槽位。
 5. 回答卡片后仍只生成预览，不会自动把内容直接写回文档。
 6. 轻量纠偏入口只在系统已经形成较明确判断时出现，不是常驻模式切换器，也不替代正常意图识别。
-# 2026-06-19 Agent Workspace 更新
 
-- 创作页整页改为 Notus Agent Workspace，不再常驻旧块画布和右侧聊天分栏。
-- 当前文档内容会在前端转换为 article blocks 后提交给 /api/agent/run；无当前文档时会先创建一篇 AI 创作草稿。
-- thinking / batch_start / batch_progress / batch_done / assistant_meta / done 会映射为工具过程和文件变更卡片。
-- 变更详情弹窗展示 operation old/new 内容；应用修改后通过 /api/agent/apply 生成新 article，再保存回当前 Markdown 文件。
-- 输入框会随请求携带当前模型、联网搜索状态、搜索服务商和附件元数据；联网搜索当前只记录配置状态，不参与真实外部搜索。
+# 2026-06-20 Agent 聊天 UI 修正
+
+- 创作页继续保留旧的块画布、文章分片预览、块编辑和批量修改预览，不再整页替换为 Agent Workspace。
+- 右侧聊天消息区、工具链和底部输入框按 Notus-design-draft/notus-agent.html 还原；聊天顶部不显示 Agent Workspace 标题，也不显示模型配置和搜索配置按钮。
+- 当前文档路径会作为 Agentic Loop 默认授权路径；自动应用模式直接使用该路径启动，手动确认模式会在任务确认卡中展示并允许修改。无当前文档时仍先创建一篇 AI 创作草稿。
+- session_created / snapshot_done / loop_start / thinking / tool_start / tool_done / waiting_preview_confirm / loop_done 会累计为设计稿工具过程和文件变更卡片；最终 assistant 消息保留完整工具步骤，历史会话中仍可展开查看每一步的说明、工具输入和结果。
+- 批量修改预览、应用和取消能力继续保留；变更详情弹窗展示文件级 patch 的 old/new 内容，应用修改后通过 /api/agent/loop/apply 写回 Markdown，再携带 session_id 续跑。
+- 输入框会随请求携带当前模型、联网搜索状态、搜索服务商和附件元数据；联网搜索当前只记录配置状态，不参与真实外部搜索；输入框上方不展示预制问题列表。

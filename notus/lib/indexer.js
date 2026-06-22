@@ -525,9 +525,14 @@ async function rebuildIndex(onProgress, options = {}) {
   }
 }
 
+async function triggerIncrementalIndex(relPath) {
+  await indexFile(relPath);
+}
+
 module.exports = {
   splitIntoChunks,
   indexFile,
+  triggerIncrementalIndex,
   indexBatch,
   clearIndex,
   removeFile,

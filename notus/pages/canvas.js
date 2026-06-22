@@ -10,6 +10,7 @@ import { ClarifyDrawer } from '../components/ChatArea/ClarifyDrawer';
 import { ConversationDrawer } from '../components/ChatArea/ConversationDrawer';
 import { InputBar } from '../components/ChatArea/InputBar';
 import { BatchOperationCard } from '../components/AIPanel/BatchOperationCard';
+import { AgentWorkspace } from '../components/AgentWorkspace/AgentWorkspace';
 import { ResizableLayout } from '../components/ui/ResizableLayout';
 import { DropdownSelect } from '../components/ui/DropdownSelect';
 import { DocumentFindBar } from '../components/ui/DocumentFindBar';
@@ -24,6 +25,7 @@ import { useToast } from '../components/ui/Toast';
 import { useApp } from '../contexts/AppContext';
 import { useAppStatus } from '../contexts/AppStatusContext';
 import { useLlmConfigs } from '../hooks/useLlmConfigs';
+import { useAgentLoopController } from '../hooks/useAgentLoopController';
 import { useStableAiReadiness } from '../hooks/useStableAiReadiness';
 import { useDocumentFind } from '../hooks/useDocumentFind';
 import { useUnsavedChangesGuard } from '../hooks/useUnsavedChangesGuard';
@@ -32,6 +34,11 @@ import { getVisibleDocumentLabel } from '../lib/documentLabels';
 import { splitEditorVisibleMarkdown } from '../lib/markdownMeta';
 import { deriveAiReadiness } from '../utils/aiReadiness';
 import { mapConversationMessages } from '../utils/conversations';
+import {
+  buildConversationExportFileName,
+  downloadTextFile,
+  formatConversationExportMarkdown,
+} from '../utils/conversationExport';
 import { readApiResponse } from '../utils/http';
 import { navigateWithFallback } from '../utils/navigation';
 import {
@@ -62,6 +69,9 @@ const MOCK_BLOCKS_BY_TOPIC = {
 };
 
 const CANVAS_LAYOUT_STORAGE_KEY = 'notus-layout-canvas-left-percent';
+const CANVAS_AGENT_CONFIRM_MODE_STORAGE_KEY = 'notus-canvas-agent-confirm-mode';
+const CANVAS_AGENT_CONFIRM_AUTO_APPLY = 'auto_apply';
+const CANVAS_AGENT_CONFIRM_MANUAL = 'manual';
 const CANVAS_LAYOUT_DEFAULT = 62;
 const CANVAS_LAYOUT_MIN = 48;
 const CANVAS_LAYOUT_MAX = 64;
@@ -97,6 +107,26 @@ function writeCanvasLayoutCache(value) {
       CANVAS_LAYOUT_STORAGE_KEY,
       String(clampCanvasLayoutPercent(value))
     );
+  } catch {}
+}
+
+function normalizeCanvasAgentConfirmMode(value) {
+  return value === CANVAS_AGENT_CONFIRM_MANUAL ? CANVAS_AGENT_CONFIRM_MANUAL : CANVAS_AGENT_CONFIRM_AUTO_APPLY;
+}
+
+function readCanvasAgentConfirmMode() {
+  if (typeof window === 'undefined') return CANVAS_AGENT_CONFIRM_AUTO_APPLY;
+  try {
+    return normalizeCanvasAgentConfirmMode(window.localStorage.getItem(CANVAS_AGENT_CONFIRM_MODE_STORAGE_KEY));
+  } catch {
+    return CANVAS_AGENT_CONFIRM_AUTO_APPLY;
+  }
+}
+
+function writeCanvasAgentConfirmMode(value) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(CANVAS_AGENT_CONFIRM_MODE_STORAGE_KEY, normalizeCanvasAgentConfirmMode(value));
   } catch {}
 }
 
@@ -475,10 +505,12 @@ export default function CanvasPage() {
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
   const [streamText, setStreamText] = useState('');
+  const [activeSteps] = useState([]);
   const [activeConversationId, setActiveConversationId] = useState(null);
   const [conversationList, setConversationList] = useState([]);
   const [conversationListLoading, setConversationListLoading] = useState(false);
   const [deletingConversationId, setDeletingConversationId] = useState(null);
+  const [exportingConversationId, setExportingConversationId] = useState(null);
   const [, setConversationDraft] = useState(true);
   const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
   const [pendingOperationSets, setPendingOperationSets] = useState([]);
@@ -495,6 +527,7 @@ export default function CanvasPage() {
   const [outlineLoading, setOutlineLoading] = useState(false);
   const [outlineStatusText, setOutlineStatusText] = useState('');
   const [canvasLayoutLeftPercent, setCanvasLayoutLeftPercent] = useState(CANVAS_LAYOUT_DEFAULT);
+  const [agentConfirmMode, setAgentConfirmModeState] = useState(() => readCanvasAgentConfirmMode());
   const layoutChangeCountRef = useRef(0);
   const persistedLayoutLeftPercentRef = useRef(null);
   const dirtyStateRef = useRef(false);
@@ -502,6 +535,11 @@ export default function CanvasPage() {
   const hiddenArticleFrontmatterRef = useRef('');
   const restoreCanvasPositionRef = useRef(false);
   const saveCanvasPositionTimerRef = useRef(null);
+  const pageAliveRef = useRef(true);
+  const activeConversationIdRef = useRef(null);
+  const autoApplyControllerRef = useRef(null);
+  const autoApplyingOperationSetIdRef = useRef(null);
+  const agentLoopControlRef = useRef({ loading: false, stopAgentLoop: null });
   const articleFileId = Number(article?.fileId || article?.file_id) || null;
   const canvasConversationEnabled = Boolean(articleFileId);
   const conversationScopeKey = !article
@@ -548,6 +586,20 @@ export default function CanvasPage() {
     const cached = readCanvasLayoutCache();
     if (cached === null) return;
     setCanvasLayoutLeftPercent(cached);
+  }, []);
+
+  useEffect(() => {
+    setAgentConfirmModeState(readCanvasAgentConfirmMode());
+  }, []);
+
+  useEffect(() => {
+    activeConversationIdRef.current = activeConversationId;
+  }, [activeConversationId]);
+
+  const setAgentConfirmMode = useCallback((value) => {
+    const normalized = normalizeCanvasAgentConfirmMode(value);
+    setAgentConfirmModeState(normalized);
+    writeCanvasAgentConfirmMode(normalized);
   }, []);
 
   useEffect(() => {
@@ -696,7 +748,7 @@ export default function CanvasPage() {
     : '还需要先完成 Embedding 配置后，才能生成大纲、调用 AI 改写，并继续完成整篇创作。';
   const articleTitleLabel = getVisibleDocumentLabel(article, '未命名创作');
   const canvasFileLabel = articleFileId ? articleTitleLabel : `${articleTitleLabel} · 未保存大纲`;
-  const activeClarifyInteraction = loading
+  const rawClarifyInteraction = loading
     ? null
     : ([...pendingInteractions].reverse().find((item) => item.status === 'pending')
       || [...pendingInteractions].reverse().find((item) => item.status === 'failed')
@@ -704,7 +756,7 @@ export default function CanvasPage() {
       || null);
   const canvasInputDisabled = !aiReady
     || !canvasConversationEnabled
-    || (Boolean(activeClarifyInteraction) && clarifyDrawerPhase !== 'collapsed');
+    || (Boolean(rawClarifyInteraction) && clarifyDrawerPhase !== 'collapsed');
 
   const unsavedGuard = useUnsavedChangesGuard({
     isDirty: saveState === 'dirty',
@@ -720,7 +772,7 @@ export default function CanvasPage() {
 
   useEffect(() => {
     setClarifyDrawerPhase('expanded-question');
-  }, [activeClarifyInteraction?.id]);
+  }, [rawClarifyInteraction?.id]);
 
   const documentFind = useDocumentFind({
     enabled: Boolean(article),
@@ -962,8 +1014,112 @@ export default function CanvasPage() {
     } catch {}
   }, [fetchConversationList]);
 
+  const refreshCurrentArticleAfterAgentWrite = useCallback(async () => {
+    if (!activeFile?.id) return;
+    try {
+      const response = await fetch(`/api/articles/${activeFile.id}`, { cache: 'no-store' });
+      const payload = await readApiResponse(response, '刷新文章内容失败');
+      setArticle((prev) => ({
+        ...(prev || {}),
+        ...(payload || {}),
+        title: getVisibleDocumentLabel(payload || activeFile, '未命名创作'),
+        file_id: payload?.file_id || activeFile.id,
+        fileId: payload?.file_id || activeFile.id,
+        draft_key: null,
+        draftKey: null,
+        sourcePath: activeFile.path,
+      }));
+      hiddenArticleFrontmatterRef.current = payload?.hidden_frontmatter || payload?.hiddenFrontmatter || hiddenArticleFrontmatterRef.current || '';
+      if (Array.isArray(payload?.blocks)) setBlocks(payload.blocks);
+      setSaveState('saved');
+      await refreshFiles();
+    } catch (error) {
+      toast(error.message || '刷新文章内容失败', 'error');
+    }
+  }, [activeFile, refreshFiles, toast]);
+
+  const handleAgentLoopOperationSets = useCallback((operationSets = []) => {
+    setPendingOperationSets((prev) => (
+      (Array.isArray(operationSets) ? operationSets : []).reduce((next, item) => upsertOperationSet(next, item), prev)
+    ));
+  }, []);
+
+  const handleAgentLoopOperationSetHandled = useCallback((operationSetId) => {
+    setPendingOperationSets((prev) => prev.filter((item) => Number(item.id) !== Number(operationSetId)));
+    setMessages((prev) => prev.map((message) => (
+      Number(message?.meta?.operation_set_id || 0) === Number(operationSetId)
+        ? {
+          ...message,
+          operationSet: null,
+          meta: {
+            ...(message.meta || {}),
+            operation_set_id: null,
+          },
+        }
+        : message
+    )));
+  }, []);
+
+  const agentLoop = useAgentLoopController({
+    onAppendUserMessage: (message) => setMessages((prev) => [...prev, message]),
+    onAppendAssistantMessage: (message) => setMessages((prev) => upsertMessage(prev, message)),
+    onConversationId: (conversationId) => {
+      if (!conversationId) return;
+      setActiveConversationId(Number(conversationId));
+      setConversationDraft(false);
+    },
+    onConversationSettled: (conversationId) => {
+      if (conversationId) refreshConversationListOnly(Number(conversationId));
+    },
+    onOperationSets: handleAgentLoopOperationSets,
+    onOperationSetHandled: handleAgentLoopOperationSetHandled,
+    onApplySuccess: refreshCurrentArticleAfterAgentWrite,
+    onRollbackSuccess: refreshCurrentArticleAfterAgentWrite,
+    onError: (error) => toast(error.message || 'Agent Loop 请求失败', 'error'),
+  });
+
+  useEffect(() => {
+    agentLoopControlRef.current = {
+      loading: agentLoop.loading,
+      stopAgentLoop: agentLoop.stopAgentLoop,
+    };
+  }, [agentLoop.loading, agentLoop.stopAgentLoop]);
+
+  useEffect(() => {
+    pageAliveRef.current = true;
+    const handleLeave = () => {
+      pageAliveRef.current = false;
+      autoApplyControllerRef.current?.abort();
+      autoApplyControllerRef.current = null;
+      autoApplyingOperationSetIdRef.current = null;
+      const control = agentLoopControlRef.current || {};
+      if (control.loading) control.stopAgentLoop?.();
+    };
+    const handleRouteError = () => {
+      pageAliveRef.current = true;
+    };
+
+    router.events.on('routeChangeStart', handleLeave);
+    router.events.on('routeChangeError', handleRouteError);
+    window.addEventListener('pagehide', handleLeave);
+    window.addEventListener('beforeunload', handleLeave);
+    return () => {
+      router.events.off('routeChangeStart', handleLeave);
+      router.events.off('routeChangeError', handleRouteError);
+      window.removeEventListener('pagehide', handleLeave);
+      window.removeEventListener('beforeunload', handleLeave);
+      handleLeave();
+    };
+  }, [router.events]);
+
+  const aiRequestLoading = loading || agentLoop.loading;
+  const activeClarifyInteraction = aiRequestLoading ? null : rawClarifyInteraction;
+  const agentLoopInteractionLocked = Boolean(agentLoop.pendingAgentTask)
+    || ['running', 'waiting_confirm'].includes(agentLoop.activeAgentSession?.status);
+  const effectiveCanvasInputDisabled = canvasInputDisabled || aiRequestLoading || agentLoopInteractionLocked;
+
   const handleConversationSelect = useCallback(async (conversationId) => {
-    if (!conversationId || loading) return;
+    if (!conversationId || aiRequestLoading || agentLoopInteractionLocked) return;
     setConversationListLoading(true);
     requestControllerRef.current?.abort();
     try {
@@ -981,10 +1137,14 @@ export default function CanvasPage() {
     } finally {
       setConversationListLoading(false);
     }
-  }, [article, blocks, fetchConversationDetail, loading, toast]);
+  }, [agentLoopInteractionLocked, aiRequestLoading, article, blocks, fetchConversationDetail, toast]);
 
   const handleNewConversation = useCallback(() => {
     if (!articleFileId) return;
+    if (aiRequestLoading || agentLoopInteractionLocked) {
+      toast('当前 Agent 任务还在执行，请先停止或等待完成后再新建对话', 'info');
+      return;
+    }
     requestControllerRef.current?.abort();
     setActiveConversationId(null);
     setConversationDraft(true);
@@ -992,10 +1152,11 @@ export default function CanvasPage() {
     setPendingOperationSets([]);
     setPendingInteractions([]);
     setAiInjected('');
+    agentLoop.cancelAgentTask();
     setStreamText('');
     setLoading(false);
     setHistoryDrawerOpen(false);
-  }, [articleFileId]);
+  }, [agentLoop, agentLoopInteractionLocked, aiRequestLoading, articleFileId, toast]);
 
   const handleConversationDelete = useCallback(async (conversationId) => {
     const normalizedConversationId = Number(conversationId);
@@ -1028,6 +1189,44 @@ export default function CanvasPage() {
       setDeletingConversationId(null);
     }
   }, [activeConversationId, deletingConversationId, fetchConversationList, toast]);
+
+  const handleConversationExport = useCallback(async (conversationId, conversation = null) => {
+    const normalizedConversationId = Number(conversationId);
+    if (!Number.isFinite(normalizedConversationId) || exportingConversationId) return;
+    setExportingConversationId(normalizedConversationId);
+    try {
+      const payload = await fetchConversationDetail(normalizedConversationId, { ...article, blocks });
+      const isActive = Number(activeConversationId) === normalizedConversationId;
+      const exportMessages = isActive && messages.length > 0
+        ? messages
+        : (Array.isArray(payload.messages) ? payload.messages : []);
+      const exportPayload = {
+        conversation: { ...(conversation || {}), ...(payload || {}) },
+        messages: exportMessages,
+        agentSessions: Array.isArray(payload.agent_sessions) ? payload.agent_sessions : [],
+        pendingOperationSets: isActive
+          ? pendingOperationSets
+          : (Array.isArray(payload.pending_operation_sets) ? payload.pending_operation_sets : []),
+        source: 'Notus 创作页',
+      };
+      const content = formatConversationExportMarkdown(exportPayload);
+      downloadTextFile(buildConversationExportFileName(exportPayload.conversation), content);
+      toast('对话已导出为 Markdown 文件', 'success');
+    } catch (exportError) {
+      toast(exportError.message || '导出历史对话失败', 'error');
+    } finally {
+      setExportingConversationId(null);
+    }
+  }, [
+    activeConversationId,
+    article,
+    blocks,
+    exportingConversationId,
+    fetchConversationDetail,
+    messages,
+    pendingOperationSets,
+    toast,
+  ]);
 
   useEffect(() => {
     if (!article || !articleFileId) {
@@ -1124,112 +1323,46 @@ export default function CanvasPage() {
     };
   }, [article, blocks, pendingInteractions.length]);
 
-  const executeAgentRun = useCallback(async (requestBody, options = {}) => {
-    requestControllerRef.current?.abort();
-    const controller = new AbortController();
-    requestControllerRef.current = controller;
-    setLoading(true);
+  const buildCanvasAgentTask = useCallback((query, options = {}) => {
+    const filePath = article?.sourcePath || activeFile?.path || '';
+    const goal = filePath
+      ? `用户任务：${query}\n\n当前文章路径：${filePath}`
+      : query;
+    return {
+      goal,
+      display_query: query,
+      kind: 'canvas',
+      conversation_id: activeConversationId || undefined,
+      active_file_id: activeFile?.id || articleFileId || undefined,
+      llm_config_id: options.llmConfigId || selectedLlmConfigId,
+      authorized_paths: [filePath || ''],
+      authorized_ops: ['modify', 'create'],
+      search_knowledge_limit: 5,
+      attachments: options.attachments || [],
+      route_reason: options.routeReason || 'canvas_main_input',
+    };
+  }, [
+    activeConversationId,
+    activeFile?.id,
+    activeFile?.path,
+    article?.sourcePath,
+    articleFileId,
+    selectedLlmConfigId,
+  ]);
+
+  const prepareCanvasAgentTask = useCallback((query, options = {}) => {
+    const task = buildCanvasAgentTask(query, options);
     setAiInjected('');
-    if (options.optimisticUserMessage) {
-      setMessages((prev) => [...prev, { id: Date.now(), role: 'user', content: options.optimisticUserMessage }]);
+    if (agentConfirmMode === CANVAS_AGENT_CONFIRM_AUTO_APPLY) {
+      agentLoop.confirmAgentTask(task);
+      return;
     }
-
-    try {
-      let assistantText = '';
-      let assistantMeta = null;
-      let hasTokenStream = false;
-      let resolvedConversationId = activeConversationId;
-      const response = await fetch('/api/agent/run', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal: controller.signal,
-        body: JSON.stringify(requestBody),
-      });
-      if (!response.ok) {
-        const payload = await response.json();
-        const error = new Error(payload.error || 'AI 请求失败');
-        error.conversationId = payload.interaction?.conversation_id || activeConversationId || null;
-        throw error;
-      }
-
-      await readSse(response, (event) => {
-        if (event.conversation_id) {
-          resolvedConversationId = Number(event.conversation_id);
-        }
-        if (event.type === 'thinking') {
-          assistantText = event.text || '正在处理…';
-          setStreamText(assistantText);
-        } else if (event.type === 'token') {
-          if (!hasTokenStream) {
-            assistantText = '';
-            hasTokenStream = true;
-          }
-          assistantText += event.text || '';
-          setStreamText(assistantText);
-        } else if (event.type === 'batch_start') {
-          setStreamText(`正在准备批量修改，预计 ${event.total_batches || 1} 批…`);
-        } else if (event.type === 'batch_progress') {
-          setStreamText(event.text || `正在处理第 ${event.current_batch}/${event.total_batches} 批…`);
-        } else if (event.type === 'batch_done') {
-          setStreamText(`已生成 ${event.total_operations || 0} 项修改，正在整理预览…`);
-        } else if (event.type === 'assistant_meta') {
-          assistantMeta = event.assistant_meta || null;
-          if (event.operation_set) {
-            setPendingOperationSets((prev) => upsertOperationSet(prev, event.operation_set));
-          }
-          if (event.interaction) {
-            setPendingInteractions((prev) => upsertInteraction(prev, event.interaction));
-          }
-        } else if (event.type === 'interaction_request') {
-          if (event.interaction) {
-            setPendingInteractions((prev) => upsertInteraction(prev, event.interaction));
-          }
-        } else if (event.type === 'done') {
-          assistantMeta = event.assistant_meta || assistantMeta;
-          if (event.operation_set) {
-            setPendingOperationSets((prev) => upsertOperationSet(prev, event.operation_set));
-          }
-          if (event.interaction) {
-            setPendingInteractions((prev) => upsertInteraction(prev, event.interaction));
-          }
-          setMessages((prev) => upsertMessage(prev, {
-            id: event.message_id || Date.now(),
-            role: 'assistant',
-            content: event.assistant_message || assistantText || '处理完成。',
-            citations: event.citations || [],
-            meta: assistantMeta,
-          }));
-          if (resolvedConversationId) {
-            setActiveConversationId(resolvedConversationId);
-            setConversationDraft(false);
-            refreshConversationListOnly(resolvedConversationId);
-          }
-          setStreamText('');
-          setLoading(false);
-        } else if (event.type === 'error') {
-          const nextError = new Error(event.error || 'AI 请求失败');
-          nextError.conversationId = event.conversation_id ? Number(event.conversation_id) : resolvedConversationId;
-          throw nextError;
-        }
-      });
-    } catch (error) {
-      if (error.name !== 'AbortError') {
-        if (error.conversationId) {
-          setActiveConversationId(Number(error.conversationId));
-          setConversationDraft(false);
-          refreshConversationListOnly(Number(error.conversationId));
-        }
-        toast(error.message || 'AI 请求失败', 'error');
-      }
-      setStreamText('');
-      setLoading(false);
-      throw error;
-    } finally {
-      if (requestControllerRef.current === controller) {
-        requestControllerRef.current = null;
-      }
-    }
-  }, [activeConversationId, refreshConversationListOnly, toast]);
+    agentLoop.createAgentTask(task);
+  }, [
+    agentConfirmMode,
+    agentLoop,
+    buildCanvasAgentTask,
+  ]);
 
   const focusCanvasInput = useCallback(() => {
     window.requestAnimationFrame(() => {
@@ -1293,19 +1426,15 @@ export default function CanvasPage() {
   const runInteractionResume = useCallback(async (interaction, llmConfigId = selectedLlmConfigId) => {
     if (!interaction?.id) return;
     if (!llmConfigId) {
-      toast('请先在模型配置中新增并测试至少一个 LLM 配置', 'warning');
+      toast('请先在模型配置中新增至少一个 LLM 配置', 'warning');
       return;
     }
-    await executeAgentRun({
-      interaction_id: interaction.id,
-      interaction_response: interaction.response || null,
-      llm_config_id: llmConfigId,
-      active_file_id: activeFile?.id || null,
-      article: { ...article, blocks },
-      style_mode: styleSource,
-      style_file_ids: styleSource === 'manual' ? manualStyleFileIds : undefined,
+    const originalInput = interaction?.payload?.original_user_input || '继续完成刚才的创作任务';
+    prepareCanvasAgentTask(originalInput, {
+      llmConfigId,
+      routeReason: 'legacy_interaction_resume',
     });
-  }, [activeFile?.id, article, blocks, executeAgentRun, manualStyleFileIds, selectedLlmConfigId, styleSource, toast]);
+  }, [prepareCanvasAgentTask, selectedLlmConfigId, toast]);
 
   const handleInteractionCardSubmit = useCallback(async (interaction, answers) => {
     try {
@@ -1321,55 +1450,42 @@ export default function CanvasPage() {
 
   const handleDecisionCorrection = useCallback(async (signalId) => {
     const action = DECISION_CORRECTION_ACTIONS[signalId];
-    if (!action || loading) return;
+    if (!action || aiRequestLoading) return;
     if (!articleFileId) {
       toast('先保存当前大纲为文档，再继续 AI 改写和历史对话', 'info');
       return;
     }
     if (!selectedLlmConfigId) {
-      toast('请先在模型配置中新增并测试至少一个 LLM 配置', 'warning');
+      toast('请先在模型配置中新增至少一个 LLM 配置', 'warning');
       return;
     }
 
     try {
-      await executeAgentRun({
-        conversation_id: activeConversationId || undefined,
-        user_input: action.prompt,
-        user_meta: {
-          source: 'decision_correction',
-          correction_state: action.correctionState,
-        },
-        llm_config_id: selectedLlmConfigId,
-        active_file_id: activeFile?.id || null,
-        article: { ...article, blocks },
-        style_mode: styleSource,
-        style_file_ids: styleSource === 'manual' ? manualStyleFileIds : undefined,
-      }, {
-        optimisticUserMessage: action.prompt,
+      prepareCanvasAgentTask(action.prompt, {
+        llmConfigId: selectedLlmConfigId,
+        routeReason: 'decision_correction',
       });
     } catch {}
   }, [
-    activeConversationId,
-    activeFile?.id,
-    article,
+    aiRequestLoading,
     articleFileId,
-    blocks,
-    executeAgentRun,
-    loading,
-    manualStyleFileIds,
+    prepareCanvasAgentTask,
     selectedLlmConfigId,
-    styleSource,
     toast,
   ]);
 
-  const handleSend = useCallback(async (query, llmConfigId = selectedLlmConfigId) => {
+  const handleSend = useCallback(async (query, optionsOrLlmConfigId = selectedLlmConfigId) => {
+    const sendOptions = optionsOrLlmConfigId && typeof optionsOrLlmConfigId === 'object'
+      ? optionsOrLlmConfigId
+      : { llmConfigId: optionsOrLlmConfigId };
+    const llmConfigId = sendOptions.llmConfigId || selectedLlmConfigId;
     if (!articleFileId) {
       toast('先保存当前大纲为文档，再继续 AI 改写和历史对话', 'info');
       return;
     }
 
     if (!llmConfigId) {
-      toast('请先在模型配置中新增并测试至少一个 LLM 配置', 'warning');
+      toast('请先在模型配置中新增至少一个 LLM 配置', 'warning');
       return;
     }
 
@@ -1380,31 +1496,19 @@ export default function CanvasPage() {
     }
 
     try {
-      await executeAgentRun({
-        conversation_id: activeConversationId || undefined,
-        user_input: query,
-        llm_config_id: llmConfigId,
-        active_file_id: activeFile?.id || null,
-        article: { ...article, blocks },
-        style_mode: styleSource,
-        style_file_ids: styleSource === 'manual' ? manualStyleFileIds : undefined,
-      }, {
-        optimisticUserMessage: query,
+      prepareCanvasAgentTask(query, {
+        llmConfigId,
+        attachments: sendOptions.attachments || [],
+        routeReason: 'canvas_main_input',
       });
     } catch {}
   }, [
-    activeConversationId,
-    activeFile?.id,
-    article,
     articleFileId,
-    blocks,
-    executeAgentRun,
-    manualStyleFileIds,
     activeClarifyInteraction,
     cancelInteraction,
     clarifyDrawerPhase,
+    prepareCanvasAgentTask,
     selectedLlmConfigId,
-    styleSource,
     toast,
   ]);
 
@@ -1504,67 +1608,19 @@ export default function CanvasPage() {
 
   const handleApplyOperationSet = useCallback(async (operationSet) => {
     try {
-      const response = await fetch('/api/agent/apply', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          article: { ...article, blocks },
-          operations: operationSet?.operations || [],
-          operation_set_id: operationSet?.id || null,
-        }),
-      });
-      const payload = await response.json();
-      if (!response.ok || !payload.success) {
-        const errorCode = payload?.code || payload?.error || '';
-        if (payload?.operation_set_status) {
-          setPendingOperationSets((prev) => prev.map((item) => (
-            Number(item.id) === Number(operationSet?.id)
-              ? { ...item, status: payload.operation_set_status }
-              : item
-          )));
-        }
-        if (errorCode === 'OLD_MISMATCH') {
-          throw new Error('这组预览对应的原文已经变化，请重新生成后再应用');
-        }
-        if (errorCode === 'ARTICLE_STALE') {
-          throw new Error('文章内容已经变化，请重新生成预览后再应用');
-        }
-        if (errorCode === 'FILE_STALE') {
-          throw new Error('Markdown 文件已经变化，请重新加载后再应用预览');
-        }
-        throw new Error(payload.error || payload.code || '应用修改失败');
-      }
-      const nextArticle = payload.article
-        ? {
-          ...payload.article,
-          file_id: payload.article.file_id || article?.file_id || article?.fileId,
-          fileId: payload.article.file_id || article?.file_id || article?.fileId,
-          sourcePath: article?.sourcePath,
-        }
-        : article;
-      setArticle(nextArticle);
-      setBlocks(payload.article?.blocks || blocks);
-      setPendingOperationSets((prev) => prev.filter((item) => Number(item.id) !== Number(operationSet?.id)));
-      setSaveState('dirty');
+      await agentLoop.applyOperationSet(operationSet, { approvalMode: CANVAS_AGENT_CONFIRM_MANUAL });
       toast('修改已应用', 'success');
     } catch (error) {
       toast(error.message || '应用修改失败', 'error');
     }
-  }, [article, blocks, toast]);
+  }, [agentLoop, toast]);
 
   const handleCancelOperationSet = useCallback(async (operationSet) => {
     try {
-      await fetch('/api/agent/apply', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'cancel',
-          operation_set_id: operationSet?.id || null,
-        }),
-      });
+      await agentLoop.rejectOperationSet(operationSet);
     } catch {}
     setPendingOperationSets((prev) => prev.filter((item) => Number(item.id) !== Number(operationSet?.id)));
-  }, []);
+  }, [agentLoop]);
 
   const handleDragEnd = useCallback(({ active, over }) => {
     if (!over || active.id === over.id) return;
@@ -1581,6 +1637,77 @@ export default function CanvasPage() {
     acc[String(item.id)] = item;
     return acc;
   }, {});
+  const activeAgentLoopSession = agentLoop.activeAgentSession;
+  const activeAgentLoopSessionConversationId = activeAgentLoopSession?.conversation_id;
+  const activeAgentLoopSessionOperationSetId = activeAgentLoopSession?.operation_set_id;
+  const activeAgentLoopSessionReason = activeAgentLoopSession?.reason;
+  const activeAgentLoopSessionStatus = activeAgentLoopSession?.status;
+  const applyAgentOperationSet = agentLoop.applyOperationSet;
+
+  useEffect(() => {
+    if (agentConfirmMode !== CANVAS_AGENT_CONFIRM_AUTO_APPLY) return undefined;
+    if (activeAgentLoopSessionStatus !== 'waiting_confirm' || activeAgentLoopSessionReason !== 'waiting_preview_confirm') return undefined;
+    const operationSetId = Number(activeAgentLoopSessionOperationSetId || 0);
+    if (!operationSetId || autoApplyingOperationSetIdRef.current === operationSetId) return undefined;
+    const operationSet = pendingOperationSets.find((item) => (
+      Number(item.id) === operationSetId && (!item.status || item.status === 'pending')
+    ));
+    if (!operationSet || !pageAliveRef.current) return undefined;
+
+    const startConversationId = activeConversationIdRef.current ? Number(activeConversationIdRef.current) : null;
+    const sessionConversationId = activeAgentLoopSessionConversationId ? Number(activeAgentLoopSessionConversationId) : startConversationId;
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      if (!pageAliveRef.current || controller.signal.aborted) return;
+      const currentConversationId = activeConversationIdRef.current ? Number(activeConversationIdRef.current) : null;
+      if (sessionConversationId && currentConversationId && sessionConversationId !== currentConversationId) return;
+      autoApplyControllerRef.current?.abort();
+      autoApplyControllerRef.current = controller;
+      autoApplyingOperationSetIdRef.current = operationSetId;
+      try {
+        await applyAgentOperationSet(operationSet, {
+          signal: controller.signal,
+          approvalMode: CANVAS_AGENT_CONFIRM_AUTO_APPLY,
+          shouldResume: () => {
+            const currentConversationId = activeConversationIdRef.current ? Number(activeConversationIdRef.current) : null;
+            return pageAliveRef.current
+              && !controller.signal.aborted
+              && (!sessionConversationId || !currentConversationId || sessionConversationId === currentConversationId);
+          },
+        });
+        if (!controller.signal.aborted) toast('修改预览已自动应用', 'success');
+      } catch (error) {
+        if (controller.signal.aborted || error?.name === 'AbortError') return;
+        toast(error.message || '自动应用预览失败，请手动检查', 'error');
+      } finally {
+        if (autoApplyingOperationSetIdRef.current === operationSetId) {
+          autoApplyingOperationSetIdRef.current = null;
+        }
+        if (autoApplyControllerRef.current === controller) {
+          autoApplyControllerRef.current = null;
+        }
+      }
+    }, 160);
+
+    return () => {
+      window.clearTimeout(timer);
+      if (autoApplyingOperationSetIdRef.current === operationSetId && autoApplyControllerRef.current === controller) {
+        controller.abort();
+        autoApplyingOperationSetIdRef.current = null;
+        autoApplyControllerRef.current = null;
+      }
+    };
+  }, [
+    agentConfirmMode,
+    activeAgentLoopSessionConversationId,
+    activeAgentLoopSessionOperationSetId,
+    activeAgentLoopSessionReason,
+    activeAgentLoopSessionStatus,
+    applyAgentOperationSet,
+    pendingOperationSets,
+    toast,
+  ]);
+
   const hiddenInteractionIds = new Set(
     pendingInteractions
       .filter((item) => item && ['pending', 'failed', 'stale'].includes(item.status))
@@ -1718,7 +1845,7 @@ export default function CanvasPage() {
                   label="查看历史对话"
                   size={30}
                   active={historyDrawerOpen}
-                  disabled={!canvasConversationEnabled || loading || conversationListLoading}
+                  disabled={!canvasConversationEnabled || aiRequestLoading || conversationListLoading || agentLoopInteractionLocked}
                   onClick={() => setHistoryDrawerOpen(true)}
                 >
                   {conversationListLoading ? <Spinner size={13} /> : <Icons.clock size={14} />}
@@ -1730,7 +1857,7 @@ export default function CanvasPage() {
                 <IconButton
                   label="新建对话"
                   size={30}
-                  disabled={!canvasConversationEnabled || loading}
+                  disabled={!canvasConversationEnabled || aiRequestLoading || agentLoopInteractionLocked}
                   onClick={handleNewConversation}
                 >
                   <Icons.plus size={14} />
@@ -1782,6 +1909,39 @@ export default function CanvasPage() {
         )}
       </div>
 
+      <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+        <AgentWorkspace
+          messages={visibleMessages.map((message) => {
+            const operationSet = message.meta?.operation_set_id ? pendingOperationSetById[String(message.meta.operation_set_id)] : null;
+            return operationSet ? { ...message, operationSet } : message;
+          })}
+          streamText={agentLoop.loading || agentLoop.streamText ? agentLoop.streamText : streamText}
+          loading={aiRequestLoading}
+          error={agentLoop.error || ''}
+          activeSteps={agentLoop.activeSteps.length > 0 ? agentLoop.activeSteps : activeSteps}
+          llmConfigs={llmConfigs}
+          selectedConfigId={selectedLlmConfigId}
+          onConfigChange={setSelectedLlmConfigId}
+          onSend={handleSend}
+          onStop={() => {
+            if (agentLoop.loading) agentLoop.stopAgentLoop();
+            else requestControllerRef.current?.abort();
+          }}
+          onApplyOperationSet={handleApplyOperationSet}
+          onCancelOperationSet={handleCancelOperationSet}
+          pendingAgentTask={agentLoop.pendingAgentTask}
+          activeAgentSession={agentLoop.activeAgentSession}
+          onConfirmAgentTask={agentLoop.confirmAgentTask}
+          onCancelAgentTask={agentLoop.cancelAgentTask}
+          onRollbackAgentSession={agentLoop.rollbackAgentSession}
+          onExtendAgentSession={agentLoop.extendAgentSession}
+          agentConfirmMode={agentConfirmMode}
+          onAgentConfirmModeChange={setAgentConfirmMode}
+          disabled={effectiveCanvasInputDisabled}
+          placeholder={canvasConversationEnabled ? '例如：让 @b2 更简洁，或为第 3 段加一个例子…' : '先保存当前大纲为文档，再继续 AI 改写…'}
+        />
+      </div>
+      <div style={{ display: 'none' }}>
       <div style={{ flex: 1, overflow: 'auto', padding: '8px 16px', minHeight: 0 }}>
         {!canvasConversationEnabled && (
           <div style={{ padding: '32px 0', display: 'flex', justifyContent: 'center' }}>
@@ -1837,7 +1997,7 @@ export default function CanvasPage() {
                 ) : msg.meta?.show_decision_summary && msg.meta?.canvas_mode === 'edit' ? (
                   <CorrectionChipBar
                     onSelect={handleDecisionCorrection}
-                    disabled={loading}
+                    disabled={aiRequestLoading}
                   />
                 ) : null}
               </AiBubble>
@@ -1851,17 +2011,21 @@ export default function CanvasPage() {
         isEmpty={canvasConversationEnabled && visibleMessages.length === 0 && !loading}
         placeholder={canvasConversationEnabled ? '例如：让 @b2 更简洁，或为第 3 段加一个例子…' : '先保存当前大纲为文档，再继续 AI 改写…'}
         onSend={handleSend}
-        onStop={() => requestControllerRef.current?.abort()}
-        loading={loading}
+        onStop={() => {
+          if (agentLoop.loading) agentLoop.stopAgentLoop();
+          else requestControllerRef.current?.abort();
+        }}
+        loading={aiRequestLoading}
         injectedValue={aiInjected}
         llmConfigs={llmConfigs}
         selectedConfigId={selectedLlmConfigId}
         onConfigChange={setSelectedLlmConfigId}
-        disabled={canvasInputDisabled}
+        disabled={effectiveCanvasInputDisabled}
         showPlusMenu={false}
         mentionOptions={[{ value: '__all__', token: '@全文', label: '全文', preview: '对整篇文章生效', searchText: '全文 整篇 整文' }, ...mentionOptions]}
         textareaRef={inputTextareaRef}
       />
+      </div>
       {activeClarifyInteraction ? (
         <div
           style={{
@@ -1909,7 +2073,9 @@ export default function CanvasPage() {
         emptyText="暂无历史对话"
         onSelect={handleConversationSelect}
         onDelete={handleConversationDelete}
+        onExport={handleConversationExport}
         deletingConversationId={deletingConversationId}
+        exportingConversationId={exportingConversationId}
       />
     </div>
   );

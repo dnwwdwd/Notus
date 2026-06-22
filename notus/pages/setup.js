@@ -2,10 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
 import { NotusLogo, Icons } from '../components/ui/Icons';
 import { Button } from '../components/ui/Button';
-import { TextInput } from '../components/ui/Input';
 import { ProgressBar } from '../components/ui/ProgressBar';
 import { Spinner } from '../components/ui/Spinner';
-import { Toggle } from '../components/ui/Toggle';
 import { useToast } from '../components/ui/Toast';
 import { LlmConfigCardsSection } from '../components/Settings/LlmConfigCardsSection';
 import { useApp } from '../contexts/AppContext';
@@ -144,7 +142,7 @@ function getImportEntryLabel(file) {
   return file.relativePath || file.webkitRelativePath || file.name;
 }
 
-// ── Step1 — model config (horizontal layout) ────────────────────
+// ── Step1 — model config ────────────────────
 const Step1 = ({
   form,
   onChange,
@@ -162,7 +160,7 @@ const Step1 = ({
   };
 
   return (
-    <div>
+    <div style={{ maxWidth: 672, margin: '0 auto', color: '#2D2D2D' }}>
       {loading && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14, fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>
           <Spinner size={14} />
@@ -170,82 +168,108 @@ const Step1 = ({
         </div>
       )}
 
-      {/* Two-column layout */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 0.92fr) minmax(0, 1.08fr)', gap: 20, marginBottom: 16 }}>
-        {/* Left column: Embedding */}
-        <div style={{ background: 'linear-gradient(180deg, rgba(193,95,60,0.04) 0%, var(--bg-elevated) 100%)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-xl)', boxShadow: 'var(--shadow-sm)', padding: 18, display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <div style={{ fontSize: 'var(--text-sm)', fontWeight: 600, color: 'var(--text-primary)', marginBottom: 2 }}>Embedding 模型</div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 32, marginBottom: 16 }}>
+        <section style={{ background: '#fff', border: '1px solid #E5E3D8', borderRadius: 12, boxShadow: '0 1px 2px rgba(0,0,0,0.04)', padding: 24, display: 'flex', flexDirection: 'column', gap: 20 }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+            <div style={{ width: 36, height: 36, borderRadius: 10, background: 'rgba(251,228,210,0.5)', color: '#D97757', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><Icons.database size={18} /></div>
             <div>
-              <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 5 }}>Base URL</div>
-              <TextInput
+              <div style={{ fontSize: 15, lineHeight: 1.25, fontWeight: 700, color: '#2D2D2D' }}>Embedding 配置</div>
+              <div style={{ fontSize: 12, color: '#8A8881', marginTop: 3, lineHeight: 1.45 }}>用于知识库索引与检索的向量模型</div>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <label className="notus-llm-field">
+              <span>Base URL</span>
+              <input
+                className="notus-model-input"
                 value={form.embBaseUrl}
                 onChange={(e) => onChange({ embBaseUrl: e.target.value })}
                 placeholder="https://api.openai.com/v1"
               />
-            </div>
-            <div>
-              <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 5 }}>模型名称</div>
-              <TextInput
+            </label>
+
+            <label className="notus-llm-field">
+              <span>模型名称</span>
+              <input
+                className="notus-model-input"
                 value={form.embModel}
                 onChange={(e) => onChange({ embModel: e.target.value })}
                 placeholder="text-embedding-3-small"
               />
-            </div>
-          </div>
+            </label>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 10, alignItems: 'end' }}>
-            <div>
-              <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 5 }}>API Key</div>
-              <TextInput
+            <label className="notus-llm-field">
+              <span>API Key</span>
+              <input
+                className="notus-model-input"
+                type="password"
                 value={form.embApiKey}
                 onChange={(e) => onChange({ embApiKey: e.target.value })}
-                placeholder={keyHints.embedding ? '已保存，留空不修改' : 'sk-…'}
-                masked
+                placeholder="sk-••••••••••••"
               />
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingBottom: 1 }}>
-              <span style={{ fontSize: 11, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>多模态向量</span>
-              <Toggle on={form.embMultimodalEnabled} onChange={(v) => onChange({ embMultimodalEnabled: v })} />
+            </label>
+
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, border: '1px solid #F2F0EA', background: '#FDFCFB', borderRadius: 10, padding: '12px 16px' }}>
+              <div>
+                <div style={{ fontSize: 13, lineHeight: 1.35, color: '#4B4944', fontWeight: 700 }}>启用多模态向量</div>
+                <div style={{ fontSize: 12, color: '#8A8881', marginTop: 3 }}>用于图片等非纯文本内容的索引能力</div>
+              </div>
+              <button
+                type="button"
+                aria-pressed={form.embMultimodalEnabled}
+                onClick={() => onChange({ embMultimodalEnabled: !form.embMultimodalEnabled })}
+                style={{
+                  width: 44,
+                  height: 24,
+                  border: 0,
+                  borderRadius: 999,
+                  padding: 2,
+                  background: form.embMultimodalEnabled ? '#D97757' : '#E5E3D8',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: form.embMultimodalEnabled ? 'flex-end' : 'flex-start',
+                  transitionProperty: 'background-color',
+                  transitionDuration: '150ms',
+                }}
+              >
+                <span style={{ width: 20, height: 20, borderRadius: 999, background: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,0.16)' }} />
+              </button>
             </div>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 10, flexWrap: 'wrap', marginTop: 6 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-              <Button
-                variant="secondary"
-                loading={testState === 'loading'}
+          <div style={{ borderTop: '1px solid #F2F0EA', paddingTop: 18, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
+            <div style={{ maxWidth: '55%', minWidth: 220, color: testState === 'success' ? 'var(--success)' : testState === 'error' ? 'var(--danger)' : '#A3A19A', fontSize: 11, lineHeight: 1.6 }}>
+              {testState === 'success'
+                ? 'Embedding 连接成功' + (detectedEmbDim ? '，已识别 ' + detectedEmbDim + ' 维' : '') + '，可以继续下一步。'
+                : testState === 'error'
+                  ? (testErrorMsg || 'Embedding 连接失败，请检查模型、地址或 API Key。')
+                  : '继续下一步前需要完成一次 Embedding 连通性测试，系统会记录向量维度用于索引。'}
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+              <button
+                type="button"
+                className="notus-llm-secondary-button"
                 onClick={onTest}
+                disabled={testState === 'loading'}
                 style={testButtonStyle}
               >
-                {testState === 'success' ? '✓ Embedding 正常' : testState === 'error' ? '✕ Embedding 失败' : '测试 Embedding'}
-              </Button>
+                {testState === 'loading' ? '测试中…' : testState === 'success' ? '✓ Embedding 正常' : testState === 'error' ? '✕ Embedding 失败' : '测试 Embedding'}
+              </button>
             </div>
           </div>
-        </div>
+        </section>
 
-        <div style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.94) 0%, var(--bg-elevated) 100%)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-xl)', boxShadow: 'var(--shadow-sm)', padding: 18 }}>
+        <section style={{ background: '#fff', border: '1px solid #E5E3D8', borderRadius: 12, boxShadow: '0 1px 2px rgba(0,0,0,0.04)', padding: 24 }}>
           <LlmConfigCardsSection
-            compact
             title="LLM 配置"
-            subtitle="问答和创作页会读取这里保存的模型配置。新增或修改接入信息后，必须先测试通过才能保存。"
             onStateChange={onLlmStateChange}
           />
-        </div>
+        </section>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-        {testErrorMsg && (
-          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--danger)' }}>{testErrorMsg}</span>
-        )}
-
-        {testState === 'success' && (
-          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--success)', marginLeft: 4 }}>Embedding 连接成功，可以继续下一步</span>
-        )}
-
-        <div style={{ flex: 1 }} />
-      </div>
+      <div style={{ flex: 1 }} />
     </div>
   );
 };

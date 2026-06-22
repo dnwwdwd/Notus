@@ -97,6 +97,11 @@
 ## Git 远程与提交范围
 
 - 本仓库默认同时维护两个远程：GitHub 远程和部署在 NAS 上的私有 GitLab 远程。
+- 远程名必须区分清楚：
+  - gitlab：私有 GitLab，地址为 git@gitlab.burgercat.heiyu.space:hejiajun/notus.git。
+  - origin：公开 GitHub，地址为 git@github.com:dnwwdwd/Notus.git。
+- 推送到私有 GitLab 时必须使用 GitLab 专用 SSH key：~/.ssh/id_ed25519_gitlab_20260524-124302，推荐命令形态为：GIT_SSH_COMMAND='ssh -i ~/.ssh/id_ed25519_gitlab_20260524-124302 -o IdentitiesOnly=yes' git push gitlab main。
+- 不要用默认 SSH key 推送 GitLab；默认 key 可能对应 GitHub 或其他账号，会导致 Permission denied (publickey)。
 - 私有 GitLab 远程用于保留完整项目副本，默认应提交源码、文档、需求台账、懒猫兼容配置、脚本和其他项目源文件。
 - GitHub 远程默认只提交公开仓库应保留的源码与必要项目文件，不提交 `docs/` 和 `Notus-design-draft/` 目录。
 - 私有 GitLab 远程继续排除构建和打包产物，以及本地运行数据；至少包括 `*.lpk`、`web-dist/`、`desktop/dist/`、`desktop/resources/notus/`、`lzc-dist/`、`.next/`、`notus/.next/`、`node_modules/`、`notus/node_modules/`、环境变量文件、数据库文件、日志目录和本地笔记目录。

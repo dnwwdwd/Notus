@@ -10,6 +10,7 @@ const DEFAULTS = {
   embeddingApiKey: '',
   embeddingBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
   llmProvider: 'qwen',
+  llmApiProtocol: 'openai',
   llmModel: 'qwen-max',
   llmApiKey: '',
   llmBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
@@ -107,6 +108,7 @@ function readEnvConfig() {
     ),
 
     llmProvider,
+    llmApiProtocol: String(process.env.LLM_API_PROTOCOL || DEFAULTS.llmApiProtocol).trim().toLowerCase() || DEFAULTS.llmApiProtocol,
     llmModel: process.env.LLM_MODEL || process.env.LLM_DEFAULT_MODEL || DEFAULTS.llmModel,
     llmApiKey: process.env.LLM_API_KEY || '',
     llmBaseUrl: cleanBaseUrl(
@@ -182,6 +184,7 @@ function applySettings(baseConfig, settings = {}) {
   }
 
   if (map.llm_provider) next.llmProvider = map.llm_provider;
+  if (map.llm_api_protocol) next.llmApiProtocol = String(map.llm_api_protocol || DEFAULTS.llmApiProtocol).trim().toLowerCase();
   if (map.llm_model) next.llmModel = map.llm_model;
   if (map.llm_api_key) next.llmApiKey = map.llm_api_key;
   if (map.llm_base_url !== undefined) {

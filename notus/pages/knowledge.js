@@ -8,6 +8,7 @@ import { ClarifyDrawer } from '../components/ChatArea/ClarifyDrawer';
 import { UserBubble, AiBubble } from '../components/ChatArea/ChatMessage';
 import { ConversationDrawer } from '../components/ChatArea/ConversationDrawer';
 import { InputBar } from '../components/ChatArea/InputBar';
+import { AgentWorkspace } from '../components/AgentWorkspace/AgentWorkspace';
 import { ResizableLayout } from '../components/ui/ResizableLayout';
 import { DropdownSelect } from '../components/ui/DropdownSelect';
 import { DocumentFindBar } from '../components/ui/DocumentFindBar';
@@ -24,6 +25,7 @@ import { useToast } from '../components/ui/Toast';
 import { useApp } from '../contexts/AppContext';
 import { useAppStatus } from '../contexts/AppStatusContext';
 import { useLlmConfigs } from '../hooks/useLlmConfigs';
+import { useAgentLoopController } from '../hooks/useAgentLoopController';
 import { useStableAiReadiness } from '../hooks/useStableAiReadiness';
 import { useDocumentFind } from '../hooks/useDocumentFind';
 import { useEditorToc } from '../hooks/useEditorToc';
@@ -48,20 +50,19 @@ import {
   writeEditorViewPosition,
 } from '../utils/viewPosition';
 import { mapConversationMessages } from '../utils/conversations';
+import {
+  buildConversationExportFileName,
+  downloadTextFile,
+  formatConversationExportMarkdown,
+} from '../utils/conversationExport';
 import { readApiResponse } from '../utils/http';
 import { navigateWithFallback } from '../utils/navigation';
+import { classifyKnowledgeTaskIntent, shouldAuthorizeCurrentFile } from '../utils/agentLoopRouting';
 
 const WysiwygEditor = dynamic(
   () => import('../components/Editor/WysiwygEditor').then((module) => module.WysiwygEditor),
   { ssr: false, loading: () => <SkeletonText lines={6} /> }
 );
-
-const SUGGESTIONS = [
-  '我最近写了什么？',
-  '关于缓存的三种策略有哪些差别？',
-  '整理一下我对"慢"的思考',
-  '读书笔记里提到过哪些决策模型？',
-];
 
 const KNOWLEDGE_LAYOUT_STORAGE_KEY = 'notus-layout-knowledge-left-percent';
 const KNOWLEDGE_LAYOUT_DEFAULT = 44;
@@ -108,6 +109,48 @@ function buildAnswerStage(event = {}) {
     stage: event.sufficiency === false || event.answer_mode === 'no_evidence' ? 'insufficient' : 'found',
     sources,
   };
+}
+
+function buildKnowledgeAgentSteps(stage, done = false) {
+  if (done) {
+    return [
+      {
+        id: 'search_knowledge',
+        label: '检索知识库',
+        status: 'done',
+        detail: '已完成知识库召回、证据聚合和回答模式判断。',
+        tool: '检索知识库',
+        input: 'scope: 本地知识库',
+        result: stage?.sources ? '找到 ' + stage.sources + ' 条可用来源' : '已完成',
+      },
+      {
+        id: 'answer',
+        label: '生成回答',
+        status: 'done',
+        detail: '已输出回答内容。',
+      },
+    ];
+  }
+  if (!stage) {
+    return [
+      {
+        id: 'answer',
+        label: '生成回答',
+        status: 'running',
+        detail: '正在根据检索结果组织回答。',
+      },
+    ];
+  }
+  return [
+    {
+      id: 'search_knowledge',
+      label: stage.stage === 'insufficient' ? '检查证据充分性' : '检索知识库',
+      status: 'running',
+      detail: stage.sources ? '当前找到 ' + stage.sources + ' 条候选来源。' : '正在召回相关笔记。',
+      tool: '检索知识库',
+      input: 'scope: 本地知识库',
+    },
+  ];
 }
 
 function buildAssistantNote(message) {
@@ -187,6 +230,7 @@ export default function KnowledgePage() {
   const [conversationList, setConversationList] = useState([]);
   const [conversationListLoading, setConversationListLoading] = useState(false);
   const [deletingConversationId, setDeletingConversationId] = useState(null);
+  const [exportingConversationId, setExportingConversationId] = useState(null);
   const [, setConversationDraft] = useState(true);
   const [pendingInteractions, setPendingInteractions] = useState([]);
   const [interactionSubmittingId, setInteractionSubmittingId] = useState(null);
@@ -617,6 +661,64 @@ export default function KnowledgePage() {
     } catch {}
   }, [fetchConversationList]);
 
+  const refreshActiveDocumentAfterAgentWrite = useCallback(async () => {
+    try {
+      await refreshFiles();
+      if (!activeFile?.id) return;
+      const response = await fetch(`/api/files/${activeFile.id}`, { cache: 'no-store' });
+      const payload = await readApiResponse(response, '刷新当前文档失败');
+      setCachedContent(activeFile.id, payload.content || '');
+      const { visibleContent, hiddenFrontmatter } = splitEditorVisibleMarkdown(payload.content || '');
+      const nextContent = visibleContent || '';
+      setDocContent(nextContent);
+      docContentRef.current = nextContent;
+      persistedDocContentRef.current = nextContent;
+      hiddenDocFrontmatterRef.current = hiddenFrontmatter || '';
+      setDocSaveState('saved');
+    } catch (writeRefreshError) {
+      toast(writeRefreshError.message || '刷新当前文档失败', 'error');
+    }
+  }, [activeFile?.id, refreshFiles, setCachedContent, toast]);
+
+  const handleAgentLoopOperationSetHandled = useCallback((operationSetId) => {
+    setMessages((prev) => prev.map((message) => (
+      Number(message?.meta?.operation_set_id || 0) === Number(operationSetId)
+        ? {
+          ...message,
+          operationSet: null,
+          meta: {
+            ...(message.meta || {}),
+            operation_set_id: null,
+          },
+        }
+        : message
+    )));
+  }, []);
+
+  const agentLoop = useAgentLoopController({
+    onAppendUserMessage: (message) => setMessages((prev) => [...prev, message]),
+    onAppendAssistantMessage: (message) => setMessages((prev) => upsertMessage(prev, message)),
+    onConversationId: (conversationId) => {
+      if (!conversationId) return;
+      setActiveConversationId(Number(conversationId));
+      setConversationDraft(false);
+    },
+    onConversationSettled: (conversationId) => {
+      if (conversationId) refreshConversationListOnly(Number(conversationId));
+    },
+    onOperationSetHandled: handleAgentLoopOperationSetHandled,
+    onApplySuccess: refreshActiveDocumentAfterAgentWrite,
+    onRollbackSuccess: refreshActiveDocumentAfterAgentWrite,
+    onError: (loopError) => {
+      const message = loopError.message || 'Agent Loop 请求失败';
+      setError(message);
+      toast(message, 'error');
+    },
+  });
+  const aiRequestLoading = loading || agentLoop.loading;
+  const agentLoopInteractionLocked = Boolean(agentLoop.pendingAgentTask)
+    || ['running', 'waiting_confirm'].includes(agentLoop.activeAgentSession?.status);
+
   const focusKnowledgeInput = useCallback(() => {
     window.requestAnimationFrame(() => {
       inputTextareaRef.current?.focus?.();
@@ -677,7 +779,7 @@ export default function KnowledgePage() {
   const runInteractionResume = useCallback(async (interaction, llmConfigId = selectedLlmConfigId) => {
     if (!interaction?.id || !llmConfigId) {
       if (!llmConfigId) {
-        toast('请先在模型配置中新增并测试至少一个 LLM 配置', 'warning');
+      toast('请先在模型配置中新增至少一个 LLM 配置', 'warning');
       }
       return;
     }
@@ -804,12 +906,13 @@ export default function KnowledgePage() {
     setConversationDraft(true);
     setMessages([]);
     setPendingInteractions([]);
+    agentLoop.cancelAgentTask();
     setStreamText('');
     setError(null);
     setLoading(false);
     setRetrievalStage(null);
     setHistoryDrawerOpen(false);
-  }, [clearActiveCitationState]);
+  }, [agentLoop, clearActiveCitationState]);
 
   const handleConversationDelete = useCallback(async (conversationId) => {
     const normalizedConversationId = Number(conversationId);
@@ -843,8 +946,41 @@ export default function KnowledgePage() {
     }
   }, [activeConversationId, clearActiveCitationState, deletingConversationId, fetchConversationList, toast]);
 
+  const handleConversationExport = useCallback(async (conversationId, conversation = null) => {
+    const normalizedConversationId = Number(conversationId);
+    if (!Number.isFinite(normalizedConversationId) || exportingConversationId) return;
+    setExportingConversationId(normalizedConversationId);
+    try {
+      const payload = await fetchConversationDetail(normalizedConversationId);
+      const isActive = Number(activeConversationId) === normalizedConversationId;
+      const exportMessages = isActive && messages.length > 0
+        ? messages
+        : (Array.isArray(payload.messages) ? payload.messages : []);
+      const exportPayload = {
+        conversation: { ...(conversation || {}), ...(payload || {}) },
+        messages: exportMessages,
+        agentSessions: Array.isArray(payload.agent_sessions) ? payload.agent_sessions : [],
+        pendingOperationSets: Array.isArray(payload.pending_operation_sets) ? payload.pending_operation_sets : [],
+        source: 'Notus 知识库页',
+      };
+      const content = formatConversationExportMarkdown(exportPayload);
+      downloadTextFile(buildConversationExportFileName(exportPayload.conversation), content);
+      toast('对话已导出为 Markdown 文件', 'success');
+    } catch (exportError) {
+      toast(exportError.message || '导出历史对话失败', 'error');
+    } finally {
+      setExportingConversationId(null);
+    }
+  }, [
+    activeConversationId,
+    exportingConversationId,
+    fetchConversationDetail,
+    messages,
+    toast,
+  ]);
+
   const handleConversationSelect = useCallback(async (conversationId) => {
-    if (!conversationId || loading) return;
+    if (!conversationId || aiRequestLoading || agentLoopInteractionLocked) return;
     setConversationListLoading(true);
     requestControllerRef.current?.abort();
     clearActiveCitationState();
@@ -864,7 +1000,7 @@ export default function KnowledgePage() {
     } finally {
       setConversationListLoading(false);
     }
-  }, [clearActiveCitationState, fetchConversationDetail, loading, toast]);
+  }, [agentLoopInteractionLocked, aiRequestLoading, clearActiveCitationState, fetchConversationDetail, toast]);
 
   useEffect(() => {
     let cancelled = false;
@@ -904,9 +1040,13 @@ export default function KnowledgePage() {
     };
   }, [fetchConversationDetail, fetchConversationList, toast]);
 
-  const handleSend = async (query, llmConfigId = selectedLlmConfigId) => {
+  const handleSend = async (query, optionsOrLlmConfigId = selectedLlmConfigId) => {
+    const sendOptions = optionsOrLlmConfigId && typeof optionsOrLlmConfigId === 'object'
+      ? optionsOrLlmConfigId
+      : { llmConfigId: optionsOrLlmConfigId };
+    const llmConfigId = sendOptions.llmConfigId || selectedLlmConfigId;
     if (!llmConfigId) {
-      toast('请先在模型配置中新增并测试至少一个 LLM 配置', 'warning');
+      toast('请先在模型配置中新增至少一个 LLM 配置', 'warning');
       return;
     }
 
@@ -917,13 +1057,48 @@ export default function KnowledgePage() {
       } catch {}
     }
 
+    const routeDecision = classifyKnowledgeTaskIntent(query);
+    if (routeDecision.route === 'loop') {
+      const authorizeCurrentFile = shouldAuthorizeCurrentFile(query);
+      const currentPath = authorizeCurrentFile ? (activeFile?.path || '') : '';
+      const goal = currentPath
+        ? `用户任务：${query}\n\n当前文档路径：${currentPath}`
+        : query;
+      setError(null);
+      setRetrievalStage(null);
+      agentLoop.createAgentTask({
+        goal,
+        display_query: query,
+        kind: 'knowledge',
+        conversation_id: activeConversationId || undefined,
+        active_file_id: activeFile?.id || undefined,
+        llm_config_id: llmConfigId,
+        authorized_paths: [currentPath || ''],
+        authorized_ops: ['modify', 'create'],
+        search_knowledge_limit: 5,
+        attachments: sendOptions.attachments || [],
+        route_reason: routeDecision.reason,
+      });
+      return;
+    }
+
     requestControllerRef.current?.abort();
     const controller = new AbortController();
     requestControllerRef.current = controller;
     setError(null);
     setLoading(true);
     setRetrievalStage({ stage: 'searching', sources: 0 });
-    setMessages((prev) => [...prev, { id: Date.now(), role: 'user', content: query }]);
+    setMessages((prev) => [...prev, {
+      id: Date.now(),
+      role: 'user',
+      content: query,
+      attachments: sendOptions.attachments || [],
+      meta: {
+        web_search_enabled: Boolean(sendOptions.webSearchEnabled),
+        search_provider: sendOptions.searchProvider || null,
+        search_providers: sendOptions.searchProviders || undefined,
+      },
+    }]);
     setStreamText('');
 
     try {
@@ -942,9 +1117,13 @@ export default function KnowledgePage() {
           conversation_id: activeConversationId || undefined,
           query,
           llm_config_id: llmConfigId,
+          modelConfigId: llmConfigId,
           active_file_id: activeFile?.id || null,
           reference_mode: referenceMode,
           reference_file_ids: referenceMode === 'manual' ? manualReferenceFileIds : undefined,
+          webSearchEnabled: Boolean(sendOptions.webSearchEnabled),
+          searchProvider: sendOptions.searchProvider || null,
+          attachments: sendOptions.attachments || [],
         }),
       });
       if (!response.ok) {
@@ -997,6 +1176,7 @@ export default function KnowledgePage() {
             sourceCount: Number(event.source_count || finalMeta?.source_count || sourceCount || citations.length || 0),
             meta: finalMeta,
             answerMode: event.answer_mode || finalMeta?.answer_mode || null,
+            toolSteps: buildKnowledgeAgentSteps(buildAnswerStage({ citation_count: Number(event.source_count || finalMeta?.source_count || sourceCount || citations.length || 0) }), true),
           }));
           if (resolvedConversationId) {
             setActiveConversationId(resolvedConversationId);
@@ -1032,7 +1212,24 @@ export default function KnowledgePage() {
     }
   };
 
-  const activeClarifyInteraction = loading
+  const handleApplyOperationSet = async (operationSet) => {
+    try {
+      await agentLoop.applyOperationSet(operationSet);
+      toast('修改已应用', 'success');
+    } catch (applyError) {
+      toast(applyError.message || '应用修改失败', 'error');
+    }
+  };
+
+  const handleCancelOperationSet = async (operationSet) => {
+    try {
+      await agentLoop.rejectOperationSet(operationSet);
+    } catch (rejectError) {
+      toast(rejectError.message || '撤销预览失败', 'error');
+    }
+  };
+
+  const activeClarifyInteraction = aiRequestLoading
     ? null
     : ([...pendingInteractions].reverse().find((item) => item.status === 'pending')
       || [...pendingInteractions].reverse().find((item) => item.status === 'failed')
@@ -1053,7 +1250,7 @@ export default function KnowledgePage() {
     }
     return true;
   });
-  const isEmpty = visibleMessages.length === 0 && !loading;
+  const isEmpty = visibleMessages.length === 0 && !aiRequestLoading;
 
   const handleClarifyDrawerSubmit = useCallback(async (interaction, answers) => {
     try {
@@ -1271,7 +1468,7 @@ export default function KnowledgePage() {
                       label="查看历史对话"
                       size={30}
                       active={historyDrawerOpen}
-                      disabled={loading || conversationListLoading}
+                      disabled={aiRequestLoading || conversationListLoading || agentLoopInteractionLocked}
                       onClick={() => setHistoryDrawerOpen(true)}
                     >
                       {conversationListLoading ? <Icons.refresh size={14} style={{ animation: 'spin 1s linear infinite' }} /> : <Icons.clock size={14} />}
@@ -1283,7 +1480,7 @@ export default function KnowledgePage() {
                     <IconButton
                       label="新建对话"
                       size={30}
-                      disabled={loading}
+                      disabled={aiRequestLoading || agentLoopInteractionLocked}
                       onClick={handleNewConversation}
                     >
                       <Icons.plus size={14} />
@@ -1337,6 +1534,35 @@ export default function KnowledgePage() {
                 </>
               )}
           </div>
+          <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+            <AgentWorkspace
+              messages={visibleMessages}
+              streamText={agentLoop.loading || agentLoop.streamText ? agentLoop.streamText : streamText}
+              loading={aiRequestLoading}
+              error={agentLoop.error || error}
+              activeSteps={agentLoop.activeSteps.length > 0 ? agentLoop.activeSteps : buildKnowledgeAgentSteps(retrievalStage)}
+              llmConfigs={llmConfigs}
+              selectedConfigId={selectedLlmConfigId}
+              onConfigChange={setSelectedLlmConfigId}
+              onSend={handleSend}
+              onStop={() => {
+                if (agentLoop.loading) agentLoop.stopAgentLoop();
+                else requestControllerRef.current?.abort();
+              }}
+              onCitationClick={handleCitationClick}
+              onApplyOperationSet={handleApplyOperationSet}
+              onCancelOperationSet={handleCancelOperationSet}
+              pendingAgentTask={agentLoop.pendingAgentTask}
+              activeAgentSession={agentLoop.activeAgentSession}
+              onConfirmAgentTask={agentLoop.confirmAgentTask}
+              onCancelAgentTask={agentLoop.cancelAgentTask}
+              onRollbackAgentSession={agentLoop.rollbackAgentSession}
+              onExtendAgentSession={agentLoop.extendAgentSession}
+              disabled={knowledgeInputDisabled || aiRequestLoading || agentLoopInteractionLocked}
+              placeholder="从你的知识库中查找答案…"
+            />
+          </div>
+          <div style={{ display: 'none' }}>
           <div style={{ flex: 1, overflow: 'auto', padding: '24px 32px' }}>
             <div style={{ maxWidth: 680, margin: '0 auto' }}>
               {isEmpty ? (
@@ -1346,34 +1572,6 @@ export default function KnowledgePage() {
                     title="向你的知识库提问"
                     subtitle="你可以一边编辑左侧文章，一边基于笔记内容发问。"
                   />
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'center', marginTop: 16 }}>
-                    {SUGGESTIONS.map((s, i) => (
-                      <button
-                        key={i}
-                        onClick={() => handleSend(s, selectedLlmConfigId)}
-                        style={{
-                          height: 32, padding: '0 16px',
-                          background: 'var(--bg-elevated)',
-                          border: '1px solid var(--border-primary)',
-                          borderRadius: 'var(--radius-full)',
-                          fontSize: 'var(--text-xs)',
-                          color: 'var(--text-secondary)',
-                          cursor: 'pointer',
-                          transition: 'all var(--transition-fast)',
-                        }}
-                        onMouseEnter={(event) => {
-                          event.currentTarget.style.borderColor = 'var(--accent)';
-                          event.currentTarget.style.color = 'var(--accent)';
-                        }}
-                        onMouseLeave={(event) => {
-                          event.currentTarget.style.borderColor = 'var(--border-primary)';
-                          event.currentTarget.style.color = 'var(--text-secondary)';
-                        }}
-                      >
-                        {s}
-                      </button>
-                    ))}
-                  </div>
                 </div>
               ) : (
                 <>
@@ -1420,15 +1618,19 @@ export default function KnowledgePage() {
             isEmpty={isEmpty}
             placeholder="从你的知识库中查找答案…"
             onSend={handleSend}
-            onStop={() => requestControllerRef.current?.abort()}
-            loading={loading}
+            onStop={() => {
+              if (agentLoop.loading) agentLoop.stopAgentLoop();
+              else requestControllerRef.current?.abort();
+            }}
+            loading={aiRequestLoading}
             llmConfigs={llmConfigs}
             selectedConfigId={selectedLlmConfigId}
             onConfigChange={setSelectedLlmConfigId}
-            disabled={knowledgeInputDisabled}
+            disabled={knowledgeInputDisabled || aiRequestLoading || agentLoopInteractionLocked}
             showPlusMenu={false}
             textareaRef={inputTextareaRef}
           />
+          </div>
           {activeClarifyInteraction ? (
             <div
               style={{
@@ -1475,7 +1677,9 @@ export default function KnowledgePage() {
             emptyText="暂无历史对话"
             onSelect={handleConversationSelect}
             onDelete={handleConversationDelete}
+            onExport={handleConversationExport}
             deletingConversationId={deletingConversationId}
+            exportingConversationId={exportingConversationId}
           />
           {aiUiState.showLockedState && (
             <AiLockedState

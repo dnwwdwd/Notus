@@ -44,6 +44,7 @@ function ensureRuntime({ startBackground = true } = {}) {
     if (startBackground) {
       const { indexFile, removeFile } = require('./indexer');
       const { startStyleBackgroundWorkers } = require('./style');
+      const { startSessionCleaner } = require('./agentSessionCleaner');
       startWatcher({
         onAdd: (filePath) => indexFile(filePath).catch((error) => logger.error('watcher.add.failed', { file_path: filePath, error })),
         onChange: (filePath) => indexFile(filePath).catch((error) => logger.error('watcher.change.failed', { file_path: filePath, error })),
@@ -53,6 +54,7 @@ function ensureRuntime({ startBackground = true } = {}) {
       });
       scheduleRetries();
       startStyleBackgroundWorkers();
+      startSessionCleaner();
     }
 
     runtimeStarted = true;

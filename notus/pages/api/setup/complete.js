@@ -26,6 +26,7 @@ export default function handler(req, res) {
   }
   if (body.embedding_api_key || body.api_key) values.embedding_api_key = body.embedding_api_key || body.api_key;
   if (body.llm_provider) values.llm_provider = body.llm_provider;
+  if (body.llm_api_protocol) values.llm_api_protocol = body.llm_api_protocol;
   if (body.llm_model) values.llm_model = body.llm_model;
   if (body.llm_api_key) values.llm_api_key = body.llm_api_key;
 
@@ -34,6 +35,7 @@ export default function handler(req, res) {
   logger.info('setup.completed', {
     embedding_provider: config.embeddingProvider,
     llm_provider: config.llmProvider,
+    llm_api_protocol: config.llmApiProtocol,
     notes_dir: config.notesDir,
   });
   return res.status(200).json({
@@ -41,6 +43,7 @@ export default function handler(req, res) {
     notes_dir: config.notesDir,
     embedding_provider: config.embeddingProvider,
     llm_provider: config.llmProvider,
+    llm_api_protocol: config.llmApiProtocol,
     request_id: context.request_id,
   });
 }

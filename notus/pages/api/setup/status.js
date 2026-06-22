@@ -49,5 +49,6 @@ export default function handler(req, res) {
     embedding_provider: config.embeddingProvider,
     embedding_multimodal_enabled: Boolean(config.embeddingMultimodalEnabled),
     llm_provider: config.llmProvider,
+    llm_api_protocol: config.llmApiProtocol,
   });
 }

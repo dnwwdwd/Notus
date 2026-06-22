@@ -5,8 +5,9 @@ const {
   getConversation,
   getConversationMessages,
 } = require('../../../lib/conversations');
-const { listOperationSetsByConversation } = require('../../../lib/canvasOperationSets');
+const { listOperationSetsByConversation, listOperationSetsBySession } = require('../../../lib/canvasOperationSets');
 const { listInteractionsByConversation } = require('../../../lib/conversationInteractions');
+const { countSnapshots, listRunLogs, listSessionsByConversation } = require('../../../lib/agentSession');
 
 export default function handler(req, res) {
   const context = createRequestContext(req, res, '/api/conversations/[id]');
@@ -35,6 +36,12 @@ export default function handler(req, res) {
         articleHash: String(req.query.article_hash || '').trim() || undefined,
       })
       : [];
+    const agentSessions = listSessionsByConversation(id).map((session) => ({
+      ...session,
+      snapshots_count: countSnapshots(session.id),
+      run_logs: listRunLogs(session.id),
+      operation_sets: listOperationSetsBySession(session.id),
+    }));
     if (conversation.kind === 'canvas') {
       logger.info('canvas.operation_set.restored', {
         conversation_id: conversation.id,
@@ -55,6 +62,7 @@ export default function handler(req, res) {
       messages,
       pending_operation_sets: pendingOperationSets,
       pending_interactions: pendingInteractions,
+      agent_sessions: agentSessions,
       request_id: context.request_id,
     });
   }

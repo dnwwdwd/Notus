@@ -9,6 +9,7 @@ const {
   deriveLlmConfigBudgetFields,
   getKnownModelBudget,
 } = require('./llmBudget');
+const agentLoopMigration = require('./migrations/005_agent_loop');
 
 let db = null;
 let vecAvailable = false;
@@ -45,6 +46,98 @@ function createImageVecTable(database, dim) {
 
 function hasColumn(database, table, column) {
   return database.prepare(`PRAGMA table_info(${table})`).all().some((row) => row.name === column);
+}
+
+function tableExists(database, table) {
+  const row = database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
+  return Boolean(row);
+}
+
+function runMigrations(database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS schema_version (
+      version    INTEGER PRIMARY KEY,
+      applied_at TEXT DEFAULT (datetime('now'))
+    );
+  `);
+
+  [agentLoopMigration].forEach((migration) => {
+    const version = Number(migration.version);
+    if (!Number.isFinite(version) || version <= 0 || typeof migration.up !== 'function') return;
+    const applied = database.prepare('SELECT version FROM schema_version WHERE version = ?').get(version);
+    if (applied) return;
+    database.transaction(() => {
+      migration.up(database, { hasColumn, tableExists });
+      database.prepare('INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (?, datetime(\'now\'))').run(version);
+    })();
+  });
+}
+
+function ensureAgentLoopSchema(database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS agent_sessions (
+      id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+      conversation_id          INTEGER REFERENCES conversations(id) ON DELETE SET NULL,
+      status                   TEXT NOT NULL DEFAULT 'pending',
+      goal                     TEXT NOT NULL,
+      authorized_paths         TEXT NOT NULL DEFAULT '[]',
+      authorized_ops           TEXT NOT NULL DEFAULT '["modify","create"]',
+      created_files            TEXT NOT NULL DEFAULT '[]',
+      loop_count               INTEGER NOT NULL DEFAULT 0,
+      soft_limit               INTEGER NOT NULL DEFAULT 15,
+      hard_limit               INTEGER NOT NULL DEFAULT 30,
+      search_knowledge_limit   INTEGER,
+      tool_call_counts         TEXT NOT NULL DEFAULT '{}',
+      consecutive_fails        TEXT NOT NULL DEFAULT '{}',
+      last_tool_results        TEXT NOT NULL DEFAULT '{}',
+      messages_checkpoint      TEXT,
+      checkpoint_tool_use_id   TEXT,
+      waiting_since            TEXT,
+      session_token            TEXT UNIQUE NOT NULL,
+      expires_at               TEXT,
+      created_at               TEXT DEFAULT (datetime('now')),
+      updated_at               TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_sessions_status_updated
+      ON agent_sessions(status, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_sessions_conversation
+      ON agent_sessions(conversation_id, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS agent_snapshots (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id   INTEGER NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+      file_path    TEXT NOT NULL,
+      content      TEXT NOT NULL,
+      file_hash    TEXT NOT NULL,
+      created_at   TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_snapshots_session
+      ON agent_snapshots(session_id);
+
+    CREATE TABLE IF NOT EXISTS agent_run_logs (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id   INTEGER NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+      loop_index   INTEGER NOT NULL,
+      tool_name    TEXT,
+      tool_input   TEXT,
+      tool_result  TEXT,
+      thinking     TEXT,
+      status       TEXT NOT NULL DEFAULT 'success',
+      duration_ms  INTEGER,
+      created_at   TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_runlogs_session
+      ON agent_run_logs(session_id, loop_index);
+  `);
+}
+
+function ensureAgentLoopIndexes(database) {
+  if (tableExists(database, 'canvas_operation_sets') && hasColumn(database, 'canvas_operation_sets', 'agent_session_id')) {
+    database.exec(`
+      CREATE INDEX IF NOT EXISTS idx_canvas_operation_sets_agent_session
+        ON canvas_operation_sets(agent_session_id, status, updated_at DESC);
+    `);
+  }
 }
 
 function ensureConversationIndexes(database) {
@@ -136,6 +229,7 @@ function migrateRegularTables(database) {
   });
 
   const llmConfigColumns = [
+    ['api_protocol', "TEXT NOT NULL DEFAULT 'openai'"],
     ['context_window_tokens', `INTEGER NOT NULL DEFAULT ${DEFAULT_CONTEXT_WINDOW_TOKENS}`],
     ['max_output_tokens', `INTEGER NOT NULL DEFAULT ${DEFAULT_MAX_OUTPUT_TOKENS}`],
   ];
@@ -344,6 +438,9 @@ function ensureSchema(database, config) {
   migrateRegularTables(database);
   migrateIncompatibleTables(database);
   ensureConversationIndexes(database);
+  ensureAgentLoopSchema(database);
+  runMigrations(database);
+  ensureAgentLoopIndexes(database);
   createVecTable(database, config.embeddingDim);
   createImageVecTable(database, config.embeddingDim);
   recreateFts(database);
@@ -468,6 +565,7 @@ function initDb() {
         id                   INTEGER PRIMARY KEY AUTOINCREMENT,
         name                 TEXT NOT NULL,
         provider             TEXT NOT NULL,
+        api_protocol         TEXT NOT NULL DEFAULT 'openai',
         model                TEXT NOT NULL,
         base_url             TEXT NOT NULL,
         api_key              TEXT NOT NULL,

@@ -4,6 +4,7 @@ const { deriveLlmConfigBudgetFields } = require('./llmBudget');
 
 const LLM_SETTING_KEYS = [
   'llm_provider',
+  'llm_api_protocol',
   'llm_model',
   'llm_base_url',
   'llm_api_key',
@@ -15,12 +16,18 @@ function normalizeBaseUrl(value) {
   return String(value || '').trim().replace(/\/+$/, '');
 }
 
+function normalizeApiProtocol(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized === 'anthropic' ? 'anthropic' : 'openai';
+}
+
 function mapRow(row, { includeSecret = false } = {}) {
   if (!row) return null;
   return {
     id: row.id,
     name: row.name,
     provider: row.provider,
+    api_protocol: normalizeApiProtocol(row.api_protocol),
     model: row.model,
     base_url: row.base_url,
     api_key: includeSecret ? row.api_key : undefined,
@@ -37,7 +44,7 @@ function mapRow(row, { includeSecret = false } = {}) {
 
 function listLlmConfigs(options = {}) {
   const rows = getDb().prepare(`
-    SELECT id, name, provider, model, base_url, api_key, context_window_tokens, max_output_tokens,
+    SELECT id, name, provider, api_protocol, model, base_url, api_key, context_window_tokens, max_output_tokens,
       is_active, last_test_latency_ms, last_tested_at, created_at, updated_at
     FROM llm_configs
     ORDER BY is_active DESC, updated_at DESC, id DESC
@@ -47,7 +54,7 @@ function listLlmConfigs(options = {}) {
 
 function getLlmConfigById(id, options = {}) {
   const row = getDb().prepare(`
-    SELECT id, name, provider, model, base_url, api_key, context_window_tokens, max_output_tokens,
+    SELECT id, name, provider, api_protocol, model, base_url, api_key, context_window_tokens, max_output_tokens,
       is_active, last_test_latency_ms, last_tested_at, created_at, updated_at
     FROM llm_configs
     WHERE id = ?
@@ -57,7 +64,7 @@ function getLlmConfigById(id, options = {}) {
 
 function getActiveLlmConfig(options = {}) {
   const row = getDb().prepare(`
-    SELECT id, name, provider, model, base_url, api_key, context_window_tokens, max_output_tokens,
+    SELECT id, name, provider, api_protocol, model, base_url, api_key, context_window_tokens, max_output_tokens,
       is_active, last_test_latency_ms, last_tested_at, created_at, updated_at
     FROM llm_configs
     WHERE is_active = 1
@@ -75,6 +82,7 @@ function syncActiveConfigToSettings(config) {
 
   setSettings({
     llm_provider: config.provider,
+    llm_api_protocol: normalizeApiProtocol(config.api_protocol),
     llm_model: config.model,
     llm_base_url: config.base_url,
     llm_api_key: config.api_key,
@@ -103,6 +111,7 @@ function createLlmConfig(input = {}) {
   const database = getDb();
   const name = String(input.name || '').trim();
   const provider = String(input.provider || '').trim();
+  const apiProtocol = normalizeApiProtocol(input.api_protocol);
   const model = String(input.model || '').trim();
   const baseUrl = normalizeBaseUrl(input.base_url);
   const apiKey = String(input.api_key || '').trim();
@@ -132,20 +141,22 @@ function createLlmConfig(input = {}) {
 
     return database.prepare(`
       INSERT INTO llm_configs (
-        name, provider, model, base_url, api_key, context_window_tokens, max_output_tokens,
+        name, provider, api_protocol, model, base_url, api_key, context_window_tokens, max_output_tokens,
         is_active, last_test_latency_ms, last_tested_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     `).run(
       name,
       provider,
+      apiProtocol,
       model,
       baseUrl,
       apiKey,
       derivedBudget.context_window_tokens,
       derivedBudget.max_output_tokens,
       shouldActivate ? 1 : 0,
-      Number.isFinite(latency) ? latency : null
+      Number.isFinite(latency) ? latency : null,
+      Number.isFinite(latency) ? new Date().toISOString() : null
     );
   })();
 
@@ -163,6 +174,7 @@ function updateLlmConfig(id, input = {}) {
   const next = {
     name: String(input.name ?? existing.name).trim(),
     provider: String(input.provider ?? existing.provider).trim(),
+    api_protocol: normalizeApiProtocol(input.api_protocol ?? existing.api_protocol),
     model: String(input.model ?? existing.model).trim(),
     base_url: normalizeBaseUrl(input.base_url ?? existing.base_url),
     api_key: String(input.api_key || '').trim() || existing.api_key,
@@ -193,6 +205,7 @@ function updateLlmConfig(id, input = {}) {
       SET
         name = ?,
         provider = ?,
+        api_protocol = ?,
         model = ?,
         base_url = ?,
         api_key = ?,
@@ -206,6 +219,7 @@ function updateLlmConfig(id, input = {}) {
     `).run(
       next.name,
       next.provider,
+      next.api_protocol,
       next.model,
       next.base_url,
       next.api_key,
@@ -258,6 +272,7 @@ function resolveLlmRuntimeConfig({ llmConfigId, model } = {}) {
   return {
     ...readEnvConfig(),
     llmProvider: selected.provider,
+    llmApiProtocol: normalizeApiProtocol(selected.api_protocol),
     llmModel: String(model || selected.model).trim() || selected.model,
     llmBaseUrl: selected.base_url,
     llmApiKey: selected.api_key,

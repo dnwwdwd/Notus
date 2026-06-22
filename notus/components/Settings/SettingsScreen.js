@@ -22,6 +22,7 @@ const APP_VERSION = packageMeta.version || '0.1.2';
 
 export const SETTINGS_SECTIONS = [
   { id: 'model', label: '模型配置', icon: <Icons.robot size={14} />, href: '/settings/model' },
+  { id: 'search', label: '搜索配置', icon: <Icons.settings size={14} />, href: '/settings/search' },
   { id: 'personalization', label: '个性化', icon: <Icons.palette size={14} />, href: '/settings/personalization' },
   { id: 'storage', label: '存储', icon: <Icons.database size={14} />, href: '/settings/storage' },
   { id: 'logs', label: '日志', icon: <Icons.list size={14} />, href: '/settings/logs' },
@@ -319,71 +320,290 @@ const ModelConfig = () => {
   };
 
   return (
-    <div>
-      <div style={{ fontSize: 'var(--text-xl)', fontWeight: 600, marginBottom: 28 }}>模型配置</div>
-
-      <div style={{ marginBottom: 32 }}>
-        <div style={{ fontSize: 'var(--text-base)', fontWeight: 600, marginBottom: 16, paddingBottom: 8, borderBottom: '1px solid var(--border-subtle)' }}>
-          Embedding 模型
+    <div style={{ maxWidth: 672, margin: '0 auto', padding: '8px 0 16px', color: '#2D2D2D' }}>
+      <div style={{ borderBottom: '1px solid #E5E3D8', paddingBottom: 16, marginBottom: 32 }}>
+        <div style={{ fontFamily: 'Georgia, Songti SC, STSong, serif', fontSize: 20, lineHeight: 1.25, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8, letterSpacing: '-0.012em' }}>
+          <Icons.cpu size={20} style={{ color: '#D97757' }} />模型配置
         </div>
-        <div style={{ border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-xl)', background: 'var(--bg-elevated)', padding: 18 }}>
-          <div style={{ display: 'grid', gap: 14 }}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-              <Field label="Base URL">
-                <TextInput
-                  value={embBaseUrl}
-                  onChange={(event) => {
-                    handleEmbeddingFieldChange({ embBaseUrl: event.target.value });
-                  }}
-                  placeholder="https://api.openai.com/v1"
-                />
-              </Field>
-              <Field label="模型名称">
-                <TextInput
-                  value={embModel}
-                  onChange={(event) => handleEmbeddingFieldChange({ embModel: event.target.value })}
-                  placeholder="例如：text-embedding-3-small"
-                />
-              </Field>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 12, alignItems: 'end' }}>
-              <Field label="API Key">
-                <TextInput
-                  value={embApiKey}
-                  onChange={(event) => handleEmbeddingFieldChange({ embApiKey: event.target.value })}
-                  placeholder={keyHints.embedding ? '已保存，留空不修改' : 'sk-...'}
-                  masked
-                />
-              </Field>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingBottom: 1 }}>
-                <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>多模态向量</span>
-                <Toggle on={embMultimodalEnabled} onChange={(value) => handleEmbeddingFieldChange({ embMultimodalEnabled: value })} />
-              </div>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12, flexWrap: 'wrap' }}>
-              <div style={{ display: 'flex', gap: 10 }}>
-                <Button
-                  variant="secondary"
-                  loading={testState === 'loading'}
-                  onClick={handleTest}
-                  style={{
-                    ...(testState === 'success' ? { borderColor: 'var(--success)', color: 'var(--success)' } : {}),
-                    ...(testState === 'error' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : {}),
-                  }}
-                >
-                  {testState === 'success' ? '✓ Embedding 正常' : testState === 'error' ? '✕ Embedding 失败' : '测试 Embedding'}
-                </Button>
-                <Button variant="primary" loading={saving} disabled={!embeddingTestCurrent} onClick={handleSave}>保存 Embedding</Button>
-              </div>
+        <div style={{ fontSize: 12, color: '#8A8881', marginTop: 6, lineHeight: 1.55 }}>配置知识库索引检索所需的向量模型，以及问答与创作所用的大语言模型。</div>
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 32 }}>
+        <section style={{ background: '#fff', border: '1px solid #E5E3D8', borderRadius: 12, padding: 24, boxShadow: '0 1px 2px rgba(0,0,0,0.04)', display: 'flex', flexDirection: 'column', gap: 20 }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+            <div style={{ width: 36, height: 36, borderRadius: 10, background: 'rgba(251,228,210,0.5)', color: '#D97757', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><Icons.database size={18} /></div>
+            <div>
+              <div style={{ fontSize: 15, lineHeight: 1.25, fontWeight: 700 }}>Embedding 配置</div>
+              <div style={{ fontSize: 12, color: '#8A8881', marginTop: 3, lineHeight: 1.45 }}>用于知识库索引与检索的向量模型</div>
             </div>
           </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <label className="notus-llm-field">
+              <span>Base URL</span>
+              <input
+                className="notus-model-input"
+                value={embBaseUrl}
+                onChange={(event) => handleEmbeddingFieldChange({ embBaseUrl: event.target.value })}
+                placeholder="https://api.openai.com/v1"
+              />
+            </label>
+
+            <label className="notus-llm-field">
+              <span>模型名称</span>
+              <input
+                className="notus-model-input"
+                value={embModel}
+                onChange={(event) => handleEmbeddingFieldChange({ embModel: event.target.value })}
+                placeholder="例如：text-embedding-3-small"
+              />
+            </label>
+
+            <label className="notus-llm-field">
+              <span>API Key</span>
+              <input
+                className="notus-model-input"
+                type="password"
+                value={embApiKey}
+                onChange={(event) => handleEmbeddingFieldChange({ embApiKey: event.target.value })}
+                placeholder="sk-••••••••••••"
+              />
+            </label>
+
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, border: '1px solid #F2F0EA', background: '#FDFCFB', borderRadius: 10, padding: '12px 16px' }}>
+              <div>
+                <div style={{ fontSize: 13, lineHeight: 1.35, color: '#4B4944', fontWeight: 700 }}>启用多模态向量</div>
+                <div style={{ fontSize: 12, color: '#8A8881', marginTop: 3 }}>用于图片等非纯文本内容的索引能力</div>
+              </div>
+              <button
+                type="button"
+                aria-pressed={embMultimodalEnabled}
+                onClick={() => handleEmbeddingFieldChange({ embMultimodalEnabled: !embMultimodalEnabled })}
+                style={{
+                  width: 44,
+                  height: 24,
+                  border: 0,
+                  borderRadius: 999,
+                  padding: 2,
+                  background: embMultimodalEnabled ? '#D97757' : '#E5E3D8',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: embMultimodalEnabled ? 'flex-end' : 'flex-start',
+                  transitionProperty: 'background-color',
+                  transitionDuration: '150ms',
+                }}
+              >
+                <span style={{ width: 20, height: 20, borderRadius: 999, background: '#fff', boxShadow: '0 1px 2px rgba(0,0,0,0.16)' }} />
+              </button>
+            </div>
+          </div>
+
+          <div style={{ borderTop: '1px solid #F2F0EA', paddingTop: 18, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
+            <div style={{ maxWidth: '55%', minWidth: 220, color: testState === 'success' ? 'var(--success)' : testState === 'error' ? 'var(--danger)' : '#A3A19A', fontSize: 11, lineHeight: 1.6 }}>
+              {testState === 'success'
+                ? 'Embedding 连接测试通过，可以保存当前配置。'
+                : testState === 'error'
+                  ? 'Embedding 连接失败，请检查模型、地址或 API Key。'
+                  : '保存前需要完成一次 Embedding 连通性测试，系统会记录向量维度用于索引。'}
+            </div>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+              <button
+                type="button"
+                className="notus-llm-secondary-button"
+                onClick={handleTest}
+                disabled={testState === 'loading'}
+                style={{
+                  ...(testState === 'success' ? { borderColor: 'var(--success)', color: 'var(--success)' } : {}),
+                  ...(testState === 'error' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : {}),
+                }}
+              >
+                {testState === 'loading' ? '测试中…' : testState === 'success' ? '✓ Embedding 正常' : testState === 'error' ? '✕ Embedding 失败' : '测试 Embedding'}
+              </button>
+              <button type="button" className="notus-llm-primary-button" disabled={saving || !embeddingTestCurrent} onClick={handleSave}>
+                {saving ? '保存中…' : '保存 Embedding'}
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section style={{ background: '#fff', border: '1px solid #E5E3D8', borderRadius: 12, padding: 24, boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
+          <LlmConfigCardsSection title="LLM 配置" />
+        </section>
+      </div>
+    </div>
+  );
+};
+
+const SEARCH_MODE_OPTIONS = {
+  firecrawl: [{ value: 'default', label: '默认模式：scrape & search', description: '使用 Firecrawl 默认抓取和搜索组合。' }],
+  tavily: [
+    { value: 'basic', label: 'basic', description: '默认模式，成本较低。' },
+    { value: 'advanced', label: 'advanced', description: '更深度的搜索结果，成本更高。' },
+  ],
+  exa: [
+    { value: 'auto', label: 'auto', description: '默认模式，自动选择策略。' },
+    { value: 'fast', label: 'fast', description: '速度优先。' },
+    { value: 'deep', label: 'deep', description: '质量更高，耗时更长。' },
+  ],
+  zhipu: [{ value: 'search-prime', label: '默认搜索引擎：search-prime', description: '使用智谱默认搜索能力。' }],
+};
+
+const SearchConfig = () => {
+  const toast = useToast();
+  const [config, setConfig] = useState({
+    enabled: false,
+    selected_provider: 'firecrawl',
+    modes: {},
+    counts: {},
+    api_key_set: {},
+    providers: [],
+  });
+  const [apiKey, setApiKey] = useState('');
+  const [saving, setSaving] = useState(false);
+  const providers = config.providers || [];
+  const selectedProvider = providers.find((item) => item.id === config.selected_provider) || providers[0] || { id: 'firecrawl', name: 'Firecrawl', max_limit: 20 };
+  const modeOptions = SEARCH_MODE_OPTIONS[selectedProvider.id] || SEARCH_MODE_OPTIONS.firecrawl;
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/settings/search-providers')
+      .then((response) => response.json())
+      .then((payload) => {
+        if (!cancelled) setConfig((prev) => ({ ...prev, ...payload }));
+      })
+      .catch(() => toast('读取搜索配置失败', 'error'));
+    return () => { cancelled = true; };
+  }, [toast]);
+
+  const patchConfig = (patch) => setConfig((prev) => ({ ...prev, ...patch }));
+  const setMode = (mode) => setConfig((prev) => ({ ...prev, modes: { ...(prev.modes || {}), [selectedProvider.id]: mode } }));
+  const setCount = (count) => setConfig((prev) => ({ ...prev, counts: { ...(prev.counts || {}), [selectedProvider.id]: Number(count) || 1 } }));
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const response = await fetch('/api/settings/search-providers', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          enabled: config.enabled,
+          selected_provider: selectedProvider.id,
+          modes: config.modes,
+          counts: config.counts,
+          api_keys: apiKey.trim() ? { [selectedProvider.id]: apiKey.trim() } : {},
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || '保存搜索配置失败');
+      setConfig((prev) => ({ ...prev, ...payload }));
+      setApiKey('');
+      toast('搜索配置已保存', 'success');
+    } catch (error) {
+      toast(error.message || '保存搜索配置失败', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={{ color: '#2D2D2D' }}>
+      <div style={{ borderBottom: '1px solid #E5E3D8', paddingBottom: 16, marginBottom: 24 }}>
+        <div style={{ fontFamily: 'Georgia, Songti SC, STSong, serif', fontSize: 22, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Icons.settings size={20} style={{ color: '#D97757' }} />搜索引擎配置
         </div>
       </div>
 
-      <div style={{ marginBottom: 32 }}>
-        <LlmConfigCardsSection
-          title="LLM 配置"
-        />
+      <div style={{ background: '#fff', border: '1px solid #E5E3D8', borderRadius: 14, padding: 24, display: 'grid', gap: 24, boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid #F2F0EA', paddingBottom: 20 }}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700 }}>启用联网搜索</div>
+            <div style={{ fontSize: 12, color: '#8A8881', marginTop: 4 }}>开启后聊天输入框可以携带联网搜索参数。</div>
+          </div>
+          <Toggle on={Boolean(config.enabled)} onChange={(value) => patchConfig({ enabled: value })} />
+        </div>
+
+        <div style={{ display: 'grid', gap: 24, opacity: config.enabled ? 1 : 0.45, pointerEvents: config.enabled ? 'auto' : 'none' }}>
+          <div style={{ display: 'grid', gap: 10 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#4B4944' }}>搜索服务商</div>
+            <div style={{ display: 'flex', gap: 8, padding: 4, background: '#F9F9F8', border: '1px solid #E5E3D8', borderRadius: 10, overflowX: 'auto' }}>
+              {providers.map((provider) => {
+                const active = provider.id === selectedProvider.id;
+                return (
+                  <button
+                    key={provider.id}
+                    type="button"
+                    onClick={() => { patchConfig({ selected_provider: provider.id }); setApiKey(''); }}
+                    style={{
+                      flex: 1,
+                      minWidth: 88,
+                      height: 32,
+                      border: active ? '1px solid rgba(229,227,216,0.8)' : '1px solid transparent',
+                      borderRadius: 8,
+                      background: active ? '#fff' : 'transparent',
+                      color: active ? '#D97757' : '#6B6963',
+                      boxShadow: active ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+                      fontSize: 13,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {provider.name}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gap: 14, border: '1px solid #F2F0EA', background: '#FDFCFB', borderRadius: 14, padding: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#4B4944' }}>调用模式</div>
+            <div style={{ display: 'grid', gap: 12 }}>
+              {modeOptions.map((mode) => (
+                <label key={mode.value} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer' }}>
+                  <input
+                    type="radio"
+                    checked={(config.modes?.[selectedProvider.id] || modeOptions[0]?.value) === mode.value}
+                    onChange={() => setMode(mode.value)}
+                    style={{ marginTop: 2, accentColor: '#D97757' }}
+                  />
+                  <span style={{ display: 'grid', gap: 3 }}>
+                    <span style={{ fontSize: 13, fontWeight: 700 }}>{mode.label}</span>
+                    <span style={{ fontSize: 12, color: '#8A8881' }}>{mode.description}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+            <div style={{ display: 'grid', gap: 8, paddingTop: 14, borderTop: '1px solid rgba(229,227,216,0.6)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, fontWeight: 700, color: '#4B4944' }}>
+                <span>每次返回结果数</span>
+                <span style={{ color: '#D97757', fontFamily: 'var(--font-mono)', background: 'rgba(251,228,210,0.4)', borderRadius: 6, padding: '2px 8px' }}>{config.counts?.[selectedProvider.id] || 5} 条</span>
+              </div>
+              <input
+                type="range"
+                min="1"
+                max={selectedProvider.max_limit || 20}
+                value={config.counts?.[selectedProvider.id] || 5}
+                onChange={(event) => setCount(event.target.value)}
+                style={{ width: '100%', accentColor: '#D97757' }}
+              />
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gap: 8 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#4B4944' }}>API Key</div>
+            <TextInput
+              masked
+              value={apiKey}
+              onChange={(event) => setApiKey(event.target.value)}
+              placeholder={config.api_key_set?.[selectedProvider.id] ? '已保存，留空不修改' : 'sk-••••••••••••'}
+            />
+          </div>
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, borderTop: '1px solid #F2F0EA', paddingTop: 16 }}>
+            <Button variant="ghost" onClick={() => setApiKey('')}>取消</Button>
+            <Button variant="primary" loading={saving} onClick={save}>保存</Button>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -952,6 +1172,7 @@ const About = () => {
 
 const CONTENT_MAP = {
   model: ModelConfig,
+  search: SearchConfig,
   personalization: Personalization,
   storage: Storage,
   logs: Logs,

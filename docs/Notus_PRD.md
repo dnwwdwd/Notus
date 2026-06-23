@@ -416,6 +416,8 @@ db.exec(`
 
 当前工具集不开放删除、重命名、移动或系统命令能力；删除在任意 Agentic Loop 写入校验路径下都会被拒绝。
 
+`validateWrite()` 按操作类型区分授权边界：`modify` 只允许精确授权文件或授权目录下的文件；`create` 允许在授权目录下新建文件，如果授权项是某个 `.md` 文件，则只额外允许在该文件父目录中新建文件，不扩大同目录其他文件的修改权限。
+
 ### 4.1 `lib/db.js`
 
 ```javascript
@@ -958,6 +960,7 @@ DELETE /api/conversations/:id
 - 画布会话详情会附带 `pending_operation_sets`，前端刷新后可恢复全部未应用预览。
 - 知识库与画布会话详情都会附带 `pending_interactions`，前端刷新后可恢复 `pending / stale / failed` 提问抽屉；抽屉继续以底部抽屉形式恢复，不再把 interaction 摘要用户消息和 retry 助手消息重新露回消息流。
 - 会话详情会附带同一 conversation 下的 `agent_sessions` 导出数据，每个 session 包含运行状态、快照数量、`agent_run_logs` 工具日志和关联修改预览，但不返回 session token。
+- 会话列表会附带 `agent_session_count`，前端用于在历史抽屉显示 Agent Loop 执行日志入口。
 - 删除会话前需要确认会话存在；不存在返回 `404 CONVERSATION_NOT_FOUND`，删除成功返回 `204`。数据库外键负责级联删除 `messages`、`canvas_operation_sets` 和 `conversation_interactions`。
 - 历史抽屉删除当前会话后，知识库页回到新对话空态；创作页回到当前文章的新对话空态，并保留文章块内容和未保存状态。
 
@@ -1057,6 +1060,15 @@ POST /api/settings/test              Body: { kind: 'embedding'|'llm', config }
 5. 回滚：任务可以整体回滚，覆盖快照内被修改文件和 Agent 新建文件；新建文件会记录创建时 hash，回滚前发现外部修改时返回冲突，不直接删除。
 
 Agentic Loop 的 LLM 调用适配 OpenAI-compatible `tool_calls` 和 Anthropic `tool_use/tool_result` 两种协议；system prompt 继续接入 `getStyleContext()` 产生的风格画像和相关原文摘录。
+
+Agent Loop 日志接口：
+
+```
+GET /api/agent/sessions              → { sessions: AgentSessionWithLogs[] }，支持 `limit`、`logs_limit`、`conversation_id`
+GET /api/agent/sessions/:id          → { session, run_logs, snapshots_count, operation_sets }；无 token 时只返回不含 session token 和 checkpoint 的只读数据
+```
+
+设置页日志视图会读取最近 `agent_sessions` 和 `agent_run_logs`，按 session 与轮次展示工具名、执行结果摘要、失败状态和耗时；历史抽屉的 Agent Loop 日志入口通过 `conversation_id` 跳转到同一视图。
 
 ### 6.5 str_replace 引擎
 

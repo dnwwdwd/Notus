@@ -220,12 +220,12 @@ SSE 过程会返回：
 
 创作页右侧主输入收到用户请求后，不直接进入旧块级执行器，而是先读取创作页输入框里的执行方式。
 
-- 自动应用：默认模式。前端直接启动 Agentic Loop，不展示任务确认卡；默认授权路径优先使用当前文章路径。
+- 自动应用：默认模式。前端直接启动 Agentic Loop，不展示任务确认卡；默认授权路径优先使用当前文章所在目录。
 - 手动确认：展示任务确认卡，用户可以修改授权路径和检索次数后再启动。
 
 启动后前端调用 `/api/agent/loop/start`，服务端会：
 
-1. 创建 `agent_sessions`，保存目标、授权路径、授权操作和检索次数上限。
+1. 创建 `agent_sessions`，保存目标、授权路径、授权操作和检索次数上限；`create_note` 新建文件按目录粒度校验，后端兼容旧任务只授权当前 `.md` 文件时在父目录新建，但不会扩大同目录其他文件的修改权限。
 2. 在执行前写入 `agent_snapshots`。
 3. 通过 Agent Loop 多轮调用 `search_knowledge / read_file / create_note / preview_patch_files / analyze_folder / check_links`。
 4. `preview_patch_files` 生成后暂停为 `waiting_confirm`，前端展示文件级 patch 预览。
@@ -297,6 +297,8 @@ Agentic Loop 生成文件级预览后，前端按创作页执行方式处理：
 - `pending_operation_sets`
 - `pending_interactions`
 - `agent_sessions`：用于导出 Agent Loop 运行记录，包含工具日志、思考文本、快照数量和修改预览集合，不包含 session token
+
+会话列表会额外返回 `agent_session_count`。历史抽屉中包含 Agent Loop 的会话会显示日志入口，点击后进入设置页日志视图，并通过 `conversation_id` 只查看该会话的 Agent Loop 执行日志。
 
 前端刷新后会：
 
@@ -429,7 +431,7 @@ Agentic Loop 生成文件级预览后，前端按创作页执行方式处理：
 
 - 创作页继续保留旧的块画布、文章分片预览、块编辑和批量修改预览，不再整页替换为 Agent Workspace。
 - 右侧聊天消息区、工具链和底部输入框按 Notus-design-draft/notus-agent.html 还原；聊天顶部不显示 Agent Workspace 标题，也不显示模型配置和搜索配置按钮。
-- 当前文档路径会作为 Agentic Loop 默认授权路径；自动应用模式直接使用该路径启动，手动确认模式会在任务确认卡中展示并允许修改。无当前文档时仍先创建一篇 AI 创作草稿。
+- 当前文档所在目录会作为 Agentic Loop 默认授权路径；自动应用模式直接使用该目录启动，手动确认模式会在任务确认卡中展示并允许修改。无当前文档时仍先创建一篇 AI 创作草稿。
 - session_created / snapshot_done / loop_start / thinking / tool_start / tool_done / waiting_preview_confirm / loop_done 会累计为设计稿工具过程和文件变更卡片；最终 assistant 消息保留完整工具步骤，历史会话中仍可展开查看每一步的说明、工具输入和结果。
 - 批量修改预览、应用和取消能力继续保留；变更详情弹窗展示文件级 patch 的 old/new 内容，应用修改后通过 /api/agent/loop/apply 写回 Markdown，再携带 session_id 续跑。
 - 输入框会随请求携带当前模型、联网搜索状态、搜索服务商和附件元数据；联网搜索当前只记录配置状态，不参与真实外部搜索；输入框上方不展示预制问题列表。

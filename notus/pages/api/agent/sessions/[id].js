@@ -1,5 +1,5 @@
 const { ensureRuntime } = require('../../../../lib/runtime');
-const { getSession, listRunLogs, countSnapshots, validateSessionAccess } = require('../../../../lib/agentSession');
+const { getSession, listRunLogs, countSnapshots, sanitizeSessionForRead, validateSessionAccess } = require('../../../../lib/agentSession');
 const { listOperationSetsBySession } = require('../../../../lib/canvasOperationSets');
 
 export default async function handler(req, res) {
@@ -8,11 +8,14 @@ export default async function handler(req, res) {
   if (!runtime.ok) return res.status(500).json({ error: runtime.error.message, code: 'RUNTIME_ERROR' });
   try {
     const sessionId = Number(req.query.id || 0);
-    const access = validateSessionAccess(sessionId, req.query.session_token || req.headers['x-agent-session-token']);
-    if (!access.valid) return res.status(403).json({ error: access.reason, code: access.reason });
+    const token = req.query.session_token || req.headers['x-agent-session-token'];
+    if (token) {
+      const access = validateSessionAccess(sessionId, token);
+      if (!access.valid) return res.status(403).json({ error: access.reason, code: access.reason });
+    }
     const session = getSession(sessionId);
     return res.status(200).json({
-      session,
+      session: token ? session : sanitizeSessionForRead(session),
       run_logs: listRunLogs(sessionId),
       snapshots_count: countSnapshots(sessionId),
       operation_sets: listOperationSetsBySession(sessionId),

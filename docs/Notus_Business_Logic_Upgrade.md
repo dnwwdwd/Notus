@@ -221,9 +221,9 @@
 
 ### 8.5 Agentic Loop 任务安全边界
 
-创作页主输入和知识库页写作类任务会创建 `agent_sessions`。创作页默认自动应用，发送后直接创建 session；切换为手动确认时才先显示任务确认卡。每次 Loop 开始前先完成 `agent_snapshots`；写入类工具必须经过 `validateWrite()` 校验授权路径、授权操作和 session token。知识库页普通问答不创建 Loop session，继续走 `/api/chat`。
+创作页主输入和知识库页写作类任务会创建 `agent_sessions`。创作页默认自动应用，发送后直接创建 session；切换为手动确认时才先显示任务确认卡。每次 Loop 开始前先完成 `agent_snapshots`；写入类工具必须经过 `validateWrite()` 校验授权路径、授权操作和 session token。`create_note` 按目录粒度校验新建权限；如果历史任务只授权了当前 `.md` 文件，后端只兼容允许在该文件父目录中新建文件，不会把同目录其他文件的 `modify` 权限一并放开。知识库页普通问答不创建 Loop session，继续走 `/api/chat`。
 
-任务运行中会记录 `agent_run_logs`，并检测以下异常：
+任务运行中会记录 `agent_run_logs`，设置页日志视图会按 session 和轮次展示工具调用、结果摘要、失败状态和耗时；历史抽屉中包含 Agent Loop 的会话会显示日志入口，并跳转到设置页按 `conversation_id` 过滤。运行时同时检测以下异常：
 
 - 超过硬轮数上限。
 - 同一工具连续失败。

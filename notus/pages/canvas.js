@@ -40,6 +40,7 @@ import {
   formatConversationExportMarkdown,
 } from '../utils/conversationExport';
 import { readApiResponse } from '../utils/http';
+import { getAgentAuthorizedDirectory } from '../utils/agentPaths';
 import { navigateWithFallback } from '../utils/navigation';
 import {
   readViewPosition,
@@ -1228,6 +1229,11 @@ export default function CanvasPage() {
     toast,
   ]);
 
+  const handleConversationAgentLogs = useCallback((conversationId) => {
+    if (!conversationId) return;
+    navigateWithFallback(router, `/settings/logs?conversation_id=${encodeURIComponent(conversationId)}`);
+  }, [router]);
+
   useEffect(() => {
     if (!article || !articleFileId) {
       setConversationList([]);
@@ -1335,7 +1341,7 @@ export default function CanvasPage() {
       conversation_id: activeConversationId || undefined,
       active_file_id: activeFile?.id || articleFileId || undefined,
       llm_config_id: options.llmConfigId || selectedLlmConfigId,
-      authorized_paths: [filePath || ''],
+      authorized_paths: [getAgentAuthorizedDirectory(filePath)],
       authorized_ops: ['modify', 'create'],
       search_knowledge_limit: 5,
       attachments: options.attachments || [],
@@ -2074,6 +2080,7 @@ export default function CanvasPage() {
         onSelect={handleConversationSelect}
         onDelete={handleConversationDelete}
         onExport={handleConversationExport}
+        onViewAgentLogs={handleConversationAgentLogs}
         deletingConversationId={deletingConversationId}
         exportingConversationId={exportingConversationId}
       />

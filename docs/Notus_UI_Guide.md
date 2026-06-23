@@ -772,5 +772,6 @@ bg:--danger-subtle radius:--radius-md padding:--space-2 --space-3。✕(--danger
 - 模型配置在设置页和引导页展示；搜索配置作为设置菜单项展示，不在聊天顶部切换。
 - Agentic Loop 任务确认卡只在手动确认模式或知识库写作类任务中显示在消息列表上方：白色圆角卡片、左侧 wand 图标、目标摘要、允许写入路径 textarea、检索次数输入框，以及“取消 / 开始执行”按钮。创作页默认自动应用模式不显示这张卡片。
 - Agentic Loop 会话状态卡显示 session id、执行轮数、状态和原因；达到硬上限时展示“继续 10 轮”，所有非空会话都可显示“回滚任务”。
+- 设置页日志增加 Agent Loop 执行日志区块：按 session 和轮次分组，展示工具名、结果摘要、失败状态和耗时；失败条目使用 danger 弱背景与边框高亮。历史抽屉中包含 Agent Loop 的会话显示日志入口图标，点击跳转到设置页并按该会话过滤。
 - 文件级预览沿用 OperationSetCard 与 DiffDialog；当 operation set 含 `patches` 时，详情标题显示文件路径，正文 diff 展示 `old/new`。
 - 普通知识问答不显示任务确认卡；创作页主输入默认直接进入 Agentic Loop 并自动应用文件预览，也可切换为手动确认后显示任务确认卡；知识库页写作类任务仍先显示任务确认卡。

@@ -134,6 +134,7 @@
 - `kind`
 - `title`
 - `message_count`
+- `agent_session_count`
 - 最近一条消息的 `preview`
 - `updated_at`
 
@@ -149,6 +150,8 @@
   - `GET /api/conversations/:id`
   - 然后把完整 `messages` 映射到页面消息列表中
   - 如果会话包含 Agent Loop，详情还会返回 `agent_sessions` 导出数据，用于记录工具日志、思考文本和修改预览集合
+
+历史抽屉会根据 `agent_session_count` 为包含 Agent Loop 的会话显示日志入口。点击后进入设置页日志视图，并通过 `conversation_id` 过滤展示该会话的 `agent_run_logs`。
 
 ### 5.3 用户主动切换旧会话
 
@@ -207,10 +210,12 @@
 如果进入 Agentic Loop，前端会：
 
 1. 显示 Agentic Loop 任务确认卡。
-2. 由用户确认 `authorized_paths` 与 `search_knowledge_limit`。
+2. 由用户确认 `authorized_paths` 与 `search_knowledge_limit`；默认授权路径使用当前文档所在目录。
 3. 用户点击确认后再插入用户消息并调用 `/api/agent/loop/start`。
 4. 通过 SSE 展示 `snapshot_done / loop_start / tool_start / tool_done / waiting_preview_confirm / loop_done`。
 5. 如果生成文件级预览，用户点击应用后调用 `/api/agent/loop/apply`，成功后再续跑 Loop。
+
+`create_note` 新建文件按目录粒度校验授权。为兼容旧任务，如果授权项是当前 `.md` 文件，后端只允许在该文件父目录中新建文件，不会因此允许修改同目录其他文件。
 
 ### 6.2 实际发送的请求
 

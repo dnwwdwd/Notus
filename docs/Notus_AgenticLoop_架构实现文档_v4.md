@@ -269,7 +269,7 @@ function startSessionCleaner() {
 - **令牌化授权**：Agent 拿到的是本次任务的有限写权限，不是工作区的全局权限
 - **任务级粒度**：每次任务单独授权，任务结束后 token 自动过期（24 小时）
 - **操作类型分离**：modify 和 create 独立控制，delete 永远不在授权范围内
-- **目录级新建**：新建文件授权到目录粒度，不授权到具体文件名
+- **目录级新建**：新建文件授权到目录粒度，不授权到具体文件名；兼容旧任务只授权当前 `.md` 文件时，仅允许在该文件父目录中新建，不扩大同目录其他文件的修改权限
 - **读取不受限**：检索和读取可访问全库，只有写入受 `authorized_paths` 约束
 - **系统层拦截**：校验函数与 Agent 逻辑完全解耦，Agent 绕不过去
 
@@ -358,7 +358,7 @@ function validateWrite(token, targetPath, operation) {
     return { valid: false, reason: `OPERATION_NOT_AUTHORIZED: ${operation}` };
 
   const authorizedPaths = JSON.parse(row.authorized_paths);
-  if (!isPathSafe(targetPath, authorizedPaths))
+  if (!isPathSafe(targetPath, authorizedPaths, operation))
     return { valid: false, reason: `PATH_NOT_AUTHORIZED: ${targetPath}` };
 
   return { valid: true };
@@ -368,14 +368,34 @@ function validateWrite(token, targetPath, operation) {
  * 路径安全检查
  * 已知限制：未解析符号链接，本地单用户场景风险极低，后续可用 fs.realpathSync 加固
  */
-function isPathSafe(targetPath, authorizedPaths) {
-  const normalized = path.normalize(targetPath);
+function normalizeAgentPath(value) {
+  return path.normalize(String(value || '').replace(/\\/g, '/')).replace(/\\/g, '/').replace(/^\/+/, '');
+}
+
+function getAgentPathDir(value) {
+  const normalized = normalizeAgentPath(value);
+  if (!normalized || !normalized.includes('/')) return '';
+  return normalized.slice(0, normalized.lastIndexOf('/'));
+}
+
+function isPathSafe(targetPath, authorizedPaths, operation = 'modify') {
+  const normalized = normalizeAgentPath(targetPath);
+  if (!normalized) return false;
   if (normalized.includes('..')) return false;
-  if (path.isAbsolute(normalized)) return false;
+  if (path.isAbsolute(String(targetPath || ''))) return false;
+
   return authorizedPaths.some(authPath => {
-    const normalizedAuth = path.normalize(authPath);
-    return normalized === normalizedAuth
-      || normalized.startsWith(normalizedAuth + path.sep);
+    const normalizedAuth = normalizeAgentPath(authPath);
+    if (normalizedAuth === '') return true;
+    if (normalized === normalizedAuth) return true;
+    if (normalized.startsWith(`${normalizedAuth}/`)) return true;
+
+    if (operation === 'create' && normalizedAuth.toLowerCase().endsWith('.md')) {
+      const authDir = getAgentPathDir(normalizedAuth);
+      return authDir ? getAgentPathDir(normalized) === authDir : !normalized.includes('/');
+    }
+
+    return false;
   });
 }
 
@@ -1416,7 +1436,22 @@ action='extend'
   → POST /start { session_id }  ← 重新建立 SSE 连接，续跑 loop
 ```
 
-### 7.4 查询 Session（断线重连重建 UI）
+### 7.4 查询 Session（断线重连重建 UI / 日志页追溯）
+
+```
+GET /api/agent/sessions?limit=20&logs_limit=100&conversation_id=...
+
+→ {
+    sessions: [{
+      ...safeSession,
+      run_logs: AgentRunLog[],    // 按 session 和 loop_index 展示工具调用
+      snapshots_count: number,
+      operation_sets: OperationSet[]
+    }]
+  }
+```
+
+该列表接口供设置页日志视图使用。历史抽屉中包含 Agent Loop 的会话会根据 `agent_session_count` 显示日志入口，点击后带 `conversation_id` 跳转到日志页过滤。
 
 ```
 GET /api/agent/sessions/:id
@@ -1429,7 +1464,7 @@ GET /api/agent/sessions/:id
   }
 ```
 
-断线重连后，前端调用此接口根据 `run_logs` 和 `session.status` 重建 UI 状态。
+断线重连后，前端调用单 session 接口根据 `run_logs` 和 `session.status` 重建 UI 状态。无 token 的 GET 只返回去敏后的只读 session、日志和预览集合，不暴露 `session_token`、checkpoint 消息和工具上下文；需要写入、应用或回滚的接口仍然必须带 token。
 
 ### 7.5 回滚整个任务
 

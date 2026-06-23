@@ -10,6 +10,7 @@ import { ProgressBar } from '../ui/ProgressBar';
 import { Badge } from '../ui/Badge';
 import { Toggle } from '../ui/Toggle';
 import { useToast } from '../ui/Toast';
+import { AgentLoopLogList } from '../AgentLoop/AgentLoopLogList';
 import { LlmConfigCardsSection } from './LlmConfigCardsSection';
 import packageMeta from '../../package.json';
 import { usePlatform } from '../../contexts/PlatformContext';
@@ -610,12 +611,16 @@ const SearchConfig = () => {
 };
 
 const Logs = () => {
+  const router = useRouter();
   const toast = useToast();
   const [items, setItems] = useState([]);
+  const [agentSessions, setAgentSessions] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [agentLoading, setAgentLoading] = useState(false);
   const [level, setLevel] = useState('');
   const [route, setRoute] = useState('');
   const [requestId, setRequestId] = useState('');
+  const agentConversationId = String(router.query.conversation_id || '').trim();
 
   const formatLogTimestamp = (value) => {
     if (!value) return '—';
@@ -652,9 +657,29 @@ const Logs = () => {
     }
   };
 
+  const fetchAgentLogs = async () => {
+    setAgentLoading(true);
+    try {
+      const params = new URLSearchParams({ limit: '20', logs_limit: '100' });
+      if (agentConversationId) params.set('conversation_id', agentConversationId);
+      const response = await fetch(`/api/agent/sessions?${params.toString()}`);
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || '读取 Agent Loop 日志失败');
+      setAgentSessions(Array.isArray(payload.sessions) ? payload.sessions : []);
+    } catch (error) {
+      toast(error.message || '读取 Agent Loop 日志失败', 'error');
+    } finally {
+      setAgentLoading(false);
+    }
+  };
+
   useEffect(() => {
     fetchLogs().catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    fetchAgentLogs().catch(() => {});
+  }, [agentConversationId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div>
@@ -662,6 +687,20 @@ const Logs = () => {
       <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', marginBottom: 28 }}>
         查看最近的服务端结构化日志，用于排查导入、索引、模型配置和运行时错误。
       </div>
+
+      <Section title="Agent Loop 执行日志">
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', lineHeight: 1.7 }}>
+            {agentConversationId ? `当前仅显示会话 #${agentConversationId} 的 Agent Loop 记录。` : '查看最近的 Agent Loop 轮次、工具调用、失败摘要和耗时。'}
+          </div>
+          <Button variant="secondary" loading={agentLoading} onClick={fetchAgentLogs}>刷新 Agent 日志</Button>
+        </div>
+        <AgentLoopLogList
+          sessions={agentSessions}
+          loading={agentLoading}
+          formatTimestamp={formatLogTimestamp}
+        />
+      </Section>
 
       <Section title="筛选">
         <div style={{ display: 'grid', gap: 12 }}>

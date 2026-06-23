@@ -43,6 +43,7 @@ function toConversationRow(row) {
     draft_key: normalizeDraftKey(row.draft_key),
     ...scopes,
     message_count: Number(row.message_count || 0),
+    agent_session_count: Number(row.agent_session_count || 0),
     preview: String(row.preview || ''),
     preview_role: row.preview_role || '',
   };
@@ -111,6 +112,7 @@ function listConversations({ kind = null, fileId, draftKey, limit = 20 } = {}) {
     SELECT
       c.*,
       COALESCE((SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id), 0) AS message_count,
+      COALESCE((SELECT COUNT(*) FROM agent_sessions s WHERE s.conversation_id = c.id), 0) AS agent_session_count,
       COALESCE((SELECT m.content FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1), '') AS preview,
       COALESCE((SELECT m.role FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1), '') AS preview_role
     FROM conversations c

@@ -11,6 +11,7 @@
     "start": "next start",
     "lint": "next lint",
     "test:platform": "node tests/platform.test.js",
+    "test:agent-session": "node tests/agent-session-paths.test.js",
     "test:knowledge-routing": "node tests/knowledge-routing.test.js",
     "test:knowledge-retrieval": "node tests/knowledge-retrieval.test.js"
   },

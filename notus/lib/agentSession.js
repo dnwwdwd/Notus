@@ -5,6 +5,12 @@ const { getDb } = require('./db');
 const { getEffectiveConfig } = require('./config');
 const { sha256 } = require('./files');
 const { triggerIncrementalIndex, removeFile: removeFileFromIndex } = require('./indexer');
+const {
+  isPathSafe,
+  normalizeAgentPath,
+  normalizeAuthorizedPaths,
+  resolveInsideNotes,
+} = require('./agentPathRules');
 
 const TERMINAL_STATUSES = new Set(['completed', 'cancelled', 'failed', 'rolled_back']);
 const ACTIVE_STATUSES = new Set(['running', 'waiting_confirm']);
@@ -33,39 +39,6 @@ function normalizeOps(ops = []) {
     set.add('create');
   }
   return [...set];
-}
-
-function normalizeAgentPath(input, { allowRoot = false, ensureMarkdown = false } = {}) {
-  const raw = String(input || '').replace(/\\/g, '/').trim();
-  if (!raw || raw === '.') {
-    if (allowRoot) return '';
-    throw new Error('path is required');
-  }
-  if (raw.includes('\0')) throw new Error('invalid path');
-  if (path.isAbsolute(raw)) throw new Error('absolute paths are not allowed');
-  let normalized = path.posix.normalize(raw).replace(/^\/+|\/+$/g, '');
-  if (!normalized || normalized === '.' || normalized === '..' || normalized.startsWith('../')) {
-    if (allowRoot && (!normalized || normalized === '.')) return '';
-    throw new Error('invalid path');
-  }
-  if (ensureMarkdown && !/\.md$/i.test(normalized)) normalized += '.md';
-  return normalized;
-}
-
-function resolveInsideNotes(notesDir, relativePath, { allowRoot = false } = {}) {
-  const normalized = normalizeAgentPath(relativePath, { allowRoot });
-  const base = path.resolve(notesDir);
-  const absolute = normalized ? path.resolve(base, normalized) : base;
-  if (absolute !== base && !absolute.startsWith(`${base}${path.sep}`)) {
-    throw new Error('path escapes notes directory');
-  }
-  return { absolutePath: absolute, relativePath: normalized };
-}
-
-function normalizeAuthorizedPaths(paths = []) {
-  const input = Array.isArray(paths) ? paths : [];
-  const normalized = input.map((item) => normalizeAgentPath(item, { allowRoot: true })).filter((item, index, arr) => arr.indexOf(item) === index);
-  return normalized.length > 0 ? normalized : [''];
 }
 
 function normalizeCreatedFiles(value) {
@@ -151,15 +124,28 @@ function listSessionsByConversation(conversationId) {
   return getDb().prepare('SELECT * FROM agent_sessions WHERE conversation_id = ? ORDER BY id ASC')
     .all(id)
     .map(formatSession)
-    .map((session) => {
-      const {
-        session_token: _sessionToken,
-        messages_checkpoint: _messagesCheckpoint,
-        checkpoint_tool_use_id: _checkpointToolUseId,
-        ...safeSession
-      } = session;
-      return safeSession;
-    });
+    .map(sanitizeSessionForRead);
+}
+
+function sanitizeSessionForRead(session) {
+  if (!session) return null;
+  const {
+    session_token: _sessionToken,
+    messages_checkpoint: _messagesCheckpoint,
+    checkpoint_tool_use_id: _checkpointToolUseId,
+    ...safeSession
+  } = session;
+  return safeSession;
+}
+
+function listRecentSessions({ limit = 20, conversationId = null } = {}) {
+  const normalizedLimit = Math.min(Math.max(Math.floor(Number(limit) || 20), 1), 100);
+  const normalizedConversationId = normalizePositiveInt(conversationId);
+  const db = getDb();
+  const rows = normalizedConversationId
+    ? db.prepare('SELECT * FROM agent_sessions WHERE conversation_id = ? ORDER BY updated_at DESC, id DESC LIMIT ?').all(normalizedConversationId, normalizedLimit)
+    : db.prepare('SELECT * FROM agent_sessions ORDER BY updated_at DESC, id DESC LIMIT ?').all(normalizedLimit);
+  return rows.map(formatSession).map(sanitizeSessionForRead);
 }
 
 function updateSessionStatus(sessionId, status) {
@@ -185,20 +171,6 @@ function extendHardLimit(sessionId, extraLoops = 10) {
   return getSession(sessionId);
 }
 
-function isPathSafe(targetPath, authorizedPaths = []) {
-  let target;
-  try {
-    target = normalizeAgentPath(targetPath, { allowRoot: false, ensureMarkdown: true });
-  } catch {
-    return false;
-  }
-  return normalizeAuthorizedPaths(authorizedPaths).some((authPath) => {
-    if (!authPath) return true;
-    if (target === authPath) return true;
-    return target.startsWith(`${authPath}/`);
-  });
-}
-
 function validateWrite(token, targetPath, operation) {
   const db = getDb();
   const row = db.prepare('SELECT * FROM agent_sessions WHERE session_token = ?').get(String(token || ''));
@@ -209,7 +181,7 @@ function validateWrite(token, targetPath, operation) {
   const op = String(operation || '').trim();
   if (op === 'delete') return { valid: false, reason: 'DELETE_NEVER_ALLOWED' };
   if (!session.authorized_ops.includes(op)) return { valid: false, reason: `OPERATION_NOT_AUTHORIZED: ${op}` };
-  if (!isPathSafe(targetPath, session.authorized_paths)) return { valid: false, reason: `PATH_NOT_AUTHORIZED: ${targetPath}` };
+  if (!isPathSafe(targetPath, session.authorized_paths, op)) return { valid: false, reason: `PATH_NOT_AUTHORIZED: ${targetPath}` };
   return { valid: true, session };
 }
 
@@ -521,6 +493,8 @@ module.exports = {
   createSession,
   getSession,
   listSessionsByConversation,
+  listRecentSessions,
+  sanitizeSessionForRead,
   updateSessionStatus,
   updateSessionLoopCount,
   extendHardLimit,

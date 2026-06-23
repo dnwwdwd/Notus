@@ -58,6 +58,7 @@ import {
 import { readApiResponse } from '../utils/http';
 import { navigateWithFallback } from '../utils/navigation';
 import { classifyKnowledgeTaskIntent, shouldAuthorizeCurrentFile } from '../utils/agentLoopRouting';
+import { getAgentAuthorizedDirectory } from '../utils/agentPaths';
 
 const WysiwygEditor = dynamic(
   () => import('../components/Editor/WysiwygEditor').then((module) => module.WysiwygEditor),
@@ -979,6 +980,11 @@ export default function KnowledgePage() {
     toast,
   ]);
 
+  const handleConversationAgentLogs = useCallback((conversationId) => {
+    if (!conversationId) return;
+    navigateWithFallback(router, `/settings/logs?conversation_id=${encodeURIComponent(conversationId)}`);
+  }, [router]);
+
   const handleConversationSelect = useCallback(async (conversationId) => {
     if (!conversationId || aiRequestLoading || agentLoopInteractionLocked) return;
     setConversationListLoading(true);
@@ -1073,7 +1079,7 @@ export default function KnowledgePage() {
         conversation_id: activeConversationId || undefined,
         active_file_id: activeFile?.id || undefined,
         llm_config_id: llmConfigId,
-        authorized_paths: [currentPath || ''],
+        authorized_paths: [getAgentAuthorizedDirectory(currentPath)],
         authorized_ops: ['modify', 'create'],
         search_knowledge_limit: 5,
         attachments: sendOptions.attachments || [],
@@ -1678,6 +1684,7 @@ export default function KnowledgePage() {
             onSelect={handleConversationSelect}
             onDelete={handleConversationDelete}
             onExport={handleConversationExport}
+            onViewAgentLogs={handleConversationAgentLogs}
             deletingConversationId={deletingConversationId}
             exportingConversationId={exportingConversationId}
           />

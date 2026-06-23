@@ -14,6 +14,7 @@ export function ConversationDrawer({
   onSelect,
   onDelete,
   onExport,
+  onViewAgentLogs,
   deletingConversationId = null,
   exportingConversationId = null,
 }) {
@@ -112,6 +113,8 @@ export function ConversationDrawer({
             const preview = String(conversation.preview || '').trim();
             const deleting = Number(deletingConversationId) === Number(conversation.id);
             const exporting = Number(exportingConversationId) === Number(conversation.id);
+            const canViewAgentLogs = Boolean(onViewAgentLogs) && Number(conversation.agent_session_count || 0) > 0;
+            const actionColumns = [canViewAgentLogs, Boolean(onExport), true].filter(Boolean).length;
 
             return (
               <div
@@ -125,7 +128,7 @@ export function ConversationDrawer({
                   color: active ? 'var(--accent)' : 'var(--text-primary)',
                   textAlign: 'left',
                   display: 'grid',
-                  gridTemplateColumns: onExport ? 'minmax(0, 1fr) 28px 28px' : 'minmax(0, 1fr) 28px',
+                  gridTemplateColumns: `minmax(0, 1fr) repeat(${actionColumns}, 28px)`,
                   columnGap: 8,
                   alignItems: 'start',
                   cursor: 'default',
@@ -174,6 +177,34 @@ export function ConversationDrawer({
                     </div>
                   )}
                 </button>
+                {canViewAgentLogs ? (
+                  <button
+                    type="button"
+                    aria-label={`查看 Agent Loop 日志 ${title}`}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      onViewAgentLogs(conversation.id, conversation);
+                    }}
+                    title="查看 Agent Loop 日志"
+                    style={{
+                      width: 28,
+                      height: 28,
+                      borderRadius: 'var(--radius-sm)',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color: 'var(--text-secondary)',
+                      opacity: 0.88,
+                      cursor: 'pointer',
+                      border: 0,
+                      padding: 0,
+                      background: 'transparent',
+                    }}
+                  >
+                    <Icons.list size={13} />
+                  </button>
+                ) : null}
                 {onExport ? (
                   <button
                     type="button"

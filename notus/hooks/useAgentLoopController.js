@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { getAgentLoopReasonLabel, getAgentToolLabel } from '../utils/agentDisplay';
 
 function toPositiveInt(value) {
   const next = Number(value);
@@ -73,28 +74,11 @@ function completeSteps(list = []) {
 }
 
 function toolLabel(name = '') {
-  const map = {
-    search_knowledge: '检索知识库',
-    read_file: '读取文件',
-    create_note: '新建笔记',
-    preview_patch_files: '生成修改预览',
-    analyze_folder: '分析目录',
-    check_links: '检查链接',
-  };
-  return map[name] || name || '执行工具';
+  return getAgentToolLabel(name) || '执行工具';
 }
 
 function reasonLabel(reason = '') {
-  const map = {
-    goal_achieved: '任务已完成',
-    hard_limit_reached: '已达到本次执行轮次上限，可选择继续执行',
-    consecutive_tool_failure: '同一工具连续失败，任务已停止',
-    deadloop_detected: '检测到重复执行，任务已停止',
-    no_progress: '连续未取得有效进展，任务已停止',
-    waiting_preview_confirm: '已生成修改预览，等待确认',
-    cancelled: '任务已取消',
-  };
-  return map[reason] || reason || '任务已结束';
+  return getAgentLoopReasonLabel(reason);
 }
 
 function buildEventStep(event = {}) {

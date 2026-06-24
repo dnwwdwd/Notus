@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
 import { TopBar } from '../Layout/TopBar';
 import { NotusLogo, Icons } from '../ui/Icons';
@@ -462,6 +462,8 @@ const SearchConfig = () => {
   });
   const [apiKey, setApiKey] = useState('');
   const [saving, setSaving] = useState(false);
+  const [savingEnabled, setSavingEnabled] = useState(false);
+  const savingEnabledRef = useRef(false);
   const providers = config.providers || [];
   const selectedProvider = providers.find((item) => item.id === config.selected_provider) || providers[0] || { id: 'firecrawl', name: 'Firecrawl', max_limit: 20 };
   const modeOptions = SEARCH_MODE_OPTIONS[selectedProvider.id] || SEARCH_MODE_OPTIONS.firecrawl;
@@ -480,6 +482,31 @@ const SearchConfig = () => {
   const patchConfig = (patch) => setConfig((prev) => ({ ...prev, ...patch }));
   const setMode = (mode) => setConfig((prev) => ({ ...prev, modes: { ...(prev.modes || {}), [selectedProvider.id]: mode } }));
   const setCount = (count) => setConfig((prev) => ({ ...prev, counts: { ...(prev.counts || {}), [selectedProvider.id]: Number(count) || 1 } }));
+
+  const saveEnabled = async (enabled) => {
+    if (savingEnabledRef.current) return;
+    const previousEnabled = Boolean(config.enabled);
+    savingEnabledRef.current = true;
+    patchConfig({ enabled });
+    setSavingEnabled(true);
+    try {
+      const response = await fetch('/api/settings/search-providers', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || '保存联网搜索开关失败');
+      setConfig((prev) => ({ ...prev, ...payload }));
+      toast(enabled ? '联网搜索已启用' : '联网搜索已关闭', 'success');
+    } catch (error) {
+      patchConfig({ enabled: previousEnabled });
+      toast(error.message || '保存联网搜索开关失败', 'error');
+    } finally {
+      savingEnabledRef.current = false;
+      setSavingEnabled(false);
+    }
+  };
 
   const save = async () => {
     setSaving(true);
@@ -521,7 +548,9 @@ const SearchConfig = () => {
             <div style={{ fontSize: 15, fontWeight: 700 }}>启用联网搜索</div>
             <div style={{ fontSize: 12, color: '#8A8881', marginTop: 4 }}>开启后聊天输入框可以携带联网搜索参数。</div>
           </div>
-          <Toggle on={Boolean(config.enabled)} onChange={(value) => patchConfig({ enabled: value })} />
+          <div style={{ opacity: savingEnabled ? 0.62 : 1 }}>
+            <Toggle on={Boolean(config.enabled)} onChange={saveEnabled} />
+          </div>
         </div>
 
         <div style={{ display: 'grid', gap: 24, opacity: config.enabled ? 1 : 0.45, pointerEvents: config.enabled ? 'auto' : 'none' }}>

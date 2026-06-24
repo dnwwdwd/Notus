@@ -26,7 +26,7 @@ export default function handler(req, res) {
       return res.status(404).json({ error: 'Conversation not found', code: 'CONVERSATION_NOT_FOUND', request_id: context.request_id });
     }
     const messages = getConversationMessages(id);
-    const pendingOperationSets = conversation.kind === 'canvas'
+    const pendingOperationSets = ['canvas', 'knowledge'].includes(conversation.kind)
       ? listOperationSetsByConversation(id, {
         articleHash: String(req.query.article_hash || '').trim() || undefined,
       })

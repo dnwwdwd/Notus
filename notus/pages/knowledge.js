@@ -201,6 +201,18 @@ function upsertMessage(list = [], message = null) {
   return next;
 }
 
+function attachOperationSetsToMessages(messages = [], operationSets = []) {
+  const map = (Array.isArray(operationSets) ? operationSets : []).reduce((acc, item) => {
+    if (item?.id) acc[String(item.id)] = item;
+    return acc;
+  }, {});
+  return (Array.isArray(messages) ? messages : []).map((message) => {
+    const operationSetId = message?.meta?.operation_set_id;
+    const operationSet = operationSetId ? map[String(operationSetId)] : null;
+    return operationSet ? { ...message, operationSet } : message;
+  });
+}
+
 function shouldHideInteractionSummaryMessage(message) {
   if (message?.role !== 'user') return false;
   const meta = message?.meta && typeof message.meta === 'object' ? message.meta : {};
@@ -681,15 +693,15 @@ export default function KnowledgePage() {
     }
   }, [activeFile?.id, refreshFiles, setCachedContent, toast]);
 
-  const handleAgentLoopOperationSetHandled = useCallback((operationSetId) => {
+  const handleAgentLoopOperationSetHandled = useCallback((operationSetId, _action, operationSet = null) => {
     setMessages((prev) => prev.map((message) => (
       Number(message?.meta?.operation_set_id || 0) === Number(operationSetId)
         ? {
           ...message,
-          operationSet: null,
+          operationSet: operationSet || message.operationSet || null,
           meta: {
             ...(message.meta || {}),
-            operation_set_id: null,
+            operation_set_id: operationSetId,
           },
         }
         : message
@@ -717,14 +729,28 @@ export default function KnowledgePage() {
     },
   });
   const aiRequestLoading = loading || agentLoop.loading;
-  const agentLoopInteractionLocked = Boolean(agentLoop.pendingAgentTask)
-    || ['running', 'waiting_confirm'].includes(agentLoop.activeAgentSession?.status);
+  const agentLoopInteractionLocked = ['running', 'waiting_confirm'].includes(agentLoop.activeAgentSession?.status);
 
   const focusKnowledgeInput = useCallback(() => {
     window.requestAnimationFrame(() => {
       inputTextareaRef.current?.focus?.();
     });
   }, []);
+
+  const discardPendingAgentDiffs = useCallback(async () => {
+    const operationSets = messages
+      .map((message) => message.operationSet)
+      .filter((operationSet) => (
+        Number(operationSet?.agent_session_id || 0) > 0
+        && Array.isArray(operationSet?.patches)
+        && operationSet.patches.some((patch) => ['pending', 'failed'].includes(String(patch?.status || 'pending')))
+      ));
+    for (const operationSet of operationSets) {
+      try {
+        await agentLoop.discardPendingOperationSet(operationSet);
+      } catch {}
+    }
+  }, [agentLoop, messages]);
 
   const respondToInteraction = useCallback(async (interaction, body, options = {}) => {
     if (!interaction?.id) return null;
@@ -992,7 +1018,10 @@ export default function KnowledgePage() {
     clearActiveCitationState();
     try {
       const payload = await fetchConversationDetail(conversationId);
-      setMessages(mapConversationMessages(payload.messages, 'knowledge'));
+      setMessages(attachOperationSetsToMessages(
+        mapConversationMessages(payload.messages, 'knowledge'),
+        payload.pending_operation_sets
+      ));
       setPendingInteractions(Array.isArray(payload.pending_interactions) ? payload.pending_interactions : []);
       setActiveConversationId(Number(conversationId));
       setConversationDraft(false);
@@ -1072,13 +1101,15 @@ export default function KnowledgePage() {
         : query;
       setError(null);
       setRetrievalStage(null);
-      agentLoop.createAgentTask({
+      await discardPendingAgentDiffs();
+      agentLoop.confirmAgentTask({
         goal,
         display_query: query,
         kind: 'knowledge',
         conversation_id: activeConversationId || undefined,
         active_file_id: activeFile?.id || undefined,
         llm_config_id: llmConfigId,
+        approval_mode: 'manual_confirm',
         authorized_paths: [getAgentAuthorizedDirectory(currentPath)],
         authorized_ops: ['modify', 'create'],
         search_knowledge_limit: 5,
@@ -1218,20 +1249,23 @@ export default function KnowledgePage() {
     }
   };
 
-  const handleApplyOperationSet = async (operationSet) => {
+  const handleApplyOperationFile = async (operationSet, patchIndex) => {
     try {
-      await agentLoop.applyOperationSet(operationSet);
-      toast('修改已应用', 'success');
+      await agentLoop.applyOperationFile(operationSet, patchIndex, { approvalMode: 'manual_confirm' });
+      toast('文件修改已应用', 'success');
     } catch (applyError) {
-      toast(applyError.message || '应用修改失败', 'error');
+      toast(applyError.message || '应用文件修改失败', 'error');
+      throw applyError;
     }
   };
 
-  const handleCancelOperationSet = async (operationSet) => {
+  const handleRollbackOperationFile = async (operationSet, patchIndex) => {
     try {
-      await agentLoop.rejectOperationSet(operationSet);
-    } catch (rejectError) {
-      toast(rejectError.message || '撤销预览失败', 'error');
+      await agentLoop.rollbackOperationFile(operationSet, patchIndex);
+      toast('文件修改已回滚', 'success');
+    } catch (rollbackError) {
+      toast(rollbackError.message || '回滚文件修改失败', 'error');
+      throw rollbackError;
     }
   };
 
@@ -1556,14 +1590,9 @@ export default function KnowledgePage() {
                 else requestControllerRef.current?.abort();
               }}
               onCitationClick={handleCitationClick}
-              onApplyOperationSet={handleApplyOperationSet}
-              onCancelOperationSet={handleCancelOperationSet}
-              pendingAgentTask={agentLoop.pendingAgentTask}
+              onApplyOperationFile={handleApplyOperationFile}
+              onRollbackOperationFile={handleRollbackOperationFile}
               activeAgentSession={agentLoop.activeAgentSession}
-              onConfirmAgentTask={agentLoop.confirmAgentTask}
-              onCancelAgentTask={agentLoop.cancelAgentTask}
-              onRollbackAgentSession={agentLoop.rollbackAgentSession}
-              onExtendAgentSession={agentLoop.extendAgentSession}
               disabled={knowledgeInputDisabled || aiRequestLoading || agentLoopInteractionLocked}
               placeholder="从你的知识库中查找答案…"
             />

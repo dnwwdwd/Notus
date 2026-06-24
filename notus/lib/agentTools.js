@@ -5,7 +5,14 @@ const { getEffectiveConfig } = require('./config');
 const { hybridSearch } = require('./retrieval');
 const { createFile, getFileByPath, writeMarkdownFile, sha256, extractTitle } = require('./files');
 const { triggerIncrementalIndex } = require('./indexer');
-const { createOperationSet, getOperationSetById, markOperationSetStatus } = require('./canvasOperationSets');
+const {
+  createOperationSet,
+  deriveOperationSetStatus,
+  getOperationSetById,
+  normalizePatchStates,
+  normalizePatchStatus,
+  updateOperationSet,
+} = require('./canvasOperationSets');
 const {
   checkAndIncrementToolCount,
   getSession,
@@ -158,10 +165,165 @@ async function executeCreateNote({ path: filePath, content = '', title = '' } = 
 function normalizePatch(patch = {}) {
   const filePath = normalizeAgentPath(patch.file_path || patch.path, { ensureMarkdown: true });
   return {
+    ...(patch || {}),
     file_path: filePath,
     old: String(patch.old ?? ''),
     new: String(patch.new ?? ''),
   };
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function normalizeStoredPatches(patches = []) {
+  return normalizePatchStates((Array.isArray(patches) ? patches : []).map((patch) => normalizePatch(patch)));
+}
+
+function patchConflict(reason, patch) {
+  return {
+    success: false,
+    conflict: true,
+    conflicting_files: [{ path: patch?.file_path || '', reason }],
+  };
+}
+
+function replaceUnique(source = '', target = '', replacement = '', emptyReason = 'EMPTY_TARGET') {
+  const current = String(source || '');
+  const from = String(target ?? '');
+  const to = String(replacement ?? '');
+  if (from === '') {
+    if (current !== '') return { ok: false, reason: emptyReason };
+    return { ok: true, next: to };
+  }
+  const first = current.indexOf(from);
+  if (first < 0) return { ok: false, reason: 'TEXT_NOT_FOUND' };
+  if (current.indexOf(from, first + from.length) >= 0) return { ok: false, reason: 'TEXT_NOT_UNIQUE' };
+  return {
+    ok: true,
+    next: `${current.slice(0, first)}${to}${current.slice(first + from.length)}`,
+  };
+}
+
+function resolvePatchIndex(patches = [], { patchIndex = null, filePath = '' } = {}) {
+  const numericIndex = Number(patchIndex);
+  if (Number.isInteger(numericIndex) && numericIndex >= 0 && numericIndex < patches.length) return numericIndex;
+  if (filePath) {
+    const normalizedPath = normalizeAgentPath(filePath, { ensureMarkdown: true });
+    return patches.findIndex((patch) => patch.file_path === normalizedPath);
+  }
+  return -1;
+}
+
+function savePatchStates(set, patches) {
+  const status = deriveOperationSetStatus(patches);
+  return updateOperationSet(set.id, { patches, status });
+}
+
+async function applyPreviewPatchFile(operationSetId, sessionId, {
+  patchIndex = null,
+  filePath = '',
+  force = false,
+  auto = false,
+} = {}) {
+  const set = getOperationSetById(operationSetId);
+  if (!set) return { success: false, error: 'OPERATION_SET_NOT_FOUND' };
+  if (Number(set.agent_session_id || 0) !== Number(sessionId)) return { success: false, error: 'SESSION_OPERATION_SET_MISMATCH' };
+  const patches = normalizeStoredPatches(set.patches);
+  const index = resolvePatchIndex(patches, { patchIndex, filePath });
+  if (index < 0) return { success: false, error: 'PATCH_NOT_FOUND' };
+  const patch = patches[index];
+  const status = normalizePatchStatus(patch.status);
+  if (['applied', 'auto_applied'].includes(status)) {
+    return { success: true, applied: true, changed_files: [], operation_set: set, patch_index: index };
+  }
+  if (!['pending', 'failed'].includes(status)) return { success: false, error: 'PATCH_NOT_PENDING', patch_status: status };
+
+  const file = getFileByPath(patch.file_path);
+  if (!file) return patchConflict('FILE_NOT_FOUND', patch);
+  const replacement = replaceUnique(file.content || '', patch.old, patch.new, 'OLD_REQUIRED');
+  if (!replacement.ok && !force) return patchConflict(replacement.reason === 'TEXT_NOT_FOUND' ? 'OLD_NOT_FOUND' : replacement.reason, patch);
+  if (!replacement.ok) return patchConflict(replacement.reason, patch);
+
+  writeMarkdownFile(patch.file_path, replacement.next);
+  patches[index] = {
+    ...patch,
+    status: auto ? 'auto_applied' : 'applied',
+    handled_at: nowIso(),
+    error: '',
+  };
+  const operationSet = savePatchStates(set, patches);
+  triggerIncrementalIndex(patch.file_path).catch((error) => console.warn('[AgentLoop] 增量索引失败（非致命）:', patch.file_path, error.message));
+  return { success: true, applied: true, changed_files: [patch.file_path], operation_set: operationSet, patch_index: index };
+}
+
+async function rollbackPreviewPatchFile(operationSetId, sessionId, {
+  patchIndex = null,
+  filePath = '',
+  force = false,
+} = {}) {
+  const set = getOperationSetById(operationSetId);
+  if (!set) return { success: false, error: 'OPERATION_SET_NOT_FOUND' };
+  if (Number(set.agent_session_id || 0) !== Number(sessionId)) return { success: false, error: 'SESSION_OPERATION_SET_MISMATCH' };
+  const patches = normalizeStoredPatches(set.patches);
+  const index = resolvePatchIndex(patches, { patchIndex, filePath });
+  if (index < 0) return { success: false, error: 'PATCH_NOT_FOUND' };
+  const patch = patches[index];
+  const status = normalizePatchStatus(patch.status);
+  if (['rolled_back', 'discarded'].includes(status)) {
+    return { success: true, rolled_back: true, changed_files: [], operation_set: set, patch_index: index };
+  }
+  if (status === 'pending' || status === 'failed') {
+    patches[index] = { ...patch, status: 'rolled_back', handled_at: nowIso(), error: '' };
+    const operationSet = savePatchStates(set, patches);
+    return { success: true, rolled_back: true, changed_files: [], operation_set: operationSet, patch_index: index };
+  }
+
+  const file = getFileByPath(patch.file_path);
+  if (!file) return patchConflict('FILE_NOT_FOUND', patch);
+  const replacement = replaceUnique(file.content || '', patch.new, patch.old, 'NEW_NOT_FOUND');
+  if (!replacement.ok && !force) return patchConflict(replacement.reason === 'TEXT_NOT_FOUND' ? 'NEW_NOT_FOUND' : replacement.reason, patch);
+  if (!replacement.ok) return patchConflict(replacement.reason, patch);
+
+  writeMarkdownFile(patch.file_path, replacement.next);
+  patches[index] = { ...patch, status: 'rolled_back', handled_at: nowIso(), error: '' };
+  const operationSet = savePatchStates(set, patches);
+  triggerIncrementalIndex(patch.file_path).catch((error) => console.warn('[AgentLoop] 增量索引失败（非致命）:', patch.file_path, error.message));
+  return { success: true, rolled_back: true, changed_files: [patch.file_path], operation_set: operationSet, patch_index: index };
+}
+
+async function discardPreviewPatchFile(operationSetId, sessionId, {
+  patchIndex = null,
+  filePath = '',
+} = {}) {
+  const set = getOperationSetById(operationSetId);
+  if (!set) return { success: false, error: 'OPERATION_SET_NOT_FOUND' };
+  if (Number(set.agent_session_id || 0) !== Number(sessionId)) return { success: false, error: 'SESSION_OPERATION_SET_MISMATCH' };
+  const patches = normalizeStoredPatches(set.patches);
+  const index = resolvePatchIndex(patches, { patchIndex, filePath });
+  if (index < 0) return { success: false, error: 'PATCH_NOT_FOUND' };
+  const patch = patches[index];
+  const status = normalizePatchStatus(patch.status);
+  if (status !== 'pending' && status !== 'failed') return { success: true, discarded: false, changed_files: [], operation_set: set, patch_index: index };
+  patches[index] = { ...patch, status: 'discarded', handled_at: nowIso(), error: '' };
+  const operationSet = savePatchStates(set, patches);
+  return { success: true, discarded: true, changed_files: [], operation_set: operationSet, patch_index: index };
+}
+
+async function discardPendingPreviewPatches(operationSetId, sessionId) {
+  const set = getOperationSetById(operationSetId);
+  if (!set) return { success: false, error: 'OPERATION_SET_NOT_FOUND' };
+  if (Number(set.agent_session_id || 0) !== Number(sessionId)) return { success: false, error: 'SESSION_OPERATION_SET_MISMATCH' };
+  const patches = normalizeStoredPatches(set.patches);
+  let discarded = 0;
+  const nextPatches = patches.map((patch) => {
+    const status = normalizePatchStatus(patch.status);
+    if (status !== 'pending' && status !== 'failed') return patch;
+    discarded += 1;
+    return { ...patch, status: 'discarded', handled_at: nowIso(), error: '' };
+  });
+  const operationSet = savePatchStates(set, nextPatches);
+  return { success: true, discarded_count: discarded, operation_set: operationSet };
 }
 
 function findUniqueIndex(source = '', target = '') {
@@ -259,43 +421,28 @@ async function executePreviewPatchFiles({ patches = [] } = {}, sessionId) {
   return { operation_set_id: operationSet.id, patch_count: normalized.length, patches: normalized.map((patch) => ({ file_path: patch.file_path })) };
 }
 
-function getSnapshotHashMap(sessionId) {
-  const rows = getDb().prepare('SELECT file_path, file_hash FROM agent_snapshots WHERE session_id = ?').all(sessionId);
-  return new Map(rows.map((row) => [row.file_path, row.file_hash]));
-}
-
-async function applyPreviewWithConflictCheck(operationSetId, sessionId, { force = false } = {}) {
+async function applyPreviewWithConflictCheck(operationSetId, sessionId, { force = false, approvalMode = '', auto = false } = {}) {
   const set = getOperationSetById(operationSetId);
   if (!set) return { success: false, error: 'OPERATION_SET_NOT_FOUND' };
   if (Number(set.agent_session_id || 0) !== Number(sessionId)) return { success: false, error: 'SESSION_OPERATION_SET_MISMATCH' };
-  if (set.status !== 'pending') return { success: false, error: 'OPERATION_SET_NOT_PENDING', status: set.status };
-  const patches = Array.isArray(set.patches) ? set.patches.map(normalizePatch) : [];
+  const patches = normalizeStoredPatches(set.patches);
   if (patches.length === 0) return { success: false, error: 'PATCHES_REQUIRED' };
-  const snapshotHashes = getSnapshotHashMap(Number(sessionId));
-  const conflicts = [];
-  for (const patch of patches) {
-    const file = getFileByPath(patch.file_path);
-    if (!file) { conflicts.push({ path: patch.file_path, reason: 'FILE_NOT_FOUND' }); continue; }
-    const snapshotHash = snapshotHashes.get(patch.file_path);
-    const currentHash = sha256(file.content || '');
-    if (snapshotHash && currentHash !== snapshotHash && !force) conflicts.push({ path: patch.file_path, reason: 'FILE_CHANGED' });
-    const current = String(file.content || '');
-    if (patch.old === '' && current !== '') conflicts.push({ path: patch.file_path, reason: 'OLD_REQUIRED' });
-    else if (!current.includes(patch.old)) conflicts.push({ path: patch.file_path, reason: 'OLD_NOT_FOUND' });
-  }
-  if (conflicts.length > 0) return { success: false, conflict: true, conflicting_files: conflicts };
-
   const changed = [];
-  for (const patch of patches) {
-    const file = getFileByPath(patch.file_path);
-    const current = String(file.content || '');
-    const next = current.replace(patch.old, patch.new);
-    writeMarkdownFile(patch.file_path, next);
-    changed.push(patch.file_path);
+  let latestSet = set;
+  for (let index = 0; index < patches.length; index += 1) {
+    const patch = patches[index];
+    const status = normalizePatchStatus(patch.status);
+    if (status !== 'pending' && status !== 'failed') continue;
+    const result = await applyPreviewPatchFile(operationSetId, sessionId, {
+      patchIndex: index,
+      force,
+      auto: auto || approvalMode === 'auto_confirm' || approvalMode === 'auto_apply',
+    });
+    if (!result.success) return result;
+    latestSet = result.operation_set || latestSet;
+    changed.push(...(Array.isArray(result.changed_files) ? result.changed_files : []));
   }
-  markOperationSetStatus(set.id, 'applied');
-  changed.forEach((filePath) => triggerIncrementalIndex(filePath).catch((error) => console.warn('[AgentLoop] 增量索引失败（非致命）:', filePath, error.message)));
-  return { success: true, applied: true, changed_files: changed };
+  return { success: true, applied: true, changed_files: changed, operation_set: latestSet };
 }
 
 function listMarkdownFiles(absPath, notesDir) {
@@ -459,6 +606,10 @@ module.exports = {
   executeAnalyzeFolder,
   executeCheckLinks,
   applyPreviewWithConflictCheck,
+  applyPreviewPatchFile,
+  rollbackPreviewPatchFile,
+  discardPreviewPatchFile,
+  discardPendingPreviewPatches,
   alignPatchOldText,
   TOOL_EXECUTORS,
 };

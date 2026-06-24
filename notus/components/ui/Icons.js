@@ -43,6 +43,8 @@ export const Icons = {
   redo: (p) => <Icon {...p}><path d="m15 14 5-5-5-5M20 9H9a5 5 0 0 0 0 10h4"/></Icon>,
   split: (p) => <Icon {...p}><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/></Icon>,
   sparkles: (p) => <Icon {...p}><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/></Icon>,
+  zap: (p) => <Icon {...p}><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></Icon>,
+  hand: (p) => <Icon {...p}><path d="M18 11.5V10a2 2 0 0 0-4 0v1M14 10V8a2 2 0 0 0-4 0v3M10 10V6.5a2 2 0 0 0-4 0v7.2M6 13.7 4.8 12.5a2 2 0 0 0-2.8 2.8l4.4 4.4A7 7 0 0 0 11.3 22H14a6 6 0 0 0 6-6v-4.5a2 2 0 0 0-4 0V12"/></Icon>,
   globe: (p) => <Icon {...p}><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></Icon>,
   square: (p) => <Icon {...p}><rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor" stroke="none"/></Icon>,
   arrowUp: (p) => <Icon {...p}><path d="M12 19V5M6 11l6-6 6 6"/></Icon>,

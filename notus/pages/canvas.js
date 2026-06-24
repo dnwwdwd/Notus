@@ -71,8 +71,8 @@ const MOCK_BLOCKS_BY_TOPIC = {
 
 const CANVAS_LAYOUT_STORAGE_KEY = 'notus-layout-canvas-left-percent';
 const CANVAS_AGENT_CONFIRM_MODE_STORAGE_KEY = 'notus-canvas-agent-confirm-mode';
-const CANVAS_AGENT_CONFIRM_AUTO_APPLY = 'auto_apply';
-const CANVAS_AGENT_CONFIRM_MANUAL = 'manual';
+const CANVAS_AGENT_CONFIRM_AUTO_CONFIRM = 'auto_confirm';
+const CANVAS_AGENT_CONFIRM_MANUAL_CONFIRM = 'manual_confirm';
 const CANVAS_LAYOUT_DEFAULT = 62;
 const CANVAS_LAYOUT_MIN = 48;
 const CANVAS_LAYOUT_MAX = 64;
@@ -112,15 +112,16 @@ function writeCanvasLayoutCache(value) {
 }
 
 function normalizeCanvasAgentConfirmMode(value) {
-  return value === CANVAS_AGENT_CONFIRM_MANUAL ? CANVAS_AGENT_CONFIRM_MANUAL : CANVAS_AGENT_CONFIRM_AUTO_APPLY;
+  if (value === 'manual' || value === CANVAS_AGENT_CONFIRM_MANUAL_CONFIRM) return CANVAS_AGENT_CONFIRM_MANUAL_CONFIRM;
+  return CANVAS_AGENT_CONFIRM_AUTO_CONFIRM;
 }
 
 function readCanvasAgentConfirmMode() {
-  if (typeof window === 'undefined') return CANVAS_AGENT_CONFIRM_AUTO_APPLY;
+  if (typeof window === 'undefined') return CANVAS_AGENT_CONFIRM_AUTO_CONFIRM;
   try {
     return normalizeCanvasAgentConfirmMode(window.localStorage.getItem(CANVAS_AGENT_CONFIRM_MODE_STORAGE_KEY));
   } catch {
-    return CANVAS_AGENT_CONFIRM_AUTO_APPLY;
+    return CANVAS_AGENT_CONFIRM_AUTO_CONFIRM;
   }
 }
 
@@ -133,6 +134,16 @@ function writeCanvasAgentConfirmMode(value) {
 
 function getQueryValue(value) {
   return Array.isArray(value) ? value[0] : value;
+}
+
+function getCanvasRouteFileId(router) {
+  const fromQuery = Number(getQueryValue(router?.query?.fileId));
+  if (Number.isFinite(fromQuery) && fromQuery > 0) return fromQuery;
+  const asPath = typeof router?.asPath === 'string' ? router.asPath : '';
+  const queryText = asPath.includes('?') ? asPath.split('?')[1].split('#')[0] : '';
+  if (!queryText) return null;
+  const fromPath = Number(new URLSearchParams(queryText).get('fileId'));
+  return Number.isFinite(fromPath) && fromPath > 0 ? fromPath : null;
 }
 
 function summarizeBlockPreview(content = '') {
@@ -488,12 +499,56 @@ const CanvasEntry = ({ onStart, locked, disabled = false, onOpenSettings }) => {
   );
 };
 
+const CanvasRouteLoading = ({ missing = false, onBack }) => (
+  <div style={{ flex: 1, display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(360px, 38%)', background: 'var(--bg-primary)', minHeight: 0 }}>
+    <div style={{ minHeight: 0, overflow: 'hidden', borderRight: '1px solid var(--border-primary)', background: 'var(--bg-primary)' }}>
+      <div style={{ maxWidth: 720, margin: '0 auto', padding: '40px 32px 80px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 28 }}>
+          <div style={{ width: 32, height: 32, borderRadius: 10, background: 'var(--accent-subtle)', color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+            {missing ? <Icons.warn size={16} /> : <Spinner size={16} />}
+          </div>
+          <div>
+            <div style={{ fontSize: 'var(--text-base)', fontWeight: 700, color: 'var(--text-primary)' }}>
+              {missing ? '未找到要打开的文档' : '正在打开文档…'}
+            </div>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', marginTop: 4 }}>
+              {missing ? '请从左侧文件列表重新选择一篇文章进入创作页。' : '正在加载文章结构和对话上下文。'}
+            </div>
+          </div>
+        </div>
+        <div style={{ display: 'grid', gap: 14 }}>
+          {[0, 1, 2, 3, 4].map((item) => (
+            <div key={item} style={{ display: 'grid', gap: 8 }}>
+              <div style={{ width: item === 0 ? '52%' : `${72 - item * 7}%`, height: item === 0 ? 26 : 16, borderRadius: 8, background: 'var(--bg-muted)' }} />
+              <div style={{ width: `${94 - item * 8}%`, height: 12, borderRadius: 999, background: 'var(--bg-hover)' }} />
+            </div>
+          ))}
+        </div>
+        {missing ? (
+          <Button variant="ghost" onClick={onBack} style={{ marginTop: 28 }}>
+            返回创作首页
+          </Button>
+        ) : null}
+      </div>
+    </div>
+    <div style={{ minHeight: 0, background: 'var(--bg-secondary)', display: 'grid', gridTemplateRows: '1fr auto' }}>
+      <div style={{ padding: 24, display: 'grid', alignContent: 'end', gap: 12 }}>
+        <div style={{ width: '70%', height: 12, borderRadius: 999, background: 'var(--bg-hover)' }} />
+        <div style={{ width: '44%', height: 12, borderRadius: 999, background: 'var(--bg-hover)' }} />
+      </div>
+      <div style={{ padding: '0 16px 24px' }}>
+        <div style={{ height: 104, borderRadius: 22, background: 'var(--bg-elevated)', border: '1px solid var(--border-primary)' }} />
+      </div>
+    </div>
+  </div>
+);
+
 // ─── Main canvas ───────────────────────────────────────────────
 export default function CanvasPage() {
   const router = useRouter();
   const toast = useToast();
   const { status: appStatus, loading: appStatusLoading } = useAppStatus();
-  const { allFiles, activeFile, refreshFiles, selectFile, getCachedContent, setCachedContent } = useApp();
+  const { allFiles, activeFile, refreshFiles, selectFile, getCachedContent, setCachedContent, loadingFiles } = useApp();
   const { configs: llmConfigs, activeConfigId, loading: llmConfigsLoading } = useLlmConfigs();
   const chatEndRef = useRef(null);
   const requestControllerRef = useRef(null);
@@ -538,10 +593,11 @@ export default function CanvasPage() {
   const saveCanvasPositionTimerRef = useRef(null);
   const pageAliveRef = useRef(true);
   const activeConversationIdRef = useRef(null);
-  const autoApplyControllerRef = useRef(null);
-  const autoApplyingOperationSetIdRef = useRef(null);
   const agentLoopControlRef = useRef({ loading: false, stopAgentLoop: null });
   const articleFileId = Number(article?.fileId || article?.file_id) || null;
+  const routeFileId = router.isReady ? getCanvasRouteFileId(router) : null;
+  const routeTargetFile = routeFileId ? allFiles.find((file) => Number(file.id) === Number(routeFileId)) : null;
+  const routeFileMissing = Boolean(routeFileId && router.isReady && !loadingFiles && !routeTargetFile && !articleFileId);
   const canvasConversationEnabled = Boolean(articleFileId);
   const conversationScopeKey = !article
     ? 'none'
@@ -794,16 +850,15 @@ export default function CanvasPage() {
   // Support ?fileId=X coming from editor "AI 创作" button
   useEffect(() => {
     if (!router.isReady) return;
-    const queryFileId = Number(getQueryValue(router.query.fileId));
     if (!shouldSyncCanvasQueryFile({
-      requestedFileId: queryFileId,
+      requestedFileId: routeFileId,
       activeFileId: activeFile?.id,
       articleFileId,
       pendingRouteFileId: pendingRouteFileIdRef.current,
     })) {
       if (
         pendingRouteFileIdRef.current
-        && Number(pendingRouteFileIdRef.current) === Number(queryFileId)
+        && Number(pendingRouteFileIdRef.current) === Number(routeFileId)
         && !shouldKeepCanvasRoutePending({
           pendingRouteFileId: pendingRouteFileIdRef.current,
           articleFileId,
@@ -813,10 +868,10 @@ export default function CanvasPage() {
       }
       return;
     }
-    const nextFile = allFiles.find((file) => file.id === queryFileId);
+    const nextFile = allFiles.find((file) => Number(file.id) === Number(routeFileId));
     if (!nextFile) return;
     selectFile(nextFile);
-  }, [activeFile?.id, allFiles, articleFileId, router.isReady, router.query.fileId, selectFile]);
+  }, [activeFile?.id, allFiles, articleFileId, routeFileId, router.isReady, selectFile]);
 
   const loadSourceFileContent = useCallback(async (fileId) => {
     const cached = getCachedContent(fileId);
@@ -1045,16 +1100,18 @@ export default function CanvasPage() {
     ));
   }, []);
 
-  const handleAgentLoopOperationSetHandled = useCallback((operationSetId) => {
-    setPendingOperationSets((prev) => prev.filter((item) => Number(item.id) !== Number(operationSetId)));
+  const handleAgentLoopOperationSetHandled = useCallback((operationSetId, _action, operationSet = null) => {
+    if (operationSet) {
+      setPendingOperationSets((prev) => upsertOperationSet(prev, operationSet));
+    }
     setMessages((prev) => prev.map((message) => (
       Number(message?.meta?.operation_set_id || 0) === Number(operationSetId)
         ? {
           ...message,
-          operationSet: null,
+          operationSet: operationSet || message.operationSet || null,
           meta: {
             ...(message.meta || {}),
-            operation_set_id: null,
+            operation_set_id: operationSetId,
           },
         }
         : message
@@ -1090,9 +1147,6 @@ export default function CanvasPage() {
     pageAliveRef.current = true;
     const handleLeave = () => {
       pageAliveRef.current = false;
-      autoApplyControllerRef.current?.abort();
-      autoApplyControllerRef.current = null;
-      autoApplyingOperationSetIdRef.current = null;
       const control = agentLoopControlRef.current || {};
       if (control.loading) control.stopAgentLoop?.();
     };
@@ -1115,8 +1169,7 @@ export default function CanvasPage() {
 
   const aiRequestLoading = loading || agentLoop.loading;
   const activeClarifyInteraction = aiRequestLoading ? null : rawClarifyInteraction;
-  const agentLoopInteractionLocked = Boolean(agentLoop.pendingAgentTask)
-    || ['running', 'waiting_confirm'].includes(agentLoop.activeAgentSession?.status);
+  const agentLoopInteractionLocked = ['running', 'waiting_confirm'].includes(agentLoop.activeAgentSession?.status);
   const effectiveCanvasInputDisabled = canvasInputDisabled || aiRequestLoading || agentLoopInteractionLocked;
 
   const handleConversationSelect = useCallback(async (conversationId) => {
@@ -1356,18 +1409,32 @@ export default function CanvasPage() {
     selectedLlmConfigId,
   ]);
 
-  const prepareCanvasAgentTask = useCallback((query, options = {}) => {
+  const discardPendingAgentDiffs = useCallback(async () => {
+    const targets = pendingOperationSets.filter((operationSet) => (
+      Number(operationSet?.agent_session_id || 0) > 0
+      && Array.isArray(operationSet?.patches)
+      && operationSet.patches.some((patch) => ['pending', 'failed'].includes(String(patch?.status || 'pending')))
+    ));
+    for (const operationSet of targets) {
+      try {
+        await agentLoop.discardPendingOperationSet(operationSet);
+      } catch {}
+    }
+  }, [agentLoop, pendingOperationSets]);
+
+  const prepareCanvasAgentTask = useCallback(async (query, options = {}) => {
     const task = buildCanvasAgentTask(query, options);
     setAiInjected('');
-    if (agentConfirmMode === CANVAS_AGENT_CONFIRM_AUTO_APPLY) {
-      agentLoop.confirmAgentTask(task);
-      return;
-    }
-    agentLoop.createAgentTask(task);
+    await discardPendingAgentDiffs();
+    agentLoop.confirmAgentTask({
+      ...task,
+      approval_mode: normalizeCanvasAgentConfirmMode(agentConfirmMode),
+    });
   }, [
     agentConfirmMode,
     agentLoop,
     buildCanvasAgentTask,
+    discardPendingAgentDiffs,
   ]);
 
   const focusCanvasInput = useCallback(() => {
@@ -1436,7 +1503,7 @@ export default function CanvasPage() {
       return;
     }
     const originalInput = interaction?.payload?.original_user_input || '继续完成刚才的创作任务';
-    prepareCanvasAgentTask(originalInput, {
+    await prepareCanvasAgentTask(originalInput, {
       llmConfigId,
       routeReason: 'legacy_interaction_resume',
     });
@@ -1467,7 +1534,7 @@ export default function CanvasPage() {
     }
 
     try {
-      prepareCanvasAgentTask(action.prompt, {
+      await prepareCanvasAgentTask(action.prompt, {
         llmConfigId: selectedLlmConfigId,
         routeReason: 'decision_correction',
       });
@@ -1502,7 +1569,7 @@ export default function CanvasPage() {
     }
 
     try {
-      prepareCanvasAgentTask(query, {
+      await prepareCanvasAgentTask(query, {
         llmConfigId,
         attachments: sendOptions.attachments || [],
         routeReason: 'canvas_main_input',
@@ -1614,10 +1681,30 @@ export default function CanvasPage() {
 
   const handleApplyOperationSet = useCallback(async (operationSet) => {
     try {
-      await agentLoop.applyOperationSet(operationSet, { approvalMode: CANVAS_AGENT_CONFIRM_MANUAL });
+      await agentLoop.applyOperationSet(operationSet, { approvalMode: CANVAS_AGENT_CONFIRM_MANUAL_CONFIRM });
       toast('修改已应用', 'success');
     } catch (error) {
       toast(error.message || '应用修改失败', 'error');
+    }
+  }, [agentLoop, toast]);
+
+  const handleApplyOperationFile = useCallback(async (operationSet, patchIndex) => {
+    try {
+      await agentLoop.applyOperationFile(operationSet, patchIndex, { approvalMode: CANVAS_AGENT_CONFIRM_MANUAL_CONFIRM });
+      toast('文件修改已应用', 'success');
+    } catch (error) {
+      toast(error.message || '应用文件修改失败', 'error');
+      throw error;
+    }
+  }, [agentLoop, toast]);
+
+  const handleRollbackOperationFile = useCallback(async (operationSet, patchIndex) => {
+    try {
+      await agentLoop.rollbackOperationFile(operationSet, patchIndex);
+      toast('文件修改已回滚', 'success');
+    } catch (error) {
+      toast(error.message || '回滚文件修改失败', 'error');
+      throw error;
     }
   }, [agentLoop, toast]);
 
@@ -1643,76 +1730,6 @@ export default function CanvasPage() {
     acc[String(item.id)] = item;
     return acc;
   }, {});
-  const activeAgentLoopSession = agentLoop.activeAgentSession;
-  const activeAgentLoopSessionConversationId = activeAgentLoopSession?.conversation_id;
-  const activeAgentLoopSessionOperationSetId = activeAgentLoopSession?.operation_set_id;
-  const activeAgentLoopSessionReason = activeAgentLoopSession?.reason;
-  const activeAgentLoopSessionStatus = activeAgentLoopSession?.status;
-  const applyAgentOperationSet = agentLoop.applyOperationSet;
-
-  useEffect(() => {
-    if (agentConfirmMode !== CANVAS_AGENT_CONFIRM_AUTO_APPLY) return undefined;
-    if (activeAgentLoopSessionStatus !== 'waiting_confirm' || activeAgentLoopSessionReason !== 'waiting_preview_confirm') return undefined;
-    const operationSetId = Number(activeAgentLoopSessionOperationSetId || 0);
-    if (!operationSetId || autoApplyingOperationSetIdRef.current === operationSetId) return undefined;
-    const operationSet = pendingOperationSets.find((item) => (
-      Number(item.id) === operationSetId && (!item.status || item.status === 'pending')
-    ));
-    if (!operationSet || !pageAliveRef.current) return undefined;
-
-    const startConversationId = activeConversationIdRef.current ? Number(activeConversationIdRef.current) : null;
-    const sessionConversationId = activeAgentLoopSessionConversationId ? Number(activeAgentLoopSessionConversationId) : startConversationId;
-    const controller = new AbortController();
-    const timer = window.setTimeout(async () => {
-      if (!pageAliveRef.current || controller.signal.aborted) return;
-      const currentConversationId = activeConversationIdRef.current ? Number(activeConversationIdRef.current) : null;
-      if (sessionConversationId && currentConversationId && sessionConversationId !== currentConversationId) return;
-      autoApplyControllerRef.current?.abort();
-      autoApplyControllerRef.current = controller;
-      autoApplyingOperationSetIdRef.current = operationSetId;
-      try {
-        await applyAgentOperationSet(operationSet, {
-          signal: controller.signal,
-          approvalMode: CANVAS_AGENT_CONFIRM_AUTO_APPLY,
-          shouldResume: () => {
-            const currentConversationId = activeConversationIdRef.current ? Number(activeConversationIdRef.current) : null;
-            return pageAliveRef.current
-              && !controller.signal.aborted
-              && (!sessionConversationId || !currentConversationId || sessionConversationId === currentConversationId);
-          },
-        });
-        if (!controller.signal.aborted) toast('修改预览已自动应用', 'success');
-      } catch (error) {
-        if (controller.signal.aborted || error?.name === 'AbortError') return;
-        toast(error.message || '自动应用预览失败，请手动检查', 'error');
-      } finally {
-        if (autoApplyingOperationSetIdRef.current === operationSetId) {
-          autoApplyingOperationSetIdRef.current = null;
-        }
-        if (autoApplyControllerRef.current === controller) {
-          autoApplyControllerRef.current = null;
-        }
-      }
-    }, 160);
-
-    return () => {
-      window.clearTimeout(timer);
-      if (autoApplyingOperationSetIdRef.current === operationSetId && autoApplyControllerRef.current === controller) {
-        controller.abort();
-        autoApplyingOperationSetIdRef.current = null;
-        autoApplyControllerRef.current = null;
-      }
-    };
-  }, [
-    agentConfirmMode,
-    activeAgentLoopSessionConversationId,
-    activeAgentLoopSessionOperationSetId,
-    activeAgentLoopSessionReason,
-    activeAgentLoopSessionStatus,
-    applyAgentOperationSet,
-    pendingOperationSets,
-    toast,
-  ]);
 
   const hiddenInteractionIds = new Set(
     pendingInteractions
@@ -1737,6 +1754,21 @@ export default function CanvasPage() {
 
   // ── Entry screen ──
   if (!article) {
+    if (!router.isReady || routeFileId) {
+      return (
+        <Shell active="canvas" tocDisabled requestAction={requestCanvasFileSwitch} navigateOnFileSelect={false}>
+          <CanvasRouteLoading
+            missing={router.isReady && routeFileMissing}
+            onBack={() => {
+              pendingRouteFileIdRef.current = null;
+              router.replace('/canvas', undefined, { shallow: true });
+            }}
+          />
+          {unsavedGuard.dialog}
+        </Shell>
+      );
+    }
+
     return (
       <Shell active="canvas" tocDisabled requestAction={requestCanvasFileSwitch} navigateOnFileSelect={false}>
         <CanvasEntry
@@ -1933,14 +1965,9 @@ export default function CanvasPage() {
             if (agentLoop.loading) agentLoop.stopAgentLoop();
             else requestControllerRef.current?.abort();
           }}
-          onApplyOperationSet={handleApplyOperationSet}
-          onCancelOperationSet={handleCancelOperationSet}
-          pendingAgentTask={agentLoop.pendingAgentTask}
+          onApplyOperationFile={handleApplyOperationFile}
+          onRollbackOperationFile={handleRollbackOperationFile}
           activeAgentSession={agentLoop.activeAgentSession}
-          onConfirmAgentTask={agentLoop.confirmAgentTask}
-          onCancelAgentTask={agentLoop.cancelAgentTask}
-          onRollbackAgentSession={agentLoop.rollbackAgentSession}
-          onExtendAgentSession={agentLoop.extendAgentSession}
           agentConfirmMode={agentConfirmMode}
           onAgentConfirmModeChange={setAgentConfirmMode}
           disabled={effectiveCanvasInputDisabled}

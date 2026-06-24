@@ -79,10 +79,11 @@ export default async function handler(req, res) {
 
     let assistantText = '';
     const llmConfig = resolveLlmRuntimeConfig({ llmConfigId: body.llm_config_id || undefined });
-    await runAgentLoop({
+    const loopResult = await runAgentLoop({
       sessionId,
       llmConfig,
       signal: controller.signal,
+      approvalMode: body.approval_mode || body.approvalMode || 'auto_confirm',
       onStream: (event) => {
         if (event.type === 'thinking' && event.text) assistantText += event.text;
         send(res, { ...event, session_id: sessionId, conversation_id: conversationId });
@@ -95,7 +96,12 @@ export default async function handler(req, res) {
         conversationId,
         role: 'assistant',
         content: assistantText.trim() || `Agent 任务已${finalSession.status === 'completed' ? '完成' : finalSession.status === 'cancelled' ? '取消' : '结束'}。`,
-        meta: { agent_loop: true, session_id: sessionId, status: finalSession.status },
+        meta: {
+          agent_loop: true,
+          session_id: sessionId,
+          status: finalSession.status,
+          operation_set_id: loopResult?.operation_set_id || null,
+        },
       });
       touchConversation(conversationId);
     }

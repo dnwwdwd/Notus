@@ -16,7 +16,7 @@ const {
   updateSessionLoopCount,
   updateSessionStatus,
 } = require('./agentSession');
-const { buildToolDefinitions, executeToolSafely, summarizeInput, validateToolUseBlock } = require('./agentTools');
+const { applyPreviewWithConflictCheck, buildToolDefinitions, executeToolSafely, summarizeInput, validateToolUseBlock } = require('./agentTools');
 const { estimateChatRequestTokens } = require('./llmBudget');
 
 function sleep(ms) {
@@ -84,6 +84,12 @@ function isGoalAchieved(stopReason, toolUseBlocks = []) {
   return toolUseBlocks.length === 0 && ['end_turn', 'stop', 'stop_sequence'].includes(String(stopReason || 'end_turn'));
 }
 
+function normalizeApprovalMode(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'manual' || normalized === 'manual_confirm') return 'manual_confirm';
+  return 'auto_confirm';
+}
+
 async function loadStyleContext(session) {
   try {
     const config = getEffectiveConfig();
@@ -94,10 +100,11 @@ async function loadStyleContext(session) {
   }
 }
 
-async function runAgentLoop({ sessionId, llmConfig, onStream, signal } = {}) {
+async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMode = 'auto_confirm' } = {}) {
   let session = getSession(sessionId);
   const config = getEffectiveConfig();
   const emit = typeof onStream === 'function' ? onStream : () => {};
+  const normalizedApprovalMode = normalizeApprovalMode(approvalMode);
 
   const { snapshotCount } = await snapshotFiles(session.id, config.notesDir);
   emit({ type: 'snapshot_done', snapshot_count: snapshotCount });
@@ -237,10 +244,75 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal } = {}) {
       });
 
       if (toolUse.name === 'preview_patch_files' && !failed) {
-        updateSessionStatus(session.id, 'waiting_confirm');
-        saveMessagesCheckpoint(session.id, messages, content, toolUse.id);
-        emit({ type: 'waiting_preview_confirm', operation_set_id: result.operation_set_id, loop_index: loopIndex });
-        return { status: 'waiting_confirm', operation_set_id: result.operation_set_id };
+        let previewResult = result;
+        if (normalizedApprovalMode === 'auto_confirm') {
+          previewResult = await applyPreviewWithConflictCheck(result.operation_set_id, session.id, {
+            approvalMode: normalizedApprovalMode,
+            auto: true,
+          });
+          if (!previewResult.success) {
+            updateSessionStatus(session.id, 'failed');
+            emit({ type: 'loop_done', reason: 'consecutive_tool_failure', tool_name: toolUse.name, loop_index: loopIndex });
+            return { status: 'failed', reason: 'preview_auto_apply_failed', operation_set_id: result.operation_set_id };
+          }
+        }
+
+        toolResults[toolResults.length - 1] = {
+          type: 'tool_result',
+          tool_use_id: toolUse.id,
+          content: JSON.stringify({
+            ...result,
+            approval_mode: normalizedApprovalMode,
+            applied: normalizedApprovalMode === 'auto_confirm',
+            changed_files: previewResult.changed_files || [],
+          }),
+          is_error: false,
+        };
+        messages.push({ role: 'assistant', content });
+        messages.push({ role: 'user', content: toolResults });
+
+        loopIndex += 1;
+        updateSessionLoopCount(session.id, loopIndex);
+        emit({ type: 'loop_start', loop_index: loopIndex });
+        let finalResponse = null;
+        let finalThinking = '';
+        try {
+          finalResponse = await callLLMWithRetry({
+            system: `${systemPrompt}\n\n现在不要再调用任何工具。请用简短中文总结刚才生成的文件修改，并提醒用户可以在对话底部的 diff 卡片中按文件确认或回滚。`,
+            messages: compactMessages(messages, Number(llmConfig?.llmContextWindowTokens || config.llmContextWindowTokens || 60000)),
+            tools: [],
+            llmConfig,
+            taskType: 'agent_loop',
+            temperature: 0.2,
+          });
+          const finalParsed = parseResponse(finalResponse);
+          finalThinking = finalParsed.textBlocks.map((block) => block.text).join('\n').trim();
+          finalParsed.textBlocks.forEach((block) => emit({ type: 'thinking', text: block.text, loop_index: loopIndex }));
+        } catch {
+          finalThinking = normalizedApprovalMode === 'auto_confirm'
+            ? '修改已自动确认并写入文件，可在下方 diff 卡片中逐文件查看或回滚。'
+            : '修改预览已生成，请在下方 diff 卡片中逐文件应用或回滚。';
+          emit({ type: 'thinking', text: finalThinking, loop_index: loopIndex });
+        }
+        logToolCall({
+          sessionId: session.id,
+          loopIndex,
+          toolName: null,
+          toolInput: null,
+          toolResult: { operation_set_id: result.operation_set_id, approval_mode: normalizedApprovalMode },
+          thinking: finalThinking,
+          status: 'success',
+          durationMs: 0,
+        });
+        updateSessionStatus(session.id, 'completed');
+        emit({
+          type: 'loop_done',
+          reason: 'goal_achieved',
+          loop_index: loopIndex,
+          operation_set_id: result.operation_set_id,
+          usage: finalResponse?.usage || null,
+        });
+        return { status: 'completed', reason: 'goal_achieved', operation_set_id: result.operation_set_id };
       }
     }
 

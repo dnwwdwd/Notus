@@ -3,8 +3,9 @@ import { useRouter } from 'next/router';
 import { Button } from '../ui/Button';
 import { TextInput } from '../ui/Input';
 import { Toggle } from '../ui/Toggle';
-import { Dialog, ConfirmDialog } from '../ui/Dialog';
+import { Dialog } from '../ui/Dialog';
 import { Icons } from '../ui/Icons';
+import { Tooltip } from '../ui/Tooltip';
 import { useToast } from '../ui/Toast';
 import { StreamingText } from '../ui/StreamingText';
 import { LlmConfigCardsSection } from '../Settings/LlmConfigCardsSection';
@@ -41,16 +42,16 @@ const SEARCH_MODE_LABELS = {
 
 const AGENT_CONFIRM_MODE_OPTIONS = [
   {
-    value: 'auto_apply',
-    label: '自动应用',
-    description: '发送后直接执行；生成预览后自动写入。',
-    icon: 'wand',
+    value: 'auto_confirm',
+    label: '自动',
+    description: 'Agent 完成后自动应用所有修改，可在对话记录中查看详情和回滚。',
+    icon: 'zap',
   },
   {
-    value: 'manual',
-    label: '手动确认',
-    description: '先显示任务卡；预览也由你手动应用。',
-    icon: 'eye',
+    value: 'manual_confirm',
+    label: '手动',
+    description: 'Agent 完成后需逐文件手动确认，未确认内容在下次任务时自动废弃。',
+    icon: 'hand',
   },
 ];
 
@@ -93,7 +94,7 @@ function modelLabel(config) {
 }
 
 function normalizeAgentConfirmMode(value) {
-  return value === 'manual' ? 'manual' : 'auto_apply';
+  return value === 'manual' || value === 'manual_confirm' ? 'manual_confirm' : 'auto_confirm';
 }
 
 function getAgentConfirmModeOption(value) {
@@ -306,160 +307,141 @@ function operationItems(operationSet) {
   if (!operationSet) return [];
   if (Array.isArray(operationSet.patches) && operationSet.patches.length > 0) {
     return operationSet.patches.map((patch, index) => ({
-      id: patch.id || 'patch-' + index,
+      id: patch.patch_id || patch.id || 'patch-' + index,
+      patchIndex: index,
       type: 'str_replace',
       file_path: patch.file_path,
       old: patch.old,
       new: patch.new,
+      status: patch.status || 'pending',
+      handled_at: patch.handled_at || null,
+      error: patch.error || '',
     }));
   }
   return Array.isArray(operationSet.operations) ? operationSet.operations : [];
 }
 
-function OperationSetCard({ operationSet, onOpenDetail, onCancel }) {
-  if (!operationSet) return null;
+function patchStatusMeta(status) {
+  const normalized = String(status || 'pending');
+  if (normalized === 'applied') return { label: '已应用', color: '#166534', bg: 'rgba(187,247,208,0.50)' };
+  if (normalized === 'auto_applied') return { label: '已自动应用', color: '#166534', bg: 'rgba(187,247,208,0.50)' };
+  if (normalized === 'rolled_back') return { label: '已回滚', color: '#991B1B', bg: 'rgba(254,202,202,0.52)' };
+  if (normalized === 'discarded') return { label: '已废弃', color: C.tertiary, bg: C.muted };
+  if (normalized === 'failed') return { label: '处理失败', color: C.accentDark, bg: 'rgba(217,119,87,0.12)' };
+  return { label: '待确认', color: C.accent, bg: 'rgba(251,228,210,0.42)' };
+}
+
+function isPatchPending(item) {
+  const status = String(item?.status || 'pending');
+  return status === 'pending' || status === 'failed';
+}
+
+function buildDiffLines(operation = {}) {
+  return [
+    ...(operation.old ? String(operation.old).split('\n').map((line) => ({ type: 'remove', content: line })) : []),
+    ...(operation.new ? String(operation.new).split('\n').map((line) => ({ type: 'add', content: line })) : []),
+    ...(operation.content ? String(operation.content).split('\n').map((line) => ({ type: 'add', content: line })) : []),
+  ];
+}
+
+function AgentDiffCard({ operationSet, onApplyFile, onRollbackFile }) {
   const operations = operationItems(operationSet);
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [busyKey, setBusyKey] = useState('');
+  useEffect(() => {
+    setSelectedIndex((prev) => Math.min(prev, Math.max(operations.length - 1, 0)));
+  }, [operationSet?.id, operations.length]);
+  if (!operationSet || operations.length === 0) return null;
+  const activeOperation = operations[Math.min(selectedIndex, Math.max(operations.length - 1, 0))] || {};
+  const activePath = activeOperation.file_path || activeOperation.path || '全文';
+  const diffLines = buildDiffLines(activeOperation);
   const fileCount = new Set(operations.map((item) => item.file_path || item.path).filter(Boolean)).size;
-  const createCount = operations.filter((item) => item.type === 'create' || item.is_new || item.action === 'create').length;
-  const modifyCount = Math.max(0, operations.length - createCount);
+  const pendingCount = operations.filter(isPatchPending).length;
+  const autoApplied = operations.length > 0 && operations.every((item) => String(item.status || '') === 'auto_applied');
+  const activeStatus = patchStatusMeta(activeOperation.status);
+  const canApply = isPatchPending(activeOperation);
+  const canRollback = !['rolled_back', 'discarded'].includes(String(activeOperation.status || 'pending'));
+  const moveToNextPending = () => {
+    const next = operations.findIndex((item, index) => index !== selectedIndex && isPatchPending(item));
+    if (next >= 0) setSelectedIndex(next);
+  };
+  const runFileAction = async (kind) => {
+    const key = `${kind}-${activeOperation.patchIndex}`;
+    setBusyKey(key);
+    try {
+      if (kind === 'apply') await onApplyFile?.(operationSet, activeOperation.patchIndex);
+      else await onRollbackFile?.(operationSet, activeOperation.patchIndex);
+      moveToNextPending();
+    } finally {
+      setBusyKey('');
+    }
+  };
   return (
     <div style={{
       marginTop: 12,
-      background: C.soft,
+      background: '#fff',
       borderRadius: 16,
-      padding: 16,
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      gap: 16,
-      boxShadow: 'inset 0 0 0 1px rgba(229,227,216,0.50)',
-      flexWrap: 'wrap',
+      overflow: 'hidden',
+      boxShadow: '0 8px 24px rgba(45,45,45,0.05), inset 0 0 0 1px rgba(229,227,216,0.82)',
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
-        <span style={{ width: 32, height: 32, borderRadius: '50%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: C.secondary, background: '#fff', boxShadow: '0 1px 6px rgba(45,45,45,0.08), inset 0 0 0 1px rgba(229,227,216,0.95)' }}>
-          <Icons.edit size={15} />
-        </span>
-        <div style={{ display: 'grid', gap: 3 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>{fileCount || operations.length} 个文件发生变更</div>
-          <div style={{ fontSize: 11, color: C.tertiary }}>{createCount ? createCount + ' 个新建，' : ''}{modifyCount ? modifyCount + ' 个修改' : '预览已生成，等待确认'}</div>
-        </div>
-      </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: '0 0 auto' }}>
-        <button type="button" className="notus-agent-pressable" onClick={() => onCancel?.(operationSet)} style={transitionButton({ minWidth: 0, height: 32, padding: '0 12px', borderRadius: 8, background: '#fff', color: C.secondary, boxShadow: 'inset 0 0 0 1px rgba(229,227,216,0.95)', fontSize: 12, fontWeight: 600 })}><Icons.undo size={12} style={{ marginRight: 4, verticalAlign: -2 }} />撤销</button>
-        <button type="button" className="notus-agent-pressable" onClick={() => onOpenDetail?.(operationSet)} style={transitionButton({ minWidth: 0, height: 32, padding: '0 16px', borderRadius: 8, background: C.accent, color: '#fff', boxShadow: '0 1px 6px rgba(217, 119, 87, 0.24)', fontSize: 12, fontWeight: 600 })}>查看详情</button>
-      </div>
-    </div>
-  );
-}
-
-function normalizePathsText(value) {
-  return String(value || '')
-    .split(/[\n,，]/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function AgentTaskConfirmCard({ task, onConfirm, onCancel }) {
-  const [pathsText, setPathsText] = useState('');
-  const [limit, setLimit] = useState(5);
-
-  useEffect(() => {
-    setPathsText((task?.authorized_paths || ['']).join('\n'));
-    setLimit(Number(task?.search_knowledge_limit || 5));
-  }, [task]);
-
-  if (!task) return null;
-
-  const confirm = () => {
-    onConfirm?.({
-      ...task,
-      authorized_paths: normalizePathsText(pathsText),
-      search_knowledge_limit: Math.max(0, Math.min(20, Number(limit || 0))),
-    });
-  };
-
-  return (
-    <div style={{ margin: '0 0 18px', borderRadius: 18, background: '#fff', padding: 18, boxShadow: '0 10px 30px rgba(45,45,45,0.06), inset 0 0 0 1px rgba(229,227,216,0.82)' }}>
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-        <span style={{ width: 36, height: 36, borderRadius: 13, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(251,228,210,0.52)', color: C.accent, flexShrink: 0 }}>
-          <Icons.wand size={17} />
-        </span>
-        <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ fontSize: 14, fontWeight: 800, color: C.text }}>这是一个需要多步执行的创作任务</div>
-          <div style={{ marginTop: 5, fontSize: 13, lineHeight: 1.7, color: C.secondary, whiteSpace: 'pre-wrap' }}>{task.goal}</div>
-        </div>
-      </div>
-      <div style={{ marginTop: 14, display: 'grid', gap: 12 }}>
-        <label style={{ display: 'grid', gap: 6, fontSize: 12, color: C.tertiary }}>
-          允许写入的路径（每行一个；空值表示知识库根目录）
-          <textarea
-            rows={3}
-            value={pathsText}
-            onChange={(event) => setPathsText(event.target.value)}
-            style={{ border: '1px solid ' + C.border, borderRadius: 12, background: C.soft, color: C.text, padding: '9px 10px', resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.6 }}
-            placeholder="例如：草稿/\n项目计划.md"
-          />
-        </label>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 140px', gap: 12, alignItems: 'end' }}>
-          <div style={{ padding: 12, borderRadius: 13, background: C.soft, color: C.secondary, fontSize: 12, lineHeight: 1.7 }}>
-            本次允许 Agent 创建和修改 Markdown 文件；删除文件始终禁止。所有文件改动会先生成预览，确认后才写入。
+      <div style={{ minHeight: 48, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '12px 14px', borderBottom: '1px solid ' + C.border, background: C.page }}>
+        <div style={{ minWidth: 0, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ width: 30, height: 30, borderRadius: 11, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: C.accent, background: 'rgba(251,228,210,0.44)', flexShrink: 0 }}>
+            <Icons.edit size={15} />
+          </span>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 800, color: C.text }}>{fileCount || operations.length} 个文件发生变更</div>
+            <div style={{ marginTop: 2, fontSize: 11, color: C.tertiary }}>{autoApplied ? '已自动确认，可逐文件回滚' : pendingCount > 0 ? `${pendingCount} 个文件待确认` : '本次任务的文件已全部处理'}</div>
           </div>
-          <label style={{ display: 'grid', gap: 6, fontSize: 12, color: C.tertiary }}>
-            检索次数上限
-            <input
-              type="number"
-              min="0"
-              max="20"
-              value={limit}
-              onChange={(event) => setLimit(event.target.value)}
-              style={{ height: 38, border: '1px solid ' + C.border, borderRadius: 12, background: '#fff', color: C.text, padding: '0 10px' }}
-            />
-          </label>
         </div>
+        <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 800, color: activeStatus.color, background: activeStatus.bg, borderRadius: 999, padding: '4px 8px' }}>{activeStatus.label}</span>
       </div>
-      <div style={{ marginTop: 14, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-        <button type="button" onClick={onCancel} style={transitionButton({ height: 34, padding: '0 13px', borderRadius: 11, background: C.soft, color: C.secondary, fontSize: 13, fontWeight: 800 })}>取消</button>
-        <button type="button" onClick={confirm} style={transitionButton({ height: 34, padding: '0 15px', borderRadius: 11, background: C.accent, color: '#fff', fontSize: 13, fontWeight: 800, boxShadow: '0 6px 18px rgba(217,119,87,0.22)' })}>开始执行</button>
+      <div style={{ display: 'grid', gridTemplateColumns: '210px minmax(0, 1fr)', minHeight: 320 }}>
+        <div style={{ borderRight: '1px solid ' + C.border, background: C.page, padding: 8, overflowY: 'auto' }}>
+          {operations.map((operation, index) => {
+            const path = operation.file_path || operation.path || '全文';
+            const active = index === selectedIndex;
+            const statusMeta = patchStatusMeta(operation.status);
+            return (
+              <button key={operation.id || index} type="button" onClick={() => setSelectedIndex(index)} style={transitionButton({ width: '100%', textAlign: 'left', display: 'grid', gap: 4, padding: '9px 10px', borderRadius: 10, background: active ? '#fff' : 'transparent', color: active ? C.text : C.secondary, boxShadow: active ? 'inset 0 0 0 1px rgba(229,227,216,0.92)' : 'none' })}>
+                <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                  <span style={{ minWidth: 0, fontSize: 12, fontWeight: 800, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{String(path).split('/').pop()}</span>
+                  <span style={{ flexShrink: 0, width: 7, height: 7, borderRadius: 999, background: statusMeta.color }} />
+                </span>
+                <span style={{ fontSize: 10.5, color: C.tertiary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{path}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', background: '#FAFAFA' }}>
+          <div style={{ minHeight: 40, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '8px 12px', borderBottom: '1px solid ' + C.border, background: '#fff' }}>
+            <span style={{ minWidth: 0, fontSize: 12, color: C.secondary, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{activePath}</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+              <button type="button" disabled={!canRollback || Boolean(busyKey)} onClick={() => runFileAction('rollback')} style={transitionButton({ height: 30, padding: '0 11px', borderRadius: 9, background: canRollback ? 'rgba(254,202,202,0.65)' : C.muted, color: canRollback ? '#991B1B' : C.tertiary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: (!canRollback || busyKey) ? 'not-allowed' : 'pointer' })}>回滚修改</button>
+              <button type="button" disabled={!canApply || Boolean(busyKey)} onClick={() => runFileAction('apply')} style={transitionButton({ height: 30, padding: '0 12px', borderRadius: 9, background: canApply ? '#16A34A' : C.muted, color: canApply ? '#fff' : C.tertiary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: (!canApply || busyKey) ? 'not-allowed' : 'pointer' })}>应用修改</button>
+            </div>
+          </div>
+          <div style={{ flex: 1, minHeight: 0, maxHeight: 360, overflowY: 'auto', padding: '12px 0' }}>
+            <div style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12.5, lineHeight: 1.65 }}>
+              {diffLines.length === 0 ? <div style={{ padding: '0 14px', color: C.tertiary }}>没有可展示的 diff 内容。</div> : diffLines.map((line, index) => {
+                const remove = line.type === 'remove';
+                const add = line.type === 'add';
+                return (
+                  <div key={index} style={{ display: 'flex', padding: '0 14px', background: add ? 'rgba(187,247,208,0.45)' : remove ? 'rgba(254,202,202,0.45)' : 'transparent', color: add ? '#166534' : remove ? '#991B1B' : C.secondary, textDecoration: remove ? 'line-through' : 'none' }}>
+                    <span style={{ width: 20, flex: '0 0 auto', color: '#BDBBB3', textAlign: 'right', paddingRight: 8, userSelect: 'none' }}>{add ? '+' : remove ? '-' : ' '}</span>
+                    <span style={{ flex: 1, minWidth: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{line.content}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
 }
 
-function agentStatusLabel(status) {
-  const map = {
-    running: '执行中',
-    waiting_confirm: '等待确认',
-    completed: '已完成',
-    failed: '已结束',
-    cancelled: '已取消',
-    rolled_back: '已回滚',
-  };
-  return map[status] || status || '未知状态';
-}
-
-function AgentSessionCard({ session, onRollback, onExtend }) {
-  if (!session?.id) return null;
-  const canExtend = session.status === 'waiting_confirm' && session.reason === 'hard_limit_reached';
-  return (
-    <div style={{ margin: '0 0 18px', borderRadius: 16, background: C.soft, padding: 14, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, boxShadow: 'inset 0 0 0 1px rgba(229,227,216,0.82)', flexWrap: 'wrap' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <span style={{ width: 32, height: 32, borderRadius: 12, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: '#fff', color: C.secondary, boxShadow: 'inset 0 0 0 1px rgba(229,227,216,0.82)' }}>
-          <Icons.brain size={16} />
-        </span>
-        <div>
-          <div style={{ fontSize: 13, fontWeight: 800, color: C.text }}>Agentic Loop #{session.id} · {agentStatusLabel(session.status)}</div>
-          <div style={{ marginTop: 2, fontSize: 12, color: C.tertiary }}>{session.loop_count ? '已执行 ' + session.loop_count + ' 轮' : '准备执行'}{session.reason ? ' · ' + session.reason : ''}</div>
-        </div>
-      </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        {canExtend ? <button type="button" onClick={() => onExtend?.(session)} style={transitionButton({ height: 30, padding: '0 11px', borderRadius: 10, background: '#fff', color: C.secondary, fontSize: 12, fontWeight: 800, boxShadow: 'inset 0 0 0 1px rgba(229,227,216,0.92)' })}>继续 10 轮</button> : null}
-        <button type="button" onClick={() => onRollback?.(session)} style={transitionButton({ height: 30, padding: '0 11px', borderRadius: 10, background: '#fff', color: C.secondary, fontSize: 12, fontWeight: 800, boxShadow: 'inset 0 0 0 1px rgba(229,227,216,0.92)' })}>回滚任务</button>
-      </div>
-    </div>
-  );
-}
-
-function MessageList({ messages, streamText, loading, activeSteps, onOpenOperationSet, onCancelOperationSet, onCitationClick }) {
+function MessageList({ messages, streamText, loading, activeSteps, onApplyOperationFile, onRollbackOperationFile, onCitationClick }) {
   if (messages.length === 0 && !loading) {
     return (
       <div style={{ minHeight: '42vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', color: C.tertiary }}>
@@ -505,7 +487,7 @@ function MessageList({ messages, streamText, loading, activeSteps, onOpenOperati
                   ))}
                 </div>
               ) : null}
-              {message.operationSet ? <OperationSetCard operationSet={message.operationSet} onOpenDetail={onOpenOperationSet} onCancel={onCancelOperationSet} /> : null}
+              {message.operationSet ? <AgentDiffCard operationSet={message.operationSet} onApplyFile={onApplyOperationFile} onRollbackFile={onRollbackOperationFile} /> : null}
             </div>
           </div>
         );
@@ -525,86 +507,59 @@ function MessageList({ messages, streamText, loading, activeSteps, onOpenOperati
 }
 
 function AgentConfirmModeSelect({ value, onChange, disabled }) {
-  const [open, setOpen] = useState(false);
   const current = getAgentConfirmModeOption(value);
-  const CurrentIcon = current.icon === 'eye' ? Icons.eye : Icons.wand;
-  const close = () => setOpen(false);
-
-  const selectMode = (mode) => {
-    onChange?.(mode);
-    close();
-  };
 
   return (
-    <div style={{ position: 'relative' }}>
-      <button
-        type="button"
-        aria-label="Agent 确认方式"
-        aria-expanded={open}
-        onClick={() => !disabled && setOpen((prev) => !prev)}
-        disabled={disabled}
-        className="notus-agent-pressable"
-        style={transitionButton({
-          height: 30,
-          padding: '0 10px',
-          borderRadius: 10,
-          background: current.value === 'auto_apply' ? 'rgba(251,228,210,0.42)' : 'transparent',
-          color: current.value === 'auto_apply' ? C.accent : C.secondary,
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: 6,
-          fontSize: 13,
-          fontWeight: 800,
-          boxShadow: current.value === 'auto_apply' ? 'inset 0 0 0 1px rgba(217,119,87,0.16)' : 'none',
-          opacity: disabled ? 0.55 : 1,
-          cursor: disabled ? 'not-allowed' : 'pointer',
-        })}
-      >
-        <CurrentIcon size={15} />
-        <span>{current.label}</span>
-        <Icons.chevronDown size={12} />
-      </button>
-      {open ? (
-        <>
-          <button type="button" aria-label="关闭确认方式下拉" onClick={close} style={{ position: 'fixed', inset: 0, zIndex: 19, border: 0, background: 'transparent', padding: 0 }} />
-          <div style={{ position: 'absolute', bottom: 'calc(100% + 4px)', left: 0, width: 248, padding: 8, borderRadius: 16, background: '#fff', boxShadow: '0 -12px 44px -14px rgba(45,45,45,0.16), inset 0 0 0 1px rgba(229,227,216,0.95)', zIndex: 20 }}>
-            <div style={{ padding: '6px 8px 8px', color: '#A3A19A', fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5 }}>创作执行方式</div>
-            {AGENT_CONFIRM_MODE_OPTIONS.map((option) => {
-              const active = option.value === current.value;
-              const OptionIcon = option.icon === 'eye' ? Icons.eye : Icons.wand;
-              return (
-                <button
-                  type="button"
-                  key={option.value}
-                  onClick={() => selectMode(option.value)}
-                  className="notus-agent-pressable"
-                  style={transitionButton({
-                    width: '100%',
-                    minHeight: 54,
-                    padding: '9px 10px',
-                    borderRadius: 12,
-                    background: active ? 'rgba(251,228,210,0.34)' : 'transparent',
-                    color: active ? C.accent : C.secondary,
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 10,
-                    textAlign: 'left',
-                  })}
-                >
-                  <span style={{ width: 30, height: 30, borderRadius: 10, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, background: active ? '#fff' : C.soft, color: active ? C.accent : C.tertiary, boxShadow: active ? 'inset 0 0 0 1px rgba(217,119,87,0.14)' : 'none' }}>
-                    <OptionIcon size={15} />
-                  </span>
-                  <span style={{ display: 'grid', gap: 2, minWidth: 0, flex: 1 }}>
-                    <span style={{ fontSize: 13, fontWeight: 800, color: active ? C.accent : C.text }}>{option.label}</span>
-                    <span style={{ fontSize: 11, lineHeight: 1.45, color: C.tertiary }}>{option.description}</span>
-                  </span>
-                  {active ? <Icons.check size={14} style={{ color: C.accent, flexShrink: 0 }} /> : null}
-                </button>
-              );
-            })}
-          </div>
-        </>
-      ) : null}
+    <div
+      role="radiogroup"
+      aria-label="Agent 确认方式"
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 2,
+        padding: 2,
+        borderRadius: 10,
+        background: C.soft,
+        boxShadow: 'inset 0 0 0 1px rgba(229,227,216,0.86)',
+        opacity: disabled ? 0.55 : 1,
+      }}
+    >
+      {AGENT_CONFIRM_MODE_OPTIONS.map((option) => {
+        const active = option.value === current.value;
+        const OptionIcon = option.icon === 'hand' ? Icons.hand : Icons.zap;
+        return (
+          <Tooltip key={option.value} content={option.description} placement="top" disabled={disabled}>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={active}
+              aria-label={`Agent 确认方式：${option.label}`}
+              disabled={disabled}
+              onClick={() => onChange?.(option.value)}
+              className="notus-agent-pressable"
+              style={transitionButton({
+                minWidth: 62,
+                height: 26,
+                padding: '0 8px',
+                borderRadius: 8,
+                background: active ? '#fff' : 'transparent',
+                color: active ? C.accent : C.tertiary,
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 5,
+                fontSize: 12,
+                fontWeight: 800,
+                boxShadow: active ? '0 1px 3px rgba(45,45,45,0.08), inset 0 0 0 1px rgba(217,119,87,0.14)' : 'none',
+                cursor: disabled ? 'not-allowed' : 'pointer',
+              })}
+            >
+              <OptionIcon size={13} stroke={option.icon === 'zap' ? 1.8 : 1.55} />
+              <span>{option.label}</span>
+            </button>
+          </Tooltip>
+        );
+      })}
     </div>
   );
 }
@@ -613,13 +568,15 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
   const [value, setValue] = useState('');
   const [files, setFiles] = useState([]);
   const [focused, setFocused] = useState(false);
-  const [selectedSearchProviders, setSelectedSearchProviders] = useState([]);
+  const [selectedSearchProvider, setSelectedSearchProvider] = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
   const fileInputRef = useRef(null);
   const selectedConfig = useMemo(() => llmConfigs.find((item) => String(item.id) === String(selectedConfigId)) || llmConfigs[0] || null, [llmConfigs, selectedConfigId]);
   const providers = searchConfig.providers || SEARCH_PROVIDER_FALLBACKS;
-  const providersConfigured = providers.some((provider) => searchConfig.api_key_set?.[provider.id]);
+  const preferredSearchProvider = providers.find((provider) => provider.id === searchConfig.selected_provider)?.id || providers[0]?.id || 'firecrawl';
+  const webSearchSelected = Boolean(selectedSearchProvider);
+  const searchProviderList = webSearchSelected ? [selectedSearchProvider] : [];
   const showAgentConfirmMode = typeof onAgentConfirmModeChange === 'function';
   const groupedConfigs = useMemo(() => {
     const groups = [];
@@ -635,6 +592,17 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
     return groups;
   }, [llmConfigs]);
 
+  useEffect(() => {
+    if (!searchConfig.enabled && selectedSearchProvider) {
+      setSelectedSearchProvider('');
+      setSearchOpen(false);
+      return;
+    }
+    if (selectedSearchProvider && !providers.some((provider) => provider.id === selectedSearchProvider)) {
+      setSelectedSearchProvider(preferredSearchProvider);
+    }
+  }, [preferredSearchProvider, providers, searchConfig.enabled, selectedSearchProvider]);
+
   const addFiles = (fileList) => {
     const next = Array.from(fileList || []).map((file) => ({
       id: 'file-' + Date.now() + '-' + Math.random().toString(16).slice(2),
@@ -649,16 +617,16 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
   const submit = (forcedText) => {
     const text = String(forcedText || value || '').trim();
     if ((!text && files.length === 0) || loading || disabled || !selectedConfig) return;
-    if (selectedSearchProviders.length > 0 && !providersConfigured) {
+    if (webSearchSelected && !searchConfig.enabled) {
       onRequireSearchConfig?.();
       return;
     }
     onSend?.(text, {
       llmConfigId: selectedConfig.id,
       attachments: files,
-      webSearchEnabled: selectedSearchProviders.length > 0,
-      searchProvider: selectedSearchProviders[0] || null,
-      searchProviders: selectedSearchProviders,
+      webSearchEnabled: webSearchSelected,
+      searchProvider: selectedSearchProvider || null,
+      searchProviders: searchProviderList,
     });
     setValue('');
     setFiles([]);
@@ -669,24 +637,22 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
   const canSend = !loading && !disabled && Boolean(selectedConfig) && (Boolean(value.trim()) || files.length > 0);
   const toggleWebSearch = () => {
     if (loading || disabled) return;
-    if (!providersConfigured) {
+    if (!searchConfig.enabled) {
       onRequireSearchConfig?.();
       return;
     }
-    if (selectedSearchProviders.length > 0) {
-      setSelectedSearchProviders([]);
+    if (webSearchSelected) {
+      setSelectedSearchProvider('');
       setSearchOpen(false);
       return;
     }
     setModelOpen(false);
+    setSelectedSearchProvider(preferredSearchProvider);
     setSearchOpen(true);
   };
-  const toggleSearchProvider = (providerId) => {
-    setSelectedSearchProviders((prev) => (
-      prev.includes(providerId)
-        ? prev.filter((item) => item !== providerId)
-        : [...prev, providerId]
-    ));
+  const selectSearchProvider = (providerId) => {
+    setSelectedSearchProvider(providerId);
+    setSearchOpen(false);
   };
 
   return (
@@ -702,16 +668,16 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
             <button type="button" aria-label="添加附件" onClick={() => fileInputRef.current?.click()} disabled={loading || disabled} style={transitionButton({ width: 30, height: 30, borderRadius: 10, background: 'transparent', color: C.tertiary, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, opacity: loading || disabled ? 0.5 : 1 })}><Icons.paperclip size={18} /></button>
             {showAgentConfirmMode ? <AgentConfirmModeSelect value={agentConfirmMode} onChange={onAgentConfirmModeChange} disabled={loading || disabled} /> : null}
             <div style={{ position: 'relative' }}>
-              <button type="button" onClick={toggleWebSearch} disabled={loading || disabled} style={transitionButton({ height: 28, padding: '0 10px', borderRadius: 8, background: selectedSearchProviders.length > 0 ? 'rgba(251,228,210,0.40)' : 'transparent', color: selectedSearchProviders.length > 0 ? C.accent : C.tertiary, display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: selectedSearchProviders.length > 0 ? 800 : 600, opacity: loading || disabled ? 0.5 : 1 })}><Icons.globe size={15} />联网</button>
+              <button type="button" onClick={toggleWebSearch} disabled={loading || disabled} style={transitionButton({ height: 28, padding: '0 10px', borderRadius: 8, background: webSearchSelected ? 'rgba(251,228,210,0.40)' : 'transparent', color: webSearchSelected ? C.accent : C.tertiary, display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: webSearchSelected ? 800 : 600, opacity: loading || disabled ? 0.5 : 1 })}><Icons.globe size={15} />联网</button>
               {searchOpen ? (
                 <>
                   <button type="button" aria-label="关闭搜索商下拉" onClick={() => setSearchOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 19, border: 0, background: 'transparent', padding: 0 }} />
-                  <div style={{ position: 'absolute', bottom: 'calc(100% + 4px)', left: 0, width: 192, padding: '8px 0', borderRadius: 14, background: '#fff', boxShadow: '0 -10px 40px -10px rgba(0,0,0,0.10), inset 0 0 0 1px rgba(229,227,216,0.95)', zIndex: 20 }}>
+                  <div role="radiogroup" aria-label="搜索引擎" style={{ position: 'absolute', bottom: 'calc(100% + 4px)', left: 0, width: 192, padding: '8px 0', borderRadius: 14, background: '#fff', boxShadow: '0 -10px 40px -10px rgba(0,0,0,0.10), inset 0 0 0 1px rgba(229,227,216,0.95)', zIndex: 20 }}>
                     <div style={{ padding: '6px 16px', color: '#A3A19A', fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5 }}>搜索引擎</div>
                     {providers.map((provider) => {
-                      const checked = selectedSearchProviders.includes(provider.id);
+                      const checked = selectedSearchProvider === provider.id;
                       return (
-                        <button type="button" key={provider.id} onClick={() => toggleSearchProvider(provider.id)} style={transitionButton({ width: '100%', minHeight: 34, padding: '0 16px', background: 'transparent', color: C.secondary, display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 13, textAlign: 'left' })}>{provider.name}{checked ? <Icons.check size={14} style={{ color: C.accent }} /> : null}</button>
+                        <button type="button" role="radio" aria-checked={checked} key={provider.id} onClick={() => selectSearchProvider(provider.id)} style={transitionButton({ width: '100%', minHeight: 34, padding: '0 16px', background: checked ? 'rgba(251,228,210,0.30)' : 'transparent', color: checked ? C.accent : C.secondary, display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 13, fontWeight: checked ? 800 : 500, textAlign: 'left' })}>{provider.name}{checked ? <Icons.check size={14} style={{ color: C.accent }} /> : null}</button>
                       );
                     })}
                   </div>
@@ -950,89 +916,11 @@ function SearchConfigView({ config, onSaved, onBack, selectProvider }) {
   );
 }
 
-function DiffDialog({ operationSet, open, onClose, onApply }) {
-  const [selectedIndex, setSelectedIndex] = useState(0);
-  const operations = operationItems(operationSet);
-  useEffect(() => {
-    if (open) setSelectedIndex(0);
-  }, [open, operationSet?.id]);
-  if (!open) return null;
-  const activeOperation = operations[Math.min(selectedIndex, Math.max(operations.length - 1, 0))] || {};
-  const activePath = activeOperation.file_path || activeOperation.path || (activeOperation.block_id ? 'Block ' + activeOperation.block_id : '全文');
-  const diffLines = [
-    ...(activeOperation.old ? String(activeOperation.old).split('\n').map((line) => ({ type: 'remove', content: line })) : []),
-    ...(activeOperation.new ? String(activeOperation.new).split('\n').map((line) => ({ type: 'add', content: line })) : []),
-    ...(activeOperation.content ? String(activeOperation.content).split('\n').map((line) => ({ type: 'add', content: line })) : []),
-  ];
-  return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, animation: 'fadeIn 0.2s ease-out both' }}>
-      <button type="button" aria-label="关闭修改详情" onClick={onClose} style={{ position: 'absolute', inset: 0, border: 0, background: 'rgba(255,255,255,0.70)', backdropFilter: 'blur(10px)', padding: 0 }} />
-      <div style={{ position: 'relative', width: '100%', maxWidth: 1024, height: '85vh', background: '#fff', border: '1px solid #E5E3D8', borderRadius: 22, boxShadow: '0 20px 60px -15px rgba(0,0,0,0.10)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        <div style={{ height: 56, flex: '0 0 auto', borderBottom: '1px solid #E5E3D8', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 16px', background: C.page }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Icons.code size={18} style={{ color: C.secondary }} />
-            <span style={{ fontSize: 14, fontWeight: 700, color: C.text }}>修改详情预览</span>
-            <span style={{ fontSize: 12, color: '#A3A19A', marginLeft: 8, padding: '2px 8px', background: C.muted, borderRadius: 999 }}>{operations.length} 项变更</span>
-          </div>
-          <button type="button" aria-label="关闭" onClick={onClose} style={transitionButton({ width: 32, height: 32, borderRadius: 8, background: 'transparent', color: C.tertiary, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' })}><Icons.x size={18} /></button>
-        </div>
-        <div style={{ flex: 1, minHeight: 0, display: 'flex', overflow: 'hidden' }}>
-          <div style={{ width: 256, flex: '0 0 auto', borderRight: '1px solid #E5E3D8', background: C.page, overflowY: 'auto', padding: 8 }}>
-            <div style={{ fontSize: 11, fontWeight: 800, color: '#A3A19A', textTransform: 'uppercase', letterSpacing: 0.5, padding: '8px 8px 10px' }}>变更列表</div>
-            {operations.length === 0 ? <div style={{ padding: 12, fontSize: 13, color: C.tertiary }}>没有可展示的修改。</div> : operations.map((operation, index) => {
-              const path = operation.file_path || operation.path || (operation.block_id ? 'Block ' + operation.block_id : '全文');
-              const active = index === selectedIndex;
-              const isNew = operation.type === 'create' || operation.is_new || operation.action === 'create';
-              return (
-                <button key={operation.id || index} type="button" onClick={() => setSelectedIndex(index)} style={transitionButton({ width: '100%', textAlign: 'left', display: 'grid', gap: 4, padding: '10px 12px', borderRadius: 10, background: active ? C.muted : 'transparent', color: active ? C.text : C.secondary })}>
-                  <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                    <span style={{ fontSize: 13, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{String(path).split('/').pop()}</span>
-                    <span style={{ fontSize: 10, fontWeight: 800, color: isNew ? '#E2574C' : C.accent, background: isNew ? 'rgba(226,87,76,0.10)' : 'rgba(217,119,87,0.10)', borderRadius: 5, padding: '2px 6px', flexShrink: 0 }}>{isNew ? '新建' : '修改'}</span>
-                  </span>
-                  <span style={{ fontSize: 11, color: '#A3A19A', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{path}</span>
-                </button>
-              );
-            })}
-          </div>
-          <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: '#FAFAFA', overflow: 'hidden' }}>
-            <div style={{ height: 40, flex: '0 0 auto', borderBottom: '1px solid #E5E3D8', display: 'flex', alignItems: 'center', padding: '0 16px', background: '#fff' }}>
-              <span style={{ fontSize: 12, color: C.secondary, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{activePath}</span>
-            </div>
-            <div style={{ flex: 1, overflowY: 'auto', padding: '16px 0' }}>
-              <div style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 13, lineHeight: 1.7 }}>
-                {diffLines.length === 0 ? <div style={{ padding: '0 16px', color: C.tertiary }}>没有可展示的 diff 内容。</div> : diffLines.map((line, index) => {
-                  const remove = line.type === 'remove';
-                  const add = line.type === 'add';
-                  return (
-                    <div key={index} style={{ display: 'flex', padding: '0 16px', background: add ? 'rgba(187,247,208,0.45)' : remove ? 'rgba(254,202,202,0.45)' : 'transparent', color: add ? '#166534' : remove ? '#991B1B' : C.secondary, textDecoration: remove ? 'line-through' : 'none' }}>
-                      <span style={{ width: 24, flex: '0 0 auto', color: '#BDBBB3', textAlign: 'right', paddingRight: 8, userSelect: 'none' }}>{add ? '+' : remove ? '-' : ' '}</span>
-                      <span style={{ flex: 1, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{line.content}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-        </div>
-        <div style={{ height: 64, flex: '0 0 auto', borderTop: '1px solid #E5E3D8', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px', background: C.page }}>
-          <span style={{ fontSize: 12, color: '#A3A19A' }}>请确认这些变更符合预期后再应用。</span>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <button type="button" onClick={onClose} style={transitionButton({ height: 36, padding: '0 16px', borderRadius: 10, background: '#fff', color: C.secondary, boxShadow: 'inset 0 0 0 1px rgba(229,227,216,0.95)', fontSize: 13, fontWeight: 700 })}>关闭</button>
-            <button type="button" onClick={() => onApply?.(operationSet)} style={transitionButton({ height: 36, padding: '0 16px', borderRadius: 10, background: C.accent, color: '#fff', boxShadow: '0 6px 18px rgba(217,119,87,0.22)', fontSize: 13, fontWeight: 700 })}>应用修改</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-export function AgentWorkspace({ messages, streamText, loading, error, activeSteps, llmConfigs, selectedConfigId, onConfigChange, onSend, onStop, onApplyOperationSet, onCancelOperationSet, onCitationClick, pendingAgentTask, onConfirmAgentTask, onCancelAgentTask, activeAgentSession, onRollbackAgentSession, onExtendAgentSession, disabled, placeholder, agentConfirmMode, onAgentConfirmModeChange }) {
+export function AgentWorkspace({ messages, streamText, loading, error, activeSteps, llmConfigs, selectedConfigId, onConfigChange, onSend, onStop, onApplyOperationFile, onRollbackOperationFile, onCitationClick, activeAgentSession, disabled, placeholder, agentConfirmMode, onAgentConfirmModeChange }) {
   const router = useRouter();
   const [searchConfig, setSearchConfig] = useState({ enabled: false, selected_provider: 'firecrawl', modes: {}, counts: {}, api_key_set: {}, providers: SEARCH_PROVIDER_FALLBACKS });
   const [searchPromptOpen, setSearchPromptOpen] = useState(false);
   const [searchViewProvider, setSearchViewProvider] = useState('');
-  const [detailOperationSet, setDetailOperationSet] = useState(null);
-  const [undoOperationSet, setUndoOperationSet] = useState(null);
   const endRef = useRef(null);
 
   useEffect(() => {
@@ -1045,7 +933,7 @@ export function AgentWorkspace({ messages, streamText, loading, error, activeSte
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [messages, streamText, loading, activeSteps, pendingAgentTask, activeAgentSession]);
+  }, [messages, streamText, loading, activeSteps, activeAgentSession]);
 
   const requireSearchConfig = ({ selectProvider = '', quiet = false } = {}) => {
     if (selectProvider) {
@@ -1059,19 +947,15 @@ export function AgentWorkspace({ messages, streamText, loading, error, activeSte
     <div style={{ position: 'relative', height: '100%', minHeight: 0, background: C.page, color: C.text, overflow: 'hidden', WebkitFontSmoothing: 'antialiased', MozOsxFontSmoothing: 'grayscale' }}>
       <main style={{ height: '100%', overflowY: 'auto', padding: '32px 16px 190px' }}>
         <div style={{ maxWidth: 768, margin: '0 auto' }}>
-          <AgentTaskConfirmCard task={pendingAgentTask} onConfirm={onConfirmAgentTask} onCancel={onCancelAgentTask} />
-          <AgentSessionCard session={activeAgentSession} onRollback={onRollbackAgentSession} onExtend={onExtendAgentSession} />
-          <MessageList messages={messages || []} streamText={streamText || ''} loading={Boolean(loading)} activeSteps={activeSteps || []} onOpenOperationSet={setDetailOperationSet} onCancelOperationSet={setUndoOperationSet} onCitationClick={onCitationClick} />
+          <MessageList messages={messages || []} streamText={streamText || ''} loading={Boolean(loading)} activeSteps={activeSteps || []} onApplyOperationFile={onApplyOperationFile} onRollbackOperationFile={onRollbackOperationFile} onCitationClick={onCitationClick} />
           {error ? <div style={{ marginTop: 16, padding: '12px 14px', borderRadius: 14, background: 'rgba(217,119,87,0.08)', color: C.accentDark, fontSize: 13, lineHeight: 1.7 }}>{error}</div> : null}
           <div ref={endRef} style={{ height: 12 }} />
         </div>
       </main>
       <AgentInput loading={Boolean(loading)} disabled={Boolean(disabled)} llmConfigs={llmConfigs || []} selectedConfigId={selectedConfigId} onConfigChange={onConfigChange} onSend={onSend} onStop={onStop} searchConfig={searchConfig} onRequireSearchConfig={requireSearchConfig} placeholder={placeholder} agentConfirmMode={agentConfirmMode} onAgentConfirmModeChange={onAgentConfirmModeChange} />
-      <Dialog open={searchPromptOpen} onClose={() => setSearchPromptOpen(false)} title="未配置搜索引擎" maxWidth={420} footer={<><Button variant="ghost" onClick={() => setSearchPromptOpen(false)}>取消</Button><Button variant="primary" onClick={() => { setSearchPromptOpen(false); navigateWithFallback(router, '/settings/search'); }}>前去配置</Button></>}>
-        <div style={{ fontSize: 14, color: C.secondary, lineHeight: 1.8 }}>联网搜索需要先保存服务商 API Key。本次会保存配置和请求状态，真实外部搜索调用后续接入。</div>
+      <Dialog open={searchPromptOpen} onClose={() => setSearchPromptOpen(false)} title="联网搜索未开启" maxWidth={420} footer={<><Button variant="ghost" onClick={() => setSearchPromptOpen(false)}>取消</Button><Button variant="primary" onClick={() => { setSearchPromptOpen(false); navigateWithFallback(router, '/settings/search'); }}>前往设置</Button></>}>
+        <div style={{ fontSize: 14, color: C.secondary, lineHeight: 1.8 }}>需要开启联网搜索功能才能使用，请前往设置 → 搜索配置 → 启用联网搜索。</div>
       </Dialog>
-      <DiffDialog open={Boolean(detailOperationSet)} operationSet={detailOperationSet} onClose={() => setDetailOperationSet(null)} onApply={(operationSet) => { setDetailOperationSet(null); onApplyOperationSet?.(operationSet); }} />
-      <ConfirmDialog open={Boolean(undoOperationSet)} title="撤销这次修改预览" message={undoOperationSet ? '确定撤销这 ' + operationItems(undoOperationSet).length + ' 项修改预览吗？' : ''} confirmLabel="撤销" onClose={() => setUndoOperationSet(null)} onConfirm={() => { const target = undoOperationSet; setUndoOperationSet(null); onCancelOperationSet?.(target); }} />
     </div>
   );
 }

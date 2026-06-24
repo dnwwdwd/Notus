@@ -1,7 +1,7 @@
 # 创作页 Chat 全流程业务文档
 
-> 更新时间：2026-06-21
-> 适用范围：`/canvas` 当前真实实现的大纲生成、Agentic Loop 创作任务、风格仿写、文件级预览、应用续跑与回滚链路
+> 更新时间：2026-06-24
+> 适用范围：`/canvas` 当前真实实现的大纲生成、Agentic Loop 创作任务、风格仿写、文件级预览、自动确认、逐文件应用/回滚与废弃链路
 
 ---
 
@@ -20,10 +20,11 @@
 
 ## 2. 当前产品口径
 
-- 创作页仍然是“围绕当前文章做协作编辑”的工作台；右侧主输入入口默认使用 Agentic Loop 自动应用模式，发送后直接调用 `/api/agent/loop/start`，不再把创作页主输入发送到旧的 `/api/agent/run`。
-- 输入框左下角提供“自动应用 / 手动确认”下拉框，仅在创作页展示，选择值持久化到浏览器本机。自动应用模式跳过任务确认卡；手动确认模式才显示任务确认卡。
-- 当前文章改写、整篇生成/重写、新建笔记、文件夹分析、链接检查等任务都通过 Agentic Loop 执行；自动应用模式使用当前文章路径和默认检索次数，手动确认模式允许用户在任务卡中修改 `authorized_paths` 与 `search_knowledge_limit`。
+- 创作页仍然是“围绕当前文章做协作编辑”的工作台；右侧主输入入口默认使用 Agentic Loop 自动确认模式，发送后直接调用 `/api/agent/loop/start`，不再把创作页主输入发送到旧的 `/api/agent/run`。
+- 输入框左下角提供“自动确认 / 手动确认”选择器，仅在创作页展示，选择值持久化到浏览器本机。两种模式都不显示前置任务确认卡；差异只发生在文件级 diff 生成后的应用策略。
+- 当前文章改写、整篇生成/重写、新建笔记、文件夹分析、链接检查等任务都通过 Agentic Loop 执行；默认授权路径优先使用当前文章所在目录，检索次数使用当前前端配置。
 - 大纲可以先生成，但必须保存为正式文档后，才能继续稳定对话和应用 AI 改写。
+- 从文件页或知识库页携带 `?fileId=` 进入创作页时，目标文章加载完成前显示“正在打开文档…”骨架态，不再短暂显示新建创作入口。
 - 事实参考继续走后台自动补充，前台不单独展示事实来源配置。
 - 风格来源前台只保留：
   - 自动匹配
@@ -218,19 +219,19 @@ SSE 过程会返回：
 
 ### 6.6 主输入 Agentic Loop
 
-创作页右侧主输入收到用户请求后，不直接进入旧块级执行器，而是先读取创作页输入框里的执行方式。
+创作页右侧主输入收到用户请求后，不直接进入旧块级执行器，而是先读取创作页输入框里的确认方式。
 
-- 自动应用：默认模式。前端直接启动 Agentic Loop，不展示任务确认卡；默认授权路径优先使用当前文章所在目录。
-- 手动确认：展示任务确认卡，用户可以修改授权路径和检索次数后再启动。
+- 自动确认：默认模式。前端直接启动 Agentic Loop；`preview_patch_files` 生成后由后端自动应用所有文件，完成消息底部仍显示已自动应用的 diff 卡片。
+- 手动确认：前端同样直接启动 Agentic Loop；`preview_patch_files` 生成后在对话底部显示常驻 diff 卡片，由用户逐文件应用或回滚。
 
 启动后前端调用 `/api/agent/loop/start`，服务端会：
 
 1. 创建 `agent_sessions`，保存目标、授权路径、授权操作和检索次数上限；`create_note` 新建文件按目录粒度校验，后端兼容旧任务只授权当前 `.md` 文件时在父目录新建，但不会扩大同目录其他文件的修改权限。
 2. 在执行前写入 `agent_snapshots`。
 3. 通过 Agent Loop 多轮调用 `search_knowledge / read_file / create_note / preview_patch_files / analyze_folder / check_links`。
-4. `preview_patch_files` 生成后暂停为 `waiting_confirm`，前端展示文件级 patch 预览。
-5. 自动应用模式会在页面仍停留在当前对话时自动调用 `/api/agent/loop/apply` 写入文件，再调用 `/api/agent/loop/start` 续跑；手动确认模式则等待用户点击应用。
-6. 任务完成、取消或失败后，可通过 `/api/agent/sessions/:id/rollback` 恢复快照并删除未被外部修改的新建文件。
+4. `preview_patch_files` 生成文件级 patch，并写入 `canvas_operation_sets.pathes_json`。
+5. 自动确认模式在服务端自动调用文件级应用逻辑，patch 状态标记为 `auto_applied`；手动确认模式保持 `pending`。
+6. Loop 结束后，最终助手消息底部展示常驻 diff 卡片；应用、回滚或废弃只调用 `/api/agent/loop/apply`，不会再次请求 LLM。
 
 ---
 
@@ -264,23 +265,33 @@ SSE 过程会返回：
 ### 7.3 状态
 
 - `pending`
+- `partial`
 - `applied`
 - `cancelled`
 - `stale`
 
+文件级 patch 另有独立状态：
+
+- `pending`
+- `applied`
+- `auto_applied`
+- `rolled_back`
+- `discarded`
+- `failed`
+
 ### 7.4 应用
 
-Agentic Loop 生成文件级预览后，前端按创作页执行方式处理：
+Agentic Loop 生成文件级预览后，前端按确认方式处理：
 
-- 自动应用：如果用户仍停留在当前页面和当前对话，前端自动调用应用接口；如果应用请求尚未发出就离开页面、关闭页面或切换当前对话，则不再写入。
-- 手动确认：前端保留预览卡和详情弹窗，等待用户点击“应用修改”。
+- 自动确认：后端在 Loop 完成前自动应用所有文件，前端只展示“已自动应用”状态的 diff 卡片，用户仍可逐文件回滚。
+- 手动确认：前端在对应助手消息底部保留 diff 卡片，用户逐文件点击“应用修改”或“回滚修改”，点击后立即生效，不弹二次确认。
 
 应用时：
 
-1. 调用 `/api/agent/loop/apply`，携带 `session_id`、`session_token` 和 `operation_set_id`。
-2. 后端按任务快照与 `old` 文本做冲突校验，通过后写入 Markdown 文件；生成预览前，`preview_patch_files` 会先把空白差异下的唯一近似 `old` 对齐到当前文件精确片段，无法唯一匹配时才返回明确错误。
+1. 调用 `/api/agent/loop/apply`，携带 `session_id`、`session_token`、`operation_set_id`、`patch_index` 和动作类型。
+2. 后端按当前文件中的唯一 `old/new` 文本做冲突校验，通过后写入 Markdown 文件；生成预览前，`preview_patch_files` 会先把空白差异下的唯一近似 `old` 对齐到当前文件精确片段，无法唯一匹配时才返回明确错误。
 3. 前端刷新当前文章内容和文件树状态。
-4. 成功后再次调用 `/api/agent/loop/start`，携带同一个 `session_id + session_token` 续跑，直到任务完成或进入可处理的暂停状态。
+4. 成功后只更新 diff 卡片状态；不会再次调用 `/api/agent/loop/start`，也不会触发模型生成总结。
 
 ### 7.5 取消与过期
 
@@ -377,8 +388,8 @@ Agentic Loop 生成文件级预览后，前端按创作页执行方式处理：
 2. 最后一题答完后先进入回顾态，允许回到前题修改
 3. 用户点击“开始生成预览”后，前端才调用 `POST /api/interactions/:id/respond`
 4. 后端把结构化答案写入 `response_json`，并追加一条 `user` 摘要消息；摘要消息的 `meta` 同时会写入当前文章范围内的短时纠错状态
-5. 如果答案已经足够，前端按当前创作页执行方式继续：自动应用模式直接调用 `/api/agent/loop/start`，手动确认模式重新生成 Agentic Loop 任务确认卡
-6. 自动应用模式会在预览生成后自动写入并续跑；手动确认模式继续只生成预览，等待用户确认
+5. 如果答案已经足够，前端按当前创作页确认方式继续：自动确认和手动确认都直接调用 `/api/agent/loop/start`
+6. 自动确认模式会在预览生成后自动写入；手动确认模式继续只生成预览，等待用户逐文件确认
 
 ### 9.4 回答失败或文章变化
 
@@ -402,18 +413,18 @@ Agentic Loop 生成文件级预览后，前端按创作页执行方式处理：
 - `loop_start` / `soft_limit_notice`
 - `thinking`
 - `tool_start` / `tool_done`
-- `waiting_preview_confirm`
 - `loop_done`
 - `cancelled` / `error`
 
-这些事件会映射到 AgentWorkspace 的任务状态卡、工具过程、流式思考文本和文件级预览卡。
+这些事件会映射到 AgentWorkspace 的工具过程、流式思考文本和文件级 diff 卡；旧 `waiting_preview_confirm` 仅作为历史兼容事件处理，不再是新预览流程的暂停点。
 
 ### `/api/agent/loop/apply`
 
-当前用于三类动作：
+当前用于以下动作：
 
-- `{ session_id, session_token, action: "apply", operation_set_id }`：应用文件级预览。
-- `{ session_id, session_token, action: "reject", operation_set_id }`：撤销预览并取消本次任务。
+- `{ session_id, session_token, action: "apply_file", operation_set_id, patch_index }`：应用单个文件级 patch。
+- `{ session_id, session_token, action: "rollback_file", operation_set_id, patch_index }`：回滚单个文件级 patch。
+- `{ session_id, session_token, action: "discard_pending", operation_set_id }`：在下一条 prompt 前废弃未处理 patch。
 - `{ session_id, session_token, action: "extend", extra_loops }`：硬上限暂停后继续执行。
 
 ---
@@ -431,7 +442,7 @@ Agentic Loop 生成文件级预览后，前端按创作页执行方式处理：
 
 - 创作页继续保留旧的块画布、文章分片预览、块编辑和批量修改预览，不再整页替换为 Agent Workspace。
 - 右侧聊天消息区、工具链和底部输入框按 Notus-design-draft/notus-agent.html 还原；聊天顶部不显示 Agent Workspace 标题，也不显示模型配置和搜索配置按钮。
-- 当前文档所在目录会作为 Agentic Loop 默认授权路径；自动应用模式直接使用该目录启动，手动确认模式会在任务确认卡中展示并允许修改。无当前文档时仍先创建一篇 AI 创作草稿。
-- session_created / snapshot_done / loop_start / thinking / tool_start / tool_done / waiting_preview_confirm / loop_done 会累计为设计稿工具过程和文件变更卡片；最终 assistant 消息保留完整工具步骤，历史会话中仍可展开查看每一步的说明、工具输入和结果。
-- 批量修改预览、应用和取消能力继续保留；变更详情弹窗展示文件级 patch 的 old/new 内容，应用修改后通过 /api/agent/loop/apply 写回 Markdown，再携带 session_id 续跑。
-- 输入框会随请求携带当前模型、联网搜索状态、搜索服务商和附件元数据；联网搜索当前只记录配置状态，不参与真实外部搜索；输入框上方不展示预制问题列表。
+- 当前文档所在目录会作为 Agentic Loop 默认授权路径；自动确认和手动确认都直接使用该授权范围启动。无当前文档时仍先创建一篇 AI 创作草稿。
+- session_created / snapshot_done / loop_start / thinking / tool_start / tool_done / loop_done 会累计为设计稿工具过程和文件变更卡片；最终 assistant 消息保留完整工具步骤，历史会话中仍可展开查看每一步的说明、工具输入和结果。
+- 批量修改预览、应用和取消能力继续保留；文件级 patch 的 old/new 内容直接在对话底部 diff 卡片中展示，应用或回滚通过 `/api/agent/loop/apply` 写回 Markdown 并更新 patch 状态，不再携带 session_id 续跑。
+- 输入框会随请求携带当前模型、联网搜索状态、单选搜索服务商和附件元数据；联网搜索当前只记录配置状态，不参与真实外部搜索；输入框上方不展示预制问题列表。设置页联网搜索总开关实时保存，其他搜索配置仍手动保存。

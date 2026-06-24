@@ -71,11 +71,11 @@
 | M4-03 创作规划器 + 执行器主链路 | `lib/canvasRequestPlanner.js` `lib/canvasAgent.js` | ✅ | 已从旧的单块工具循环升级为“规则规划 + 单次 helper + 执行器”主链路，支持单块、多块、全文与文本回复/文章分析；多轮续聊现会沿用最近目标块、最近操作类型和最近建议摘要 |
 | M4-04 旧 intent 链路清理 | `pages/api/agent/intent.js` `lib/agent.js` | ✅ | 旧的独立 intent 接口和 legacy Canvas 工具循环已移除，当前只保留内置请求规划主链路 |
 | M4-05 大纲生成 `/api/agent/outline` SSE | `pages/api/agent/outline.js` `lib/prompt.js` | ✅ | 已接 LLM 大纲生成，并改为复用 `getStyleContext()`，让大纲和改写共用同一套风格上下文 |
-| M4-06 Agentic Loop 运行 `/api/agent/loop/start` SSE | `pages/api/agent/loop/start.js` `hooks/useAgentLoopController.js` | ✅ | 创作页主输入已切到 Agentic Loop；默认自动应用模式跳过任务确认卡，文件预览生成后自动调用 `/api/agent/loop/apply` 并携带 session 续跑，手动确认模式保留任务卡和手动预览应用 |
-| M4-07 CanvasBlock 组件 | `components/Canvas/CanvasBlock.js` `pages/canvas.js` | ✅ | 块级编辑组件继续保留；创作页右侧聊天面板使用设计稿样式，当前文章路径作为 Agentic Loop 默认授权路径，手动确认模式下会在任务确认卡中展示 |
+| M4-06 Agentic Loop 运行 `/api/agent/loop/start` SSE | `pages/api/agent/loop/start.js` `hooks/useAgentLoopController.js` | ✅ | 创作页主输入已切到 Agentic Loop；默认自动确认模式跳过任务确认卡，文件预览生成后由后端自动应用，手动确认模式在对话底部逐文件应用或回滚，应用动作不再续跑 |
+| M4-07 CanvasBlock 组件 | `components/Canvas/CanvasBlock.js` `pages/canvas.js` | ✅ | 块级编辑组件继续保留；创作页右侧聊天面板使用设计稿样式，当前文章路径作为 Agentic Loop 默认授权路径，顶部 Agent Loop 任务/回滚卡片已移除 |
 | M4-08 AIPanel + 批量预览恢复 | `components/AIPanel/BatchOperationCard.js` `pages/canvas.js` | ✅ | 已支持整组预览、整组应用/取消、刷新恢复全部未应用预览、文章变更后 `stale` 提示；AIPanel 继续保留后台自动事实补充 + 前台风格来源配置；历史会话抽屉支持二次确认删除 |
-| M4-09 新建创作入口页 | `pages/canvas.js` CanvasEntry | ✅ | 话题输入 + 最近列表全部可点击，"从空白开始"按钮可用；侧边栏选中文件后会在当前页基于该文章进入创作；新主题内容可保存为 Markdown 并索引 |
-| M4-10 编辑器"AI 创作"按钮 | `components/Editor/EditorToolbar.js` | ✅ | 点击跳转 /canvas |
+| M4-09 新建创作入口页 | `pages/canvas.js` CanvasEntry | ✅ | 话题输入 + 最近列表全部可点击，"从空白开始"按钮可用；侧边栏选中文件后会在当前页基于该文章进入创作；携带 `?fileId=` 打开已有文档时先显示文档加载骨架，不再露出新建入口；新主题内容可保存为 Markdown 并索引 |
+| M4-10 编辑器"AI 创作"按钮 | `components/Editor/EditorToolbar.js` | ✅ | 点击跳转 `/canvas?fileId=...`，创作页在目标文章加载完成前显示“正在打开文档…”骨架态 |
 | M4-11 风格指纹与旧文回填 | `lib/style.js` `lib/indexer.js` `lib/runtime.js` | ✅ | 已新增 `style_fingerprints / style_profile`、索引后自动提取、旧文后台回填、重建索引暂停与恢复 |
 | M4-12 工作区工具层第一阶段 | `lib/workspaceAgentTools.js` `lib/workspaceScope.js` `pages/api/conversations/[id]/scope.js` | ✅ | 已新增 `search_knowledge/read_file/get_style_context/ask_user/preview_edit_article` 工具骨架、四类会话 scope 与预览应用前的写入范围校验 |
 
@@ -85,7 +85,7 @@
 
 | 子任务 | 文件 | 状态 | 备注 |
 |--------|------|------|------|
-| M5-01 设置页（模型/搜索/个性化/存储/日志/关于） | `pages/settings/[section].js` `components/Settings/SettingsScreen.js` | ✅ | 模型配置现统一为设计稿暖色单栏卡片：手动填写 Base URL / 模型名 / API Key，Embedding 维度测试后由后端记录；LLM 新增/编辑支持 OpenAI API 与 Anthropic 兼容协议选择，使用 448px 暖白弹窗，保存不再强制测试连通性；搜索配置已加入设置菜单；个性化页提供“标题与文件名双向绑定”开关，默认关闭；存储页已接真实重建/清除索引；日志页可查询服务端 JSONL 日志 |
+| M5-01 设置页（模型/搜索/个性化/存储/日志/关于） | `pages/settings/[section].js` `components/Settings/SettingsScreen.js` | ✅ | 模型配置现统一为设计稿暖色单栏卡片：手动填写 Base URL / 模型名 / API Key，Embedding 维度测试后由后端记录；LLM 新增/编辑支持 OpenAI API 与 Anthropic 兼容协议选择，使用 448px 暖白弹窗，保存不再强制测试连通性；搜索配置已加入设置菜单，联网搜索总开关实时保存，服务商/模式/结果数/API Key 仍手动保存；个性化页提供“标题与文件名双向绑定”开关，默认关闭；存储页已接真实重建/清除索引；日志页可查询服务端 JSONL 日志 |
 | M5-02 CommandPalette（cmdk） | `components/Layout/TopBar.js` | ⚠️ 部分 | 已提供全局文章搜索弹层和 ⌘K 快捷键；空输入时不再展示文章；完整命令面板仍未实现 |
 | M5-03 快捷键绑定 | `contexts/ShortcutsContext.js` `components/Editor/WysiwygEditor.js` `components/Layout/TopBar.js` `components/ChatArea/InputBar.js` `components/Canvas/CanvasBlock.js` | ✅ | 常用快捷键已集中到 `/settings/shortcuts` 维护，并接入搜索、发送、保存文档、保存块编辑、取消块编辑；用户可见提示已按平台显示 Command / Ctrl；Electron 已补充固定系统级搜索快捷键 |
 | M5-04 Toast 全局错误降级 | `components/ui/Toast.js` `lib/errors.js` | ✅ | `lib/errors.js` 已补充 `HTTP_ERROR_MESSAGES` 映射表（400/401/403/429/500/502/503）与 `httpErrorMessage()` 工具函数，供所有 API 路由与前端错误分支调用 |
@@ -107,7 +107,7 @@
 - 旧的“知识库问答 + 普通文件改写”只能描述当前部分能力，不能作为最终产品定义。
 - 文件系统仍是真相来源；数据库只保存索引、缓存、会话、预览和运行状态。
 - 后续 Agent 能力应围绕工作区工具扩展，包括读取文件、搜索工作区、创建笔记、更新 frontmatter、多文件预览、整理目录和检查内部链接。
-- 创作页和知识库页已接入 Agentic Loop：创作页主输入默认自动应用，发送后直接启动 Loop，文件预览生成后自动应用并续跑；创作页也可切换为手动确认。知识库页普通问答继续走 `/api/chat`，写作类任务通过保守关键词规则进入任务确认、工具调用、文件级预览、应用续跑和整体回滚。
+- 创作页和知识库页已接入 Agentic Loop：创作页主输入默认自动确认，发送后直接启动 Loop，文件预览生成后自动应用并在对话底部保留可回滚 diff 卡片；创作页也可切换为手动确认逐文件处理。知识库页普通问答继续走 `/api/chat`，写作类任务通过保守关键词规则进入工具调用、文件级预览、逐文件应用/回滚和未处理项废弃。
 - 检索范围、写入范围和风格参考范围应逐步升级为会话级可见状态，而不是仅作为单次请求参数。
 - 所有写入 Markdown 的能力都必须先生成可审查结果；单文件使用块级 diff，多文件使用批量预览。Agentic Loop 的文件级预览在创建前会先把空白差异下的唯一近似 `old` 对齐为当前文件精确片段。
 - 知识库页以 Agent 问答为主，但保留旧的文档预览/编辑分栏；文档上下文继续作为请求上下文和引用来源参与回答。

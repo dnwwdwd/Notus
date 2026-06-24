@@ -3,7 +3,10 @@ const { sha256 } = require('./files');
 
 const DEFAULT_EXPIRE_DAYS = 7;
 const ACTIVE_STATUSES = ['pending', 'stale'];
-const TERMINAL_STATUSES = ['applied', 'cancelled'];
+const TERMINAL_STATUSES = ['applied', 'cancelled', 'partial'];
+const PATCH_STATUSES = ['pending', 'applied', 'auto_applied', 'rolled_back', 'discarded', 'failed'];
+const PATCH_APPLIED_STATUSES = ['applied', 'auto_applied'];
+const PATCH_CANCELLED_STATUSES = ['rolled_back', 'discarded'];
 
 function normalizeNullablePositiveInt(value) {
   const next = Number(value);
@@ -49,6 +52,29 @@ function parsePatches(value) {
   }
 }
 
+function normalizePatchStatus(value, fallback = 'pending') {
+  const normalized = String(value || '').trim().toLowerCase();
+  return PATCH_STATUSES.includes(normalized) ? normalized : fallback;
+}
+
+function normalizePatchStates(patches = []) {
+  return (Array.isArray(patches) ? patches : []).map((patch, index) => ({
+    ...(patch || {}),
+    patch_id: String(patch?.patch_id || patch?.id || `patch-${index}`),
+    status: normalizePatchStatus(patch?.status),
+  }));
+}
+
+function deriveOperationSetStatus(patches = []) {
+  const normalized = normalizePatchStates(patches);
+  if (normalized.length === 0) return 'pending';
+  const statuses = normalized.map((patch) => normalizePatchStatus(patch.status));
+  if (statuses.includes('pending') || statuses.includes('failed')) return 'pending';
+  if (statuses.every((status) => PATCH_APPLIED_STATUSES.includes(status))) return 'applied';
+  if (statuses.every((status) => PATCH_CANCELLED_STATUSES.includes(status))) return 'cancelled';
+  return 'partial';
+}
+
 function formatRow(row) {
   if (!row) return null;
   return {
@@ -60,7 +86,7 @@ function formatRow(row) {
     article_hash: String(row.article_hash || ''),
     mode: normalizeMode(row.mode),
     operations: parseOperations(row.operations_json),
-    patches: parsePatches(row.pathes_json),
+    patches: normalizePatchStates(parsePatches(row.pathes_json)),
     status: normalizeStatus(row.status),
     expires_at: row.expires_at || null,
     created_at: row.created_at || null,
@@ -113,7 +139,7 @@ function createOperationSet({
   const normalizedConversationId = normalizeNullablePositiveInt(conversationId || snakeConversationId);
   if (!normalizedConversationId) throw new Error('conversation_id is required');
   const serializedOperations = JSON.stringify(Array.isArray(operations) ? operations : []);
-  const serializedPatches = JSON.stringify(Array.isArray(patches) ? patches : []);
+  const serializedPatches = JSON.stringify(normalizePatchStates(Array.isArray(patches) ? patches : []));
   const columns = [];
   const placeholders = [];
   const params = [];
@@ -192,7 +218,7 @@ function updateOperationSet(id, updates = {}) {
   }
   if (Object.prototype.hasOwnProperty.call(updates, 'patches') && hasColumn(database, 'canvas_operation_sets', 'pathes_json')) {
     sets.push('pathes_json = ?');
-    params.push(JSON.stringify(Array.isArray(updates.patches) ? updates.patches : []));
+    params.push(JSON.stringify(normalizePatchStates(Array.isArray(updates.patches) ? updates.patches : [])));
   }
   if (sets.length === 0) return getOperationSetById(normalizedId);
   sets.push("updated_at = datetime('now')");
@@ -228,7 +254,7 @@ function listOperationSetsByConversation(conversationId, options = {}) {
 
   const statuses = Array.isArray(options.statuses) && options.statuses.length > 0
     ? options.statuses.map((item) => normalizeStatus(item)).filter(Boolean)
-    : ['pending', 'stale'];
+    : ['pending', 'stale', 'partial', 'applied', 'cancelled'];
 
   const rows = database.prepare(`
     SELECT *
@@ -249,7 +275,7 @@ function listOperationSetsBySession(sessionId, options = {}) {
   if (!normalizedSessionId) return [];
   const statuses = Array.isArray(options.statuses) && options.statuses.length > 0
     ? options.statuses.map((item) => normalizeStatus(item)).filter(Boolean)
-    : ['pending', 'stale', 'applied', 'cancelled'];
+    : ['pending', 'stale', 'partial', 'applied', 'cancelled'];
   const rows = database.prepare(`
     SELECT *
     FROM canvas_operation_sets
@@ -262,12 +288,16 @@ function listOperationSetsBySession(sessionId, options = {}) {
 
 module.exports = {
   ACTIVE_STATUSES,
+  PATCH_STATUSES,
   computeArticleHash,
   createOperationSet,
+  deriveOperationSetStatus,
   getOperationSetById,
   listOperationSetsByConversation,
   listOperationSetsBySession,
   markConversationOperationSetsStale,
   markOperationSetStatus,
+  normalizePatchStates,
+  normalizePatchStatus,
   updateOperationSet,
 };

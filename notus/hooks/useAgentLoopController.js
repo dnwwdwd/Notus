@@ -303,6 +303,7 @@ export function useAgentLoopController({
         kind: input?.kind || 'agent',
         authorized_paths: input?.authorized_paths || [''],
         authorized_ops: input?.authorized_ops || ['modify', 'create'],
+        approval_mode: input?.approval_mode || input?.approvalMode || 'auto_confirm',
         conversation_id: input?.conversation_id || undefined,
         active_file_id: input?.active_file_id || undefined,
         llm_config_id: input?.llm_config_id || input?.llmConfigId || undefined,
@@ -415,6 +416,15 @@ export function useAgentLoopController({
           const current = sessionRef.current || {};
           const hardLimit = event.reason === 'hard_limit_reached';
           const failed = ['consecutive_tool_failure', 'deadloop_detected', 'no_progress'].includes(event.reason);
+          let operationSet = null;
+          if (event.operation_set_id) {
+            try {
+              const detail = await fetchSessionDetails(event.session_id || current.id, current.token || resumeToken);
+              operationSet = normalizeOperationSets(detail?.operation_sets).find((item) => (
+                Number(item.id) === Number(event.operation_set_id)
+              )) || null;
+            } catch {}
+          }
           setActiveAgentSession({
             id: event.session_id || current.id,
             token: current.token || resumeToken,
@@ -431,7 +441,9 @@ export function useAgentLoopController({
               session_id: event.session_id || current.id,
               status: hardLimit ? 'waiting_confirm' : failed ? 'failed' : 'completed',
               reason: event.reason || '',
+              operation_set_id: event.operation_set_id || operationSet?.id || null,
             },
+            operationSet,
             toolSteps: completeSteps(stepsRef.current),
           });
           setStreamText('');
@@ -486,9 +498,9 @@ export function useAgentLoopController({
     } catch {}
   }, [pendingAgentTask, startAgentLoop]);
 
-  const applyOperationSet = useCallback(async (operationSet, options = {}) => {
+  const runOperationSetAction = useCallback(async (operationSet, action, options = {}) => {
     const session = sessionRef.current;
-    if (!session?.id || !session?.token) throw new Error('缺少 Agent 任务状态，无法应用预览');
+    if (!session?.id || !session?.token) throw new Error('缺少 Agent 任务状态，无法处理预览');
     const operationSetId = operationSet?.id || session.operation_set_id;
     if (!operationSetId) throw new Error('缺少修改预览 ID');
     const response = await fetch('/api/agent/loop/apply', {
@@ -499,7 +511,9 @@ export function useAgentLoopController({
         session_id: session.id,
         session_token: session.token,
         operation_set_id: operationSetId,
-        action: 'apply',
+        action,
+        patch_index: options.patchIndex === undefined ? undefined : options.patchIndex,
+        file_path: options.filePath || undefined,
         force: Boolean(options.force),
         approval_mode: options.approvalMode || undefined,
       }),
@@ -509,17 +523,33 @@ export function useAgentLoopController({
       if (payload.conflict) {
         throw new Error('文件已经变化，请检查冲突后重新确认');
       }
-      throw new Error(payload.error || payload.code || '应用修改失败');
+      throw new Error(payload.error || payload.code || '处理修改失败');
     }
-    onOperationSetHandled?.(operationSetId, 'applied');
-    await onApplySuccess?.(payload, operationSet);
+    onOperationSetHandled?.(operationSetId, action, payload.operation_set || null);
+    if (['apply', 'apply_all', 'apply_file'].includes(action)) {
+      await onApplySuccess?.(payload, operationSet);
+    } else if (action === 'rollback_file') {
+      await onRollbackSuccess?.(payload, operationSet);
+    }
     if (payload.session) setActiveAgentSession({ ...payload.session, token: session.token });
-    if (typeof options.shouldResume === 'function' && !options.shouldResume(payload, operationSet)) {
-      return payload;
-    }
-    await startAgentLoop({ session_id: session.id, session_token: session.token }, { resume: true });
     return payload;
-  }, [onApplySuccess, onOperationSetHandled, setActiveAgentSession, startAgentLoop]);
+  }, [onApplySuccess, onOperationSetHandled, onRollbackSuccess, setActiveAgentSession]);
+
+  const applyOperationSet = useCallback((operationSet, options = {}) => (
+    runOperationSetAction(operationSet, options.action || 'apply_all', options)
+  ), [runOperationSetAction]);
+
+  const applyOperationFile = useCallback((operationSet, patchIndex, options = {}) => (
+    runOperationSetAction(operationSet, 'apply_file', { ...options, patchIndex })
+  ), [runOperationSetAction]);
+
+  const rollbackOperationFile = useCallback((operationSet, patchIndex, options = {}) => (
+    runOperationSetAction(operationSet, 'rollback_file', { ...options, patchIndex })
+  ), [runOperationSetAction]);
+
+  const discardPendingOperationSet = useCallback((operationSet, options = {}) => (
+    runOperationSetAction(operationSet, 'discard_pending', options)
+  ), [runOperationSetAction]);
 
   const rejectOperationSet = useCallback(async (operationSet) => {
     const session = sessionRef.current;
@@ -625,6 +655,9 @@ export function useAgentLoopController({
     startAgentLoop,
     stopAgentLoop,
     applyOperationSet,
+    applyOperationFile,
+    rollbackOperationFile,
+    discardPendingOperationSet,
     rejectOperationSet,
     extendAgentSession,
     rollbackAgentSession,

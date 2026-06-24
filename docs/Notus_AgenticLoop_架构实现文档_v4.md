@@ -1,6 +1,6 @@
 # Notus Agentic Loop 架构实现文档
 
-> v4.0 · 面向开发者的完整实现规范
+> v4.1 · 面向开发者的完整实现规范
 > 覆盖：架构分层、文件权限系统、数据库、核心模块、Prompt Engineering、API、错误处理
 >
 > **v4.0 相对 v3.0 变更说明：**
@@ -11,6 +11,12 @@
 > - 修复 索引更新缺失：新建/修改文件后触发增量索引，明确同步/异步策略
 > - 修复 `messages_checkpoint` 大小：存入前执行 `compactMessages` 压缩，并记录预期大小范围
 > - 修复 回滚删除新建文件缺少冲突检测：删除前检查文件是否被外部修改，有修改则提示用户确认
+>
+> **v4.1 相对 v4.0 变更说明（2026-06-24）：**
+> - 移除预览生成后的 `waiting_preview_confirm` 主流程暂停；`preview_patch_files` 生成 operation set 后，Loop 按自动确认/手动确认规则直接完成。
+> - `/api/agent/loop/apply` 不再承担“应用后续跑”职责；应用、回滚、废弃只更新文件和 patch 状态，不触发 LLM。
+> - 任务确认卡和顶部 session/回滚卡从主流程移除，文件变更统一展示在对应助手消息底部的常驻 diff 卡片。
+> - 回滚粒度从任务级整体回滚调整为文件级 patch 回滚；未处理 patch 在下一条 prompt 发出前自动标记为 `discarded`。
 
 ---
 
@@ -28,12 +34,12 @@
 | 执行 | 一次规划 + 一批操作 | 多轮 tool call，自主决策下一步 |
 | 知识库 | 用户手动指定参考文件 | Agent 主动调用 `search_knowledge` tool |
 | 写入 | 单文件块级 diff | 修改已有文件走批量预览，新建文件即时落盘 |
-| 撤销 | 无 | 整个任务级快照一键回滚（含新建文件追踪） |
+| 撤销 | 无 | 文件级 patch 应用/回滚/废弃（自动确认仍保留回滚入口） |
 | 用户感知 | 即时操作，无过程可见 | 实时工具链可视化 + 任务进度 |
 
 ### 1.3 写入策略
 
-**修改已有文件**：必须通过 `preview_patch_files` 生成批量预览，用户确认后才落盘。
+**修改已有文件**：必须通过 `preview_patch_files` 生成批量预览。自动确认模式由服务端在 Loop 完成前自动落盘；手动确认模式在对话底部 diff 卡片中逐文件应用或回滚。
 
 **新建文件**：通过 `create_note` 即时写入磁盘，不走预览流程。理由：新建文件不存在覆盖风险，且每次新建都打断 loop 等待确认会破坏 Agent 执行的连续性。新建的文件路径会记录在 `created_files` 字段，回滚时一并处理（含冲突检测）。
 
@@ -41,12 +47,12 @@
 - Agent **只能在用户授权范围内写入**，不访问外部网络、不执行系统命令
 - **删除权限永远不开放**，当前阶段直接拒绝 delete 操作
 - **读取不受授权路径限制**：`search_knowledge` 和 `read_file` 可访问全库内容，授权路径只限制写入。这是有意的设计决策：限制读取会严重削弱检索能力，而读取本身不会造成数据损坏
-- `search_knowledge` 单次任务调用上限在任务确认卡上由用户设置（默认值见 §1.4）
+- `search_knowledge` 单次任务调用上限由前端启动参数传入（默认值见 §1.4）
 - Loop 软提示上限 **15 轮**，硬上限 **30 轮**（详见 §2.4）
 
 ### 1.4 `search_knowledge` 调用上限设计
 
-固定 3 次对于"检查全库孤立笔记"等需要分批检索的复杂任务明显不够。改为按任务场景动态推荐，在任务确认卡上展示推荐值，用户可调整：
+固定 3 次对于"检查全库孤立笔记"等需要分批检索的复杂任务明显不够。当前由前端按任务场景传入推荐值，后续可在可见会话设置中调整：
 
 | 任务类型 | 推荐上限 | 说明 |
 |---------|---------|------|
@@ -113,16 +119,16 @@ lib/
 ├── agentSession.js        # session 管理、权限校验、快照、checkpoint、轨迹记录
 ├── agentTools.js          # 工具定义 + 执行器
 ├── agentLoopPrompt.js     # Loop 专用 Prompt 模板
-└── agentSessionCleaner.js # waiting_confirm 超时清理定时任务
+└── agentSessionCleaner.js # 历史 waiting_confirm / 过期 session 清理定时任务
 
 pages/api/agent/
 ├── loop/
-│   ├── start.js           # 启动 loop / 续跑 loop（SSE，统一入口）
+│   ├── start.js           # 启动 loop（SSE，硬上限暂停后可继续）
 │   ├── cancel.js          # 取消正在运行的 loop
-│   └── apply.js           # 用户确认批量预览（只做写入+状态更新，返回 JSON）
+│   └── apply.js           # 文件级应用/回滚/废弃（只做写入+状态更新，返回 JSON）
 └── sessions/
     ├── [id].js            # 查询 session 状态（断线重连重建 UI）
-    └── [id]/rollback.js   # 回滚整个任务
+    └── [id]/rollback.js   # 历史任务级回滚兼容接口
 ```
 
 ### 2.3 数据库新增表
@@ -147,7 +153,7 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
   last_tool_results    TEXT NOT NULL DEFAULT '{}',    -- 工具结果哈希，用于死循环检测
   messages_checkpoint  TEXT,                          -- 压缩后的 messages JSON，暂停续跑用
   checkpoint_tool_use_id TEXT,                        -- 触发暂停的 tool_use_id，续跑时构造 tool_result
-  waiting_since        DATETIME,                      -- 进入 waiting_confirm 的时间
+  waiting_since        DATETIME,                      -- 硬上限或历史 waiting_confirm 的时间
   session_token        TEXT UNIQUE NOT NULL,
   expires_at           DATETIME,
   created_at           DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -1127,13 +1133,20 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal }) {
 
       toolResults.push({ tool_use_id: toolUse.id, content: JSON.stringify(result) });
 
-      // preview_patch_files 暂停（此时必是当轮唯一 tool call，已通过唯一性校验）
+      // preview_patch_files 生成 operation set（此时必是当轮唯一 tool call，已通过唯一性校验）
       if (toolUse.name === 'preview_patch_files' && !result.error) {
-        updateSessionStatus(sessionId, 'waiting_confirm');
-        saveMessagesCheckpoint(sessionId, messages, response.content, toolUse.id);
-        onStream({ type: 'waiting_preview_confirm', operation_set_id: result.operation_set_id, loop_index: loopIndex });
+        const applied = approvalMode === 'auto_confirm'
+          ? await applyPreviewWithConflictCheck(result.operation_set_id, sessionId, { auto: true })
+          : null;
+        messages.push({ role: 'assistant', content: response.content });
+        messages.push({
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: toolUse.id, content: JSON.stringify({ ...result, applied }) }]
+        });
+        updateSessionStatus(sessionId, 'completed');
+        onStream({ type: 'loop_done', reason: 'goal_achieved', loop_index: loopIndex, operation_set_id: result.operation_set_id });
         return;
-        // 后续由前端调用 /apply 写入文件，再调用 /start（携带 session_id）续跑
+        // 后续用户点击 diff 卡片只调用 /apply 更新文件与 patch 状态，不再续跑 Loop
       }
     }
 
@@ -1343,14 +1356,14 @@ ${session.authorized_paths.map(p => `- ${p}`).join('\n')}
 
 ## 七、API 设计
 
-### 7.1 启动 Loop / 续跑 Loop（统一入口）
+### 7.1 启动 Loop / 硬上限继续执行
 
-`/start` 同时承担首次启动和续跑两个职责：
+`/start` 主要承担首次启动职责；硬上限暂停后可继续执行：
 
 - 首次启动：不传 `session_id`，创建新 session，开始 loop
-- 续跑：传入 `session_id`（状态为 `waiting_confirm`），从 checkpoint 恢复继续 loop
+- 继续执行：传入 `session_id`（状态为 `waiting_confirm` 且 reason 为硬上限），从 checkpoint 恢复继续 loop
 
-这样前端逻辑统一：不论是首次启动还是用户确认预览后续跑，都向同一个接口建立 SSE 连接。
+文件级预览应用不再通过 `/start` 续跑；用户点击 diff 卡片后只调用 `/api/agent/loop/apply` 更新文件和 patch 状态。
 
 ```
 POST /api/agent/loop/start
@@ -1365,21 +1378,20 @@ Body（首次启动）: {
   search_knowledge_limit?: number | null  // null=不限制，默认 5
 }
 
-Body（续跑）: {
+Body（继续执行）: {
   session_id: number             // 仅此字段，其他忽略
 }
 
 → SSE：
   { type: 'session_created', session_id, session_token }  // 首次启动
-  { type: 'session_resumed', session_id }                 // 续跑
+  { type: 'session_resumed', session_id }                 // 硬上限继续执行
   { type: 'snapshot_done', snapshot_count }
   { type: 'loop_start', loop_index }
   { type: 'soft_limit_notice', loop_index }
   { type: 'thinking', text, loop_index }
   { type: 'tool_start', tool_name, tool_input_summary, loop_index }
   { type: 'tool_done', tool_name, result_summary, loop_index, failed }
-  { type: 'waiting_preview_confirm', operation_set_id, loop_index }
-  { type: 'loop_done', reason, loop_index }
+  { type: 'loop_done', reason, loop_index, operation_set_id? }
     reason: 'goal_achieved' | 'hard_limit_reached' | 'consecutive_tool_failure'
           | 'deadloop_detected' | 'no_progress'
   { type: 'cancelled' }
@@ -1395,7 +1407,7 @@ Body: { session_id: number }
 → { success, status }
 ```
 
-### 7.3 用户确认预览（只做写入，不触发 SSE）
+### 7.3 文件级应用 / 回滚 / 废弃（只做写入和状态更新，不触发 SSE）
 
 ```
 POST /api/agent/loop/apply
@@ -1403,23 +1415,32 @@ POST /api/agent/loop/apply
 Body: {
   session_id: number,
   operation_set_id: number,
-  action: 'apply' | 'reject' | 'extend',
+  action: 'apply_file' | 'rollback_file' | 'discard_file' | 'discard_pending' | 'apply_all' | 'extend',
+  patch_index?: number,
+  file_path?: string,
   extra_loops?: number,        // action='extend' 时有效，默认 10
   force?: boolean              // 强制覆盖冲突文件，默认 false
 }
 
-action='apply'
-  → 乐观锁校验（见 §4.5）
-  → 无冲突或 force=true：写入文件
-    返回 { success: true, applied: true }
-    前端收到后调用 POST /start（传入 session_id）续跑 loop
+action='apply_file'
+  → 校验当前文件存在唯一 old 文本
+  → 无冲突：写入文件，patch.status = 'applied'
+    返回 { success: true, operation_set }
   → 有冲突且 force=false：
     返回 { conflict: true, conflicting_files: string[] }
     前端展示冲突文件，由用户决定是否强制覆盖
 
-action='reject'
-  → 停止任务，不回滚已有改动
-  → 返回 { success: true }
+action='rollback_file'
+  → 已应用 patch 使用 new -> old 恢复，未应用 patch 直接标记 rolled_back
+  → 返回 { success: true, operation_set }
+
+action='discard_file' / action='discard_pending'
+  → 未处理 patch 标记 discarded，不写磁盘
+  → 返回 { success: true, operation_set }
+
+action='apply_all'
+  → 兼容旧整体应用入口，逐个应用 pending patch
+  → 返回 { success: true, operation_set }
 
 action='extend'
   → 更新 hard_limit += extra_loops（默认 +10）
@@ -1427,13 +1448,13 @@ action='extend'
   → 前端收到后调用 POST /start（传入 session_id）续跑 loop
 ```
 
-**前端续跑流程：**
+**前端逐文件确认流程：**
 
 ```
-用户点击"确认写入"
-  → POST /apply { action: 'apply', ... }
-  → 收到 { success: true, applied: true }
-  → POST /start { session_id }  ← 重新建立 SSE 连接，续跑 loop
+用户点击"应用修改"或"回滚修改"
+  → POST /apply { action: 'apply_file' | 'rollback_file', operation_set_id, patch_index, ... }
+  → 收到 { success: true, operation_set }
+  → 更新对话底部 diff 卡片状态，不调用 LLM，不调用 /start
 ```
 
 ### 7.4 查询 Session（断线重连重建 UI / 日志页追溯）
@@ -1466,7 +1487,7 @@ GET /api/agent/sessions/:id
 
 断线重连后，前端调用单 session 接口根据 `run_logs` 和 `session.status` 重建 UI 状态。无 token 的 GET 只返回去敏后的只读 session、日志和预览集合，不暴露 `session_token`、checkpoint 消息和工具上下文；需要写入、应用或回滚的接口仍然必须带 token。
 
-### 7.5 回滚整个任务
+### 7.5 历史任务级回滚兼容接口
 
 ```
 POST /api/agent/sessions/:id/rollback
@@ -1514,6 +1535,8 @@ async function triggerIncrementalIndex(relPath, notesDir) {
 }
 ```
 
+当前主流程不再把该接口作为用户入口；对话底部 diff 卡片通过 `/api/agent/loop/apply` 的 `rollback_file` 实现文件级回滚。该接口仅保留给历史 session、调试或未来管理员级恢复工具使用。
+
 ### 8.4 System Prompt 补充说明
 
 ```
@@ -1545,7 +1568,7 @@ search_knowledge 可能还检索不到刚刚创建的内容。
 | Context 超限 | compactMessages() 压缩（保留失败记录） | 透明 |
 | 软上限（15 轮） | 插入提示，loop 继续 | soft_limit_notice 事件 |
 | 硬上限（30 轮） | 暂停，转 waiting_confirm | loop_done reason=hard_limit_reached |
-| waiting_confirm 超时（1 小时） | 定时任务自动 cancel，不回滚 | 下次查询 session 时感知 |
+| 历史 waiting_confirm 超时（1 小时） | 定时任务自动 cancel，不回滚 | 下次查询 session 时感知 |
 | SSE 断开 | signal.abort() 停止 loop | loop 停止 |
 | 断线重连 | GET sessions/:id 重建 UI | ToolChainVisualizer 从 run_logs 恢复 |
 | 用户取消 | 立即停止，展示是否回滚选项 | cancelled 事件 |

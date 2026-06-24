@@ -382,7 +382,7 @@ db.exec(`
 
 ### 4.0 工作区 Agent 目标分层
 
-当前版本的知识库问答和创作画布已经接入工作区 Agent 基础能力：创作页主输入统一进入 Agentic Loop，并在输入框提供“自动应用 / 手动确认”模式选择；知识库页普通问答继续走 `/api/chat`，写作类任务按保守关键词规则进入 Agentic Loop。Loop 会话在开始执行前创建快照，写入前做系统层权限校验，并支持任务级回滚。旧 `/api/agent/run` 保留为历史兼容接口，不作为创作页主入口。
+当前版本的知识库问答和创作画布已经接入工作区 Agent 基础能力：创作页主输入统一进入 Agentic Loop，并在输入框提供“自动确认 / 手动确认”模式选择；知识库页普通问答继续走 `/api/chat`，写作类任务按保守关键词规则进入 Agentic Loop。Loop 会话在开始执行前创建快照，写入前做系统层权限校验，并支持对话底部逐文件确认、回滚和废弃。旧 `/api/agent/run` 保留为历史兼容接口，不作为创作页主入口。
 
 ```
 用户界面层
@@ -411,7 +411,7 @@ db.exec(`
   - 多文件批量预览
   - 高风险操作确认
   - 应用后自动索引
-  - 任务级快照与回滚
+  - 任务级快照与文件级确认/回滚
 ```
 
 当前工具集不开放删除、重命名、移动或系统命令能力；删除在任意 Agentic Loop 写入校验路径下都会被拒绝。
@@ -607,7 +607,7 @@ function startWatcher()  // chokidar 监听 NOTES_DIR
 
 ### 4.7 创作执行链路
 
-创作页主输入默认使用自动应用模式：发送后直接调用 `/api/agent/loop/start`，不展示任务确认卡；输入框左下角的“自动应用 / 手动确认”下拉框只在创作页展示，并持久化到浏览器本机。手动确认模式下，前端仍先展示任务确认卡，让用户确认 `authorized_paths` 与 `search_knowledge_limit` 后再调用 `/api/agent/loop/start`。旧 `/api/agent/run` + `/api/agent/apply` 只保留历史兼容，不再作为当前主流程。
+创作页主输入默认使用自动确认模式：发送后直接调用 `/api/agent/loop/start`，不展示任务确认卡；输入框左下角的“自动 / 手动”分段确认控件只在创作页展示，说明文案进入 tooltip，并持久化到浏览器本机。手动确认模式下同样直接启动 Agentic Loop，文件级预览在完成消息底部以 diff 卡片逐文件等待应用或回滚。旧 `/api/agent/run` + `/api/agent/apply` 只保留历史兼容，不再作为当前主流程。
 
 ```javascript
 async function resolveCanvasRequest({
@@ -900,15 +900,17 @@ POST /api/agent/loop/start           Body:
                                        { type: 'thinking', text, loop_index }
                                        { type: 'tool_start', tool_name, tool_input_summary, loop_index }
                                        { type: 'tool_done', tool_name, result_summary, failed, loop_index }
-                                       { type: 'waiting_preview_confirm', operation_set_id, loop_index }
-                                       { type: 'loop_done', reason, loop_index }
-                                       { type: 'error', error, code }
+                                      { type: 'loop_done', reason, loop_index, operation_set_id? }
+                                      { type: 'error', error, code }
 
 POST /api/agent/loop/apply           Body:
-                                     { session_id, session_token, operation_set_id, action: 'apply' }
-                                     | { session_id, session_token, operation_set_id?, action: 'reject' }
+                                     { session_id, session_token, operation_set_id, action: 'apply_file', patch_index?, file_path? }
+                                     | { session_id, session_token, operation_set_id, action: 'rollback_file', patch_index?, file_path? }
+                                     | { session_id, session_token, operation_set_id, action: 'discard_file', patch_index?, file_path? }
+                                     | { session_id, session_token, operation_set_id, action: 'discard_pending' }
+                                     | { session_id, session_token, operation_set_id, action: 'apply_all' }
                                      | { session_id, session_token, action: 'extend', extra_loops? }
-                                     → { success, changed_files?, conflict?, conflicting_files?, new_hard_limit? }
+                                     → { success, changed_files?, conflict?, conflicting_files?, operation_set?, new_hard_limit? }
 
 POST /api/agent/loop/cancel          Body: { session_id } → { success }
 GET  /api/agent/sessions/:id         → { session, run_logs, snapshots_count, operation_sets }
@@ -1053,11 +1055,11 @@ POST /api/settings/test              Body: { kind: 'embedding'|'llm', config }
 
 创作 Agent 当前主流程为 Agentic Loop：
 
-1. 创作页主输入按当前执行模式创建 `agent_sessions`：自动应用模式直接启动，手动确认模式先展示任务确认卡；Loop 按 LLM 工具调用自主执行多轮，工具包括 `search_knowledge`、`read_file`、`create_note`、`preview_patch_files`、`analyze_folder`、`check_links`。
+1. 创作页主输入按当前执行模式创建 `agent_sessions`：自动确认和手动确认都会直接启动 Loop，不再生成前置任务确认卡；Loop 按 LLM 工具调用自主执行多轮，工具包括 `search_knowledge`、`read_file`、`create_note`、`preview_patch_files`、`analyze_folder`、`check_links`。
 2. 写入前置：每次 Loop 开始前先写入 `agent_snapshots`；`create_note` 与 `preview_patch_files` 必须通过 `validateWrite()`；删除操作始终拒绝。
-3. 预览与应用：`preview_patch_files` 在单轮内必须是唯一工具调用；创建 operation set 前会对 `old` 文本做精确匹配、首尾裁剪匹配和空白折叠后的唯一匹配，匹配成功后使用当前文件中的精确片段写入文件级 patches；patches 存入 `canvas_operation_sets.pathes_json`。自动应用模式下，前端在用户仍停留在当前页面和当前对话时自动调用 `/api/agent/loop/apply` 并续跑；手动确认模式下，用户点击应用后再续跑。
+3. 预览与应用：`preview_patch_files` 在单轮内必须是唯一工具调用；创建 operation set 前会对 `old` 文本做精确匹配、首尾裁剪匹配和空白折叠后的唯一匹配，匹配成功后使用当前文件中的精确片段写入文件级 patches；patches 存入 `canvas_operation_sets.pathes_json`，每个 patch 额外记录 `pending / applied / auto_applied / rolled_back / discarded / failed` 状态。自动确认模式下，后端在 Loop 完成前自动应用全部文件，并把 diff 卡片标记为已自动应用；手动确认模式下，用户在对话底部逐文件点击应用或回滚，接口只写文件和更新状态，不再续跑 Loop 或触发 LLM 总结。
 4. 异常终止：软上限提醒、硬上限暂停、连续工具失败、重复工具结果死循环、连续无工具无进展都会结束或暂停本次任务。
-5. 回滚：任务可以整体回滚，覆盖快照内被修改文件和 Agent 新建文件；新建文件会记录创建时 hash，回滚前发现外部修改时返回冲突，不直接删除。
+5. 回滚与废弃：回滚以文件级 patch 为单位执行，已应用文件使用 `new -> old` 恢复，未应用文件直接标记为 `rolled_back`；下一条 prompt 发出前会把上一条任务仍未处理的 patch 标记为 `discarded`，不影响同任务中已经应用的文件。
 
 Agentic Loop 的 LLM 调用适配 OpenAI-compatible `tool_calls` 和 Anthropic `tool_use/tool_result` 两种协议；system prompt 继续接入 `getStyleContext()` 产生的风格画像和相关原文摘录。
 
@@ -1307,7 +1309,7 @@ exec node server.js
   - 文件页、知识库页、创作页在当前内容为 `dirty` 时，从侧边栏、顶部搜索或页内切换到其他文档前都必须先触发同一套未保存确认弹窗；确认保存或放弃后，才允许继续跳转；弹窗底部不显示“取消”按钮，关闭弹窗则保持当前页面不跳转
   - 文档内容搜索浮层只显示输入、匹配计数、上下切换和关闭，不显示额外说明文案或空关键词提示
   - 文件页与知识库页都必须提供 H1-H6 大纲；大纲项使用真实标题 active 状态，点击后即时设置精确滚动位置并更新选中视觉，切换文件树 / 大纲 tab 后不得恢复旧选中项
-  - 创作页对 `?fileId=` 的处理必须避免“旧 query 把新选中文档写回去”的状态循环；切换中的目标文档只有在文章内容真正切到目标文件后，才能释放路由同步保护
+  - 创作页对 `?fileId=` 的处理必须避免“旧 query 把新选中文档写回去”的状态循环；切换中的目标文档只有在文章内容真正切到目标文件后，才能释放路由同步保护；当路由携带 `fileId` 且 `article` 尚未加载完成时，必须显示文档加载骨架，不能回退到新建创作空态
   - 侧边栏“新建文件后自动打开”必须复用与普通点文件相同的页面级切换入口；当页面存在未保存守卫或创作页路由保护时，不能在共享上下文里直接 `selectFile`
   - 文件页、知识库页、创作页在同页切换 `fileId` 时都必须触发路由更新；知识库页和创作页的同页切文档也应显示统一的全局 `PageTransitionOverlay`
   - 创作块编辑态必须持续保留，textarea 失焦不能自动保存或退出；只允许 `Mod+Enter` / “完成”保存，`Esc` / “取消编辑”放弃当前块编辑
@@ -1347,7 +1349,7 @@ exec node server.js
 - M3-06 多模型切换下拉（支持搜索）
 - 知识库页与创作页在流式回复开始后，都必须立即渲染 AI 气泡占位；首 token 到来前使用固定占位的柔和三点等待态，避免布局跳动。知识库检索状态必须进入 AI loading 气泡内部，按“分析问题 / 检索笔记 / 找到证据 / 组织答案”等步骤动态切换，不作为独立状态条固定在回复外部
 - 输入框生成中只保留停止按钮；真正的“AI 正在回复”反馈只能放在 AI 回复气泡区，不能继续放在输入框内部
-- AgentWorkspace 输入框上方不得展示预制问题列表；知识库页和创作页都只保留直接输入、附件、联网搜索、搜索商选择、模型选择和发送/停止控件
+- AgentWorkspace 输入框上方不得展示预制问题列表；知识库页和创作页都只保留直接输入、附件、联网搜索、搜索商单选、模型选择和发送/停止控件
 - AI 回复气泡本体不显示边框；来源卡片、状态徽标等内部组件可按自身语义保留必要边界
   - 模型选择器必须固定在输入框右下角发送/停止按钮左侧；触发器在窄宽度下单行 `ellipsis` 缩略显示，菜单项仍展示完整模型名
 
@@ -1404,18 +1406,18 @@ exec node server.js
 # 2026-06-20 Agent 聊天 UI 技术口径
 
 - 共享 AgentWorkspace 前端组件改为右侧聊天面板，不再整页替换知识库页和创作页；页面业务主区域继续使用原有文档编辑、块画布和批量预览组件。
-- 新增 /api/settings/search-providers，用 settings 表保存搜索启用状态、当前服务商、调用模式、结果数和 API Key；响应只返回 api_key_set，不返回明文密钥。
+- 新增 /api/settings/search-providers，用 settings 表保存搜索启用状态、当前服务商、调用模式、结果数和 API Key；响应只返回 api_key_set，不返回明文密钥。设置页联网搜索总开关可单独 PUT `{ enabled }` 实时保存，服务商、模式、结果数和 API Key 仍由保存按钮提交。
 - /api/chat 与 AgentWorkspace 输入框接受 webSearchEnabled、searchProvider、attachments 和 modelConfigId 兼容字段，并将联网状态、服务商和附件元数据写入消息 meta。
-- 创作页主输入在自动应用模式下直接进入 `/api/agent/loop/start`，手动确认模式下先生成 `pendingAgentTask`；应用文件级预览通过 `/api/agent/loop/apply` 完成，成功后携带 `session_id` 续跑。
+- 创作页主输入在自动确认或手动确认模式下都直接进入 `/api/agent/loop/start`，不再生成 `pendingAgentTask`；应用、回滚和废弃文件级预览通过 `/api/agent/loop/apply` 完成，成功后只更新文件内容与 operation set 状态，不携带 `session_id` 续跑。
 - 搜索配置进入设置菜单 /settings/search；聊天顶部不再提供模型配置和搜索配置入口。
 - AgentWorkspace 不再接收或渲染 suggestions，避免输入框上方出现预制问题列表。
 - `AgentWorkspace.ToolChain` 以 `notus-agent.html` 为视觉基准：外层为顶部状态图标 + border-top 步骤列表；步骤行使用 button 控制折叠状态，`aria-expanded` 暴露展开状态，运行态使用圆环持续旋转，不使用 refresh 图标；失败态使用警示图标，完成态使用 check；展开区使用左侧细线、13.5px 说明文本、浅色工具卡片、monospace input/result 和三点等待态。
-- 创作页 `/canvas` 在 `/api/agent/loop/start` SSE 过程中累计 `session_created / snapshot_done / loop_start / thinking / tool_start / tool_done / waiting_preview_confirm / loop_done` 对应的工具步骤，写入最终 assistant message 的 `toolSteps`，历史会话中不丢失中间步骤。
+- 创作页 `/canvas` 在 `/api/agent/loop/start` SSE 过程中累计 `session_created / snapshot_done / loop_start / thinking / tool_start / tool_done / loop_done` 对应的工具步骤，写入最终 assistant message 的 `toolSteps`，历史会话中不丢失中间步骤；旧 `waiting_preview_confirm` 事件仅作为历史兼容分支保留。
 - AgentWorkspace 的已完成 AI 消息和流式 AI 消息都通过 `StreamingText` 渲染，保持 Markdown、GFM、数学公式和代码高亮一致。
 
 # 2026-06-19 Agentic Loop 技术口径
 
-- 创作页和知识库页继续复用 AgentWorkspace 输入入口；创作页主输入默认直接进入 `/api/agent/loop/start`，也可切换为手动确认后再进入；知识库页写作类任务进入 `/api/agent/loop/start`，普通问答继续走 `/api/chat`。
+- 创作页和知识库页继续复用 AgentWorkspace 输入入口；创作页主输入默认以自动确认进入 `/api/agent/loop/start`，也可切换为手动确认后逐文件处理 diff；知识库页写作类任务进入 `/api/agent/loop/start`，普通问答继续走 `/api/chat`。
 - `canvas_operation_sets` 新增可空 `agent_session_id` 与 `pathes_json`；旧 `operations_json` 继续服务块级 operation set，新文件级 patch 使用 `{ file_path, old, new }` 存入 `pathes_json`。
 - Agentic Loop 新增 `agent_sessions`、`agent_snapshots`、`agent_run_logs`；任务开始前必须完成快照，写入走 `validateWrite()`，删除能力不开放。
 - `lib/agentTools.js` 提供六个工具：`search_knowledge`、`read_file`、`create_note`、`preview_patch_files`、`analyze_folder`、`check_links`。`preview_patch_files` 单轮唯一，创建预览前会先把空白差异下的唯一近似 `old` 对齐到当前文件精确片段；应用前再次校验快照 hash 与 `old` 文本。

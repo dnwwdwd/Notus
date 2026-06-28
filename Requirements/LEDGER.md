@@ -13,6 +13,12 @@
 
 | ID | 日期 | 分类 | 标题 | 状态 | 归档位置 | 备注 |
 |----|------|------|------|------|----------|------|
+| REQ-20260627-001 | 2026-06-27 | 功能优化 | 将结构化澄清统一命名为提问卡片并开放 Agent Loop 调用 | 已完成 | `Requirements/REQ-20260627-001.md` | `ClarifyDrawer` 对外统一称为提问卡片；Agent Loop 新增 `ask_question_card` 工具，支持 Agent 主动生成，也支持用户通过 prompt 要求 Agent 生成提问卡片，回答后恢复同一 Loop 继续执行 |
+| REQ-20260625-003 | 2026-06-25 | 功能优化 | 恢复创作页 @b 块级 Agent 工具并优化图片与导出链路 | 已完成 | Requirements/REQ-20260625-003.md | 创作页 Agent Loop 新增 `preview_canvas_blocks` 块级预览工具，用户可继续用 `@b1/@b2` 精准修改文本块；本地图片粘贴和工具栏插入改为保存到同级 `assets` 资源目录并以相对路径写入 Markdown；Markdown 导出统一输出包含 `notes` 和资源目录的 zip；导出弹窗将已选文件置顶 |
+| REQ-20260625-002 | 2026-06-25 | 功能优化 | 接入 Agent Loop 联网搜索工具与会话上下文持久化 | 已完成 | Requirements/REQ-20260625-002.md | 输入框联网开关打开时注入 `web_search` 工具；关闭时不注入；搜索结果以 `web_search_context` 持久化为同会话上下文；Provider 调用使用官方 npm SDK；Firecrawl 可无 Key，其他 provider 未配置 Key 时引导到对应设置 tab |
+| REQ-20260625-001 | 2026-06-25 | 功能优化 | 调整创作页粘贴文本转附件阈值与附件数量上限 | 已完成 | Requirements/REQ-20260625-001.md | 创作页纯文本粘贴超过 100 字符即转为 TXT 附件；每条消息最多保留 5 个解析附件，粘贴生成的 TXT 与上传文件共用同一上限 |
+| REQ-20260624-001 | 2026-06-24 | 功能优化 | 创作页附件与网页链接解析及 Agent diff 详情弹窗 | 已完成 | Requirements/REQ-20260624-001.md | 创作页支持 PDF/DOCX/MD/TXT 上传解析、剪贴板文件解析、超过 100 字符粘贴文本转 TXT 附件、用户输入中的网页链接正文解析，并将文件级修改改为消息摘要卡 + DiffDialog 详情弹窗；知识库页不启用解析附件模式，搜索供应商接入不纳入本次范围 |
+| REQ-20260623-001 | 2026-06-23 | 功能优化 | 补充 GitHub/GitLab 排除 lzc、notes、logs 目录规则 | 已完成 | Requirements/REQ-20260623-001.md | 已在 AGENTS/CLAUDE 的远程提交范围中明确 `lzc/`、`notes/`、`logs/` 目录无需推送到 GitHub 和 GitLab |
 | REQ-20260621-004 | 2026-06-21 | 功能优化 | 创作页 Agent 自动确认模式 | 已完成 | Requirements/REQ-20260621-004.md | 创作页 Agent 输入框提供“自动 / 手动”分段确认控件；两种模式都跳过前置任务确认卡，自动确认由后端应用文件预览，手动确认在对话底部逐文件应用/回滚 |
 | REQ-20260621-003 | 2026-06-21 | 功能优化 | 优化 Agent Loop 工具反馈、Markdown 回复和历史导出 | 已完成 | Requirements/REQ-20260621-003.md | 工具链运行态改为圆环持续旋转；AgentWorkspace 的 AI 回复与流式输出统一用 Markdown 富文本渲染；历史对话抽屉新增 Markdown 导出，包含用户/AI 消息、Agent session、工具日志、思考文本和修改预览记录 |
 | REQ-20260621-002 | 2026-06-21 | 功能优化 | 接通创作页与知识库页到 Agentic Loop | 已完成 | Requirements/REQ-20260621-002.md | 配合 BUG-20260621-002 修复：创作页主输入切到 `/api/agent/loop/start`；知识库页按保守关键词规则将写作类任务分流到 Loop，普通问答继续 `/api/chat`；预览应用、回滚和废弃走 `/api/agent/loop/apply`，不再触发 session 续跑 |

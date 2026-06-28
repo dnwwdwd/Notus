@@ -1,8 +1,11 @@
 export const TOOL_DISPLAY = {
   search_knowledge: '检索知识库',
+  web_search: '联网搜索',
   read_file: '读取文件',
   create_note: '新建笔记',
   preview_patch_files: '生成修改预览',
+  preview_canvas_blocks: '生成块级预览',
+  ask_question_card: '生成提问卡片',
   analyze_folder: '分析目录',
   check_links: '检查链接',
 };
@@ -19,6 +22,7 @@ export function getAgentLoopReasonLabel(reason = '') {
     deadloop_detected: '检测到重复执行，任务已停止',
     no_progress: '连续未取得有效进展，任务已停止',
     waiting_preview_confirm: '已生成修改预览，等待确认',
+    question_card_requested: '已生成提问卡片，等待回答',
     cancelled: '任务已取消',
   };
   return map[reason] || reason || '任务已结束';
@@ -28,9 +32,14 @@ export function getAgentToolResultSummary(result = null) {
   if (!result || typeof result !== 'object') return '无结果摘要';
   if (result.error) return `${result.error}${result.message ? `：${result.message}` : ''}`;
   if (result.result_count !== undefined) return `命中 ${result.result_count} 条结果`;
+  if (result.provider && result.query) return `${result.provider}：${result.query}`;
   if (result.file_path) return `${result.file_path}${result.char_count ? `，${result.char_count} 字` : ''}`;
   if (result.path) return `${result.created ? '已创建' : '文件'}：${result.path}`;
-  if (result.operation_set_id) return `修改预览 #${result.operation_set_id}，${result.patch_count || 0} 个文件`;
+  if (result.operation_set_id) {
+    if (result.operation_count !== undefined) return `块级预览 #${result.operation_set_id}，${result.operation_count || 0} 个块`;
+    return `修改预览 #${result.operation_set_id}，${result.patch_count || 0} 个文件`;
+  }
+  if (result.interaction_id) return `提问卡片 #${result.interaction_id}，${result.question_count || 0} 个问题`;
   if (result.file_count !== undefined) return `分析 ${result.file_count} 个文件${result.truncated ? '，已截断' : ''}`;
   if (result.orphan_count !== undefined || result.broken_count !== undefined) {
     return `孤立链接 ${result.orphan_count || 0} 个，失效链接 ${result.broken_count || 0} 个`;

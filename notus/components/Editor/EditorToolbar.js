@@ -73,7 +73,20 @@ const UrlDialog = ({ title, placeholder, defaultValue = 'https://', confirmLabel
   );
 };
 
-const ImageDialog = ({ onConfirm, onClose }) => {
+async function uploadEditorImage(fileId, file) {
+  if (!fileId || !file) return null;
+  const formData = new FormData();
+  formData.append('image', file);
+  const response = await fetch(`/api/files/${encodeURIComponent(fileId)}/images`, {
+    method: 'POST',
+    body: formData,
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || '图片上传失败');
+  return payload;
+}
+
+const ImageDialog = ({ fileId, onConfirm, onClose }) => {
   const fileInputRef = useRef(null);
   const [mode, setMode] = useState('local');
   const [selectedFile, setSelectedFile] = useState(null);
@@ -87,17 +100,16 @@ const ImageDialog = ({ onConfirm, onClose }) => {
       return;
     }
 
-    if (!selectedFile) return;
+    if (!selectedFile || !fileId) return;
     setSubmitting(true);
-    const reader = new FileReader();
-    reader.onload = () => {
-      onConfirm(String(reader.result || ''));
+    try {
+      const payload = await uploadEditorImage(fileId, selectedFile);
+      onConfirm(payload.src);
+    } catch (error) {
+      console.warn('Editor image upload failed.', error);
+    } finally {
       setSubmitting(false);
-    };
-    reader.onerror = () => {
-      setSubmitting(false);
-    };
-    reader.readAsDataURL(selectedFile);
+    }
   };
 
   return (
@@ -111,7 +123,7 @@ const ImageDialog = ({ onConfirm, onClose }) => {
           <Button
             variant="primary"
             loading={submitting}
-            disabled={mode === 'local' ? !selectedFile : !url || url === 'https://'}
+            disabled={mode === 'local' ? !selectedFile || !fileId : !url || url === 'https://'}
             onClick={handleConfirm}
           >
             插入图片
@@ -162,7 +174,7 @@ const ImageDialog = ({ onConfirm, onClose }) => {
               选择本地图片
             </Button>
             <div style={{ fontSize: 'var(--text-sm)', color: selectedFile ? 'var(--text-primary)' : 'var(--text-tertiary)' }}>
-              {selectedFile ? `已选择：${selectedFile.name}` : '默认优先插入本地图片，内容会以内嵌数据的形式写入 Markdown。'}
+              {selectedFile ? `已选择：${selectedFile.name}` : '选择本地图片后会保存到资源目录，并以相对路径写入 Markdown。'}
             </div>
           </div>
         ) : (
@@ -279,7 +291,7 @@ export const EditorToolbar = ({ editor, fileId, showAICreate = true, isDirty = f
           onClose={() => setDialogMode(null)}
         />
       )}
-      {dialogMode === 'image' && <ImageDialog onConfirm={confirmImage} onClose={() => setDialogMode(null)} />}
+      {dialogMode === 'image' && <ImageDialog fileId={fileId} onConfirm={confirmImage} onClose={() => setDialogMode(null)} />}
       <div style={{
         height: 40,
         background: 'var(--bg-elevated)',

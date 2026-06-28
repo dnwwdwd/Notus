@@ -440,6 +440,7 @@ export default function FilesPage() {
             onChange={handleChange}
             onSave={handleSave}
             onEditorReady={setEditor}
+            fileId={activeFile.id}
           />
 
           {/* Save + index toast */}

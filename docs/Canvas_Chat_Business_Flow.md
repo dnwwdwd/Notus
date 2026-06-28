@@ -1,7 +1,7 @@
 # 创作页 Chat 全流程业务文档
 
-> 更新时间：2026-06-24
-> 适用范围：`/canvas` 当前真实实现的大纲生成、Agentic Loop 创作任务、风格仿写、文件级预览、自动确认、逐文件应用/回滚与废弃链路
+> 更新时间：2026-06-25
+> 适用范围：`/canvas` 当前真实实现的大纲生成、Agentic Loop 创作任务、`@b` 块级预览工具、附件/网页链接解析、风格仿写、文件级预览、自动确认、逐文件应用/回滚与废弃链路
 
 ---
 
@@ -23,6 +23,8 @@
 - 创作页仍然是“围绕当前文章做协作编辑”的工作台；右侧主输入入口默认使用 Agentic Loop 自动确认模式，发送后直接调用 `/api/agent/loop/start`，不再把创作页主输入发送到旧的 `/api/agent/run`。
 - 输入框左下角提供“自动确认 / 手动确认”选择器，仅在创作页展示，选择值持久化到浏览器本机。两种模式都不显示前置任务确认卡；差异只发生在文件级 diff 生成后的应用策略。
 - 当前文章改写、整篇生成/重写、新建笔记、文件夹分析、链接检查等任务都通过 Agentic Loop 执行；默认授权路径优先使用当前文章所在目录，检索次数使用当前前端配置。
+- 当前文章中明确带有 `@b1`、`@b2`、`@b3` 等块引用的局部修改任务优先通过 Agent Loop 的 `preview_canvas_blocks` 工具生成块级 operation set；该链路复用旧创作页块级预览和 `/api/agent/apply` 应用能力，用于减少文件级 patch 匹配和 Agent Loop 轮次。
+- 创作页输入框启用解析附件模式：支持 PDF/DOCX/MD/TXT 上传、剪贴板文件、超过 100 字符的粘贴文本转 `.txt` 附件，每条消息最多 5 个解析附件，并自动解析用户输入中的网页链接正文；知识库页不启用该模式。
 - 大纲可以先生成，但必须保存为正式文档后，才能继续稳定对话和应用 AI 改写。
 - 从文件页或知识库页携带 `?fileId=` 进入创作页时，目标文章加载完成前显示“正在打开文档…”骨架态，不再短暂显示新建创作入口。
 - 事实参考继续走后台自动补充，前台不单独展示事实来源配置。
@@ -221,17 +223,18 @@ SSE 过程会返回：
 
 创作页右侧主输入收到用户请求后，不直接进入旧块级执行器，而是先读取创作页输入框里的确认方式。
 
-- 自动确认：默认模式。前端直接启动 Agentic Loop；`preview_patch_files` 生成后由后端自动应用所有文件，完成消息底部仍显示已自动应用的 diff 卡片。
-- 手动确认：前端同样直接启动 Agentic Loop；`preview_patch_files` 生成后在对话底部显示常驻 diff 卡片，由用户逐文件应用或回滚。
+- 自动确认：默认模式。前端直接启动 Agentic Loop；`preview_patch_files` 生成后由后端自动应用所有文件，完成消息底部显示文件变更摘要卡，详情弹窗中显示已自动应用状态并保留回滚。`preview_canvas_blocks` 生成块级预览卡片，由用户在创作页确认后应用到当前画布并保存 Markdown。
+- 手动确认：前端同样直接启动 Agentic Loop；`preview_patch_files` 生成后在对话底部显示文件变更摘要卡，由用户打开详情弹窗逐文件应用或回滚，也可全部应用。
 
 启动后前端调用 `/api/agent/loop/start`，服务端会：
 
 1. 创建 `agent_sessions`，保存目标、授权路径、授权操作和检索次数上限；`create_note` 新建文件按目录粒度校验，后端兼容旧任务只授权当前 `.md` 文件时在父目录新建，但不会扩大同目录其他文件的修改权限。
-2. 在执行前写入 `agent_snapshots`。
-3. 通过 Agent Loop 多轮调用 `search_knowledge / read_file / create_note / preview_patch_files / analyze_folder / check_links`。
-4. `preview_patch_files` 生成文件级 patch，并写入 `canvas_operation_sets.pathes_json`。
-5. 自动确认模式在服务端自动调用文件级应用逻辑，patch 状态标记为 `auto_applied`；手动确认模式保持 `pending`。
-6. Loop 结束后，最终助手消息底部展示常驻 diff 卡片；应用、回滚或废弃只调用 `/api/agent/loop/apply`，不会再次请求 LLM。
+2. 解析本轮上传附件和用户文本中的网页链接；成功或部分成功的解析结果以 `system + parsed_attachment` 消息写入当前 conversation。
+3. 在执行前写入 `agent_snapshots`。
+4. 通过 Agent Loop 多轮调用 `search_knowledge / read_file / create_note / preview_patch_files / preview_canvas_blocks / ask_question_card / analyze_folder / check_links`。
+5. `preview_patch_files` 生成文件级 patch，并写入 `canvas_operation_sets.pathes_json`；`preview_canvas_blocks` 根据当前文章块快照和 `@bN` 引用生成块级 `operations_json`；`ask_question_card` 生成提问卡片并等待用户回答。
+6. 自动确认模式在服务端自动调用文件级应用逻辑，patch 状态标记为 `auto_applied`；手动确认模式保持 `pending`。
+7. Loop 结束后，最终助手消息底部展示摘要卡；应用、回滚或废弃只调用 `/api/agent/loop/apply`，不会再次请求 LLM。
 
 ---
 
@@ -283,15 +286,16 @@ SSE 过程会返回：
 
 Agentic Loop 生成文件级预览后，前端按确认方式处理：
 
-- 自动确认：后端在 Loop 完成前自动应用所有文件，前端只展示“已自动应用”状态的 diff 卡片，用户仍可逐文件回滚。
-- 手动确认：前端在对应助手消息底部保留 diff 卡片，用户逐文件点击“应用修改”或“回滚修改”，点击后立即生效，不弹二次确认。
+- 自动确认：后端在 Loop 完成前自动应用所有文件，前端展示“已自动应用”摘要卡，用户仍可在详情弹窗中逐文件回滚。
+- 手动确认：前端在对应助手消息底部保留摘要卡，用户打开详情弹窗逐文件点击“应用修改”或“回滚修改”，也可全部应用；点击后立即生效，不弹二次确认。应用/回滚只在生成该预览的当前对话内有效，新建或切换对话后旧预览只保留查看、导出和日志复盘。
 
 应用时：
 
-1. 调用 `/api/agent/loop/apply`，携带 `session_id`、`session_token`、`operation_set_id`、`patch_index` 和动作类型。
-2. 后端按当前文件中的唯一 `old/new` 文本做冲突校验，通过后写入 Markdown 文件；生成预览前，`preview_patch_files` 会先把空白差异下的唯一近似 `old` 对齐到当前文件精确片段，无法唯一匹配时才返回明确错误。
-3. 前端刷新当前文章内容和文件树状态。
-4. 成功后只更新 diff 卡片状态；不会再次调用 `/api/agent/loop/start`，也不会触发模型生成总结。
+1. 调用 `/api/agent/loop/apply`，携带 `session_id`、`session_token`、`current_conversation_id`、`operation_set_id`、`patch_index` 和动作类型。
+2. 文件级 patch 由后端按当前文件中的唯一 `old/new` 文本做冲突校验，通过后写入 Markdown 文件；生成预览前，`preview_patch_files` 会先把空白差异下的唯一近似 `old` 对齐到当前文件精确片段，无法唯一匹配时才返回明确错误。
+3. 块级 `@b` 预览由 `/api/agent/apply` 按当前画布 `article.blocks` 校验 `operation.old` 并应用，前端随后调用文章保存链路把最新块内容写回 Markdown 并触发索引。
+4. 前端按当前 `articleFileId` 刷新文章内容、清理文件内容缓存，并刷新文件树状态。
+5. 成功后只更新弹窗和摘要卡状态；不会再次调用 `/api/agent/loop/start`，也不会触发模型生成总结。
 
 ### 7.5 取消与过期
 
@@ -315,7 +319,7 @@ Agentic Loop 生成文件级预览后，前端按确认方式处理：
 
 1. 恢复消息
 2. 恢复所有未应用预览
-3. 恢复 `pending / stale / failed` 提问抽屉
+3. 恢复 `pending / stale / failed` 提问卡片
 4. 根据当前文章 hash 自动判断 operation set 或 interaction 是否需要转为 `stale`
 
 ### 8.1 删除历史会话
@@ -324,7 +328,7 @@ Agentic Loop 生成文件级预览后，前端按确认方式处理：
 
 1. 点击删除图标只打开二次确认，不会切换到该会话。
 2. 确认后调用 `DELETE /api/conversations/:id`。
-3. 服务端确认会话存在后删除；消息、批量预览和提问抽屉记录由外键级联清理。
+3. 服务端确认会话存在后删除；消息、批量预览和提问卡片记录由外键级联清理。
 4. 如果删除的是当前会话，创作页清空右侧消息、待应用预览和待回答抽屉，回到当前文章的新对话空态。
 5. 删除当前会话不会清空左侧文章块，也不会改变当前未保存状态。
 
@@ -345,11 +349,11 @@ Agentic Loop 生成文件级预览后，前端按确认方式处理：
 
 ---
 
-## 9. 主动提问抽屉
+## 9. 提问卡片
 
 ### 9.1 什么时候会出现
 
-当前创作页不会把提问抽屉当作默认兜底。只有在以下场景之一出现时，才会走结构化抽屉：
+当前创作页不会把提问卡片当作默认兜底。只有在以下场景之一出现时，才会生成结构化提问卡片：
 
 - 主意图不稳，例如系统无法稳定判断这轮是继续讨论、文章分析，还是直接改文档
 - 缺少写入位置，例如“把上面的内容写到文档中”
@@ -359,10 +363,12 @@ Agentic Loop 生成文件级预览后，前端按确认方式处理：
 - 缺少写入方式，例如已知道来源和位置，但还不知道是“追加”还是“替换”
 - 高风险修改在预算不足、helper 超时或候选证据不一致时，需要先保守确认
 - 续跑前发现原目标块已经失效，需要重新确认写入位置
+- Agent Loop 自己判断当前任务还缺少关键信息
+- 用户通过 prompt 明确要求 Agent 生成提问卡片或先问几个问题
 
-### 9.2 抽屉里保存什么
+### 9.2 提问卡片里保存什么
 
-后端会把抽屉对应的 interaction 持久化到 `conversation_interactions`，并冻结：
+后端会把提问卡片对应的 interaction 持久化到 `conversation_interactions`，并冻结：
 
 - `primary_intent`
 - `source_message_id`
@@ -390,15 +396,16 @@ Agentic Loop 生成文件级预览后，前端按确认方式处理：
 4. 后端把结构化答案写入 `response_json`，并追加一条 `user` 摘要消息；摘要消息的 `meta` 同时会写入当前文章范围内的短时纠错状态
 5. 如果答案已经足够，前端按当前创作页确认方式继续：自动确认和手动确认都直接调用 `/api/agent/loop/start`
 6. 自动确认模式会在预览生成后自动写入；手动确认模式继续只生成预览，等待用户逐文件确认
+7. 如果提问卡片来自 Agent Loop 的 `ask_question_card` 工具，前端会恢复同一个 Agent session，把答案作为 tool result 送回模型，不会绕回旧块级 Agent 链路
 
 ### 9.4 回答失败或文章变化
 
-- 如果文章 hash 已变化，抽屉会转为 `stale`，不能直接继续执行
-- 如果回答已经记录，但自动续跑失败，抽屉只保留“重试生成预览”入口；点击重试后前端会再次发起续跑。若续跑时发现原目标块失效，则会把同一张抽屉重置为 `pending`，并只要求重新确认位置
-- 结构化澄清始终保持提问抽屉形态，不能降级为没有按钮和输入框的纯文本追问。
+- 如果文章 hash 已变化，提问卡片会转为 `stale`，不能直接继续执行
+- 如果回答已经记录，但自动续跑失败，提问卡片只保留“重试生成预览”入口；点击重试后前端会再次发起续跑。若续跑时发现原目标块失效，则会把同一张卡片重置为 `pending`，并只要求重新确认位置
+- 结构化提问始终保持提问卡片形态，不能降级为没有按钮和输入框的纯文本追问。
 - 澄清后续跑生成预览时，即使同一条消息同时带有“当前理解”摘要，也必须展示批量预览和应用按钮。
 - `pending / stale / failed` 三种状态都会在刷新后恢复显示；`answered / cancelled` 不再显示为可操作态
-- 抽屉收起后，输入栏恢复普通提问；如果用户此时直接发送新请求，旧 interaction 会先标记为 `cancelled`
+- 提问卡片收起后，输入栏恢复普通提问；如果用户此时直接发送新请求，旧 interaction 会先标记为 `cancelled`
 
 ---
 
@@ -416,7 +423,7 @@ Agentic Loop 生成文件级预览后，前端按确认方式处理：
 - `loop_done`
 - `cancelled` / `error`
 
-这些事件会映射到 AgentWorkspace 的工具过程、流式思考文本和文件级 diff 卡；旧 `waiting_preview_confirm` 仅作为历史兼容事件处理，不再是新预览流程的暂停点。
+这些事件会映射到 AgentWorkspace 的工具过程、流式思考文本、附件/网页解析步骤和文件变更摘要卡；旧 `waiting_preview_confirm` 仅作为历史兼容事件处理，不再是新预览流程的暂停点。
 
 ### `/api/agent/loop/apply`
 
@@ -434,7 +441,7 @@ Agentic Loop 生成文件级预览后，前端按确认方式处理：
 1. 旧的 `/api/agent/run` 与 `/api/agent/apply` 文件仍保留用于历史兼容；创作页主输入不再调用它们。
 2. 首版不做风格别名表、术语映射和自动学习同义词。
 3. 全文改写不会自动无限放宽范围，超过硬上限时必须要求用户缩小范围。
-4. 主动提问抽屉现在同时存在于创作页和知识库页，但知识库页只收集检索必要信息，不接入创作规划器的主意图与写入槽位。
+4. 提问卡片现在同时存在于创作页、知识库页和 Agent Loop 工具链；知识库页只收集检索必要信息，不接入创作规划器的主意图与写入槽位。
 5. 回答卡片后仍只生成预览，不会自动把内容直接写回文档。
 6. 轻量纠偏入口只在系统已经形成较明确判断时出现，不是常驻模式切换器，也不替代正常意图识别。
 
@@ -444,5 +451,5 @@ Agentic Loop 生成文件级预览后，前端按确认方式处理：
 - 右侧聊天消息区、工具链和底部输入框按 Notus-design-draft/notus-agent.html 还原；聊天顶部不显示 Agent Workspace 标题，也不显示模型配置和搜索配置按钮。
 - 当前文档所在目录会作为 Agentic Loop 默认授权路径；自动确认和手动确认都直接使用该授权范围启动。无当前文档时仍先创建一篇 AI 创作草稿。
 - session_created / snapshot_done / loop_start / thinking / tool_start / tool_done / loop_done 会累计为设计稿工具过程和文件变更卡片；最终 assistant 消息保留完整工具步骤，历史会话中仍可展开查看每一步的说明、工具输入和结果。
-- 批量修改预览、应用和取消能力继续保留；文件级 patch 的 old/new 内容直接在对话底部 diff 卡片中展示，应用或回滚通过 `/api/agent/loop/apply` 写回 Markdown 并更新 patch 状态，不再携带 session_id 续跑。
-- 输入框会随请求携带当前模型、联网搜索状态、单选搜索服务商和附件元数据；联网搜索当前只记录配置状态，不参与真实外部搜索；输入框上方不展示预制问题列表。设置页联网搜索总开关实时保存，其他搜索配置仍手动保存。
+- 批量修改预览、应用和取消能力继续保留；文件级 patch 的 old/new 内容在 DiffDialog 中展示，应用或回滚通过 `/api/agent/loop/apply` 写回 Markdown 并更新 patch 状态，不再携带 session_id 续跑。
+- 输入框会随请求携带当前模型、解析附件元数据、联网搜索状态和单选搜索服务商；上传附件与网页链接解析会进入 Agent Loop 上下文。联网搜索打开时，创作页 Agent Loop 会注入 `web_search` 工具，搜索结果以同会话 `web_search_context` 持久化并在后续联网任务中复用；输入框上方不展示预制问题列表。

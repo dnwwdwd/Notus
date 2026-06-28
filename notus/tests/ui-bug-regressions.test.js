@@ -37,6 +37,22 @@ function runTests() {
   assert.ok(conversationDrawer.includes('Icons.trash'));
   assert.ok(conversationDrawer.includes('onDelete?.(pendingDelete.id, pendingDelete)'));
 
+  const agentWorkspace = read('components/AgentWorkspace/AgentWorkspace.js');
+  assert.ok(agentWorkspace.includes('function OperationSetCard'));
+  assert.ok(agentWorkspace.includes('function DiffDialog'));
+  assert.ok(agentWorkspace.includes("attachmentMode === 'parsed'"));
+  assert.ok(agentWorkspace.includes('pasted-text-'));
+  assert.ok(agentWorkspace.includes('const LONG_PASTE_ATTACHMENT_THRESHOLD = 100;'));
+  assert.ok(agentWorkspace.includes('const MAX_PARSED_ATTACHMENTS = 5;'));
+  assert.ok(!agentWorkspace.includes('function AgentDiffCard'));
+
+  const canvasPage = read('pages/canvas.js');
+  assert.ok(canvasPage.includes('attachmentMode="parsed"'));
+  assert.ok(canvasPage.includes('clearCachedContent'));
+
+  const knowledgePage = read('pages/knowledge.js');
+  assert.ok(!knowledgePage.includes('attachmentMode="parsed"'));
+
   console.log('ui bug regressions tests passed');
 }
 

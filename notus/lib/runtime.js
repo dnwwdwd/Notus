@@ -14,6 +14,7 @@ function ensureDirs(config) {
   fs.mkdirSync(config.assetsDir, { recursive: true });
   fs.mkdirSync(require('path').dirname(config.dbPath), { recursive: true });
   fs.mkdirSync(config.logDir, { recursive: true });
+  fs.mkdirSync(config.sessionDir, { recursive: true });
 }
 
 function scheduleRetries() {

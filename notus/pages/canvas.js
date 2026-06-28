@@ -150,6 +150,19 @@ function summarizeBlockPreview(content = '') {
   return String(content || '').replace(/\s+/g, ' ').trim().slice(0, 48) || '空白块';
 }
 
+function formatCanvasBlocksForAgent(blocks = []) {
+  const list = Array.isArray(blocks) ? blocks : [];
+  if (list.length === 0) return '';
+  return [
+    '当前创作页文本块快照（用户可用 @b1、@b2 指定块；如需按块改写，优先调用 preview_canvas_blocks）：',
+    ...list.map((block, index) => {
+      const content = String(block?.content || '').replace(/\r\n/g, '\n');
+      const clipped = content.length > 1800 ? `${content.slice(0, 1800)}\n...[已截断]` : content;
+      return `@b${index + 1} (${block?.type || 'paragraph'}, block_id=${block?.id || ''})\n${clipped}`;
+    }),
+  ].join('\n\n');
+}
+
 function buildCanvasConversationListUrl(fileId, draftKey) {
   const params = new URLSearchParams({ kind: 'canvas', limit: '20' });
   const normalizedFileId = Number(fileId);
@@ -548,7 +561,7 @@ export default function CanvasPage() {
   const router = useRouter();
   const toast = useToast();
   const { status: appStatus, loading: appStatusLoading } = useAppStatus();
-  const { allFiles, activeFile, refreshFiles, selectFile, getCachedContent, setCachedContent, loadingFiles } = useApp();
+  const { allFiles, activeFile, refreshFiles, selectFile, getCachedContent, setCachedContent, clearCachedContent, loadingFiles } = useApp();
   const { configs: llmConfigs, activeConfigId, loading: llmConfigsLoading } = useLlmConfigs();
   const chatEndRef = useRef(null);
   const requestControllerRef = useRef(null);
@@ -732,8 +745,9 @@ export default function CanvasPage() {
     requestControllerRef.current?.abort();
   }, []);
 
-  const handleSaveArticle = useCallback(async () => {
+  const handleSaveArticle = useCallback(async (overrideBlocks = null) => {
     if (!article) return false;
+    const effectiveBlocks = Array.isArray(overrideBlocks) ? overrideBlocks : blocks;
     setSavingArticle(true);
     setSaveState('saving');
 
@@ -747,7 +761,7 @@ export default function CanvasPage() {
             draft_key: article.draft_key || article.draftKey || null,
             file_id: article.file_id || article.fileId,
             hidden_frontmatter: hiddenArticleFrontmatterRef.current,
-            blocks,
+            blocks: effectiveBlocks,
           },
         }),
       });
@@ -766,7 +780,7 @@ export default function CanvasPage() {
         sourcePath: payload.path,
       });
       hiddenArticleFrontmatterRef.current = payload.article?.hidden_frontmatter || hiddenArticleFrontmatterRef.current || '';
-      setBlocks(payload.article?.blocks || blocks);
+      setBlocks(payload.article?.blocks || effectiveBlocks);
       await refreshFiles();
       const nextFile = allFiles.find((file) => file.id === payload.file_id) || { id: payload.file_id, path: payload.path, name: payload.title };
       if (nextFile?.id) selectFile(nextFile);
@@ -1071,19 +1085,22 @@ export default function CanvasPage() {
   }, [fetchConversationList]);
 
   const refreshCurrentArticleAfterAgentWrite = useCallback(async () => {
-    if (!activeFile?.id) return;
+    const targetFileId = Number(articleFileId || activeFile?.id || 0);
+    if (!targetFileId) return;
     try {
-      const response = await fetch(`/api/articles/${activeFile.id}`, { cache: 'no-store' });
+      clearCachedContent?.(targetFileId);
+      const response = await fetch(`/api/articles/${targetFileId}`, { cache: 'no-store' });
       const payload = await readApiResponse(response, '刷新文章内容失败');
+      const targetFile = allFiles.find((file) => Number(file.id) === targetFileId) || activeFile || {};
       setArticle((prev) => ({
         ...(prev || {}),
         ...(payload || {}),
-        title: getVisibleDocumentLabel(payload || activeFile, '未命名创作'),
-        file_id: payload?.file_id || activeFile.id,
-        fileId: payload?.file_id || activeFile.id,
+        title: getVisibleDocumentLabel(payload || targetFile, '未命名创作'),
+        file_id: payload?.file_id || targetFileId,
+        fileId: payload?.file_id || targetFileId,
         draft_key: null,
         draftKey: null,
-        sourcePath: activeFile.path,
+        sourcePath: targetFile.path || prev?.sourcePath || '',
       }));
       hiddenArticleFrontmatterRef.current = payload?.hidden_frontmatter || payload?.hiddenFrontmatter || hiddenArticleFrontmatterRef.current || '';
       if (Array.isArray(payload?.blocks)) setBlocks(payload.blocks);
@@ -1092,7 +1109,7 @@ export default function CanvasPage() {
     } catch (error) {
       toast(error.message || '刷新文章内容失败', 'error');
     }
-  }, [activeFile, refreshFiles, toast]);
+  }, [activeFile, allFiles, articleFileId, clearCachedContent, refreshFiles, toast]);
 
   const handleAgentLoopOperationSets = useCallback((operationSets = []) => {
     setPendingOperationSets((prev) => (
@@ -1121,6 +1138,9 @@ export default function CanvasPage() {
   const agentLoop = useAgentLoopController({
     onAppendUserMessage: (message) => setMessages((prev) => [...prev, message]),
     onAppendAssistantMessage: (message) => setMessages((prev) => upsertMessage(prev, message)),
+    onInteractionRequest: (interaction) => {
+      setPendingInteractions((prev) => upsertInteraction(prev, interaction));
+    },
     onConversationId: (conversationId) => {
       if (!conversationId) return;
       setActiveConversationId(Number(conversationId));
@@ -1135,6 +1155,7 @@ export default function CanvasPage() {
     onRollbackSuccess: refreshCurrentArticleAfterAgentWrite,
     onError: (error) => toast(error.message || 'Agent Loop 请求失败', 'error'),
   });
+  const clearAgentLoopSession = agentLoop.clearActiveAgentSession;
 
   useEffect(() => {
     agentLoopControlRef.current = {
@@ -1172,10 +1193,20 @@ export default function CanvasPage() {
   const agentLoopInteractionLocked = ['running', 'waiting_confirm'].includes(agentLoop.activeAgentSession?.status);
   const effectiveCanvasInputDisabled = canvasInputDisabled || aiRequestLoading || agentLoopInteractionLocked;
 
+  const assertCurrentOperationSet = useCallback((operationSet) => {
+    const currentConversationId = Number(activeConversationId || 0);
+    const operationConversationId = Number(operationSet?.conversation_id || 0);
+    if (!currentConversationId || !operationConversationId || currentConversationId !== operationConversationId) {
+      throw new Error('这组修改不属于当前对话，已不能继续应用或回滚。');
+    }
+    return currentConversationId;
+  }, [activeConversationId]);
+
   const handleConversationSelect = useCallback(async (conversationId) => {
     if (!conversationId || aiRequestLoading || agentLoopInteractionLocked) return;
     setConversationListLoading(true);
     requestControllerRef.current?.abort();
+    clearAgentLoopSession();
     try {
       const payload = await fetchConversationDetail(conversationId, { ...article, blocks });
       setMessages(mapConversationMessages(payload.messages, 'canvas'));
@@ -1191,7 +1222,7 @@ export default function CanvasPage() {
     } finally {
       setConversationListLoading(false);
     }
-  }, [agentLoopInteractionLocked, aiRequestLoading, article, blocks, fetchConversationDetail, toast]);
+  }, [agentLoopInteractionLocked, aiRequestLoading, article, blocks, clearAgentLoopSession, fetchConversationDetail, toast]);
 
   const handleNewConversation = useCallback(() => {
     if (!articleFileId) return;
@@ -1206,11 +1237,11 @@ export default function CanvasPage() {
     setPendingOperationSets([]);
     setPendingInteractions([]);
     setAiInjected('');
-    agentLoop.cancelAgentTask();
+    clearAgentLoopSession();
     setStreamText('');
     setLoading(false);
     setHistoryDrawerOpen(false);
-  }, [agentLoop, agentLoopInteractionLocked, aiRequestLoading, articleFileId, toast]);
+  }, [agentLoopInteractionLocked, aiRequestLoading, articleFileId, clearAgentLoopSession, toast]);
 
   const handleConversationDelete = useCallback(async (conversationId) => {
     const normalizedConversationId = Number(conversationId);
@@ -1230,6 +1261,7 @@ export default function CanvasPage() {
         setPendingOperationSets([]);
         setPendingInteractions([]);
         setAiInjected('');
+        clearAgentLoopSession();
         setStreamText('');
         setLoading(false);
         setHistoryDrawerOpen(false);
@@ -1242,7 +1274,7 @@ export default function CanvasPage() {
     } finally {
       setDeletingConversationId(null);
     }
-  }, [activeConversationId, deletingConversationId, fetchConversationList, toast]);
+  }, [activeConversationId, clearAgentLoopSession, deletingConversationId, fetchConversationList, toast]);
 
   const handleConversationExport = useCallback(async (conversationId, conversation = null) => {
     const normalizedConversationId = Number(conversationId);
@@ -1295,6 +1327,7 @@ export default function CanvasPage() {
       setMessages([]);
       setPendingOperationSets([]);
       setPendingInteractions([]);
+      clearAgentLoopSession();
       setStreamText('');
       setLoading(false);
       setConversationListLoading(false);
@@ -1316,6 +1349,7 @@ export default function CanvasPage() {
           setMessages([]);
           setPendingOperationSets([]);
           setPendingInteractions([]);
+          clearAgentLoopSession();
           return;
         }
 
@@ -1337,6 +1371,7 @@ export default function CanvasPage() {
         setMessages([]);
         setPendingOperationSets([]);
         setPendingInteractions([]);
+        clearAgentLoopSession();
         toast(loadError.message || '读取对话历史失败', 'error');
       } finally {
         if (!cancelled) {
@@ -1384,9 +1419,10 @@ export default function CanvasPage() {
 
   const buildCanvasAgentTask = useCallback((query, options = {}) => {
     const filePath = article?.sourcePath || activeFile?.path || '';
+    const blockContext = formatCanvasBlocksForAgent(blocks);
     const goal = filePath
-      ? `用户任务：${query}\n\n当前文章路径：${filePath}`
-      : query;
+      ? `用户任务：${query}\n\n当前文章路径：${filePath}${blockContext ? `\n\n${blockContext}` : ''}`
+      : `${query}${blockContext ? `\n\n${blockContext}` : ''}`;
     return {
       goal,
       display_query: query,
@@ -1398,6 +1434,8 @@ export default function CanvasPage() {
       authorized_ops: ['modify', 'create'],
       search_knowledge_limit: 5,
       attachments: options.attachments || [],
+      web_search_enabled: Boolean(options.webSearchEnabled),
+      search_provider: options.searchProvider || null,
       route_reason: options.routeReason || 'canvas_main_input',
     };
   }, [
@@ -1406,6 +1444,7 @@ export default function CanvasPage() {
     activeFile?.path,
     article?.sourcePath,
     articleFileId,
+    blocks,
     selectedLlmConfigId,
   ]);
 
@@ -1461,7 +1500,7 @@ export default function CanvasPage() {
         if (payload.interaction) {
           setPendingInteractions((prev) => upsertInteraction(prev, payload.interaction));
         }
-        throw new Error(payload.error || '回答提问抽屉失败');
+        throw new Error(payload.error || '回答提问卡片失败');
       }
 
       if (payload.interaction) {
@@ -1490,7 +1529,7 @@ export default function CanvasPage() {
       return await respondToInteraction(interaction, { action: 'cancel' }, { setSubmitting: false });
     } catch (error) {
       if (!options.silent) {
-        toast(error.message || '关闭提问抽屉失败', 'error');
+        toast(error.message || '关闭提问卡片失败', 'error');
       }
       throw error;
     }
@@ -1502,12 +1541,28 @@ export default function CanvasPage() {
       toast('请先在模型配置中新增至少一个 LLM 配置', 'warning');
       return;
     }
+    if (interaction.source === 'agent_loop') {
+      const session = agentLoop.activeAgentSession || {};
+      const sessionId = Number(interaction?.payload?.agent_session_id || session.id || 0) || null;
+      const token = session.token || '';
+      if (!sessionId || !token) {
+        toast('当前 Agent 任务状态已失效，请重新发起任务', 'warning');
+        return;
+      }
+      await agentLoop.startAgentLoop({
+        session_id: sessionId,
+        session_token: token,
+        interaction_id: interaction.id,
+        llm_config_id: llmConfigId,
+      }, { resume: true });
+      return;
+    }
     const originalInput = interaction?.payload?.original_user_input || '继续完成刚才的创作任务';
     await prepareCanvasAgentTask(originalInput, {
       llmConfigId,
       routeReason: 'legacy_interaction_resume',
     });
-  }, [prepareCanvasAgentTask, selectedLlmConfigId, toast]);
+  }, [agentLoop, prepareCanvasAgentTask, selectedLlmConfigId, toast]);
 
   const handleInteractionCardSubmit = useCallback(async (interaction, answers) => {
     try {
@@ -1517,7 +1572,7 @@ export default function CanvasPage() {
         await runInteractionResume(payload.interaction || interaction, selectedLlmConfigId);
       }
     } catch (error) {
-      toast(error.message || '回答提问抽屉失败', 'error');
+      toast(error.message || '回答提问卡片失败', 'error');
     }
   }, [respondToInteraction, runInteractionResume, selectedLlmConfigId, toast]);
 
@@ -1562,6 +1617,11 @@ export default function CanvasPage() {
       return;
     }
 
+    if (saveState === 'dirty') {
+      const saved = await handleSaveArticle();
+      if (!saved) return;
+    }
+
     if (activeClarifyInteraction && clarifyDrawerPhase === 'collapsed') {
       try {
         await cancelInteraction(activeClarifyInteraction, { silent: true });
@@ -1572,6 +1632,8 @@ export default function CanvasPage() {
       await prepareCanvasAgentTask(query, {
         llmConfigId,
         attachments: sendOptions.attachments || [],
+        webSearchEnabled: Boolean(sendOptions.webSearchEnabled),
+        searchProvider: sendOptions.searchProvider || null,
         routeReason: 'canvas_main_input',
       });
     } catch {}
@@ -1580,7 +1642,9 @@ export default function CanvasPage() {
     activeClarifyInteraction,
     cancelInteraction,
     clarifyDrawerPhase,
+    handleSaveArticle,
     prepareCanvasAgentTask,
+    saveState,
     selectedLlmConfigId,
     toast,
   ]);
@@ -1681,32 +1745,64 @@ export default function CanvasPage() {
 
   const handleApplyOperationSet = useCallback(async (operationSet) => {
     try {
-      await agentLoop.applyOperationSet(operationSet, { approvalMode: CANVAS_AGENT_CONFIRM_MANUAL_CONFIRM });
+      const currentConversationId = assertCurrentOperationSet(operationSet);
+      if (Array.isArray(operationSet?.operations) && operationSet.operations.length > 0) {
+        const response = await fetch('/api/agent/apply', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            article: { ...article, blocks },
+            operations: operationSet.operations,
+            operation_set_id: operationSet.id,
+            current_conversation_id: currentConversationId,
+          }),
+        });
+        const payload = await readApiResponse(response, '应用块级修改失败');
+        const nextBlocks = Array.isArray(payload?.article?.blocks) ? payload.article.blocks : blocks;
+        setPendingOperationSets((prev) => upsertOperationSet(prev, {
+          ...operationSet,
+          status: payload.operation_set_status || 'applied',
+        }));
+        setBlocks(nextBlocks);
+        const saved = await handleSaveArticle(nextBlocks);
+        if (!saved) return;
+        toast('块级修改已应用', 'success');
+        return;
+      }
+      await agentLoop.applyOperationSet(operationSet, {
+        approvalMode: CANVAS_AGENT_CONFIRM_MANUAL_CONFIRM,
+        currentConversationId,
+      });
       toast('修改已应用', 'success');
     } catch (error) {
       toast(error.message || '应用修改失败', 'error');
     }
-  }, [agentLoop, toast]);
+  }, [agentLoop, article, assertCurrentOperationSet, blocks, handleSaveArticle, toast]);
 
   const handleApplyOperationFile = useCallback(async (operationSet, patchIndex) => {
     try {
-      await agentLoop.applyOperationFile(operationSet, patchIndex, { approvalMode: CANVAS_AGENT_CONFIRM_MANUAL_CONFIRM });
+      const currentConversationId = assertCurrentOperationSet(operationSet);
+      await agentLoop.applyOperationFile(operationSet, patchIndex, {
+        approvalMode: CANVAS_AGENT_CONFIRM_MANUAL_CONFIRM,
+        currentConversationId,
+      });
       toast('文件修改已应用', 'success');
     } catch (error) {
       toast(error.message || '应用文件修改失败', 'error');
       throw error;
     }
-  }, [agentLoop, toast]);
+  }, [agentLoop, assertCurrentOperationSet, toast]);
 
   const handleRollbackOperationFile = useCallback(async (operationSet, patchIndex) => {
     try {
-      await agentLoop.rollbackOperationFile(operationSet, patchIndex);
+      const currentConversationId = assertCurrentOperationSet(operationSet);
+      await agentLoop.rollbackOperationFile(operationSet, patchIndex, { currentConversationId });
       toast('文件修改已回滚', 'success');
     } catch (error) {
       toast(error.message || '回滚文件修改失败', 'error');
       throw error;
     }
-  }, [agentLoop, toast]);
+  }, [agentLoop, assertCurrentOperationSet, toast]);
 
   const handleCancelOperationSet = useCallback(async (operationSet) => {
     try {
@@ -1965,12 +2061,14 @@ export default function CanvasPage() {
             if (agentLoop.loading) agentLoop.stopAgentLoop();
             else requestControllerRef.current?.abort();
           }}
+          onApplyOperationSet={handleApplyOperationSet}
           onApplyOperationFile={handleApplyOperationFile}
           onRollbackOperationFile={handleRollbackOperationFile}
           activeAgentSession={agentLoop.activeAgentSession}
           agentConfirmMode={agentConfirmMode}
           onAgentConfirmModeChange={setAgentConfirmMode}
           disabled={effectiveCanvasInputDisabled}
+          attachmentMode="parsed"
           placeholder={canvasConversationEnabled ? '例如：让 @b2 更简洁，或为第 3 段加一个例子…' : '先保存当前大纲为文档，再继续 AI 改写…'}
         />
       </div>

@@ -41,6 +41,10 @@ function normalizeOps(ops = []) {
   return [...set];
 }
 
+function normalizeToolProfile(value) {
+  return String(value || '').trim() === 'read_only' ? 'read_only' : 'default';
+}
+
 function normalizeCreatedFiles(value) {
   const parsed = Array.isArray(value) ? value : safeJsonParse(value, []);
   return (Array.isArray(parsed) ? parsed : []).map((item) => {
@@ -64,6 +68,11 @@ function createSession({
   softLimit = 15,
   hardLimit = 30,
   searchKnowledgeLimit = 5,
+  webSearchEnabled = false,
+  webSearchProvider = '',
+  webSearchMode = '',
+  webSearchCount = null,
+  toolProfile = 'default',
 } = {}) {
   const normalizedGoal = String(goal || '').trim();
   if (!normalizedGoal) throw new Error('goal is required');
@@ -73,8 +82,9 @@ function createSession({
   const result = db.prepare(`
     INSERT INTO agent_sessions (
       goal, authorized_paths, authorized_ops, session_token, expires_at,
-      soft_limit, hard_limit, search_knowledge_limit, conversation_id, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      soft_limit, hard_limit, search_knowledge_limit, conversation_id,
+      web_search_enabled, web_search_provider, web_search_mode, web_search_count, tool_profile, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
   `).run(
     normalizedGoal,
     JSON.stringify(normalizeAuthorizedPaths(authorizedPaths)),
@@ -84,7 +94,12 @@ function createSession({
     Math.max(1, Number(softLimit) || 15),
     Math.max(1, Number(hardLimit) || 30),
     searchKnowledgeLimit === null ? null : Math.max(0, Number(searchKnowledgeLimit) || 5),
-    normalizePositiveInt(conversationId)
+    normalizePositiveInt(conversationId),
+    webSearchEnabled ? 1 : 0,
+    String(webSearchProvider || '').trim(),
+    String(webSearchMode || '').trim(),
+    webSearchCount === null || webSearchCount === undefined ? null : Math.max(1, Number(webSearchCount) || 5),
+    normalizeToolProfile(toolProfile)
   );
   return { sessionId: Number(result.lastInsertRowid), token };
 }
@@ -104,6 +119,13 @@ function formatSession(row) {
     search_knowledge_limit: row.search_knowledge_limit === null || row.search_knowledge_limit === undefined
       ? null
       : Number(row.search_knowledge_limit),
+    web_search_enabled: Boolean(row.web_search_enabled),
+    web_search_provider: String(row.web_search_provider || ''),
+    web_search_mode: String(row.web_search_mode || ''),
+    web_search_count: row.web_search_count === null || row.web_search_count === undefined
+      ? null
+      : Number(row.web_search_count),
+    tool_profile: normalizeToolProfile(row.tool_profile),
     tool_call_counts: safeJsonParse(row.tool_call_counts, {}),
     consecutive_fails: safeJsonParse(row.consecutive_fails, {}),
     last_tool_results: safeJsonParse(row.last_tool_results, {}),
@@ -390,9 +412,17 @@ function summarizeToolResult(toolName, result) {
   if (result?.error) return { error: result.error, message: result.message || result.reason || '' };
   switch (toolName) {
     case 'search_knowledge': return { result_count: result?.results?.length || 0, remaining_calls: result?.remaining_calls };
+    case 'web_search': return {
+      query: result?.query || '',
+      provider: result?.provider || '',
+      result_count: result?.results?.length || 0,
+      context_message_id: result?.context_message_id || null,
+    };
     case 'read_file': return { file_path: result?.file_path, char_count: String(result?.content || '').length };
     case 'create_note': return { path: result?.path, created: Boolean(result?.created) };
     case 'preview_patch_files': return { operation_set_id: result?.operation_set_id, patch_count: result?.patch_count || 0 };
+    case 'preview_canvas_blocks': return { operation_set_id: result?.operation_set_id, operation_count: result?.operation_count || 0 };
+    case 'ask_question_card': return { interaction_id: result?.interaction_id, question_count: result?.question_count || 0 };
     case 'analyze_folder': return { file_count: result?.file_count || 0, total_count: result?.total_count || 0, truncated: Boolean(result?.truncated) };
     case 'check_links': return { orphan_count: result?.orphan_count || 0, broken_count: result?.broken_count || 0 };
     default: return { ok: true };

@@ -301,7 +301,7 @@ EmptyState：icon 📁, "还没有笔记", "导入 Markdown 文件开始使用",
 - 代码块：bg:--bg-secondary, radius:--radius-md, padding:--space-4, font:--font-mono --text-sm
 - 引用块：左边框 3px --accent, pl:--space-4, color:--text-secondary
 - 表格：外框 1px --border-primary, radius:--radius-md, th/td 单元格边框 1px --border-primary, th bg:--bg-secondary, padding:9px 12px, 选中单元格使用 accent 低透明度高亮
-- 图片：max-width:100%, radius:--radius-md, shadow:--shadow-sm
+- 图片：max-width:100%, radius:--radius-md, shadow:--shadow-sm；本地图片以相对路径写入 Markdown，编辑器只在渲染层转为本地预览 API 地址
 - 来源高亮：URL hash `#L24-L28` → 目标行 bg:--bg-diff-modified, 3s fadeOut
 
 ### 5.4 分栏预览模式
@@ -370,7 +370,7 @@ Sticky 底部，bg:--bg-elevated, padding:--space-3 --space-4, border-top:1px --
 | 输入框 | TextArea, flex:1 |
 | 发送 | 40x40, bg:--accent, color:--text-on-accent, radius:--radius-full, disabled opacity:0.4 |
 
-生成中输入栏只保留停止按钮，不再额外显示 loading 点阵。`v1` 不展示 `+` 附件入口；文件、图片、网络搜索等扩展能力统一延期到 `docs/Notus_2.0_Implementation.md`。
+生成中输入栏只保留停止按钮，不再额外显示 loading 点阵。知识库页不启用解析附件模式；创作页附件入口用于解析 PDF/DOCX/MD/TXT、剪贴板文件和超过 100 字符的粘贴文本附件，每条消息最多 5 个解析附件。
 
 ### 6.4 页面状态
 
@@ -381,7 +381,7 @@ Sticky 底部，bg:--bg-elevated, padding:--space-3 --space-4, border-top:1px --
 | 索引未完成 | EmptyState：⏳, "知识库正在建立索引", ProgressBar |
 | 模型未就绪 | AI 区整块锁定：半透明遮罩 + 居中卡片，提示先完成 LLM 与 Embedding 配置，并提供 [前往设置] |
 | AI 回复中 | 固定 AI 气泡占位 + 柔和三点等待态；首 token 到来后切换为 StreamingText；输入栏仅保留"停止生成" ghost 按钮 |
-| 结构化澄清 | 底部 `ClarifyDrawer` 覆盖输入栏，支持 `expanded-question / expanded-review / collapsed / stale / failed` 五种状态；答完后先回顾，再点“开始检索” |
+| 提问卡片 | 底部 `ClarifyDrawer` 覆盖输入栏，支持 `expanded-question / expanded-review / collapsed / stale / failed` 五种状态；答完后先回顾，再点“开始检索”或恢复 Agent Loop |
 | 检索无结果 | AI 文字提示换个问法或检查文章导入 |
 | API 错误 | InlineError 组件：错误信息 + [重试] |
 
@@ -416,9 +416,9 @@ Sticky 底部，bg:--bg-elevated, padding:--space-3 --space-4, border-top:1px --
 
 **分栏宽度：** 画布区与右侧 AI 面板之间支持拖拽调宽，并记住上次宽度。左侧创作块区与文件页、知识库页共享同一文档的最近阅读位置，返回时优先按 block id 或正文锚点恢复。
 
-**输入栏：** 同知识库 InputBar，支持 `@b2` 引用块号（`@` 触发当前文档块 autocomplete popup，并插入块引用）；候选列表支持 `ArrowUp / ArrowDown / Enter / Esc`，中文输入法组合态不抢键；创作页额外在左下角展示“自动 / 手动”分段确认控件，只显示两个短标签；自动项使用闪电图标，手动项使用手型图标，说明文案进入 tooltip，不使用下拉框、齿轮、滑块、wand 或 eye。模型选择器固定在右下角发送/停止按钮左侧，trigger 单行省略，菜单项展示完整模型名；生成中输入栏只保留停止按钮。`v1` 不展示 `+` 附件入口。系统后台只把相关块包、少量最近历史和请求内摘要送入模型；若当前只是未保存的大纲草稿，则输入栏整体禁用，并显示“先保存当前大纲为文档”的引导文案。
+**输入栏：** 同知识库 InputBar，支持 `@b2` 引用块号（`@` 触发当前文档块 autocomplete popup，并插入块引用）；候选列表支持 `ArrowUp / ArrowDown / Enter / Esc`，中文输入法组合态不抢键；创作页额外在左下角展示“自动 / 手动”分段确认控件，只显示两个短标签；自动项使用闪电图标，手动项使用手型图标，说明文案进入 tooltip，不使用下拉框、齿轮、滑块、wand 或 eye。模型选择器固定在右下角发送/停止按钮左侧，trigger 单行省略，菜单项展示完整模型名；生成中输入栏只保留停止按钮。创作页 `+` 附件入口启用解析模式，只接受 PDF/DOCX/MD/TXT；支持粘贴剪贴板文件，超过 100 字符的纯文本粘贴自动生成 TXT 附件 chip，并与上传文件共用每条消息最多 5 个附件的限制。系统后台只把相关块包、少量最近历史、请求内摘要和已解析输入源送入模型；若当前只是未保存的大纲草稿，则输入栏整体禁用，并显示“先保存当前大纲为文档”的引导文案。
 
-**提问抽屉：** 当结构化澄清仍需要用户确认时，提问抽屉会固定在右侧 AI 面板底部，覆盖原输入栏。抽屉使用列表状态布局，只保留标题、状态、问题、选项、自定义输入和按钮，不在消息流里再次内联渲染抽屉或重试块；最后一题不会自动续跑，而是先进入回顾态，用户确认后再继续生成预览。
+**提问卡片：** 当结构化问题仍需要用户确认时，提问卡片会固定在右侧 AI 面板底部，覆盖原输入栏。卡片使用列表状态布局，只保留标题、状态、问题、选项、自定义输入和按钮，不在消息流里再次内联渲染卡片或重试块；最后一题不会自动续跑，而是先进入回顾态，用户确认后再继续生成预览或恢复 Agent Loop。
 
 ### 7.3 Canvas Area
 
@@ -491,7 +491,7 @@ Embedding 模型（Base URL Input + 模型名 Input + API Key Input + 多模态�
 
 ### 8.4 搜索配置
 
-搜索配置作为设置菜单项展示，不在聊天顶部提供入口。页面使用设计稿单栏白色卡片：启用联网搜索开关、服务商单选 tab、调用模式、每次返回结果数 range、API Key 输入框、取消和保存按钮。启用联网搜索开关点击后必须立即保存，不依赖底部保存按钮；服务商、调用模式、结果数和 API Key 仍由保存按钮提交。API Key 不明文回显，只通过后端返回的保存状态决定占位提示。
+搜索配置作为设置菜单项展示，不在聊天顶部提供入口。页面使用设计稿单栏白色卡片：启用联网搜索开关、服务商单选 tab、调用模式、每次返回结果数 range、API Key 输入框、取消和保存按钮。启用联网搜索开关点击后必须立即保存，不依赖底部保存按钮；服务商、调用模式、结果数和 API Key 仍由保存按钮提交。API Key 不明文回显，只通过后端返回的保存状态决定占位提示；Firecrawl 的 API Key 文案显示为可选，Tavily、Exa、智谱显示为需要配置。
 
 **预算字段：** `context_window_tokens` 与 `max_output_tokens` 继续保存在后端，供运行时预算控制使用，但设置页与引导页卡片不直接展示。
 
@@ -711,7 +711,7 @@ bg:--danger-subtle radius:--radius-md padding:--space-2 --space-3。✕(--danger
 
 从右侧滑入的历史对话抽屉。宽 `min(360px, calc(100vw - 32px))`，顶部固定标题栏 + 关闭按钮，列表项使用圆角卡片，高亮当前会话，空态文案“暂无历史对话”。每条会话右侧提供删除 icon，点击后打开 `ConfirmDialog`，确认前不触发会话选择。
 
-每条会话右侧同时提供导出 icon，点击后直接下载 Markdown 文件；导出按钮不触发会话选择，导出进行中显示小号 Spinner。
+每条会话右侧同时提供导出 icon，点击后直接下载 Markdown 文件；导出按钮不触发会话选择，导出进行中显示小号 Spinner。文件树导出弹窗导出的是包含 `notes/` 与图片资源目录的 zip，已选文件在列表中置顶显示。
 
 ### 11.28 PageTransitionOverlay
 
@@ -764,15 +764,15 @@ bg:--danger-subtle radius:--radius-md padding:--space-2 --space-3。✕(--danger
 - 知识库页和创作页保留原有业务布局：知识库页继续常驻文档预览/编辑区，创作页继续常驻块画布、文章分片和批量修改预览能力。
 - 只将右侧聊天区域按 Notus-design-draft/notus-agent.html 还原：暖白背景、白色输入卡片、低饱和棕橙强调色、轻阴影和 16px 以上圆角。
 - 聊天顶部不显示“Notus Agent Workspace”，也不显示“模型配置”“搜索配置”按钮。
-- 底部输入框固定在右侧聊天面板底部，支持附件、联网开关、搜索服务商单选、模型选择、发送和停止；输入框上方不展示预制问题按钮。
+- 底部输入框固定在右侧聊天面板底部，支持附件、联网开关、搜索服务商单选、模型选择、发送和停止；创作页附件为解析模式，知识库页不启用解析模式；输入框上方不展示预制问题按钮。选择未配置 API Key 的搜索服务商时弹窗提示前往设置，确认后跳转 `/settings/search?provider=<provider>` 并自动切到对应服务商 tab；Firecrawl 不触发 Key 缺失提示。
 - AI 回复使用 Notus Agent 头像、标题、工具过程和正文直排；工具过程可展开查看 detail / input / result。
 - AI 回复正文使用 Markdown 富文本渲染，流式输出时保留光标，支持 GFM、数学公式、代码高亮、表格、引用和链接。
 - 工具过程按 `notus-agent.html` 复刻：顶部状态图标单独占一行；步骤区以 `#E5E3D8` 细分隔线开头；步骤行为 32px 左右高度、4px 水平间距、8px 圆角 hover 浅灰背景；展开后内容左侧缩进 25px 并加竖线，说明文字 13.5px / 1.75，工具卡片背景 `#F9F9F8`、8px 圆角、12px 内边距；chevron 展开旋转 90°。
 - 工具过程运行态使用圆环持续旋转，不使用 refresh 图标；失败态使用 warn，完成态使用 check。
-- 文件变更卡片常驻在对应助手消息底部，使用 `#F9F9F8` 背景、12px 圆角、16px 内边距；左侧为文件列表和状态点，右侧展示当前文件 diff。待确认文件提供绿色“应用修改”和红色“回滚修改”，已自动应用/已应用文件仍保留回滚入口。
+- 文件变更摘要卡常驻在对应助手消息底部，使用 `#F9F9F8` 背景、12px 圆角、16px 内边距；左侧为文件列表和状态点，右侧提供“查看详情”入口。详细 old/new diff、绿色“应用修改”、红色“回滚修改”和全部应用放在 DiffDialog 中；已自动应用/已应用文件仍保留回滚入口。
 - 模型配置在设置页和引导页展示；搜索配置作为设置菜单项展示，不在聊天顶部切换。
-- Agentic Loop 不再显示顶部任务确认卡；自动确认和手动确认都直接开始执行。执行过程迁移到右侧工具链可视化区，文件修改迁移到对应助手消息底部 diff 卡片。
+- Agentic Loop 不再显示顶部任务确认卡；自动确认和手动确认都直接开始执行。执行过程迁移到右侧工具链可视化区，文件修改迁移到对应助手消息底部摘要卡和 DiffDialog。
 - Agentic Loop 不再显示顶部会话状态/回滚卡；达到硬上限时仍可在工具链结果中暴露继续入口，普通完成态不占用主编辑区顶部空间。
 - 设置页日志增加 Agent Loop 执行日志区块：按 session 和轮次分组，展示工具名、结果摘要、失败状态和耗时；失败条目使用 danger 弱背景与边框高亮。历史抽屉中包含 Agent Loop 的会话显示日志入口图标，点击跳转到设置页并按该会话过滤。
-- 文件级预览使用 `AgentDiffCard` 常驻展示，不再打开 DiffDialog；当 operation set 含 `patches` 时，卡片按文件展示 `old/new` diff 和 `pending / applied / auto_applied / rolled_back / discarded / failed` 状态。
+- 文件级预览使用消息摘要卡常驻展示，点击“查看详情”打开 `DiffDialog`；当 operation set 含 `patches` 时，弹窗按文件展示 `old/new` diff 和 `pending / applied / auto_applied / rolled_back / discarded / failed` 状态，并提供逐文件应用、逐文件回滚和全部应用。弹窗底部说明文案为“仅当前对话可应用或回滚修改；新建/切换对话、预览已处理、会话权限过期或文件内容变化后，应用与回滚会失效。”
 - 普通知识问答不显示任务确认卡；创作页主输入默认直接进入 Agentic Loop 并自动确认文件预览，也可切换为手动确认后逐文件处理；知识库页写作类任务同样直接进入 Agentic Loop。

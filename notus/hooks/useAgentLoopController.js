@@ -109,6 +109,34 @@ function buildEventStep(event = {}) {
       result: `${event.snapshot_count || 0} 个文件`,
     };
   }
+  if (event.type === 'attachment_parse_start') {
+    const source = String(event.source || '附件');
+    return {
+      id: `attachment-${source}`,
+      label: event.source_kind === 'url' ? '解析网页链接' : '解析上传附件',
+      status: 'running',
+      detail: `正在读取：${source}`,
+      tool: event.source_kind === 'url' ? 'parse_url' : 'parse_document',
+      input: source,
+    };
+  }
+  if (event.type === 'attachment_parse_done') {
+    const source = String(event.source || '附件');
+    const failed = event.status === 'error';
+    const duplicate = Boolean(event.duplicate);
+    return {
+      id: `attachment-${source}`,
+      label: event.source_kind === 'url' ? '解析网页链接' : '解析上传附件',
+      status: failed ? 'error' : 'done',
+      detail: failed
+        ? (event.warning || '解析失败')
+        : duplicate
+          ? '已在本次对话中导入，跳过重复解析。'
+          : `已读取 ${Number(event.textLength || 0)} 字。${event.warning ? `\n${event.warning}` : ''}`,
+      tool: event.source_kind === 'url' ? 'parse_url' : 'parse_document',
+      result: failed ? (event.errorCode || 'PARSE_FAILED') : `${Number(event.textLength || 0)} 字`,
+    };
+  }
   if (event.type === 'loop_start') {
     return {
       id: `loop-${loop}`,
@@ -167,6 +195,16 @@ function buildEventStep(event = {}) {
       result: event.operation_set_id ? `预览 #${event.operation_set_id}` : '预览已生成',
     };
   }
+  if (event.type === 'interaction_request') {
+    return {
+      id: `question-card-${event.interaction?.id || loop || 'current'}`,
+      label: '等待回答提问卡片',
+      status: 'done',
+      detail: '已生成提问卡片，请回答后继续执行。',
+      tool: 'ask_question_card',
+      result: event.interaction?.id ? `提问卡片 #${event.interaction.id}` : '提问卡片已生成',
+    };
+  }
   if (event.type === 'loop_done') {
     return {
       id: `loop-done-${event.reason || 'done'}`,
@@ -205,6 +243,7 @@ export function useAgentLoopController({
   onConversationSettled,
   onOperationSets,
   onOperationSetHandled,
+  onInteractionRequest,
   onApplySuccess,
   onRollbackSuccess,
   onError,
@@ -261,6 +300,14 @@ export function useAgentLoopController({
     setPendingAgentTask(null);
   }, []);
 
+  const clearActiveAgentSession = useCallback(() => {
+    setPendingAgentTask(null);
+    setActiveAgentSession(null);
+    setSteps([]);
+    setStreamText('');
+    setError('');
+  }, [setActiveAgentSession, setSteps]);
+
   const fetchSessionDetails = useCallback(async (sessionId, token) => {
     const id = toPositiveInt(sessionId);
     if (!id || !token) return null;
@@ -296,6 +343,7 @@ export function useAgentLoopController({
       ? {
         session_id: resumeSessionId,
         session_token: resumeToken,
+        interaction_id: input?.interaction_id || input?.interactionId || undefined,
         llm_config_id: input?.llm_config_id || input?.llmConfigId || undefined,
       }
       : {
@@ -308,6 +356,10 @@ export function useAgentLoopController({
         active_file_id: input?.active_file_id || undefined,
         llm_config_id: input?.llm_config_id || input?.llmConfigId || undefined,
         search_knowledge_limit: input?.search_knowledge_limit === undefined ? 5 : input.search_knowledge_limit,
+        attachments: Array.isArray(input?.attachments) ? input.attachments : [],
+        web_search_enabled: Boolean(input?.web_search_enabled ?? input?.webSearchEnabled),
+        search_provider: input?.search_provider || input?.searchProvider || undefined,
+        tool_profile: input?.tool_profile || input?.toolProfile || undefined,
       };
 
     controllerRef.current?.abort();
@@ -329,6 +381,8 @@ export function useAgentLoopController({
         meta: {
           agent_loop: true,
           route_reason: input.route_reason || '',
+          web_search_enabled: Boolean(input?.web_search_enabled ?? input?.webSearchEnabled),
+          search_provider: input?.search_provider || input?.searchProvider || null,
         },
       });
     }
@@ -412,9 +466,24 @@ export function useAgentLoopController({
           });
           setStreamText('');
           setLoading(false);
+        } else if (event.type === 'interaction_request') {
+          const current = sessionRef.current || {};
+          const token = current.token || resumeToken;
+          setActiveAgentSession({
+            id: event.session_id || current.id,
+            token,
+            conversation_id: event.conversation_id || current.conversation_id || null,
+            status: 'waiting_confirm',
+            reason: event.reason || 'question_card_requested',
+            interaction_id: event.interaction?.id || event.interaction_id || null,
+          });
+          if (event.interaction) onInteractionRequest?.(event.interaction);
+          setStreamText('');
+          setLoading(false);
         } else if (event.type === 'loop_done') {
           const current = sessionRef.current || {};
           const hardLimit = event.reason === 'hard_limit_reached';
+          const waitingQuestionCard = event.reason === 'question_card_requested';
           const failed = ['consecutive_tool_failure', 'deadloop_detected', 'no_progress'].includes(event.reason);
           let operationSet = null;
           if (event.operation_set_id) {
@@ -429,9 +498,10 @@ export function useAgentLoopController({
             id: event.session_id || current.id,
             token: current.token || resumeToken,
             conversation_id: event.conversation_id || current.conversation_id || null,
-            status: hardLimit ? 'waiting_confirm' : failed ? 'failed' : 'completed',
+            status: hardLimit || waitingQuestionCard ? 'waiting_confirm' : failed ? 'failed' : 'completed',
             loop_count: Number(event.loop_index || current.loop_count || 0),
             reason: event.reason || '',
+            interaction_id: event.interaction_id || current.interaction_id || null,
           });
           setSteps((prev) => completeSteps(upsertStep(prev, buildEventStep(event))));
           appendAssistant({
@@ -439,8 +509,9 @@ export function useAgentLoopController({
             meta: {
               agent_loop: true,
               session_id: event.session_id || current.id,
-              status: hardLimit ? 'waiting_confirm' : failed ? 'failed' : 'completed',
+              status: hardLimit || waitingQuestionCard ? 'waiting_confirm' : failed ? 'failed' : 'completed',
               reason: event.reason || '',
+              interaction_id: event.interaction_id || current.interaction_id || null,
               operation_set_id: event.operation_set_id || operationSet?.id || null,
             },
             operationSet,
@@ -486,6 +557,7 @@ export function useAgentLoopController({
     onConversationId,
     onConversationSettled,
     onError,
+    onInteractionRequest,
     setActiveAgentSession,
     setSteps,
   ]);
@@ -511,6 +583,7 @@ export function useAgentLoopController({
         session_id: session.id,
         session_token: session.token,
         operation_set_id: operationSetId,
+        current_conversation_id: options.currentConversationId || session.conversation_id || undefined,
         action,
         patch_index: options.patchIndex === undefined ? undefined : options.patchIndex,
         file_path: options.filePath || undefined,
@@ -651,6 +724,7 @@ export function useAgentLoopController({
     error,
     createAgentTask,
     cancelAgentTask,
+    clearActiveAgentSession,
     confirmAgentTask,
     startAgentLoop,
     stopAgentLoop,

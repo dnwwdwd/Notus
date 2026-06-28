@@ -263,11 +263,11 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'query is required', code: 'QUERY_REQUIRED', request_id: context.request_id });
   }
   if (interactionId && !interaction) {
-    return res.status(404).json({ error: '提问抽屉不存在', code: 'INTERACTION_NOT_FOUND', request_id: context.request_id });
+    return res.status(404).json({ error: '提问卡片不存在', code: 'INTERACTION_NOT_FOUND', request_id: context.request_id });
   }
   if (isInteractionResume && !['answered', 'failed'].includes(interaction.status)) {
     return res.status(409).json({
-      error: interaction.status === 'stale' ? '当前澄清抽屉已经失效，请重新发起问题' : '当前澄清抽屉还没有完成回答',
+      error: interaction.status === 'stale' ? '当前提问卡片已经失效，请重新发起问题' : '当前提问卡片还没有完成回答',
       code: interaction.status === 'stale' ? 'INTERACTION_STALE' : 'INTERACTION_NOT_READY',
       interaction,
       request_id: context.request_id,

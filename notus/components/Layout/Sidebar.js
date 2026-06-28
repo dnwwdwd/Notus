@@ -103,7 +103,7 @@ async function consumeSseResponse(response, onPayload) {
 function parseDownloadFilename(contentDisposition) {
   const header = String(contentDisposition || '');
   const match = header.match(/filename="(.+?)"/i);
-  return match ? match[1] : `notus-export-${Date.now()}.md`;
+  return match ? match[1] : `notus-export-${Date.now()}.zip`;
 }
 
 function formatImportSummary(summary) {
@@ -440,12 +440,17 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
 
   const exportCandidates = useMemo(() => {
     const keyword = exportQuery.trim().toLowerCase();
-    if (!keyword) return orderedExportFiles;
-    return orderedExportFiles.filter((file) => {
+    const candidates = !keyword ? orderedExportFiles : orderedExportFiles.filter((file) => {
       const target = `${file.title || ''} ${file.name || ''} ${file.path || ''}`.toLowerCase();
       return target.includes(keyword);
     });
-  }, [exportQuery, orderedExportFiles]);
+    return [...candidates].sort((left, right) => {
+      const leftSelected = selectedExportIds.has(left.id) ? 1 : 0;
+      const rightSelected = selectedExportIds.has(right.id) ? 1 : 0;
+      if (leftSelected !== rightSelected) return rightSelected - leftSelected;
+      return 0;
+    });
+  }, [exportQuery, orderedExportFiles, selectedExportIds]);
 
   const importSucceededResults = useMemo(
     () => importResults.filter((item) => ['imported', 'overwritten'].includes(item.status)),

@@ -711,6 +711,9 @@ export default function KnowledgePage() {
   const agentLoop = useAgentLoopController({
     onAppendUserMessage: (message) => setMessages((prev) => [...prev, message]),
     onAppendAssistantMessage: (message) => setMessages((prev) => upsertMessage(prev, message)),
+    onInteractionRequest: (interaction) => {
+      setPendingInteractions((prev) => upsertInteraction(prev, interaction));
+    },
     onConversationId: (conversationId) => {
       if (!conversationId) return;
       setActiveConversationId(Number(conversationId));
@@ -728,8 +731,18 @@ export default function KnowledgePage() {
       toast(message, 'error');
     },
   });
+  const clearAgentLoopSession = agentLoop.clearActiveAgentSession;
   const aiRequestLoading = loading || agentLoop.loading;
   const agentLoopInteractionLocked = ['running', 'waiting_confirm'].includes(agentLoop.activeAgentSession?.status);
+
+  const assertCurrentOperationSet = useCallback((operationSet) => {
+    const currentConversationId = Number(activeConversationId || 0);
+    const operationConversationId = Number(operationSet?.conversation_id || 0);
+    if (!currentConversationId || !operationConversationId || currentConversationId !== operationConversationId) {
+      throw new Error('这组修改不属于当前对话，已不能继续应用或回滚。');
+    }
+    return currentConversationId;
+  }, [activeConversationId]);
 
   const focusKnowledgeInput = useCallback(() => {
     window.requestAnimationFrame(() => {
@@ -769,7 +782,7 @@ export default function KnowledgePage() {
         if (payload.interaction) {
           setPendingInteractions((prev) => upsertInteraction(prev, payload.interaction));
         }
-        throw new Error(payload.error || '回答提问抽屉失败');
+        throw new Error(payload.error || '回答提问卡片失败');
       }
       if (payload.interaction) {
         setPendingInteractions((prev) => upsertInteraction(prev, payload.interaction));
@@ -797,7 +810,7 @@ export default function KnowledgePage() {
       return await respondToInteraction(interaction, { action: 'cancel' }, { setSubmitting: false });
     } catch (cancelError) {
       if (!options.silent) {
-        toast(cancelError.message || '关闭提问抽屉失败', 'error');
+        toast(cancelError.message || '关闭提问卡片失败', 'error');
       }
       throw cancelError;
     }
@@ -808,6 +821,23 @@ export default function KnowledgePage() {
       if (!llmConfigId) {
       toast('请先在模型配置中新增至少一个 LLM 配置', 'warning');
       }
+      return;
+    }
+
+    if (interaction.source === 'agent_loop') {
+      const session = agentLoop.activeAgentSession || {};
+      const sessionId = Number(interaction?.payload?.agent_session_id || session.id || 0) || null;
+      const token = session.token || '';
+      if (!sessionId || !token) {
+        toast('当前 Agent 任务状态已失效，请重新发起任务', 'warning');
+        return;
+      }
+      await agentLoop.startAgentLoop({
+        session_id: sessionId,
+        session_token: token,
+        interaction_id: interaction.id,
+        llm_config_id: llmConfigId,
+      }, { resume: true });
       return;
     }
 
@@ -918,6 +948,7 @@ export default function KnowledgePage() {
   }, [
     activeConversationId,
     activeFile?.id,
+    agentLoop,
     manualReferenceFileIds,
     readSse,
     referenceMode,
@@ -933,13 +964,13 @@ export default function KnowledgePage() {
     setConversationDraft(true);
     setMessages([]);
     setPendingInteractions([]);
-    agentLoop.cancelAgentTask();
+    clearAgentLoopSession();
     setStreamText('');
     setError(null);
     setLoading(false);
     setRetrievalStage(null);
     setHistoryDrawerOpen(false);
-  }, [agentLoop, clearActiveCitationState]);
+  }, [clearActiveCitationState, clearAgentLoopSession]);
 
   const handleConversationDelete = useCallback(async (conversationId) => {
     const normalizedConversationId = Number(conversationId);
@@ -958,6 +989,7 @@ export default function KnowledgePage() {
         setConversationDraft(true);
         setMessages([]);
         setPendingInteractions([]);
+        clearAgentLoopSession();
         setStreamText('');
         setError(null);
         setLoading(false);
@@ -971,7 +1003,7 @@ export default function KnowledgePage() {
     } finally {
       setDeletingConversationId(null);
     }
-  }, [activeConversationId, clearActiveCitationState, deletingConversationId, fetchConversationList, toast]);
+  }, [activeConversationId, clearActiveCitationState, clearAgentLoopSession, deletingConversationId, fetchConversationList, toast]);
 
   const handleConversationExport = useCallback(async (conversationId, conversation = null) => {
     const normalizedConversationId = Number(conversationId);
@@ -1016,6 +1048,7 @@ export default function KnowledgePage() {
     setConversationListLoading(true);
     requestControllerRef.current?.abort();
     clearActiveCitationState();
+    clearAgentLoopSession();
     try {
       const payload = await fetchConversationDetail(conversationId);
       setMessages(attachOperationSetsToMessages(
@@ -1035,7 +1068,7 @@ export default function KnowledgePage() {
     } finally {
       setConversationListLoading(false);
     }
-  }, [agentLoopInteractionLocked, aiRequestLoading, clearActiveCitationState, fetchConversationDetail, toast]);
+  }, [agentLoopInteractionLocked, aiRequestLoading, clearActiveCitationState, clearAgentLoopSession, fetchConversationDetail, toast]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1044,6 +1077,7 @@ export default function KnowledgePage() {
     setStreamText('');
     setError(null);
     setRetrievalStage(null);
+    clearAgentLoopSession();
     setConversationListLoading(true);
 
     (async () => {
@@ -1073,7 +1107,7 @@ export default function KnowledgePage() {
     return () => {
       cancelled = true;
     };
-  }, [fetchConversationDetail, fetchConversationList, toast]);
+  }, [clearAgentLoopSession, fetchConversationDetail, fetchConversationList, toast]);
 
   const handleSend = async (query, optionsOrLlmConfigId = selectedLlmConfigId) => {
     const sendOptions = optionsOrLlmConfigId && typeof optionsOrLlmConfigId === 'object'
@@ -1093,12 +1127,13 @@ export default function KnowledgePage() {
     }
 
     const routeDecision = classifyKnowledgeTaskIntent(query);
-    if (routeDecision.route === 'loop') {
+    if (routeDecision.route === 'loop' || sendOptions.webSearchEnabled) {
       const authorizeCurrentFile = shouldAuthorizeCurrentFile(query);
       const currentPath = authorizeCurrentFile ? (activeFile?.path || '') : '';
       const goal = currentPath
         ? `用户任务：${query}\n\n当前文档路径：${currentPath}`
         : query;
+      const toolProfile = routeDecision.route === 'loop' ? 'default' : 'read_only';
       setError(null);
       setRetrievalStage(null);
       await discardPendingAgentDiffs();
@@ -1114,7 +1149,10 @@ export default function KnowledgePage() {
         authorized_ops: ['modify', 'create'],
         search_knowledge_limit: 5,
         attachments: sendOptions.attachments || [],
-        route_reason: routeDecision.reason,
+        web_search_enabled: Boolean(sendOptions.webSearchEnabled),
+        search_provider: sendOptions.searchProvider || null,
+        tool_profile: toolProfile,
+        route_reason: sendOptions.webSearchEnabled && routeDecision.route !== 'loop' ? 'web_search_enabled' : routeDecision.reason,
       });
       return;
     }
@@ -1251,7 +1289,11 @@ export default function KnowledgePage() {
 
   const handleApplyOperationFile = async (operationSet, patchIndex) => {
     try {
-      await agentLoop.applyOperationFile(operationSet, patchIndex, { approvalMode: 'manual_confirm' });
+      const currentConversationId = assertCurrentOperationSet(operationSet);
+      await agentLoop.applyOperationFile(operationSet, patchIndex, {
+        approvalMode: 'manual_confirm',
+        currentConversationId,
+      });
       toast('文件修改已应用', 'success');
     } catch (applyError) {
       toast(applyError.message || '应用文件修改失败', 'error');
@@ -1261,7 +1303,8 @@ export default function KnowledgePage() {
 
   const handleRollbackOperationFile = async (operationSet, patchIndex) => {
     try {
-      await agentLoop.rollbackOperationFile(operationSet, patchIndex);
+      const currentConversationId = assertCurrentOperationSet(operationSet);
+      await agentLoop.rollbackOperationFile(operationSet, patchIndex, { currentConversationId });
       toast('文件修改已回滚', 'success');
     } catch (rollbackError) {
       toast(rollbackError.message || '回滚文件修改失败', 'error');
@@ -1298,7 +1341,7 @@ export default function KnowledgePage() {
       if (!payload?.should_continue) return;
       await runInteractionResume(payload.interaction || interaction, selectedLlmConfigId);
     } catch (submitError) {
-      toast(submitError.message || '回答提问抽屉失败', 'error');
+      toast(submitError.message || '回答提问卡片失败', 'error');
     }
   }, [respondToInteraction, runInteractionResume, selectedLlmConfigId, toast]);
 
@@ -1462,6 +1505,7 @@ export default function KnowledgePage() {
                 onChange={handleDocChange}
                 onSave={handleDocSave}
                 onEditorReady={handleEditorReady}
+                fileId={activeFile.id}
               />
             )}
           </div>

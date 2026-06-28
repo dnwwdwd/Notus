@@ -15,8 +15,13 @@
 > **v4.1 相对 v4.0 变更说明（2026-06-24）：**
 > - 移除预览生成后的 `waiting_preview_confirm` 主流程暂停；`preview_patch_files` 生成 operation set 后，Loop 按自动确认/手动确认规则直接完成。
 > - `/api/agent/loop/apply` 不再承担“应用后续跑”职责；应用、回滚、废弃只更新文件和 patch 状态，不触发 LLM。
-> - 任务确认卡和顶部 session/回滚卡从主流程移除，文件变更统一展示在对应助手消息底部的常驻 diff 卡片。
+> - 任务确认卡和顶部 session/回滚卡从主流程移除，文件变更统一展示为对应助手消息底部的摘要卡，old/new 详情和逐文件操作进入 DiffDialog。
 > - 回滚粒度从任务级整体回滚调整为文件级 patch 回滚；未处理 patch 在下一条 prompt 发出前自动标记为 `discarded`。
+> - 创作页在 Loop 启动前解析上传附件、超长粘贴文本和用户显式输入的网页链接正文，解析结果以 `system + parsed_attachment` 消息进入后续 system prompt；真实搜索供应商通过用户打开联网开关后的 `web_search` 工具接入。
+>
+> **v4.2 相对 v4.1 变更说明（2026-06-27）：**
+> - 新增 `ask_question_card` 工具，正式把结构化澄清命名为“提问卡片”；Agent 可在信息不足时主动生成，也可响应用户 prompt 生成。
+> - `ask_question_card` 生成后将 session 置为 `waiting_confirm` 并保存 checkpoint；用户回答后恢复同一个 Loop，把答案作为 tool result 注入后续推理。
 
 ---
 
@@ -39,12 +44,12 @@
 
 ### 1.3 写入策略
 
-**修改已有文件**：必须通过 `preview_patch_files` 生成批量预览。自动确认模式由服务端在 Loop 完成前自动落盘；手动确认模式在对话底部 diff 卡片中逐文件应用或回滚。
+**修改已有文件**：必须通过 `preview_patch_files` 生成批量预览。自动确认模式由服务端在 Loop 完成前自动落盘；手动确认模式通过消息摘要卡打开 DiffDialog 后逐文件应用或回滚。
 
 **新建文件**：通过 `create_note` 即时写入磁盘，不走预览流程。理由：新建文件不存在覆盖风险，且每次新建都打断 loop 等待确认会破坏 Agent 执行的连续性。新建的文件路径会记录在 `created_files` 字段，回滚时一并处理（含冲突检测）。
 
 **其他硬性边界：**
-- Agent **只能在用户授权范围内写入**，不访问外部网络、不执行系统命令
+- Agent **只能在用户授权范围内写入**，不执行系统命令；除用户显式输入的网页链接正文解析外，只有在输入框联网开关打开且注入 `web_search` 工具时才做外部搜索
 - **删除权限永远不开放**，当前阶段直接拒绝 delete 操作
 - **读取不受授权路径限制**：`search_knowledge` 和 `read_file` 可访问全库内容，授权路径只限制写入。这是有意的设计决策：限制读取会严重削弱检索能力，而读取本身不会造成数据损坏
 - `search_knowledge` 单次任务调用上限由前端启动参数传入（默认值见 §1.4）
@@ -99,10 +104,10 @@
 │  validateWrite()     │      │  read_file                    │
 │  snapshotFiles()     │      │  create_note                  │
 │  rollbackSession()   │      │  preview_patch_files          │
-│  saveCheckpoint()    │      │  analyze_folder               │
-│  loadCheckpoint()    │      │  check_links                  │
-│  logToolCall()       │      │                               │
-│  checkToolLimit()    │      │                               │
+│  saveCheckpoint()    │      │  preview_canvas_blocks        │
+│  loadCheckpoint()    │      │  ask_question_card            │
+│  logToolCall()       │      │  analyze_folder               │
+│  checkToolLimit()    │      │  check_links                  │
 └──────────────────────┘      └───────────────────────────────┘
                                           │
                               ┌───────────▼───────────────────┐
@@ -1146,7 +1151,7 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal }) {
         updateSessionStatus(sessionId, 'completed');
         onStream({ type: 'loop_done', reason: 'goal_achieved', loop_index: loopIndex, operation_set_id: result.operation_set_id });
         return;
-        // 后续用户点击 diff 卡片只调用 /apply 更新文件与 patch 状态，不再续跑 Loop
+        // 后续用户在 DiffDialog 中点击应用/回滚，只调用 /apply 更新文件与 patch 状态，不再续跑 Loop
       }
     }
 
@@ -1296,8 +1301,9 @@ async function callLLMWithRetry({ system, messages, tools, llmConfig }, maxRetri
 **先了解再行动。** 在生成写入预览前，充分检索和阅读相关笔记，确保输出基于用户真实内容。
 
 **谨慎调用写入工具。**
-- preview_patch_files 调用后会立即暂停等待用户确认，用户确认后才继续
-- preview_patch_files 必须单独作为该轮的唯一工具调用，不能与任何其他工具同时出现
+- preview_patch_files 生成文件级预览后按自动确认/手动确认规则结束本次 Loop
+- preview_patch_files、preview_canvas_blocks 和 ask_question_card 必须单独作为该轮的唯一工具调用，不能与任何其他工具同时出现
+- ask_question_card 用于生成提问卡片并等待用户回答；用户回答后恢复同一个 Loop
 - 在完全准备好所有修改内容后再一次性调用
 
 **告知你的进展。** 每轮开始时用一两句话说明接下来要做什么。
@@ -1363,7 +1369,7 @@ ${session.authorized_paths.map(p => `- ${p}`).join('\n')}
 - 首次启动：不传 `session_id`，创建新 session，开始 loop
 - 继续执行：传入 `session_id`（状态为 `waiting_confirm` 且 reason 为硬上限），从 checkpoint 恢复继续 loop
 
-文件级预览应用不再通过 `/start` 续跑；用户点击 diff 卡片后只调用 `/api/agent/loop/apply` 更新文件和 patch 状态。
+文件级预览应用不再通过 `/start` 续跑；用户在 DiffDialog 中应用或回滚后只调用 `/api/agent/loop/apply` 更新文件和 patch 状态。
 
 ```
 POST /api/agent/loop/start
@@ -1454,7 +1460,7 @@ action='extend'
 用户点击"应用修改"或"回滚修改"
   → POST /apply { action: 'apply_file' | 'rollback_file', operation_set_id, patch_index, ... }
   → 收到 { success: true, operation_set }
-  → 更新对话底部 diff 卡片状态，不调用 LLM，不调用 /start
+  → 更新 DiffDialog 和消息摘要卡状态，不调用 LLM，不调用 /start
 ```
 
 ### 7.4 查询 Session（断线重连重建 UI / 日志页追溯）
@@ -1535,7 +1541,7 @@ async function triggerIncrementalIndex(relPath, notesDir) {
 }
 ```
 
-当前主流程不再把该接口作为用户入口；对话底部 diff 卡片通过 `/api/agent/loop/apply` 的 `rollback_file` 实现文件级回滚。该接口仅保留给历史 session、调试或未来管理员级恢复工具使用。
+当前主流程不再把该接口作为用户入口；DiffDialog 通过 `/api/agent/loop/apply` 的 `rollback_file` 实现文件级回滚。该接口仅保留给历史 session、调试或未来管理员级恢复工具使用。
 
 ### 8.4 System Prompt 补充说明
 

@@ -257,13 +257,15 @@ CREATE TABLE IF NOT EXISTS conversations (
 CREATE TABLE IF NOT EXISTS messages (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-  role            TEXT NOT NULL,               -- 'user' | 'assistant' | 'tool'
+  role            TEXT NOT NULL,               -- 'user' | 'assistant' | 'tool' | 'system'
+  type            TEXT NOT NULL DEFAULT 'text', -- 'text' | 'parsed_attachment'
   content         TEXT NOT NULL,               -- JSON 字符串
   citations       TEXT,                         -- JSON 数组，来源块元数据
   meta            TEXT,                         -- JSON 对象，知识库回答模式/检索统计/helper 遥测
   created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_messages_attachment ON messages(conversation_id, type, created_at);
 
 -- 设置（键值对）
 CREATE TABLE IF NOT EXISTS settings (
@@ -595,7 +597,7 @@ function buildCanvasAnalysisPrompt(input)
 - `weak_evidence` 只能写可确认部分和解释性补充
 - `conflicting_evidence` 不能把冲突来源合并成单一结论
 
-`clarify_needed` 和 `no_evidence` 由服务端直接模板化返回，不走主回答 Prompt。知识库命中 `clarify_needed` 时，服务端会直接创建 `conversation_interactions` 记录，并把抽屉需要的结构化问题、引导语和状态元信息通过 SSE 一并返回。
+`clarify_needed` 和 `no_evidence` 由服务端直接模板化返回，不走主回答 Prompt。知识库命中 `clarify_needed` 时，服务端会直接创建 `conversation_interactions` 记录，并把提问卡片需要的结构化问题、引导语和状态元信息通过 SSE 一并返回。
 
 ### 4.6 `lib/watcher.js`
 
@@ -607,7 +609,7 @@ function startWatcher()  // chokidar 监听 NOTES_DIR
 
 ### 4.7 创作执行链路
 
-创作页主输入默认使用自动确认模式：发送后直接调用 `/api/agent/loop/start`，不展示任务确认卡；输入框左下角的“自动 / 手动”分段确认控件只在创作页展示，说明文案进入 tooltip，并持久化到浏览器本机。手动确认模式下同样直接启动 Agentic Loop，文件级预览在完成消息底部以 diff 卡片逐文件等待应用或回滚。旧 `/api/agent/run` + `/api/agent/apply` 只保留历史兼容，不再作为当前主流程。
+创作页主输入默认使用自动确认模式：发送后直接调用 `/api/agent/loop/start`，不展示任务确认卡；输入框左下角的“自动 / 手动”分段确认控件只在创作页展示，说明文案进入 tooltip，并持久化到浏览器本机。手动确认模式下同样直接启动 Agentic Loop，文件级预览在完成消息底部以摘要卡等待处理，用户打开 DiffDialog 后逐文件应用或回滚。旧 `/api/agent/run` + `/api/agent/apply` 只保留历史兼容，不再作为当前主流程。
 
 ```javascript
 async function resolveCanvasRequest({
@@ -796,8 +798,9 @@ POST /api/files/import               Body: {
                                        { type: 'progress', current, total, currentFile }
                                        { type: 'file', status, name, path, id?, indexed?, error? }
                                        { type: 'done', imported, overwritten, skipped, failed, total }
-GET  /api/files/export               Query: ?ids=1,2 or ?paths=a.md,b.md → 单文件返回原始 Markdown，多文件返回 ZIP；`Content-Disposition` 需兼容中文文件名
-GET  /api/files/:id/content-image    Query: ?src=https://... → 缓存图片并返回；失败时 307 回源
+GET  /api/files/export               Query: ?ids=1,2 or ?paths=a.md,b.md → 统一返回 ZIP；选中 Markdown 位于 notes/ 下，资源目录按相对位置一并导出；`Content-Disposition` 需兼容中文文件名
+POST /api/files/:id/images           FormData:image → 保存到 assets/images/{sha256}.{ext}，返回相对当前 Markdown 的图片路径
+GET  /api/files/:id/content-image    Query: ?src=... → 本地相对图片按当前文件路径解析并返回；远程图片缓存后返回，失败时 307 回源
 ```
 
 ### 5.3 索引
@@ -904,11 +907,11 @@ POST /api/agent/loop/start           Body:
                                       { type: 'error', error, code }
 
 POST /api/agent/loop/apply           Body:
-                                     { session_id, session_token, operation_set_id, action: 'apply_file', patch_index?, file_path? }
-                                     | { session_id, session_token, operation_set_id, action: 'rollback_file', patch_index?, file_path? }
-                                     | { session_id, session_token, operation_set_id, action: 'discard_file', patch_index?, file_path? }
-                                     | { session_id, session_token, operation_set_id, action: 'discard_pending' }
-                                     | { session_id, session_token, operation_set_id, action: 'apply_all' }
+                                     { session_id, session_token, current_conversation_id, operation_set_id, action: 'apply_file', patch_index?, file_path? }
+                                     | { session_id, session_token, current_conversation_id, operation_set_id, action: 'rollback_file', patch_index?, file_path? }
+                                     | { session_id, session_token, current_conversation_id, operation_set_id, action: 'discard_file', patch_index?, file_path? }
+                                     | { session_id, session_token, current_conversation_id, operation_set_id, action: 'discard_pending' }
+                                     | { session_id, session_token, current_conversation_id, operation_set_id, action: 'apply_all' }
                                      | { session_id, session_token, action: 'extend', extra_loops? }
                                      → { success, changed_files?, conflict?, conflicting_files?, operation_set?, new_hard_limit? }
 
@@ -960,7 +963,7 @@ DELETE /api/conversations/:id
 - 知识库页默认只按 `kind=knowledge` 读取全局历史，不再用 `file_id` 分桶。
 - 创作页会话默认按 `kind=canvas + file_id` 读取；`draft_key` 仅保留给旧数据兼容与迁移。
 - 画布会话详情会附带 `pending_operation_sets`，前端刷新后可恢复全部未应用预览。
-- 知识库与画布会话详情都会附带 `pending_interactions`，前端刷新后可恢复 `pending / stale / failed` 提问抽屉；抽屉继续以底部抽屉形式恢复，不再把 interaction 摘要用户消息和 retry 助手消息重新露回消息流。
+- 知识库与画布会话详情都会附带 `pending_interactions`，前端刷新后可恢复 `pending / stale / failed` 提问卡片；提问卡片继续以底部抽屉形式恢复，不再把 interaction 摘要用户消息和 retry 助手消息重新露回消息流。
 - 会话详情会附带同一 conversation 下的 `agent_sessions` 导出数据，每个 session 包含运行状态、快照数量、`agent_run_logs` 工具日志和关联修改预览，但不返回 session token。
 - 会话列表会附带 `agent_session_count`，前端用于在历史抽屉显示 Agent Loop 执行日志入口。
 - 删除会话前需要确认会话存在；不存在返回 `404 CONVERSATION_NOT_FOUND`，删除成功返回 `204`。数据库外键负责级联删除 `messages`、`canvas_operation_sets` 和 `conversation_interactions`。
@@ -1045,6 +1048,7 @@ POST /api/settings/test              Body: { kind: 'embedding'|'llm', config }
 ### 6.3 图片缓存与图片向量
 
 - 索引时提取 Markdown 图片语法，写入 `images` 表，记录 `url / alt_text / cache_status / embedding_status`
+- 本地粘贴或工具栏插入的图片通过 `/api/files/:id/images` 保存到 `assets/images/{sha256}.{ext}`，Markdown 中只写相对路径；编辑器渲染时把相对路径转为 `/api/files/:id/content-image?src=...` 预览地址
 - 远程图片通过 `/api/files/:id/content-image?src=...` 代理下载到 `/lzcapp/var/assets/images/{sha256}.{ext}`
 - 代理只允许 `http/https`，并阻止 localhost、内网地址和非法协议，避免服务端请求风险
 - 缓存成功且开启 `EMBEDDING_MULTIMODAL_ENABLED` 时，调用第三方多模态 embedding 模型写入 `images_vec`
@@ -1055,13 +1059,22 @@ POST /api/settings/test              Body: { kind: 'embedding'|'llm', config }
 
 创作 Agent 当前主流程为 Agentic Loop：
 
-1. 创作页主输入按当前执行模式创建 `agent_sessions`：自动确认和手动确认都会直接启动 Loop，不再生成前置任务确认卡；Loop 按 LLM 工具调用自主执行多轮，工具包括 `search_knowledge`、`read_file`、`create_note`、`preview_patch_files`、`analyze_folder`、`check_links`。
+1. 创作页主输入按当前执行模式创建 `agent_sessions`：自动确认和手动确认都会直接启动 Loop，不再生成前置任务确认卡；Loop 按 LLM 工具调用自主执行多轮，工具包括 `search_knowledge`、`read_file`、`create_note`、`preview_patch_files`、`preview_canvas_blocks`、`ask_question_card`、`analyze_folder`、`check_links`。
 2. 写入前置：每次 Loop 开始前先写入 `agent_snapshots`；`create_note` 与 `preview_patch_files` 必须通过 `validateWrite()`；删除操作始终拒绝。
-3. 预览与应用：`preview_patch_files` 在单轮内必须是唯一工具调用；创建 operation set 前会对 `old` 文本做精确匹配、首尾裁剪匹配和空白折叠后的唯一匹配，匹配成功后使用当前文件中的精确片段写入文件级 patches；patches 存入 `canvas_operation_sets.pathes_json`，每个 patch 额外记录 `pending / applied / auto_applied / rolled_back / discarded / failed` 状态。自动确认模式下，后端在 Loop 完成前自动应用全部文件，并把 diff 卡片标记为已自动应用；手动确认模式下，用户在对话底部逐文件点击应用或回滚，接口只写文件和更新状态，不再续跑 Loop 或触发 LLM 总结。
+3. 预览、提问与应用：`preview_patch_files`、`preview_canvas_blocks` 和 `ask_question_card` 在单轮内必须是唯一工具调用。`preview_patch_files` 创建 operation set 前会对 `old` 文本做精确匹配、首尾裁剪匹配和空白折叠后的唯一匹配，匹配成功后使用当前文件中的精确片段写入文件级 patches；patches 存入 `canvas_operation_sets.pathes_json`，每个 patch 额外记录 `pending / applied / auto_applied / rolled_back / discarded / failed` 状态。`preview_canvas_blocks` 用当前创作页块快照和 `@bN` 引用生成 `operations_json` 块级 operation set，并通过 `/api/agent/apply` 应用到当前画布后保存 Markdown。`ask_question_card` 创建 `source='agent_loop'` 的 `conversation_interactions` 记录，将 session 置为 `waiting_confirm` 并保存消息 checkpoint；用户回答后通过同一 session 恢复 Loop，把答案作为 tool result 注入后续推理。自动确认模式下，后端在 Loop 完成前自动应用全部文件级 patch；块级预览仍显示确认卡片。手动确认模式下，消息流只展示摘要卡，用户打开详情弹窗逐文件点击应用或回滚，也可全部应用，接口只写文件和更新状态，不再续跑 Loop 或触发 LLM 总结；应用/回滚必须携带当前对话 ID，并要求 session、operation set 与当前对话一致。
 4. 异常终止：软上限提醒、硬上限暂停、连续工具失败、重复工具结果死循环、连续无工具无进展都会结束或暂停本次任务。
-5. 回滚与废弃：回滚以文件级 patch 为单位执行，已应用文件使用 `new -> old` 恢复，未应用文件直接标记为 `rolled_back`；下一条 prompt 发出前会把上一条任务仍未处理的 patch 标记为 `discarded`，不影响同任务中已经应用的文件。
+5. 回滚与废弃：回滚以文件级 patch 为单位执行，已应用文件使用 `new -> old` 恢复，未应用文件直接标记为 `rolled_back`；下一条 prompt 发出前会把上一条任务仍未处理的 patch 标记为 `discarded`，不影响同任务中已经应用的文件；新建/切换对话、会话权限过期、预览已处理或文件内容变化后，旧预览不再允许应用或回滚。
 
-Agentic Loop 的 LLM 调用适配 OpenAI-compatible `tool_calls` 和 Anthropic `tool_use/tool_result` 两种协议；system prompt 继续接入 `getStyleContext()` 产生的风格画像和相关原文摘录。
+Agentic Loop 的 LLM 调用适配 OpenAI-compatible `tool_calls` 和 Anthropic `tool_use/tool_result` 两种协议；system prompt 继续接入 `getStyleContext()` 产生的风格画像、相关原文摘录，以及同一 conversation 中已解析的附件/网页正文。Prompt 明确要求：当关键信息不足，或用户要求“生成提问卡片 / 先问我几个问题”时，调用 `ask_question_card`，不要用普通文本追问替代。
+
+创作页解析输入源：
+
+- 前端只在创作页为 `AgentWorkspace` 开启 `attachmentMode="parsed"`；知识库页保持现有附件展示，不调用解析上传接口。
+- `/api/agent/attachments/upload` 接受 `.pdf/.docx/.md/.markdown/.txt`，使用 `formidable` 暂存到运行时 `sessionDir/attachments`；前端也会做格式校验。
+- `/api/agent/loop/start` 在创建或确认 conversation 后，先解析本轮上传附件和用户文本中的 `http/https` 网页链接，再写入用户消息。PDF 使用 LiteParse 且关闭 OCR，DOCX 使用 mammoth，MD/TXT 使用 UTF-8，网页正文优先用 Readability，失败时用 HTML 正文提取兜底。
+- 解析结果为 `success` 或 `partial` 时，以 `role='system'`、`type='parsed_attachment'` 写入 `messages`；`error` 只进入本轮解析摘要和工具过程，不污染后续上下文。
+- `runAgentLoop()` 每轮按 conversation 读取解析来源，拼接到 system prompt；单来源默认最多 12,000 字符，总预算保留较新的来源优先。
+- 网页链接解析只处理用户显式提供 URL 的正文提取，不等同于联网搜索；搜索供应商选择进入 Agent Loop 请求和消息 meta，并仅在用户打开联网搜索开关时用于注入 `web_search` 工具。
 
 Agent Loop 日志接口：
 
@@ -1109,8 +1122,8 @@ function applyOperation(article, op) {
 ### 6.7 编辑器图片预览
 
 - 文件页与知识库页复用同一套所见即所得编辑器图片预览逻辑，不额外在页面层分叉实现
-- 编辑器必须单独接管剪贴板中的图片文件，优先读取为 data URL 后插入文档，避免浏览器默认粘贴与编辑器内容同步相互覆盖，导致连续粘贴时只短暂闪现后丢失
-- Tiptap 图片节点需要允许解析 data URL，保证工具栏插图与剪贴板图片走同一条稳定的持久化链路
+- 编辑器必须单独接管剪贴板中的图片文件，优先上传到当前文件对应的 `assets/images/` 资源目录并插入相对路径，避免浏览器默认粘贴与编辑器内容同步相互覆盖，导致连续粘贴时只短暂闪现后丢失
+- Tiptap 图片节点需要保留 Markdown 相对路径作为真实 `src` 属性；渲染 HTML 时再把本地相对路径转换为 `/api/files/:id/content-image?src=...`，避免把预览 API 地址写回 Markdown。历史 data URL 仍允许解析，但新插入图片不再以 base64 持久化
 - 点击编辑器正文内的图片后，前端只收集当前 `.ProseMirror` 节点下的图片列表，预览切换范围严格限定为当前文档
 - 预览层需要支持 `ArrowLeft` / `ArrowRight` 切换上一张或下一张图片，支持 `Escape` 关闭
 - 文档内容变化时，如果预览仍处于打开状态，前端应重新同步当前文档图片列表；若图片列表已为空，则自动关闭预览层
@@ -1336,7 +1349,7 @@ exec node server.js
   - 文件页 TOC 在切换文档或编辑器回填 Markdown 内容后，必须允许等待编辑器 DOM 稳定再刷新，不能因为首帧未完成渲染就把已有标题误判成空 TOC
 - M2-06 URL hash 来源跳转 + 3s 高亮淡出
 - M2-07 批量导入/导出 API + SSE 进度
-  - 导出接口在只收到 1 个文件时直接返回原始 Markdown 响应，只有多文件时才生成 zip
+- 导出接口即使只收到 1 个文件也返回 zip，zip 中包含 `notes/` 下的选中文档和对应资源目录，保证相对图片路径可用并避免单个 Markdown 过大
 - M2-08 `/indexing` 页面
 
 ### M3 知识库问答
@@ -1406,19 +1419,21 @@ exec node server.js
 # 2026-06-20 Agent 聊天 UI 技术口径
 
 - 共享 AgentWorkspace 前端组件改为右侧聊天面板，不再整页替换知识库页和创作页；页面业务主区域继续使用原有文档编辑、块画布和批量预览组件。
-- 新增 /api/settings/search-providers，用 settings 表保存搜索启用状态、当前服务商、调用模式、结果数和 API Key；响应只返回 api_key_set，不返回明文密钥。设置页联网搜索总开关可单独 PUT `{ enabled }` 实时保存，服务商、模式、结果数和 API Key 仍由保存按钮提交。
-- /api/chat 与 AgentWorkspace 输入框接受 webSearchEnabled、searchProvider、attachments 和 modelConfigId 兼容字段，并将联网状态、服务商和附件元数据写入消息 meta。
-- 创作页主输入在自动确认或手动确认模式下都直接进入 `/api/agent/loop/start`，不再生成 `pendingAgentTask`；应用、回滚和废弃文件级预览通过 `/api/agent/loop/apply` 完成，成功后只更新文件内容与 operation set 状态，不携带 `session_id` 续跑。
+- `/api/settings/search-providers` 用 settings 表保存搜索启用状态、当前服务商、调用模式、结果数和 API Key；响应只返回 `api_key_set` 和 provider 是否需要 Key，不返回明文密钥。设置页联网搜索总开关可单独 PUT `{ enabled }` 实时保存，服务商、模式、结果数和 API Key 仍由保存按钮提交；Firecrawl 允许无 Key，Tavily、Exa、智谱必须配置 Key。
+- AgentWorkspace 输入框接受 `webSearchEnabled`、`searchProvider`、`attachments` 和 `modelConfigId` 兼容字段；`/api/agent/loop/start` 将联网开关、provider 和工具 profile 写入 `agent_sessions`。联网开关打开且 provider 可用时，Agent Loop 注入 `web_search` 工具；关闭时不注入工具，也不拼入历史联网上下文。知识库页联网问答走只读 Agent Loop，创作页仍使用可写 Agent Loop。
+- `web_search` 工具通过官方 npm SDK 调用 Firecrawl、Tavily、Exa、智谱（`firecrawl@1.20.0`、`@tavily/core`、`exa-js`、`openai`），Notus 只做统一参数映射与返回结构归一化，返回 `{ query, provider, results, durationMs }`，不手写维护各 Provider 的 HTTP 请求细节。成功搜索结果以 `messages.role='system'`、`type='web_search_context'` 持久化到同一 conversation，后续仅在本会话且联网开关打开时按预算拼入 system prompt；结果不进入知识库索引。
+- 创作页主输入在自动确认或手动确认模式下都直接进入 `/api/agent/loop/start`，不再生成 `pendingAgentTask`；应用、回滚和废弃文件级预览通过 `/api/agent/loop/apply` 完成，成功后只更新文件内容与 operation set 状态，不携带 `session_id` 续跑；新建/切换对话时前端清空 active Agent session，历史对话恢复不返回 `session_token`，旧预览只能查看和导出。
 - 搜索配置进入设置菜单 /settings/search；聊天顶部不再提供模型配置和搜索配置入口。
 - AgentWorkspace 不再接收或渲染 suggestions，避免输入框上方出现预制问题列表。
 - `AgentWorkspace.ToolChain` 以 `notus-agent.html` 为视觉基准：外层为顶部状态图标 + border-top 步骤列表；步骤行使用 button 控制折叠状态，`aria-expanded` 暴露展开状态，运行态使用圆环持续旋转，不使用 refresh 图标；失败态使用警示图标，完成态使用 check；展开区使用左侧细线、13.5px 说明文本、浅色工具卡片、monospace input/result 和三点等待态。
 - 创作页 `/canvas` 在 `/api/agent/loop/start` SSE 过程中累计 `session_created / snapshot_done / loop_start / thinking / tool_start / tool_done / loop_done` 对应的工具步骤，写入最终 assistant message 的 `toolSteps`，历史会话中不丢失中间步骤；旧 `waiting_preview_confirm` 事件仅作为历史兼容分支保留。
 - AgentWorkspace 的已完成 AI 消息和流式 AI 消息都通过 `StreamingText` 渲染，保持 Markdown、GFM、数学公式和代码高亮一致。
+- 创作页文件变更消息使用摘要卡承载文件数量和状态，`DiffDialog` 展示逐文件 old/new diff、状态、应用、回滚和全部应用；弹窗底部说明应用/回滚只在当前对话有效，且在新建/切换对话、预览已处理、权限过期或文件内容变化后失效。
 
 # 2026-06-19 Agentic Loop 技术口径
 
 - 创作页和知识库页继续复用 AgentWorkspace 输入入口；创作页主输入默认以自动确认进入 `/api/agent/loop/start`，也可切换为手动确认后逐文件处理 diff；知识库页写作类任务进入 `/api/agent/loop/start`，普通问答继续走 `/api/chat`。
 - `canvas_operation_sets` 新增可空 `agent_session_id` 与 `pathes_json`；旧 `operations_json` 继续服务块级 operation set，新文件级 patch 使用 `{ file_path, old, new }` 存入 `pathes_json`。
 - Agentic Loop 新增 `agent_sessions`、`agent_snapshots`、`agent_run_logs`；任务开始前必须完成快照，写入走 `validateWrite()`，删除能力不开放。
-- `lib/agentTools.js` 提供六个工具：`search_knowledge`、`read_file`、`create_note`、`preview_patch_files`、`analyze_folder`、`check_links`。`preview_patch_files` 单轮唯一，创建预览前会先把空白差异下的唯一近似 `old` 对齐到当前文件精确片段；应用前再次校验快照 hash 与 `old` 文本。
+- `lib/agentTools.js` 提供八个基础工具：`search_knowledge`、`read_file`、`create_note`、`preview_patch_files`、`preview_canvas_blocks`、`ask_question_card`、`analyze_folder`、`check_links`；联网搜索打开时额外注入 `web_search`。`preview_patch_files`、`preview_canvas_blocks` 与 `ask_question_card` 单轮唯一；前者创建预览前会先把空白差异下的唯一近似 `old` 对齐到当前文件精确片段，块级工具根据 `@bN` 生成 `operations_json`，提问卡片工具暂停 Loop 并等待用户回答。
 - `lib/agentLoop.js` 负责多轮工具调用、context 压缩、LLM 429 退避、SSE 断开取消、软/硬轮数上限、连续失败、重复结果和无进展检测。

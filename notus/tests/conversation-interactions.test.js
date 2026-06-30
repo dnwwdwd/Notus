@@ -176,6 +176,48 @@ function runTests() {
   assert.strictEqual(discussPlan.intent, 'text');
   assert.strictEqual(discussPlan.operation_kind, 'discuss');
 
+  const genericInteraction = {
+    id: 12,
+    conversation_id: 3,
+    status: 'pending',
+    source: 'agent_loop',
+    payload: {
+      questions: [
+        {
+          id: 'outline_style',
+          slot: 'outline_style',
+          type: 'single_select',
+          required: true,
+          label: '大纲风格',
+          options: [
+            { id: 'practical', label: '实用清单' },
+            { id: 'essay', label: '散文结构' },
+          ],
+        },
+        {
+          id: 'extra_note',
+          slot: 'extra_note',
+          type: 'text_input',
+          required: true,
+          label: '补充要求',
+          options: [],
+        },
+      ],
+    },
+    response: null,
+  };
+  const genericResponse = normalizeInteractionResponse(genericInteraction, {
+    answers: {
+      outline_style: { option_id: 'practical' },
+      extra_note: { text: '不要太长' },
+    },
+  });
+  assert.strictEqual(genericResponse.resolution_status, 'resolved');
+  const genericSummary = buildInteractionAnswerSummary(genericInteraction, genericResponse);
+  assert.ok(genericSummary.includes('已回答提问卡片'));
+  assert.ok(genericSummary.includes('大纲风格=实用清单'));
+  assert.ok(genericSummary.includes('补充要求=不要太长'));
+
   console.log('conversation interactions tests passed');
 }
 

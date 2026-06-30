@@ -35,7 +35,7 @@ function buildDefaultLayout(runtimeTarget, cwd = process.cwd()) {
   return {
     dataRoot,
     notesDir: path.join(dataRoot, 'notes'),
-    assetsDir: path.join(dataRoot, 'notes', '.assets'),
+    assetsDir: path.join(dataRoot, 'assets'),
     dbPath: path.join(dataRoot, 'notus.db'),
     logDir: path.join(dataRoot, 'logs'),
     sessionDir: path.join(dataRoot, '.session'),
@@ -46,7 +46,7 @@ function derivePathsFromDataRoot(runtimeTarget, dataRoot) {
   if (runtimeTarget === 'web') {
     return {
       notesDir: path.join(dataRoot, 'notes'),
-      assetsDir: path.join(dataRoot, 'notes', '.assets'),
+      assetsDir: path.join(dataRoot, 'assets'),
       dbPath: path.join(dataRoot, 'notus.db'),
       logDir: path.join(dataRoot, 'logs'),
       sessionDir: path.join(dataRoot, '.session'),

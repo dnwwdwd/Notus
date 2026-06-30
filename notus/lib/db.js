@@ -87,6 +87,11 @@ function ensureAgentLoopSchema(database) {
       soft_limit               INTEGER NOT NULL DEFAULT 15,
       hard_limit               INTEGER NOT NULL DEFAULT 30,
       search_knowledge_limit   INTEGER,
+      web_search_enabled       INTEGER NOT NULL DEFAULT 0,
+      web_search_provider      TEXT,
+      web_search_mode          TEXT,
+      web_search_count         INTEGER,
+      tool_profile             TEXT NOT NULL DEFAULT 'default',
       tool_call_counts         TEXT NOT NULL DEFAULT '{}',
       consecutive_fails        TEXT NOT NULL DEFAULT '{}',
       last_tool_results        TEXT NOT NULL DEFAULT '{}',
@@ -129,6 +134,18 @@ function ensureAgentLoopSchema(database) {
     CREATE INDEX IF NOT EXISTS idx_runlogs_session
       ON agent_run_logs(session_id, loop_index);
   `);
+
+  [
+    ['web_search_enabled', 'INTEGER NOT NULL DEFAULT 0'],
+    ['web_search_provider', 'TEXT'],
+    ['web_search_mode', 'TEXT'],
+    ['web_search_count', 'INTEGER'],
+    ['tool_profile', "TEXT NOT NULL DEFAULT 'default'"],
+  ].forEach(([column, definition]) => {
+    if (!hasColumn(database, 'agent_sessions', column)) {
+      database.exec(`ALTER TABLE agent_sessions ADD COLUMN ${column} ${definition};`);
+    }
+  });
 }
 
 function ensureAgentLoopIndexes(database) {
@@ -158,6 +175,80 @@ function ensureConversationIndexes(database) {
         ON conversations(kind, draft_key, updated_at DESC);
     `);
   }
+}
+
+function messageRoleAllowsSystem(database) {
+  if (!tableExists(database, 'messages')) return true;
+  const row = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'").get();
+  const sql = String(row?.sql || '');
+  return /role\s+IN\s*\([^)]*system/i.test(sql) || /'system'/.test(sql);
+}
+
+function ensureMessagesSchema(database) {
+  if (!tableExists(database, 'messages')) return;
+
+  const hasType = hasColumn(database, 'messages', 'type');
+  const needsRoleRebuild = !messageRoleAllowsSystem(database);
+
+  if (!needsRoleRebuild) {
+    if (!hasType) {
+      database.exec("ALTER TABLE messages ADD COLUMN type TEXT NOT NULL DEFAULT 'text';");
+    }
+    database.exec(`
+      CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_messages_attachment
+        ON messages(conversation_id, type)
+        WHERE type = 'parsed_attachment';
+      CREATE INDEX IF NOT EXISTS idx_messages_web_search_context
+        ON messages(conversation_id, id)
+        WHERE type = 'web_search_context';
+    `);
+    return;
+  }
+
+  const selectType = hasType ? "COALESCE(type, 'text')" : "'text'";
+  database.exec('PRAGMA foreign_keys = OFF;');
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS messages_next (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        role            TEXT NOT NULL CHECK(role IN ('user','assistant','tool','system')),
+        type            TEXT NOT NULL DEFAULT 'text',
+        content         TEXT NOT NULL,
+        citations       TEXT,
+        meta            TEXT,
+        created_at      TEXT DEFAULT (datetime('now'))
+      );
+    `);
+    database.exec(`
+      INSERT INTO messages_next (id, conversation_id, role, type, content, citations, meta, created_at)
+      SELECT
+        id,
+        conversation_id,
+        CASE WHEN role IN ('user','assistant','tool','system') THEN role ELSE 'user' END,
+        ${selectType},
+        content,
+        citations,
+        meta,
+        created_at
+      FROM messages;
+      DROP TABLE messages;
+      ALTER TABLE messages_next RENAME TO messages;
+    `);
+  } finally {
+    database.exec('PRAGMA foreign_keys = ON;');
+  }
+
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_messages_attachment
+      ON messages(conversation_id, type)
+      WHERE type = 'parsed_attachment';
+    CREATE INDEX IF NOT EXISTS idx_messages_web_search_context
+      ON messages(conversation_id, id)
+      WHERE type = 'web_search_context';
+  `);
 }
 
 function migrateRegularTables(database) {
@@ -242,6 +333,7 @@ function migrateRegularTables(database) {
 
   const messageColumns = [
     ['meta', 'TEXT'],
+    ['type', "TEXT NOT NULL DEFAULT 'text'"],
   ];
 
   messageColumns.forEach(([column, definition]) => {
@@ -253,6 +345,12 @@ function migrateRegularTables(database) {
   if (!hasColumn(database, 'files', 'hash')) {
     database.exec("ALTER TABLE files ADD COLUMN hash TEXT;");
   }
+
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_messages_web_search_context
+      ON messages(conversation_id, id)
+      WHERE type = 'web_search_context';
+  `);
 
   database.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_files_stable_id
@@ -353,7 +451,8 @@ function migrateIncompatibleTables(database) {
       CREATE TABLE messages (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
         conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-        role            TEXT NOT NULL CHECK(role IN ('user','assistant','tool')),
+        role            TEXT NOT NULL CHECK(role IN ('user','assistant','tool','system')),
+        type            TEXT NOT NULL DEFAULT 'text',
         content         TEXT NOT NULL,
         citations       TEXT,
         meta            TEXT,
@@ -438,6 +537,7 @@ function ensureSchema(database, config) {
   migrateRegularTables(database);
   migrateIncompatibleTables(database);
   ensureConversationIndexes(database);
+  ensureMessagesSchema(database);
   ensureAgentLoopSchema(database);
   runMigrations(database);
   ensureAgentLoopIndexes(database);
@@ -547,7 +647,8 @@ function initDb() {
       CREATE TABLE IF NOT EXISTS messages (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
         conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-        role            TEXT NOT NULL CHECK(role IN ('user','assistant','tool')),
+        role            TEXT NOT NULL CHECK(role IN ('user','assistant','tool','system')),
+        type            TEXT NOT NULL DEFAULT 'text',
         content         TEXT NOT NULL,
         citations       TEXT,
         meta            TEXT,

@@ -961,7 +961,7 @@ DELETE /api/conversations/:id
 ```
 
 - 知识库页默认只按 `kind=knowledge` 读取全局历史，不再用 `file_id` 分桶。
-- 创作页会话默认按 `kind=canvas + file_id` 读取；`draft_key` 仅保留给旧数据兼容与迁移。
+- 创作页默认只按 `kind=canvas` 读取全局创作历史，不再用 `file_id` 或 `draft_key` 分桶；`file_id` 和 `draft_key` 仅保留给旧数据兼容、会话详情和服务端上下文。
 - 画布会话详情会附带 `pending_operation_sets`，前端刷新后可恢复全部未应用预览。
 - 知识库与画布会话详情都会附带 `pending_interactions`，前端刷新后可恢复 `pending / stale / failed` 提问卡片；提问卡片继续以底部抽屉形式恢复，不再把 interaction 摘要用户消息和 retry 助手消息重新露回消息流。
 - 会话详情会附带同一 conversation 下的 `agent_sessions` 导出数据，每个 session 包含运行状态、快照数量、`agent_run_logs` 工具日志和关联修改预览，但不返回 session token。
@@ -1041,7 +1041,7 @@ POST /api/settings/test              Body: { kind: 'embedding'|'llm', config }
 - 章节证据扩展：命中 seed chunk 后，补齐同 heading 下的邻近 chunk，合并为可直接回答的 section 证据包
 - 条件 rerank：仅在复杂问题或候选不稳定时触发，且一轮只允许一次 helper
 - 证据保守策略：只命中文档标题但正文证据不足时，明确说明“已定位到相关文档，但正文证据有限”
-- 展示口径统一：SSE 需显式回传 `source_count`，让检索状态条、助手消息元数据和最终来源卡片使用同一份来源计数；检索状态、补充说明和来源卡片在前端与 AI 回复正文共用同一个回复容器；只命中文档标题且正文几乎没有有效内容的候选，不进入最终来源卡片
+- 展示口径统一：SSE 需显式回传 `source_count`，让检索状态条、助手消息元数据和最终来源卡片使用同一份来源计数；检索状态、补充说明和来源卡片在前端与 AI 回复正文共用同一个回复容器；AgentWorkspace 中的知识库引用必须复用 `SourceCard` 垂直来源列表并保留选中态；只命中文档标题且正文几乎没有有效内容的候选，不进入最终来源卡片
 - 回答模式：固定为 `clarify_needed / grounded / weak_evidence / conflicting_evidence / no_evidence`
 - helper 缓存：`rewrite` 与 `rerank` 使用 5 分钟短时缓存，键包含会话、查询、当前文档、参考模式、参考文件和历史摘要哈希
 
@@ -1059,22 +1059,22 @@ POST /api/settings/test              Body: { kind: 'embedding'|'llm', config }
 
 创作 Agent 当前主流程为 Agentic Loop：
 
-1. 创作页主输入按当前执行模式创建 `agent_sessions`：自动确认和手动确认都会直接启动 Loop，不再生成前置任务确认卡；Loop 按 LLM 工具调用自主执行多轮，工具包括 `search_knowledge`、`read_file`、`create_note`、`preview_patch_files`、`preview_canvas_blocks`、`ask_question_card`、`analyze_folder`、`check_links`。
+1. 创作页主输入按当前执行模式创建 `agent_sessions`：自动确认和手动确认都会直接启动 Loop，不再生成前置任务确认卡；前端构造任务时必须同时传 `goal` 与 `user_query`：`goal` 显式包含当前打开文档的可见名称、当前文章路径和块快照等执行上下文，`user_query` 只保留用户本轮输入框提交的原始文字，消息列表本身不额外绑定展示文件名；Loop 按 LLM 工具调用自主执行多轮，工具包括 `search_knowledge`、`read_file`、`create_note`、`preview_patch_files`、`preview_canvas_blocks`、`ask_question_card`、`analyze_folder`、`check_links`。
 2. 写入前置：每次 Loop 开始前先写入 `agent_snapshots`；`create_note` 与 `preview_patch_files` 必须通过 `validateWrite()`；删除操作始终拒绝。
-3. 预览、提问与应用：`preview_patch_files`、`preview_canvas_blocks` 和 `ask_question_card` 在单轮内必须是唯一工具调用。`preview_patch_files` 创建 operation set 前会对 `old` 文本做精确匹配、首尾裁剪匹配和空白折叠后的唯一匹配，匹配成功后使用当前文件中的精确片段写入文件级 patches；patches 存入 `canvas_operation_sets.pathes_json`，每个 patch 额外记录 `pending / applied / auto_applied / rolled_back / discarded / failed` 状态。`preview_canvas_blocks` 用当前创作页块快照和 `@bN` 引用生成 `operations_json` 块级 operation set，并通过 `/api/agent/apply` 应用到当前画布后保存 Markdown。`ask_question_card` 创建 `source='agent_loop'` 的 `conversation_interactions` 记录，将 session 置为 `waiting_confirm` 并保存消息 checkpoint；用户回答后通过同一 session 恢复 Loop，把答案作为 tool result 注入后续推理。自动确认模式下，后端在 Loop 完成前自动应用全部文件级 patch；块级预览仍显示确认卡片。手动确认模式下，消息流只展示摘要卡，用户打开详情弹窗逐文件点击应用或回滚，也可全部应用，接口只写文件和更新状态，不再续跑 Loop 或触发 LLM 总结；应用/回滚必须携带当前对话 ID，并要求 session、operation set 与当前对话一致。
+3. 预览、提问与应用：`create_note`、`preview_patch_files`、`preview_canvas_blocks` 和 `ask_question_card` 在单轮内必须是唯一工具调用。`create_note` 不直接落盘，而是生成 `old='' / new=完整新文件内容 / change_type='create'` 的文件级 operation set；手动确认模式等待用户应用后才创建文件，自动确认模式由后端自动应用，已创建的新文件可从同一 DiffDialog 回滚删除。`preview_patch_files` 创建 operation set 前会对 `old` 文本做精确匹配、首尾裁剪匹配和空白折叠后的唯一匹配，匹配成功后使用当前文件中的精确片段写入文件级 patches；patches 存入 `canvas_operation_sets.pathes_json`，每个 patch 额外记录 `pending / applied / auto_applied / rolled_back / discarded / failed` 状态。`preview_canvas_blocks` 用当前创作页块快照和 `@bN` 引用生成 `operations_json` 块级 operation set，并通过 `/api/agent/apply` 应用到当前画布后保存 Markdown。`ask_question_card` 创建 `source='agent_loop'` 的 `conversation_interactions` 记录，将 session 置为 `waiting_confirm` 并保存消息 checkpoint；用户回答后通过同一 session 恢复 Loop，把答案作为 tool result 注入后续推理。自动确认模式下，后端在 Loop 完成前自动应用全部文件级 patch；块级预览仍显示确认卡片。手动确认模式下，消息流只展示摘要卡，用户打开详情弹窗逐文件点击应用或回滚，也可全部应用，接口只写文件和更新状态，不再续跑 Loop 或触发 LLM 总结；应用/回滚必须携带当前对话 ID，并要求 session、operation set 与当前对话一致。前端在应用或回滚后必须刷新文件树；若当前创作页打开的文件已被回滚删除，应清空当前文章状态、跳回 `/canvas` 生成大纲空态，并提示“您打开的文档已被删除”。
 4. 异常终止：软上限提醒、硬上限暂停、连续工具失败、重复工具结果死循环、连续无工具无进展都会结束或暂停本次任务。
-5. 回滚与废弃：回滚以文件级 patch 为单位执行，已应用文件使用 `new -> old` 恢复，未应用文件直接标记为 `rolled_back`；下一条 prompt 发出前会把上一条任务仍未处理的 patch 标记为 `discarded`，不影响同任务中已经应用的文件；新建/切换对话、会话权限过期、预览已处理或文件内容变化后，旧预览不再允许应用或回滚。
+5. 回滚与废弃：回滚以文件级 patch 为单位执行，已应用文件使用 `new -> old` 恢复，未应用文件直接标记为 `rolled_back`；新建文件回滚删除时必须先删除磁盘文件，再通过 `indexer.removeFile()` 清理 `files/chunks/chunks_vec/FTS`，sqlite-vec 向量虚表不能依赖外键级联；下一条 prompt 发出前会把上一条任务仍未处理的 patch 标记为 `discarded`，不影响同任务中已经应用的文件；新建/切换对话、会话权限过期、预览已处理或文件内容变化后，旧预览不再允许应用或回滚。
 
-Agentic Loop 的 LLM 调用适配 OpenAI-compatible `tool_calls` 和 Anthropic `tool_use/tool_result` 两种协议；system prompt 继续接入 `getStyleContext()` 产生的风格画像、相关原文摘录，以及同一 conversation 中已解析的附件/网页正文。Prompt 明确要求：当关键信息不足，或用户要求“生成提问卡片 / 先问我几个问题”时，调用 `ask_question_card`，不要用普通文本追问替代。
+Agentic Loop 的 LLM 调用适配 OpenAI-compatible `tool_calls` 和 Anthropic `tool_use/tool_result` 两种协议；system prompt 继续接入 `getStyleContext()` 产生的风格画像、相关原文摘录，以及同一 conversation 中已解析的附件/网页正文。Prompt 明确要求用户本轮输入优先于历史任务：历史上下文只能辅助理解，不能替代本轮明确指令；只有当前任务已经明确但缺少必要结构化槽位，或用户要求“生成提问卡片 / 先问我几个问题”时，才调用 `ask_question_card`。如果本轮只有附件或外部材料且用户没有明确要求写入、更新、修改或合并当前文档，默认读取并总结附件，或用普通文本询问用途，不自动把附件关联到历史写作任务。
 
 创作页解析输入源：
 
 - 前端只在创作页为 `AgentWorkspace` 开启 `attachmentMode="parsed"`；知识库页保持现有附件展示，不调用解析上传接口。
 - `/api/agent/attachments/upload` 接受 `.pdf/.docx/.md/.markdown/.txt`，使用 `formidable` 暂存到运行时 `sessionDir/attachments`；前端也会做格式校验。
-- `/api/agent/loop/start` 在创建或确认 conversation 后，先解析本轮上传附件和用户文本中的 `http/https` 网页链接，再写入用户消息。PDF 使用 LiteParse 且关闭 OCR，DOCX 使用 mammoth，MD/TXT 使用 UTF-8，网页正文优先用 Readability，失败时用 HTML 正文提取兜底。
+- `/api/agent/loop/start` 在创建或确认 conversation 后，先解析本轮上传附件和 `user_query/input_text/display_query` 中的 `http/https` 网页链接，再写入用户消息；不得从完整 `goal`、当前打开文档内容、当前块快照、文章路径或历史任务中提取 URL。PDF 使用 LiteParse 且关闭 OCR，standalone / `.lpk` 产物必须包含 LiteParse 对应平台 optional package、`.node` 与 `libpdfium.so`；DOCX 使用 mammoth，MD/TXT 使用 UTF-8，网页正文优先用 Readability，失败时用 HTML 正文提取兜底。
 - 解析结果为 `success` 或 `partial` 时，以 `role='system'`、`type='parsed_attachment'` 写入 `messages`；`error` 只进入本轮解析摘要和工具过程，不污染后续上下文。
 - `runAgentLoop()` 每轮按 conversation 读取解析来源，拼接到 system prompt；单来源默认最多 12,000 字符，总预算保留较新的来源优先。
-- 网页链接解析只处理用户显式提供 URL 的正文提取，不等同于联网搜索；搜索供应商选择进入 Agent Loop 请求和消息 meta，并仅在用户打开联网搜索开关时用于注入 `web_search` 工具。
+- 网页链接解析只处理用户本轮显式提供 URL 的正文提取，不等同于联网搜索；旧客户端如果只传 `goal` 而没有 `user_query/input_text/display_query`，URL 解析应跳过。搜索供应商选择进入 Agent Loop 请求和消息 meta，并仅在用户打开联网搜索开关时用于注入 `web_search` 工具。
 
 Agent Loop 日志接口：
 
@@ -1363,6 +1363,7 @@ exec node server.js
 - 知识库页与创作页在流式回复开始后，都必须立即渲染 AI 气泡占位；首 token 到来前使用固定占位的柔和三点等待态，避免布局跳动。知识库检索状态必须进入 AI loading 气泡内部，按“分析问题 / 检索笔记 / 找到证据 / 组织答案”等步骤动态切换，不作为独立状态条固定在回复外部
 - 输入框生成中只保留停止按钮；真正的“AI 正在回复”反馈只能放在 AI 回复气泡区，不能继续放在输入框内部
 - AgentWorkspace 输入框上方不得展示预制问题列表；知识库页和创作页都只保留直接输入、附件、联网搜索、搜索商单选、模型选择和发送/停止控件
+- AgentWorkspace 聊天滚动必须采用贴底跟随策略：仅当用户原本处于底部阈值内时，才随 `token`、工具链步骤、消息和任务结果继续滚动；用户上滑或生成中手动滚动后不得继续抢滚，模型切换、搜索商切换和自动/手动模式切换也不得触发消息定位
 - AI 回复气泡本体不显示边框；来源卡片、状态徽标等内部组件可按自身语义保留必要边界
   - 模型选择器必须固定在输入框右下角发送/停止按钮左侧；触发器在窄宽度下单行 `ellipsis` 缩略显示，菜单项仍展示完整模型名
 
@@ -1428,12 +1429,12 @@ exec node server.js
 - `AgentWorkspace.ToolChain` 以 `notus-agent.html` 为视觉基准：外层为顶部状态图标 + border-top 步骤列表；步骤行使用 button 控制折叠状态，`aria-expanded` 暴露展开状态，运行态使用圆环持续旋转，不使用 refresh 图标；失败态使用警示图标，完成态使用 check；展开区使用左侧细线、13.5px 说明文本、浅色工具卡片、monospace input/result 和三点等待态。
 - 创作页 `/canvas` 在 `/api/agent/loop/start` SSE 过程中累计 `session_created / snapshot_done / loop_start / thinking / tool_start / tool_done / loop_done` 对应的工具步骤，写入最终 assistant message 的 `toolSteps`，历史会话中不丢失中间步骤；旧 `waiting_preview_confirm` 事件仅作为历史兼容分支保留。
 - AgentWorkspace 的已完成 AI 消息和流式 AI 消息都通过 `StreamingText` 渲染，保持 Markdown、GFM、数学公式和代码高亮一致。
-- 创作页文件变更消息使用摘要卡承载文件数量和状态，`DiffDialog` 展示逐文件 old/new diff、状态、应用、回滚和全部应用；弹窗底部说明应用/回滚只在当前对话有效，且在新建/切换对话、预览已处理、权限过期或文件内容变化后失效。
+- 创作页文件变更消息使用摘要卡承载文件数量和状态，`DiffDialog` 展示逐文件 old/new diff、状态、应用、回滚和全部应用；弹窗高度必须限制在视口内，diff 内容区独立提供横向和纵向滚动，底部操作按钮始终可见；弹窗底部说明应用/回滚只在当前对话有效，且在新建/切换对话、预览已处理、权限过期或文件内容变化后失效。
 
 # 2026-06-19 Agentic Loop 技术口径
 
 - 创作页和知识库页继续复用 AgentWorkspace 输入入口；创作页主输入默认以自动确认进入 `/api/agent/loop/start`，也可切换为手动确认后逐文件处理 diff；知识库页写作类任务进入 `/api/agent/loop/start`，普通问答继续走 `/api/chat`。
 - `canvas_operation_sets` 新增可空 `agent_session_id` 与 `pathes_json`；旧 `operations_json` 继续服务块级 operation set，新文件级 patch 使用 `{ file_path, old, new }` 存入 `pathes_json`。
 - Agentic Loop 新增 `agent_sessions`、`agent_snapshots`、`agent_run_logs`；任务开始前必须完成快照，写入走 `validateWrite()`，删除能力不开放。
-- `lib/agentTools.js` 提供八个基础工具：`search_knowledge`、`read_file`、`create_note`、`preview_patch_files`、`preview_canvas_blocks`、`ask_question_card`、`analyze_folder`、`check_links`；联网搜索打开时额外注入 `web_search`。`preview_patch_files`、`preview_canvas_blocks` 与 `ask_question_card` 单轮唯一；前者创建预览前会先把空白差异下的唯一近似 `old` 对齐到当前文件精确片段，块级工具根据 `@bN` 生成 `operations_json`，提问卡片工具暂停 Loop 并等待用户回答。
+- `lib/agentTools.js` 提供八个基础工具：`search_knowledge`、`read_file`、`create_note`、`preview_patch_files`、`preview_canvas_blocks`、`ask_question_card`、`analyze_folder`、`check_links`；联网搜索打开时额外注入 `web_search`。`create_note`、`preview_patch_files`、`preview_canvas_blocks` 与 `ask_question_card` 单轮唯一；`create_note` 生成新建文件预览，`preview_patch_files` 创建预览前会先把空白差异下的唯一近似 `old` 对齐到当前文件精确片段，块级工具根据 `@bN` 生成 `operations_json`，提问卡片工具暂停 Loop 并等待用户回答。
 - `lib/agentLoop.js` 负责多轮工具调用、context 压缩、LLM 429 退避、SSE 断开取消、软/硬轮数上限、连续失败、重复结果和无进展检测。

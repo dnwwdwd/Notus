@@ -1,6 +1,6 @@
 # Notus 项目进度
 
-> 最后更新：2026-06-21
+> 最后更新：2026-06-30
 > 对应文档：`docs/Notus_PDD.md` / `docs/Notus_PRD.md` / `docs/Notus_UI_Guide.md` / `docs/Notus_Business_Logic_Upgrade.md` / `docs/Notus_Desktop_Roadmap.md` / `docs/Notus_Release_Notes.md`
 
 ---
@@ -56,7 +56,7 @@
 | M3-02 jieba-wasm 集成 + FTS 分词 | `lib/tokenizer.js` | ✅ | 已改为应用层分词，不再依赖 SQLite 自定义 tokenizer |
 | M3-03 `lib/prompt.js` 知识库 Prompt | `lib/prompt.js` | ✅ | 已补齐 `clarify_needed / grounded / weak_evidence / conflicting_evidence / no_evidence` 五种回答模式的提示约束，并新增条件 rerank Prompt |
 | M3-04 `/api/chat` SSE 流式 | `pages/api/chat.js` | ✅ | 已接真实检索、对话存储、查询规划与 LLM 流式输出；新增澄清直返、`no_evidence` 模板化直返、单次 helper 护栏、`assistant_meta` 回传与消息 meta 落库；已增加文档级上下文读取和 `documents/document_stats` 元信息 |
-| M3-05 Agent 聊天面板 + SourceCard 展示 | `components/AgentWorkspace/` `components/ui/SourceCard.js` | ✅ | 知识库页保留左侧文档预览/编辑区，右侧聊天面板使用设计稿样式；前端继续消费 `assistant_meta / done.meta` 展示真实回答模式、来源说明和本次读取的 Markdown 文档摘要；检索状态映射为可展开工具过程，来源卡片继续展示回答引用 |
+| M3-05 Agent 聊天面板 + SourceCard 展示 | `components/AgentWorkspace/` `components/ui/SourceCard.js` | ✅ | 知识库页保留左侧文档预览/编辑区，右侧聊天面板使用设计稿样式；前端继续消费 `assistant_meta / done.meta` 展示真实回答模式、来源说明和本次读取的 Markdown 文档摘要；检索状态映射为可展开工具过程，来源引用复用 `SourceCard` 垂直列表；聊天区采用贴底跟随滚动，用户上滑后不抢滚 |
 | M3-06 多模型切换 Select | `components/ChatArea/InputBar.js` | ✅ | UI 与 `/api/chat` 的 `model` 参数已打通；模型选择框固定在底部输入栏右下角，触发器单行缩略，菜单项展示完整模型名 |
 | M3-07 知识库参考来源手动指定 | `pages/knowledge.js` `pages/api/chat.js` `lib/retrieval.js` | ✅ | 已接 file id 过滤、当前文档优先召回、章节聚合与证据不足兜底；当前页以 Agent 工作台展示引用来源 |
 
@@ -71,9 +71,9 @@
 | M4-03 创作规划器 + 执行器主链路 | `lib/canvasRequestPlanner.js` `lib/canvasAgent.js` | ✅ | 已从旧的单块工具循环升级为“规则规划 + 单次 helper + 执行器”主链路，支持单块、多块、全文与文本回复/文章分析；多轮续聊现会沿用最近目标块、最近操作类型和最近建议摘要 |
 | M4-04 旧 intent 链路清理 | `pages/api/agent/intent.js` `lib/agent.js` | ✅ | 旧的独立 intent 接口和 legacy Canvas 工具循环已移除，当前只保留内置请求规划主链路 |
 | M4-05 大纲生成 `/api/agent/outline` SSE | `pages/api/agent/outline.js` `lib/prompt.js` | ✅ | 已接 LLM 大纲生成，并改为复用 `getStyleContext()`，让大纲和改写共用同一套风格上下文 |
-| M4-06 Agentic Loop 运行 `/api/agent/loop/start` SSE | `pages/api/agent/loop/start.js` `hooks/useAgentLoopController.js` | ✅ | 创作页主输入已切到 Agentic Loop；默认自动确认模式跳过任务确认卡，文件预览生成后由后端自动应用；手动确认模式通过消息摘要卡打开 DiffDialog 逐文件应用、回滚或全部应用，应用动作不再续跑；创作页上传附件和网页链接解析会进入本轮上下文 |
-| M4-07 CanvasBlock 组件 | `components/Canvas/CanvasBlock.js` `pages/canvas.js` | ✅ | 块级编辑组件继续保留；创作页右侧聊天面板使用设计稿样式，当前文章路径作为 Agentic Loop 默认授权路径，顶部 Agent Loop 任务/回滚卡片已移除 |
-| M4-08 AIPanel + 批量预览恢复 | `components/AIPanel/BatchOperationCard.js` `pages/canvas.js` | ✅ | 已支持整组预览、整组应用/取消、刷新恢复全部未应用预览、文章变更后 `stale` 提示；AIPanel 继续保留后台自动事实补充 + 前台风格来源配置；历史会话抽屉支持二次确认删除 |
+| M4-06 Agentic Loop 运行 `/api/agent/loop/start` SSE | `pages/api/agent/loop/start.js` `hooks/useAgentLoopController.js` | ✅ | 创作页主输入已切到 Agentic Loop；默认自动确认模式跳过任务确认卡，文件级预览生成后由后端自动应用；手动确认模式通过消息摘要卡打开 DiffDialog 逐文件应用、回滚或全部应用，`create_note` 新建文件也先生成 diff 预览，应用动作不再续跑；创作页上传附件和用户本轮输入中的网页链接解析会进入本轮上下文，`goal` 中的当前文档/块快照/历史任务不再参与 URL 解析，PDF 解析原生依赖已纳入 standalone / LPK 打包口径 |
+| M4-07 CanvasBlock 组件 | `components/Canvas/CanvasBlock.js` `pages/canvas.js` | ✅ | 块级编辑组件继续保留；创作页右侧聊天面板使用设计稿样式，当前打开文档名称和文章路径会进入 Agentic Loop 任务 goal，当前文章所在目录作为默认授权路径，顶部 Agent Loop 任务/回滚卡片已移除 |
+| M4-08 AIPanel + 批量预览恢复 | `components/AIPanel/BatchOperationCard.js` `pages/canvas.js` | ✅ | 已支持整组预览、整组应用/取消、刷新恢复全部未应用预览、文章变更后 `stale` 提示；文件级 DiffDialog 支持大 diff 的横向/纵向滚动并保持底部操作按钮可见；AIPanel 继续保留后台自动事实补充 + 前台风格来源配置；历史会话抽屉支持二次确认删除 |
 | M4-09 新建创作入口页 | `pages/canvas.js` CanvasEntry | ✅ | 话题输入 + 最近列表全部可点击，"从空白开始"按钮可用；侧边栏选中文件后会在当前页基于该文章进入创作；携带 `?fileId=` 打开已有文档时先显示文档加载骨架，不再露出新建入口；新主题内容可保存为 Markdown 并索引 |
 | M4-10 编辑器"AI 创作"按钮 | `components/Editor/EditorToolbar.js` | ✅ | 点击跳转 `/canvas?fileId=...`，创作页在目标文章加载完成前显示“正在打开文档…”骨架态 |
 | M4-11 风格指纹与旧文回填 | `lib/style.js` `lib/indexer.js` `lib/runtime.js` | ✅ | 已新增 `style_fingerprints / style_profile`、索引后自动提取、旧文后台回填、重建索引暂停与恢复 |
@@ -107,19 +107,20 @@
 - 旧的“知识库问答 + 普通文件改写”只能描述当前部分能力，不能作为最终产品定义。
 - 文件系统仍是真相来源；数据库只保存索引、缓存、会话、预览和运行状态。
 - 后续 Agent 能力应围绕工作区工具扩展，包括读取文件、搜索工作区、创建笔记、更新 frontmatter、多文件预览、整理目录和检查内部链接。
-- 创作页和知识库页已接入 Agentic Loop：创作页主输入默认自动确认，发送后直接启动 Loop，文件预览生成后自动应用并在消息中保留可打开详情的摘要卡；创作页也可切换为手动确认，在 DiffDialog 中逐文件处理或全部应用。创作页上传附件、超过 100 字符的粘贴文本和网页链接正文可作为 Agent 上下文，每条消息最多 5 个解析附件；知识库页普通问答继续走 `/api/chat`，写作类任务通过保守关键词规则进入工具调用、文件级预览、逐文件应用/回滚和未处理项废弃。
+- 创作页和知识库页已接入 Agentic Loop：创作页主输入默认自动确认，发送后直接启动 Loop，文件预览生成后自动应用并在消息中保留可打开详情的摘要卡；创作页也可切换为手动确认，在 DiffDialog 中逐文件处理或全部应用。创作页上传附件、超过 100 字符的粘贴文本和用户本轮输入中的网页链接正文可作为 Agent 上下文，每条消息最多 5 个解析附件；Agent 执行上下文 `goal` 可包含当前文档和块快照，但不会被输入源解析器扫描。知识库页普通问答继续走 `/api/chat`，写作类任务通过保守关键词规则进入工具调用、文件级预览、逐文件应用/回滚和未处理项废弃。
 - 检索范围、写入范围和风格参考范围应逐步升级为会话级可见状态，而不是仅作为单次请求参数。
 - 所有写入 Markdown 的能力都必须先生成可审查结果；创作页明确 `@b` 引用时使用 `preview_canvas_blocks` 块级预览，多文件或文件级修改使用批量预览。Agentic Loop 的文件级预览在创建前会先把空白差异下的唯一近似 `old` 对齐为当前文件精确片段。
 - 知识库页以 Agent 问答为主，但保留旧的文档预览/编辑分栏；文档上下文继续作为请求上下文和引用来源参与回答。
 - 知识库回答已从“只给来源入口”升级为“基于章节证据自然回答”，并新增查询规划、标题命中、章节上下文扩展、澄清追问、条件重排、弱证据/冲突模式与证据不足保守回答。
 - 知识库页历史会话仍统一保留在全局空间；页面首次进入默认新对话，不再自动恢复最近一条历史，只有用户主动选择旧会话时才续聊。
 - 知识库页和创作页历史抽屉均支持导出 Markdown，会包含消息、Agent session、工具日志、思考文本和修改预览记录。
-- 知识库来源卡片继续展示回答引用；左侧编辑区定位交互继续保留，点击来源仍可展开文档并定位原文。
+- 知识库来源卡片继续以 `SourceCard` 垂直列表展示回答引用；左侧编辑区定位交互继续保留，点击来源仍可展开文档并定位原文，来源列表保留选中反馈。
+- 知识库页与创作页右侧 AI 聊天区采用贴底跟随滚动：用户停留在底部时随流式输出和工具链进度滚动，用户上滑或生成中手动滚动后不再抢滚；切换模型、搜索商或自动/手动模式不触发消息定位。
 - 知识库问答继续保持单索引架构，不做摘要层级索引；每轮请求最多只允许“辅助 1 次 + 主回答 1 次”，且 `clarify_needed` 与 `no_evidence` 不调用主回答模型。
 - 知识库页与创作页的右侧 AI 回复等待态统一放在 Notus Agent 气泡区；知识库检索状态和创作批量预览状态会映射为可展开的工具过程；输入栏生成中只保留停止按钮。
 - 工具过程已进一步按 `Notus-design-draft/notus-agent.html` 还原为顶部状态图标、可折叠步骤行、展开详情和浅色工具卡片；运行态使用圆环持续旋转，创作页完成消息会保留完整工具步骤。
 - 创作页和知识库页 AgentWorkspace 的 AI 回复已统一走 Markdown 富文本流式渲染，支持 GFM、数学公式和代码高亮。
-- 知识库页与创作页的结构化提问交互已统一命名为“提问卡片”，底层继续复用设计稿 `ClarifyDrawer`：知识库页答完后继续检索，创作页答完先回顾再继续生成预览；Agent Loop 新增 `ask_question_card`，可由 Agent 主动调用，也可响应用户 prompt 生成提问卡片；两页都会隐藏 interaction 摘要用户消息与 retry 助手消息。
+- 知识库页与创作页的结构化提问交互已统一命名为“提问卡片”，底层继续复用设计稿 `ClarifyDrawer`：知识库页答完后继续检索，创作页答完先回顾再继续生成预览；Agent Loop 新增 `ask_question_card`，可在任务明确但缺少结构化槽位时主动调用，也可响应用户 prompt 生成提问卡片；本轮仅有附件或外部材料且没有写入意图时，不自动用提问卡片追问写入当前文档的位置。两页都会隐藏 interaction 摘要用户消息与 retry 助手消息。
 - 侧边栏文件树 / 大纲 tab 与各 tab 滚动位置已持久化；文件页、知识库页和创作页共享同一文档的最近阅读位置，普通滚动停止后再保存，切页时同步写入；显式来源定位和 URL 行号定位优先。
 - 知识库页与创作页历史抽屉支持删除整条会话；删除当前会话后回到新对话空态，创作页保留当前文章块内容和未保存状态。
 - 文件页、知识库页与创作页的可见文档标题统一优先显示标题或去掉 `.md` 的文件名，不再暴露 `article_xxx`、`notus_xxx`、裸 `fileId` 等内部标识。

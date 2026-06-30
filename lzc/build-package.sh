@@ -36,6 +36,24 @@ run_local_build() {
     fi
   done
 
+  # LiteParse loads PDFium through platform optional packages at runtime.
+  # Next standalone tracing can miss these native files, so keep a packaging
+  # fallback for .lpk builds.
+  mkdir -p "$DIST_DIR/notus/node_modules/@llamaindex"
+  for liteparse_pkg in \
+    "$APP_DIR/node_modules/@llamaindex/liteparse" \
+    "$APP_DIR/node_modules/@llamaindex/liteparse-linux-x64-gnu" \
+    "$APP_DIR/node_modules/@llamaindex/liteparse-linux-x64-musl" \
+    "$APP_DIR/node_modules/@llamaindex/liteparse-linux-arm64-gnu" \
+    "$APP_DIR/node_modules/@llamaindex/liteparse-linux-arm64-musl"
+  do
+    if [ -d "$liteparse_pkg" ]; then
+      liteparse_pkg_name=$(basename "$liteparse_pkg")
+      rm -rf "$DIST_DIR/notus/node_modules/@llamaindex/$liteparse_pkg_name"
+      cp -R "$liteparse_pkg" "$DIST_DIR/notus/node_modules/@llamaindex/$liteparse_pkg_name"
+    fi
+  done
+
   cp "$ROOT_DIR/lzc/run.sh" "$DIST_DIR/lzc/run.sh"
   chmod +x "$DIST_DIR/lzc/run.sh"
   echo "lzc-dist is ready at $DIST_DIR"

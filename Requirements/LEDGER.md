@@ -13,6 +13,7 @@
 
 | ID | 日期 | 分类 | 标题 | 状态 | 归档位置 | 备注 |
 |----|------|------|------|------|----------|------|
+| REQ-20260629-001 | 2026-06-29 | 功能优化 | 创作页 Agent Prompt 明确当前打开文档 | 已完成 | `Requirements/REQ-20260629-001.md` | 创作页前端对话记录展示不额外绑定文件名，但每次发给 Agent Loop 的任务 goal 都显式包含当前打开文档的可见名称和路径，避免 Agent 忽略当前工作对象 |
 | REQ-20260627-001 | 2026-06-27 | 功能优化 | 将结构化澄清统一命名为提问卡片并开放 Agent Loop 调用 | 已完成 | `Requirements/REQ-20260627-001.md` | `ClarifyDrawer` 对外统一称为提问卡片；Agent Loop 新增 `ask_question_card` 工具，支持 Agent 主动生成，也支持用户通过 prompt 要求 Agent 生成提问卡片，回答后恢复同一 Loop 继续执行 |
 | REQ-20260625-003 | 2026-06-25 | 功能优化 | 恢复创作页 @b 块级 Agent 工具并优化图片与导出链路 | 已完成 | Requirements/REQ-20260625-003.md | 创作页 Agent Loop 新增 `preview_canvas_blocks` 块级预览工具，用户可继续用 `@b1/@b2` 精准修改文本块；本地图片粘贴和工具栏插入改为保存到同级 `assets` 资源目录并以相对路径写入 Markdown；Markdown 导出统一输出包含 `notes` 和资源目录的 zip；导出弹窗将已选文件置顶 |
 | REQ-20260625-002 | 2026-06-25 | 功能优化 | 接入 Agent Loop 联网搜索工具与会话上下文持久化 | 已完成 | Requirements/REQ-20260625-002.md | 输入框联网开关打开时注入 `web_search` 工具；关闭时不注入；搜索结果以 `web_search_context` 持久化为同会话上下文；Provider 调用使用官方 npm SDK；Firecrawl 可无 Key，其他 provider 未配置 Key 时引导到对应设置 tab |

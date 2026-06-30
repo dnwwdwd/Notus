@@ -299,10 +299,6 @@ export default function KnowledgePage() {
     });
   }, [activeConfigId, llmConfigs]);
 
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, streamText]);
-
   useEffect(() => () => {
     requestControllerRef.current?.abort();
   }, []);
@@ -693,6 +689,12 @@ export default function KnowledgePage() {
     }
   }, [activeFile?.id, refreshFiles, setCachedContent, toast]);
 
+  const refreshFilesAfterAgentMayHaveChanged = useCallback(async () => {
+    try {
+      await refreshFiles({ background: true });
+    } catch {}
+  }, [refreshFiles]);
+
   const handleAgentLoopOperationSetHandled = useCallback((operationSetId, _action, operationSet = null) => {
     setMessages((prev) => prev.map((message) => (
       Number(message?.meta?.operation_set_id || 0) === Number(operationSetId)
@@ -725,6 +727,7 @@ export default function KnowledgePage() {
     onOperationSetHandled: handleAgentLoopOperationSetHandled,
     onApplySuccess: refreshActiveDocumentAfterAgentWrite,
     onRollbackSuccess: refreshActiveDocumentAfterAgentWrite,
+    onFilesMayHaveChanged: refreshFilesAfterAgentMayHaveChanged,
     onError: (loopError) => {
       const message = loopError.message || 'Agent Loop 请求失败';
       setError(message);
@@ -1139,6 +1142,7 @@ export default function KnowledgePage() {
       await discardPendingAgentDiffs();
       agentLoop.confirmAgentTask({
         goal,
+        user_query: query,
         display_query: query,
         kind: 'knowledge',
         conversation_id: activeConversationId || undefined,
@@ -1634,6 +1638,7 @@ export default function KnowledgePage() {
                 else requestControllerRef.current?.abort();
               }}
               onCitationClick={handleCitationClick}
+              citationSelection={activeCitationSelection}
               onApplyOperationFile={handleApplyOperationFile}
               onRollbackOperationFile={handleRollbackOperationFile}
               activeAgentSession={agentLoop.activeAgentSession}

@@ -219,13 +219,13 @@
 - `analyze_folder`
 - `check_links`
 
-其中 `preview_patch_files` 生成文件级 patch 预览，并按文件记录 `pending / applied / auto_applied / rolled_back / discarded / failed` 状态；创建预览前会把空白差异下的唯一近似 `old` 对齐到当前文件精确片段，无法唯一匹配时返回明确错误。`preview_canvas_blocks` 服务创作页 `@b1/@b2/@b3` 块级修改，按当前文章块快照生成 `operations_json` 块级 operation set，前端确认后通过 `/api/agent/apply` 应用到画布并保存 Markdown。`ask_question_card` 生成提问卡片并暂停同一个 Agent Loop，用户回答后把答案作为 tool result 注入后续推理。文件级消息流只展示文件变更摘要，old/new 详情、逐文件应用、回滚和全部应用放在 DiffDialog 中。应用/回滚必须属于当前对话；新建或切换对话后旧预览只保留查看、导出和日志复盘。真正落盘由 `/api/agent/loop/apply` 或文章保存链路完成，并在写入后触发增量索引。删除文件、重命名、移动和系统命令不作为当前 Agent 能力开放。
+其中 `create_note` 生成新建文件预览，写入 `old='' / new=完整新文件内容 / change_type='create'` 的文件级 patch，手动确认模式下用户应用后才创建文件，自动确认模式下后端自动创建。`preview_patch_files` 生成修改已有文件的文件级 patch 预览，并按文件记录 `pending / applied / auto_applied / rolled_back / discarded / failed` 状态；创建预览前会把空白差异下的唯一近似 `old` 对齐到当前文件精确片段，无法唯一匹配时返回明确错误。`preview_canvas_blocks` 服务创作页 `@b1/@b2/@b3` 块级修改，按当前文章块快照生成 `operations_json` 块级 operation set，前端确认后通过 `/api/agent/apply` 应用到画布并保存 Markdown。`ask_question_card` 只在当前任务明确但缺少必要结构化槽位，或用户明确要求先提问时生成提问卡片并暂停同一个 Agent Loop；本轮只有附件/外部材料且没有写入当前文档意图时，不得追问写入位置。用户回答后把答案作为 tool result 注入后续推理。文件级消息流只展示文件变更摘要，old/new 详情、逐文件应用、回滚和全部应用放在 DiffDialog 中。应用/回滚必须属于当前对话；新建或切换对话后旧预览只保留查看、导出和日志复盘。真正落盘由 `/api/agent/loop/apply` 或文章保存链路完成，并在写入后触发增量索引。删除文件、重命名、移动和系统命令不作为当前 Agent 能力开放。
 
 ### 8.5 Agentic Loop 任务安全边界
 
-创作页主输入和知识库页写作类任务会创建 `agent_sessions`。创作页默认自动确认，发送后直接创建 session；切换为手动确认时也直接执行，只是在生成文件级预览后等待用户在详情弹窗中逐文件应用或回滚。每次 Loop 开始前先完成 `agent_snapshots`；写入类工具必须经过 `validateWrite()` 校验授权路径、授权操作和 session token。前端新建/切换对话时会清空 active Agent session，后端应用/回滚接口还会校验 `current_conversation_id`、session 与 operation set 归属一致。`create_note` 按目录粒度校验新建权限；如果历史任务只授权了当前 `.md` 文件，后端只兼容允许在该文件父目录中新建文件，不会把同目录其他文件的 `modify` 权限一并放开。知识库页普通问答不创建 Loop session，继续走 `/api/chat`。
+创作页主输入和知识库页写作类任务会创建 `agent_sessions`。创作页默认自动确认，发送后直接创建 session；切换为手动确认时也直接执行，只是在生成文件级预览后等待用户在详情弹窗中逐文件应用或回滚。每次 Loop 开始前先完成 `agent_snapshots`；写入类工具必须经过 `validateWrite()` 校验授权路径、授权操作和 session token。前端新建/切换对话时会清空 active Agent session，后端应用/回滚接口还会校验 `current_conversation_id`、session 与 operation set 归属一致。`create_note` 按目录粒度校验新建权限并先生成预览；如果历史任务只授权了当前 `.md` 文件，后端只兼容允许在该文件父目录准备新文件，不会把同目录其他文件的 `modify` 权限一并放开。知识库页普通问答不创建 Loop session，继续走 `/api/chat`。
 
-创作页 Agent Loop 在创建或确认 conversation 后会解析输入源：PDF/DOCX/MD/TXT 上传文件、剪贴板文件、超长粘贴文本生成的 TXT 附件，以及用户文本中的网页链接正文。解析成功或部分成功的结果写入 `messages` 的 `system + parsed_attachment` 记录，后续每轮 system prompt 会按预算拼接这些材料；解析失败只作为本轮工具过程反馈，不进入长期上下文。该链路不等同于联网搜索；真实联网搜索由输入框联网开关控制的 `web_search` 工具完成。
+创作页 Agent Loop 在创建或确认 conversation 后会解析输入源：PDF/DOCX/MD/TXT 上传文件、剪贴板文件、超长粘贴文本生成的 TXT 附件，以及用户本轮 `user_query/input_text/display_query` 中的网页链接正文。`goal` 仍可包含当前文档、路径、块快照和授权范围，但不得作为 URL 提取来源。解析成功或部分成功的结果写入 `messages` 的 `system + parsed_attachment` 记录，后续每轮 system prompt 会按预算拼接这些材料；解析失败只作为本轮工具过程反馈，不进入长期上下文。该链路不等同于联网搜索；真实联网搜索由输入框联网开关控制的 `web_search` 工具完成。
 
 任务运行中会记录 `agent_run_logs`，设置页日志视图会按 session 和轮次展示工具调用、结果摘要、失败状态和耗时；历史抽屉中包含 Agent Loop 的会话会显示日志入口，并跳转到设置页按 `conversation_id` 过滤。运行时同时检测以下异常：
 

@@ -52,25 +52,31 @@ export default async function handler(req, res) {
         send(res, { type: 'error', error: 'goal is required', code: 'GOAL_REQUIRED' });
         return res.end();
       }
+      const userInputText = String(body.user_query ?? body.userQuery ?? body.input_text ?? body.inputText ?? body.display_query ?? body.displayQuery ?? '').trim();
+      const displayQuery = String(body.display_query ?? body.displayQuery ?? userInputText).trim();
       const conversation = ensureConversation({
         conversationId,
         kind: body.kind || 'agent',
-        title: goal,
+        title: displayQuery || goal,
         fileId: body.active_file_id || null,
       });
       conversationId = conversation.id;
+      // Only parse sources explicitly provided by the user this turn. Do not scan
+      // the full Agent goal, because it contains workspace context and block snapshots.
       const parsedAttachments = await parseAgentInputSources({
         conversationId,
         attachments: body.attachments || [],
-        text: goal,
+        userInputText,
         onEvent: (event) => send(res, { ...event, conversation_id: conversationId }),
       });
       appendConversationMessage({
         conversationId,
         role: 'user',
-        content: goal,
+        content: displayQuery || userInputText || goal,
         meta: {
           agent_loop: true,
+          agent_goal: goal,
+          user_query: userInputText,
           attachments: Array.isArray(body.attachments) ? body.attachments.map((item) => ({
             name: item?.name || '',
             size: item?.size || 0,

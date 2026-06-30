@@ -46,7 +46,7 @@ pnpm add jsdom                          # DOM 环境 (Readability 依赖)
 pnpm add cheerio                        # HTML 结构化提取 (补充 fallback)
 ```
 
-> **注意**：LiteParse 通过 `optionalDependencies` 自动选择平台对应的预编译二进制。Lazy Cat NAS（Linux ARM64）对应 `@llamaindex/liteparse-linux-arm64-gnu`，npm install 时自动下载，无需手动处理。LiteParse **不需要** LibreOffice；DOCX 由 mammoth 独立处理，两者互不依赖。
+> **注意**：LiteParse 通过 `optionalDependencies` 自动选择平台对应的预编译二进制。Lazy Cat NAS（Linux ARM64）对应 `@llamaindex/liteparse-linux-arm64-gnu`，npm install 时自动下载。Next standalone、Web 分发目录和 `.lpk` 产物必须显式包含 LiteParse 对应平台 optional package、`.node` 文件和 `libpdfium.so`，不能只打入 `@llamaindex/liteparse` 的 JS 文件。LiteParse **不需要** LibreOffice；DOCX 由 mammoth 独立处理，两者互不依赖。
 
 ---
 
@@ -569,12 +569,12 @@ export const parseUrlTool = {
 适用于文章、博客、文档、技术帖等以正文内容为主的静态渲染页面。
 
 【调用时机 - 必须满足以下所有条件才可调用】
-1. 用户明确提供了一个 URL，并表达了"读取/分析/总结/导入这个链接内容"的意图。
+1. 用户本轮输入明确提供了一个 URL，并表达了"读取/分析/总结/导入这个链接内容"的意图；不得从 Agent `goal`、当前文档内容、块快照、文章路径或历史任务中提取 URL。
 2. 该 URL 尚未在本次会话中被解析过（避免重复抓取）。
 3. URL 指向的是网页内容（非文件下载链接，文件下载应用 parse_document）。
 
 【严禁调用场景】
-- 用户未提供 URL 时。
+- 用户本轮输入未提供 URL 时。
 - URL 已在本次会话中解析过。
 - URL 明显指向文件下载（.pdf/.docx 等，应引导用户下载后上传）。
 - 用户只是在对话中提及某网址作为参考，没有明确要求导入其内容。
@@ -852,7 +852,7 @@ export type NotusToolName = (typeof NOTUS_TOOLS)[number]['name'];
 ### 8.2 parse_url 调用决策树
 
 ```
-用户发送消息
+用户发送消息（仅检查本轮 user_query/input_text/display_query，不检查 Agent goal 或当前文档快照）
     │
     ├─ 消息中包含 URL？
     │       │

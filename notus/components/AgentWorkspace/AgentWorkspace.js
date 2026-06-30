@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
 import { Button } from '../ui/Button';
 import { TextInput } from '../ui/Input';
@@ -6,6 +6,7 @@ import { Toggle } from '../ui/Toggle';
 import { Dialog } from '../ui/Dialog';
 import { Icons } from '../ui/Icons';
 import { Tooltip } from '../ui/Tooltip';
+import { SourceCard } from '../ui/SourceCard';
 import { useToast } from '../ui/Toast';
 import { StreamingText } from '../ui/StreamingText';
 import { LlmConfigCardsSection } from '../Settings/LlmConfigCardsSection';
@@ -54,6 +55,18 @@ const AGENT_CONFIRM_MODE_OPTIONS = [
     icon: 'hand',
   },
 ];
+const CHAT_STICKY_BOTTOM_THRESHOLD = 56;
+const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
+
+function isNearScrollBottom(container) {
+  if (!container) return true;
+  return container.scrollHeight - container.scrollTop - container.clientHeight <= CHAT_STICKY_BOTTOM_THRESHOLD;
+}
+
+function scrollContainerToBottom(container, behavior = 'auto') {
+  if (!container) return;
+  container.scrollTo({ top: container.scrollHeight, behavior });
+}
 
 const PARSED_ATTACHMENT_ACCEPT = '.pdf,.docx,.md,.markdown,.txt,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const PARSED_ATTACHMENT_EXTENSIONS = new Set(['.pdf', '.docx', '.md', '.markdown', '.txt']);
@@ -335,6 +348,7 @@ function operationItems(operationSet) {
       patchIndex: index,
       type: 'str_replace',
       file_path: patch.file_path,
+      change_type: patch.change_type || patch.type || '',
       old: patch.old,
       new: patch.new,
       status: patch.status || 'pending',
@@ -459,7 +473,7 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
 
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 80, background: 'rgba(45,45,45,0.28)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-      <div role="dialog" aria-modal="true" aria-label="修改详情" style={{ width: 'min(980px, calc(100vw - 48px))', maxHeight: 'min(760px, calc(100vh - 48px))', background: '#fff', borderRadius: 18, overflow: 'hidden', boxShadow: '0 24px 80px rgba(45,45,45,0.22)', display: 'flex', flexDirection: 'column' }}>
+      <div role="dialog" aria-modal="true" aria-label="修改详情" style={{ width: 'min(980px, calc(100vw - 48px))', height: 'min(760px, calc(100vh - 48px))', background: '#fff', borderRadius: 18, overflow: 'hidden', boxShadow: '0 24px 80px rgba(45,45,45,0.22)', display: 'flex', flexDirection: 'column' }}>
         <div style={{ minHeight: 58, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '14px 18px', borderBottom: '1px solid ' + C.border, background: C.page }}>
           <div style={{ minWidth: 0 }}>
             <div style={{ fontSize: 15, fontWeight: 900, color: C.text }}>修改详情</div>
@@ -467,7 +481,7 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
           </div>
           <button type="button" aria-label="关闭" onClick={onClose} style={transitionButton({ width: 34, height: 34, borderRadius: 10, background: '#fff', color: C.secondary, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', boxShadow: 'inset 0 0 0 1px rgba(229,227,216,0.95)' })}><Icons.x size={16} /></button>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '220px minmax(0, 1fr)', minHeight: 0, flex: 1 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '220px minmax(0, 1fr)', minHeight: 0, flex: 1, overflow: 'hidden' }}>
           <div style={{ borderRight: '1px solid ' + C.border, background: C.page, padding: 8, overflowY: 'auto' }}>
             {operations.map((operation, index) => {
               const pathText = operation.file_path || operation.path || '全文';
@@ -484,26 +498,26 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
               );
             })}
           </div>
-          <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', background: '#FAFAFA' }}>
+          <div style={{ minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', background: '#FAFAFA', overflow: 'hidden' }}>
             <div style={{ minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '8px 12px', borderBottom: '1px solid ' + C.border, background: '#fff' }}>
               <span style={{ minWidth: 0, fontSize: 12, color: C.secondary, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{activePath}</span>
               <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 800, color: activeStatus.color, background: activeStatus.bg, borderRadius: 999, padding: '4px 8px' }}>{activeStatus.label}</span>
             </div>
-            <div style={{ flex: 1, minHeight: 260, overflowY: 'auto', padding: '12px 0' }}>
-              <div style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12.5, lineHeight: 1.65 }}>
+            <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '12px 0', overscrollBehavior: 'contain' }}>
+              <div style={{ minWidth: 'max-content', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12.5, lineHeight: 1.65 }}>
                 {diffLines.length === 0 ? <div style={{ padding: '0 14px', color: C.tertiary }}>没有可展示的 diff 内容。</div> : diffLines.map((line, index) => {
                   const remove = line.type === 'remove';
                   const add = line.type === 'add';
                   return (
-                    <div key={index} style={{ display: 'flex', padding: '0 14px', background: add ? 'rgba(187,247,208,0.45)' : remove ? 'rgba(254,202,202,0.45)' : 'transparent', color: add ? '#166534' : remove ? '#991B1B' : C.secondary, textDecoration: remove ? 'line-through' : 'none' }}>
+                    <div key={index} style={{ display: 'flex', minWidth: '100%', padding: '0 14px', background: add ? 'rgba(187,247,208,0.45)' : remove ? 'rgba(254,202,202,0.45)' : 'transparent', color: add ? '#166534' : remove ? '#991B1B' : C.secondary, textDecoration: remove ? 'line-through' : 'none' }}>
                       <span style={{ width: 20, flex: '0 0 auto', color: '#BDBBB3', textAlign: 'right', paddingRight: 8, userSelect: 'none' }}>{add ? '+' : remove ? '-' : ' '}</span>
-                      <span style={{ flex: 1, minWidth: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{line.content}</span>
+                      <span style={{ flex: '0 0 auto', whiteSpace: 'pre' }}>{line.content}</span>
                     </div>
                   );
                 })}
               </div>
             </div>
-            <div style={{ minHeight: 56, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '10px 12px', borderTop: '1px solid ' + C.border, background: '#fff' }}>
+            <div style={{ minHeight: 56, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '10px 12px', borderTop: '1px solid ' + C.border, background: '#fff' }}>
               <span style={{ flex: 1, minWidth: 0, fontSize: 12, lineHeight: 1.6, color: C.tertiary }}>仅当前对话可应用或回滚修改；新建/切换对话、预览已处理、会话权限过期或文件内容变化后，应用与回滚会失效。</span>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
                 <button type="button" disabled={!canRollback || Boolean(busyKey)} onClick={() => runFileAction('rollback')} style={transitionButton({ height: 32, padding: '0 11px', borderRadius: 9, background: canRollback ? 'rgba(254,202,202,0.65)' : C.muted, color: canRollback ? '#991B1B' : C.tertiary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: (!canRollback || busyKey) ? 'not-allowed' : 'pointer' })}>回滚修改</button>
@@ -518,7 +532,7 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
   );
 }
 
-function MessageList({ messages, streamText, loading, activeSteps, onOpenOperationSet, onCitationClick }) {
+function MessageList({ messages, streamText, loading, activeSteps, onOpenOperationSet, onCitationClick, citationSelection }) {
   if (messages.length === 0 && !loading) {
     return (
       <div style={{ minHeight: '42vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', color: C.tertiary }}>
@@ -555,12 +569,23 @@ function MessageList({ messages, streamText, loading, activeSteps, onOpenOperati
               <ToolChain steps={message.toolSteps || []} />
               {message.content ? <StreamingText className="notus-agent-markdown" text={message.content} streaming={false} style={{ fontSize: 15, lineHeight: 1.85, color: C.text }} /> : null}
               {Array.isArray(message.citations) && message.citations.length > 0 ? (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
-                  {message.citations.slice(0, 6).map((citation, index) => (
-                    <button type="button" key={citation.file_id || citation.file || index} onClick={() => onCitationClick?.(citation)} style={transitionButton({ maxWidth: 260, padding: '8px 10px', borderRadius: 12, background: C.soft, color: C.secondary, textAlign: 'left', fontSize: 12, boxShadow: 'inset 0 0 0 1px rgba(229,227,216,0.78)' })}>
-                      <span style={{ fontWeight: 700, color: C.text }}>{citation.file_title || citation.file || '来源'}</span>
-                      {citation.preview || citation.quote ? <span> · {String(citation.preview || citation.quote).slice(0, 40)}</span> : null}
-                    </button>
+                <div style={{ display: 'grid', gap: 8, marginTop: 12 }}>
+                  <div style={{ fontSize: 12, color: C.tertiary }}>
+                    {(Number(message.sourceCount) > 0 ? Number(message.sourceCount) : message.citations.length)} 个来源
+                  </div>
+                  {message.citations.map((citation, index) => (
+                    <SourceCard
+                      key={citation.file_id || citation.file || index}
+                      file={citation.file}
+                      path={citation.path}
+                      quote={citation.quote || citation.preview}
+                      lines={citation.lines}
+                      imageProxyUrl={citation.image_proxy_url}
+                      imageAltText={citation.image_alt_text}
+                      imageCaption={citation.image_caption}
+                      selected={citationSelection?.messageId === message.id && citationSelection?.citationIndex === index}
+                      onClick={() => onCitationClick?.(citation, { messageId: message.id, citationIndex: index })}
+                    />
                   ))}
                 </div>
               ) : null}
@@ -641,7 +666,7 @@ function AgentConfirmModeSelect({ value, onChange, disabled }) {
   );
 }
 
-function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigChange, onSend, onStop, searchConfig, onRequireSearchConfig, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata' }) {
+function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigChange, onSend, onStop, searchConfig, onRequireSearchConfig, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [] }) {
   const [value, setValue] = useState('');
   const [files, setFiles] = useState([]);
   const [uploading, setUploading] = useState(false);
@@ -649,7 +674,14 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
   const [selectedSearchProvider, setSelectedSearchProvider] = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
+  const [cursorIndex, setCursorIndex] = useState(0);
+  const [activeMentionIndex, setActiveMentionIndex] = useState(0);
+  const [dismissedMentionKey, setDismissedMentionKey] = useState('');
+  const [isComposing, setIsComposing] = useState(false);
   const fileInputRef = useRef(null);
+  const textareaRef = useRef(null);
+  const mentionListRef = useRef(null);
+  const mentionOptionRefs = useRef([]);
   const selectedConfig = useMemo(() => llmConfigs.find((item) => String(item.id) === String(selectedConfigId)) || llmConfigs[0] || null, [llmConfigs, selectedConfigId]);
   const toast = useToast();
   const parsedAttachmentMode = attachmentMode === 'parsed';
@@ -689,6 +721,77 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
       setSelectedSearchProvider(preferredSearchProvider);
     }
   }, [preferredSearchProvider, providers, searchConfig.enabled, selectedSearchProvider]);
+
+  const activeMention = useMemo(() => {
+    if (!mentionOptions.length || disabled) return null;
+    const beforeCursor = value.slice(0, cursorIndex);
+    const match = beforeCursor.match(/(?:^|\s)@([^\s@]*)$/);
+    if (!match) return null;
+    const mentionStart = beforeCursor.lastIndexOf('@');
+    const mentionKey = `${mentionStart}:${beforeCursor.slice(mentionStart, cursorIndex)}`;
+    if (dismissedMentionKey === mentionKey) return null;
+    const query = String(match[1] || '').trim().toLowerCase();
+    const options = mentionOptions
+      .filter((option) => {
+        if (!query) return true;
+        const searchText = [
+          option.token,
+          option.label,
+          option.preview,
+          option.searchText,
+        ].filter(Boolean).join(' ').toLowerCase();
+        return searchText.includes(query);
+      })
+      .slice(0, 8);
+    return {
+      start: mentionStart,
+      end: cursorIndex,
+      key: mentionKey,
+      options,
+    };
+  }, [cursorIndex, disabled, dismissedMentionKey, mentionOptions, value]);
+
+  useEffect(() => {
+    if (!activeMention?.options?.length) {
+      setActiveMentionIndex(0);
+      return;
+    }
+    setActiveMentionIndex((prev) => Math.min(Math.max(prev, 0), activeMention.options.length - 1));
+  }, [activeMention?.key, activeMention?.options?.length]);
+
+  useEffect(() => {
+    if (!activeMention?.options?.length) return;
+    const list = mentionListRef.current;
+    const option = mentionOptionRefs.current[activeMentionIndex];
+    if (!list || !option) return;
+    const optionTop = option.offsetTop;
+    const optionBottom = optionTop + option.offsetHeight;
+    const visibleTop = list.scrollTop;
+    const visibleBottom = visibleTop + list.clientHeight;
+    if (optionTop < visibleTop) {
+      list.scrollTo({ top: optionTop - 4, behavior: 'smooth' });
+    } else if (optionBottom > visibleBottom) {
+      list.scrollTo({ top: optionBottom - list.clientHeight + 4, behavior: 'smooth' });
+    }
+  }, [activeMention?.options?.length, activeMentionIndex]);
+
+  const applyMention = (option) => {
+    if (!activeMention) return;
+    const token = option?.token || option?.value;
+    if (!token) return;
+    const nextValue = `${value.slice(0, activeMention.start)}${token} ${value.slice(activeMention.end)}`;
+    const nextCursor = activeMention.start + token.length + 1;
+    setValue(nextValue);
+    setCursorIndex(nextCursor);
+    setDismissedMentionKey('');
+    setActiveMentionIndex(0);
+    window.requestAnimationFrame(() => {
+      const textarea = textareaRef.current;
+      if (!textarea) return;
+      textarea.focus();
+      textarea.setSelectionRange(nextCursor, nextCursor);
+    });
+  };
 
   const addFiles = (fileList, options = {}) => {
     const rejected = [];
@@ -775,6 +878,8 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
         searchProviders: searchProviderList,
       });
       setValue('');
+      setCursorIndex(0);
+      setDismissedMentionKey('');
       setFiles([]);
       setSearchOpen(false);
       setModelOpen(false);
@@ -782,6 +887,37 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
       toast(error.message || '发送失败', 'error');
     } finally {
       setUploading(false);
+    }
+  };
+
+  const handleKeyDown = (event) => {
+    if (isComposing || event.nativeEvent?.isComposing) return;
+    if (activeMention) {
+      if (event.key === 'ArrowDown' && activeMention.options.length > 0) {
+        event.preventDefault();
+        setActiveMentionIndex((prev) => (prev + 1) % activeMention.options.length);
+        return;
+      }
+      if (event.key === 'ArrowUp' && activeMention.options.length > 0) {
+        event.preventDefault();
+        setActiveMentionIndex((prev) => (prev - 1 + activeMention.options.length) % activeMention.options.length);
+        return;
+      }
+      if (event.key === 'Enter' && !event.shiftKey && activeMention.options.length > 0) {
+        event.preventDefault();
+        applyMention(activeMention.options[activeMentionIndex] || activeMention.options[0]);
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setDismissedMentionKey(activeMention.key);
+        setActiveMentionIndex(0);
+        return;
+      }
+    }
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      submit();
     }
   };
 
@@ -839,8 +975,72 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
       <div style={{ maxWidth: 768, margin: '0 auto', borderRadius: 22, background: '#fff', boxShadow: focused ? '0 4px 24px rgba(217,119,87,0.08), inset 0 0 0 1px rgba(217,119,87,0.30)' : '0 2px 12px rgba(0,0,0,0.03), inset 0 0 0 1px rgba(229,227,216,0.95)', transitionProperty: 'box-shadow', transitionDuration: '180ms', transitionTimingFunction: 'cubic-bezier(0.16,1,0.3,1)', overflow: 'visible' }}>
         <input ref={fileInputRef} type="file" multiple accept={parsedAttachmentMode ? PARSED_ATTACHMENT_ACCEPT : undefined} style={{ display: 'none' }} onChange={(event) => { addFiles(event.target.files); event.target.value = ''; }} />
         {files.length > 0 ? <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', padding: '14px 16px 4px', maxHeight: 150, overflowY: 'auto' }}>{files.map((file) => <FileChip key={file.id} file={file} onRemove={(id) => setFiles((prev) => prev.filter((item) => item.id !== id))} />)}</div> : null}
-        <div style={{ padding: '10px 16px 8px' }}>
-          <textarea value={value} rows={1} placeholder={placeholder || '在此输入以唤起 Agent Loop...'} disabled={busy || disabled} onFocus={() => setFocused(true)} onBlur={() => setFocused(false)} onPaste={handlePaste} onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent?.isComposing) { event.preventDefault(); submit(); } }} style={{ width: '100%', minHeight: 24, maxHeight: '40vh', resize: 'none', border: 'none', outline: 'none', background: 'transparent', color: disabled ? C.tertiary : C.text, fontSize: 15, lineHeight: 1.65, padding: 0, fontFamily: 'inherit', overflowY: 'auto' }} />
+        <div style={{ position: 'relative', padding: '10px 16px 8px' }}>
+          <textarea
+            ref={textareaRef}
+            value={value}
+            rows={1}
+            placeholder={placeholder || '在此输入以唤起 Agent Loop...'}
+            disabled={busy || disabled}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
+            onPaste={handlePaste}
+            onChange={(event) => {
+              setValue(event.target.value);
+              setCursorIndex(event.target.selectionStart || 0);
+              setDismissedMentionKey('');
+            }}
+            onClick={(event) => setCursorIndex(event.currentTarget.selectionStart || 0)}
+            onKeyUp={(event) => setCursorIndex(event.currentTarget.selectionStart || 0)}
+            onSelect={(event) => setCursorIndex(event.currentTarget.selectionStart || 0)}
+            onCompositionStart={() => setIsComposing(true)}
+            onCompositionEnd={(event) => {
+              setIsComposing(false);
+              setCursorIndex(event.currentTarget.selectionStart || 0);
+            }}
+            onKeyDown={handleKeyDown}
+            style={{ width: '100%', minHeight: 24, maxHeight: '40vh', resize: 'none', border: 'none', outline: 'none', background: 'transparent', color: disabled ? C.tertiary : C.text, fontSize: 15, lineHeight: 1.65, padding: 0, fontFamily: 'inherit', overflowY: 'auto' }}
+          />
+          {activeMention ? (
+            <div style={{ position: 'absolute', left: 14, right: 14, bottom: 'calc(100% + 8px)', padding: 8, borderRadius: 16, background: '#fff', boxShadow: '0 -10px 40px -10px rgba(0,0,0,0.14), inset 0 0 0 1px rgba(229,227,216,0.95)', zIndex: 24 }}>
+              {activeMention.options.length > 0 ? (
+                <div ref={mentionListRef} style={{ maxHeight: 256, overflowY: 'auto', overscrollBehavior: 'contain', paddingRight: 2 }}>
+                  {activeMention.options.map((option, index) => (
+                    <button
+                      key={option.value || option.token || index}
+                      ref={(node) => {
+                        mentionOptionRefs.current[index] = node;
+                      }}
+                      type="button"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => applyMention(option)}
+                      onMouseEnter={() => setActiveMentionIndex(index)}
+                      style={transitionButton({
+                        width: '100%',
+                        minHeight: 52,
+                        padding: '9px 11px',
+                        borderRadius: 12,
+                        background: index === activeMentionIndex ? 'rgba(251,228,210,0.34)' : 'transparent',
+                        color: C.text,
+                        display: 'grid',
+                        gap: 4,
+                        textAlign: 'left',
+                        marginBottom: index === activeMention.options.length - 1 ? 0 : 4,
+                      })}
+                    >
+                      <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                        <span style={{ fontSize: 13, fontWeight: 800, color: C.accent }}>{option.token}</span>
+                        <span style={{ minWidth: 0, fontSize: 12, color: C.secondary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{option.label}</span>
+                      </span>
+                      <span style={{ minWidth: 0, fontSize: 12, color: C.tertiary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{option.preview}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div style={{ padding: '8px 10px', fontSize: 12, color: C.tertiary }}>当前文档中没有匹配的块</div>
+              )}
+            </div>
+          ) : null}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 12px 12px', gap: 10 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -1095,14 +1295,32 @@ function SearchConfigView({ config, onSaved, onBack, selectProvider }) {
   );
 }
 
-export function AgentWorkspace({ messages, streamText, loading, error, activeSteps, llmConfigs, selectedConfigId, onConfigChange, onSend, onStop, onApplyOperationSet, onApplyOperationFile, onRollbackOperationFile, onCitationClick, activeAgentSession, disabled, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata' }) {
+export function AgentWorkspace({ messages, streamText, loading, error, activeSteps, llmConfigs, selectedConfigId, onConfigChange, onSend, onStop, onApplyOperationSet, onApplyOperationFile, onRollbackOperationFile, onCitationClick, citationSelection, disabled, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [] }) {
   const router = useRouter();
   const [searchConfig, setSearchConfig] = useState({ enabled: false, selected_provider: 'firecrawl', modes: {}, counts: {}, api_key_set: {}, providers: SEARCH_PROVIDER_FALLBACKS });
   const [searchPromptOpen, setSearchPromptOpen] = useState(false);
   const [searchViewProvider, setSearchViewProvider] = useState('');
   const [searchPromptReason, setSearchPromptReason] = useState('disabled');
   const [detailOperationSet, setDetailOperationSet] = useState(null);
-  const endRef = useRef(null);
+  const scrollContainerRef = useRef(null);
+  const shouldStickToBottomRef = useRef(true);
+  const visibleMessages = Array.isArray(messages) ? messages : [];
+  const visibleActiveSteps = Array.isArray(activeSteps) ? activeSteps : [];
+  const lastMessage = visibleMessages[visibleMessages.length - 1] || null;
+  const messageScrollKey = [
+    visibleMessages.length,
+    lastMessage?.id || '',
+    String(lastMessage?.content || '').length,
+    lastMessage?.operationSet?.id || '',
+    lastMessage?.operationSet?.status || '',
+  ].join(':');
+  const activeStepsScrollKey = visibleActiveSteps
+    .map((step) => [step?.id || '', step?.status || '', step?.label || '', step?.detail || '', step?.result || ''].join('/'))
+    .join('|');
+
+  const handleChatScroll = useCallback((event) => {
+    shouldStickToBottomRef.current = isNearScrollBottom(event.currentTarget);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -1112,9 +1330,13 @@ export function AgentWorkspace({ messages, streamText, loading, error, activeSte
     return () => { cancelled = true; };
   }, []);
 
-  useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [messages, streamText, loading, activeSteps, activeAgentSession]);
+  useIsomorphicLayoutEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    if (!shouldStickToBottomRef.current && !isNearScrollBottom(container)) return;
+    scrollContainerToBottom(container);
+    shouldStickToBottomRef.current = true;
+  }, [messageScrollKey, String(streamText || '').length, Boolean(loading), activeStepsScrollKey, error]);
 
   useEffect(() => {
     if (!detailOperationSet?.id) return;
@@ -1143,14 +1365,14 @@ export function AgentWorkspace({ messages, streamText, loading, error, activeSte
 
   return (
     <div style={{ position: 'relative', height: '100%', minHeight: 0, background: C.page, color: C.text, overflow: 'hidden', WebkitFontSmoothing: 'antialiased', MozOsxFontSmoothing: 'grayscale' }}>
-      <main style={{ height: '100%', overflowY: 'auto', padding: '32px 16px 190px' }}>
+      <main ref={scrollContainerRef} onScroll={handleChatScroll} style={{ height: '100%', overflowY: 'auto', padding: '32px 16px 190px' }}>
         <div style={{ maxWidth: 768, margin: '0 auto' }}>
-          <MessageList messages={messages || []} streamText={streamText || ''} loading={Boolean(loading)} activeSteps={activeSteps || []} onOpenOperationSet={setDetailOperationSet} onCitationClick={onCitationClick} />
+          <MessageList messages={visibleMessages} streamText={streamText || ''} loading={Boolean(loading)} activeSteps={visibleActiveSteps} onOpenOperationSet={setDetailOperationSet} onCitationClick={onCitationClick} citationSelection={citationSelection} />
           {error ? <div style={{ marginTop: 16, padding: '12px 14px', borderRadius: 14, background: 'rgba(217,119,87,0.08)', color: C.accentDark, fontSize: 13, lineHeight: 1.7 }}>{error}</div> : null}
-          <div ref={endRef} style={{ height: 12 }} />
+          <div style={{ height: 12 }} />
         </div>
       </main>
-      <AgentInput loading={Boolean(loading)} disabled={Boolean(disabled)} llmConfigs={llmConfigs || []} selectedConfigId={selectedConfigId} onConfigChange={onConfigChange} onSend={onSend} onStop={onStop} searchConfig={searchConfig} onRequireSearchConfig={requireSearchConfig} placeholder={placeholder} agentConfirmMode={agentConfirmMode} onAgentConfirmModeChange={onAgentConfirmModeChange} attachmentMode={attachmentMode} />
+      <AgentInput loading={Boolean(loading)} disabled={Boolean(disabled)} llmConfigs={llmConfigs || []} selectedConfigId={selectedConfigId} onConfigChange={onConfigChange} onSend={onSend} onStop={onStop} searchConfig={searchConfig} onRequireSearchConfig={requireSearchConfig} placeholder={placeholder} agentConfirmMode={agentConfirmMode} onAgentConfirmModeChange={onAgentConfirmModeChange} attachmentMode={attachmentMode} mentionOptions={mentionOptions} />
       <Dialog open={searchPromptOpen} onClose={() => setSearchPromptOpen(false)} title={promptTitle} maxWidth={420} footer={<><Button variant="ghost" onClick={() => setSearchPromptOpen(false)}>取消</Button><Button variant="primary" onClick={() => { setSearchPromptOpen(false); navigateWithFallback(router, searchSettingsHref); }}>前往设置</Button></>}>
         <div style={{ fontSize: 14, color: C.secondary, lineHeight: 1.8 }}>{promptMessage}</div>
       </Dialog>

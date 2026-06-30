@@ -236,6 +236,11 @@ function normalizeOperationSets(rows = []) {
   return (Array.isArray(rows) ? rows : []).filter((item) => item?.id);
 }
 
+const FILE_MUTATION_TOOL_NAMES = new Set([
+  'create_note',
+  'preview_patch_files',
+]);
+
 export function useAgentLoopController({
   onAppendUserMessage,
   onAppendAssistantMessage,
@@ -246,6 +251,7 @@ export function useAgentLoopController({
   onInteractionRequest,
   onApplySuccess,
   onRollbackSuccess,
+  onFilesMayHaveChanged,
   onError,
 } = {}) {
   const [pendingAgentTask, setPendingAgentTask] = useState(null);
@@ -258,6 +264,7 @@ export function useAgentLoopController({
   const sessionRef = useRef(null);
   const stepsRef = useRef([]);
   const assistantTextRef = useRef('');
+  const filesMayHaveChangedRef = useRef(false);
 
   useEffect(() => () => {
     controllerRef.current?.abort();
@@ -335,6 +342,12 @@ export function useAgentLoopController({
     });
   }, [onAppendAssistantMessage]);
 
+  const notifyFilesMayHaveChanged = useCallback(async (context = {}) => {
+    if (!filesMayHaveChangedRef.current) return;
+    filesMayHaveChangedRef.current = false;
+    await onFilesMayHaveChanged?.(context);
+  }, [onFilesMayHaveChanged]);
+
   const startAgentLoop = useCallback(async (input, options = {}) => {
     const resumeSessionId = toPositiveInt(input?.session_id || input?.id);
     const resumeToken = input?.session_token || input?.token || sessionRef.current?.token || '';
@@ -348,6 +361,9 @@ export function useAgentLoopController({
       }
       : {
         goal: input?.goal,
+        user_query: input?.user_query || input?.userQuery || input?.display_query || input?.displayQuery || input?.input_text || input?.inputText || '',
+        display_query: input?.display_query || input?.displayQuery || input?.user_query || input?.userQuery || '',
+        input_text: input?.input_text || input?.inputText || input?.user_query || input?.userQuery || input?.display_query || input?.displayQuery || '',
         kind: input?.kind || 'agent',
         authorized_paths: input?.authorized_paths || [''],
         authorized_ops: input?.authorized_ops || ['modify', 'create'],
@@ -366,6 +382,7 @@ export function useAgentLoopController({
     const controller = new AbortController();
     controllerRef.current = controller;
     assistantTextRef.current = '';
+    filesMayHaveChangedRef.current = false;
     setLoading(true);
     setError('');
     setStreamText('');
@@ -403,6 +420,12 @@ export function useAgentLoopController({
         if (step) appendStep(step);
         if (event.conversation_id) {
           onConversationId?.(Number(event.conversation_id));
+        }
+        if (
+          FILE_MUTATION_TOOL_NAMES.has(event.tool_name)
+          || (Array.isArray(event.changed_files) && event.changed_files.length > 0)
+        ) {
+          filesMayHaveChangedRef.current = true;
         }
 
         if (event.type === 'session_created') {
@@ -520,11 +543,13 @@ export function useAgentLoopController({
           setStreamText('');
           setLoading(false);
           onConversationSettled?.(event.conversation_id || current.conversation_id || null);
+          await notifyFilesMayHaveChanged({ reason: event.reason || 'loop_done', event });
         } else if (event.type === 'cancelled') {
           setActiveAgentSession((prev) => ({ status: 'cancelled', reason: 'cancelled' }));
           setSteps((prev) => completeSteps(upsertStep(prev, buildEventStep(event))));
           setStreamText('');
           setLoading(false);
+          await notifyFilesMayHaveChanged({ reason: 'cancelled', event });
         } else if (event.type === 'error') {
           const nextError = new Error(event.error || 'Agent Loop 请求失败');
           nextError.code = event.code;
@@ -542,6 +567,10 @@ export function useAgentLoopController({
       }
       setStreamText('');
       setLoading(false);
+      await notifyFilesMayHaveChanged({
+        reason: nextError.name === 'AbortError' ? 'cancelled' : 'error',
+        error: nextError,
+      });
       if (nextError.name === 'AbortError') return;
       throw nextError;
     } finally {
@@ -553,6 +582,7 @@ export function useAgentLoopController({
     appendAssistant,
     appendStep,
     fetchSessionDetails,
+    notifyFilesMayHaveChanged,
     onAppendUserMessage,
     onConversationId,
     onConversationSettled,

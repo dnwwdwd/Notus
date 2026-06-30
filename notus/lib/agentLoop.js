@@ -326,9 +326,9 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMo
         };
       }
 
-      if (['preview_patch_files', 'preview_canvas_blocks'].includes(toolUse.name) && !failed) {
+      if (['create_note', 'preview_patch_files', 'preview_canvas_blocks'].includes(toolUse.name) && !failed && result.operation_set_id) {
         let previewResult = result;
-        const canAutoApply = toolUse.name === 'preview_patch_files' && normalizedApprovalMode === 'auto_confirm';
+        const canAutoApply = ['create_note', 'preview_patch_files'].includes(toolUse.name) && normalizedApprovalMode === 'auto_confirm';
         if (canAutoApply) {
           previewResult = await applyPreviewWithConflictCheck(result.operation_set_id, session.id, {
             approvalMode: normalizedApprovalMode,
@@ -363,7 +363,11 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMo
         try {
           const finalInstruction = toolUse.name === 'preview_canvas_blocks'
             ? '现在不要再调用任何工具。请用简短中文总结刚才生成的块级修改预览，并提醒用户可以在对话底部的预览卡片中确认或取消。'
-            : '现在不要再调用任何工具。请用简短中文总结刚才生成的文件修改，并提醒用户可以在对话底部的 diff 卡片中按文件确认或回滚。';
+            : toolUse.name === 'create_note'
+              ? (normalizedApprovalMode === 'auto_confirm'
+                ? '现在不要再调用任何工具。请用简短中文总结刚才新建的文件，并提醒用户可以在对话底部的 diff 卡片中查看或回滚。'
+                : '现在不要再调用任何工具。请用简短中文总结刚才生成的新建文件预览，并提醒用户可以在对话底部的 diff 卡片中应用或回滚。')
+              : '现在不要再调用任何工具。请用简短中文总结刚才生成的文件修改，并提醒用户可以在对话底部的 diff 卡片中按文件确认或回滚。';
           finalResponse = await callLLMWithRetry({
             system: `${systemPrompt}\n\n${finalInstruction}`,
             messages: compactMessages(messages, Number(llmConfig?.llmContextWindowTokens || config.llmContextWindowTokens || 60000)),
@@ -378,9 +382,13 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMo
         } catch {
           finalThinking = toolUse.name === 'preview_canvas_blocks'
             ? '块级修改预览已生成，请在下方预览卡片中确认或取消。'
-            : normalizedApprovalMode === 'auto_confirm'
-            ? '修改已自动确认并写入文件，可在下方 diff 卡片中逐文件查看或回滚。'
-            : '修改预览已生成，请在下方 diff 卡片中逐文件应用或回滚。';
+            : toolUse.name === 'create_note'
+              ? (normalizedApprovalMode === 'auto_confirm'
+                ? '新文件已自动创建，可在下方 diff 卡片中查看或回滚。'
+                : '新建文件预览已生成，请在下方 diff 卡片中应用或回滚。')
+              : normalizedApprovalMode === 'auto_confirm'
+                ? '修改已自动确认并写入文件，可在下方 diff 卡片中逐文件查看或回滚。'
+                : '修改预览已生成，请在下方 diff 卡片中逐文件应用或回滚。';
           emit({ type: 'thinking', text: finalThinking, loop_index: loopIndex });
         }
         logToolCall({

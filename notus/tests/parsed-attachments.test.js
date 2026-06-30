@@ -124,11 +124,21 @@ async function runTests() {
     const { port } = server.address();
     const pageUrl = `http://127.0.0.1:${port}/article`;
     const normalizedPageUrl = new URL(pageUrl).toString();
+    const boundaryConversation = createConversation({ kind: 'canvas', title: '输入边界测试' });
+    const boundaryResults = await parseAgentInputSources({
+      conversationId: boundaryConversation.id,
+      attachments: [],
+      userInputText: '根据我的笔记生成一个文档介绍我自己',
+      text: `当前创作页文本块快照：${pageUrl}`,
+    });
+    assert.strictEqual(boundaryResults.some((item) => item.source === normalizedPageUrl), false);
+    assert.strictEqual(loadAttachments(boundaryConversation.id).some((item) => item.source === normalizedPageUrl), false);
+
     const urlEvents = [];
     const urlResults = await parseAgentInputSources({
       conversationId: conversation.id,
       attachments: [],
-      text: `请结合这个链接 ${pageUrl} 分析`,
+      userInputText: `请结合这个链接 ${pageUrl} 分析`,
       onEvent: (event) => urlEvents.push(event),
     });
     assert.ok(urlResults.some((item) => item.source === normalizedPageUrl && item.status === 'success' && item.type === 'webpage'));

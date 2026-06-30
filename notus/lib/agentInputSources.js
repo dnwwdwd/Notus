@@ -94,11 +94,12 @@ async function parseWebUrlForConversation(conversationId, url) {
   return result;
 }
 
-async function parseAgentInputSources({ conversationId, attachments = [], text = '', onEvent } = {}) {
+async function parseAgentInputSources({ conversationId, attachments = [], userInputText, text = '', onEvent } = {}) {
   const normalizedConversationId = normalizePositiveInt(conversationId);
   if (!normalizedConversationId) return [];
   const results = [];
   const emit = typeof onEvent === 'function' ? onEvent : () => {};
+  const sourceText = userInputText === undefined ? text : userInputText;
 
   const uploadedAttachments = Array.isArray(attachments) ? attachments : [];
   for (const attachment of uploadedAttachments) {
@@ -110,7 +111,7 @@ async function parseAgentInputSources({ conversationId, attachments = [], text =
     emit({ ...summary, type: 'attachment_parse_done', source_kind: attachment?.source_kind || 'file' });
   }
 
-  const urls = extractWebUrls(text);
+  const urls = extractWebUrls(sourceText);
   for (const url of urls) {
     emit({ type: 'attachment_parse_start', source: url, source_kind: 'url' });
     const result = await parseWebUrlForConversation(normalizedConversationId, url);

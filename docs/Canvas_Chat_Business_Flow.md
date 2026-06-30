@@ -24,7 +24,7 @@
 - 输入框左下角提供“自动确认 / 手动确认”选择器，仅在创作页展示，选择值持久化到浏览器本机。两种模式都不显示前置任务确认卡；差异只发生在文件级 diff 生成后的应用策略。
 - 当前文章改写、整篇生成/重写、新建笔记、文件夹分析、链接检查等任务都通过 Agentic Loop 执行；默认授权路径优先使用当前文章所在目录，检索次数使用当前前端配置。
 - 当前文章中明确带有 `@b1`、`@b2`、`@b3` 等块引用的局部修改任务优先通过 Agent Loop 的 `preview_canvas_blocks` 工具生成块级 operation set；该链路复用旧创作页块级预览和 `/api/agent/apply` 应用能力，用于减少文件级 patch 匹配和 Agent Loop 轮次。
-- 创作页输入框启用解析附件模式：支持 PDF/DOCX/MD/TXT 上传、剪贴板文件、超过 100 字符的粘贴文本转 `.txt` 附件，每条消息最多 5 个解析附件，并自动解析用户输入中的网页链接正文；知识库页不启用该模式。
+- 创作页输入框启用解析附件模式：支持 PDF/DOCX/MD/TXT 上传、剪贴板文件、超过 100 字符的粘贴文本转 `.txt` 附件，每条消息最多 5 个解析附件，并自动解析用户本轮输入中的网页链接正文；知识库页不启用该模式。PDF 解析依赖 LiteParse/PDFium 原生文件，standalone 与 `.lpk` 产物必须包含对应平台 optional package、`.node` 和 `libpdfium.so`。
 - 大纲可以先生成，但必须保存为正式文档后，才能继续稳定对话和应用 AI 改写。
 - 从文件页或知识库页携带 `?fileId=` 进入创作页时，目标文章加载完成前显示“正在打开文档…”骨架态，不再短暂显示新建创作入口。
 - 事实参考继续走后台自动补充，前台不单独展示事实来源配置。
@@ -223,16 +223,17 @@ SSE 过程会返回：
 
 创作页右侧主输入收到用户请求后，不直接进入旧块级执行器，而是先读取创作页输入框里的确认方式。
 
-- 自动确认：默认模式。前端直接启动 Agentic Loop；`preview_patch_files` 生成后由后端自动应用所有文件，完成消息底部显示文件变更摘要卡，详情弹窗中显示已自动应用状态并保留回滚。`preview_canvas_blocks` 生成块级预览卡片，由用户在创作页确认后应用到当前画布并保存 Markdown。
-- 手动确认：前端同样直接启动 Agentic Loop；`preview_patch_files` 生成后在对话底部显示文件变更摘要卡，由用户打开详情弹窗逐文件应用或回滚，也可全部应用。
+- 自动确认：默认模式。前端直接启动 Agentic Loop；`create_note` 和 `preview_patch_files` 生成文件级 operation set 后由后端自动应用所有文件，完成消息底部显示文件变更摘要卡，详情弹窗中显示已自动应用状态并保留回滚。`preview_canvas_blocks` 生成块级预览卡片，由用户在创作页确认后应用到当前画布并保存 Markdown。
+- 手动确认：前端同样直接启动 Agentic Loop；`create_note` 和 `preview_patch_files` 生成后在对话底部显示文件变更摘要卡，由用户打开详情弹窗逐文件应用或回滚，也可全部应用。新建文件只有在用户点击应用后才真正创建。
+- 前端消息列表和历史抽屉不按文件名或当前文章过滤，创作页历史只按 `kind=canvas` 读取全局创作对话；但每次启动 Loop 时必须拆分 `goal` 和 `user_query`：`goal` 包含当前打开文档的可见名称、当前文章路径、块快照和授权范围，帮助 Agent 明确本轮工作对象；`user_query` 只包含用户本轮输入框提交的原始文字，用于输入源解析边界。
 
 启动后前端调用 `/api/agent/loop/start`，服务端会：
 
-1. 创建 `agent_sessions`，保存目标、授权路径、授权操作和检索次数上限；`create_note` 新建文件按目录粒度校验，后端兼容旧任务只授权当前 `.md` 文件时在父目录新建，但不会扩大同目录其他文件的修改权限。
-2. 解析本轮上传附件和用户文本中的网页链接；成功或部分成功的解析结果以 `system + parsed_attachment` 消息写入当前 conversation。
+1. 创建 `agent_sessions`，保存目标、授权路径、授权操作和检索次数上限；`create_note` 按目录粒度校验新建权限并生成新建文件预览，后端兼容旧任务只授权当前 `.md` 文件时在父目录准备新文件，但不会扩大同目录其他文件的修改权限。
+2. 解析本轮上传附件和 `user_query/input_text/display_query` 中的网页链接；成功或部分成功的解析结果以 `system + parsed_attachment` 消息写入当前 conversation。服务端不得从完整 `goal`、当前文档内容、块快照、文章路径或历史任务中提取 URL。
 3. 在执行前写入 `agent_snapshots`。
 4. 通过 Agent Loop 多轮调用 `search_knowledge / read_file / create_note / preview_patch_files / preview_canvas_blocks / ask_question_card / analyze_folder / check_links`。
-5. `preview_patch_files` 生成文件级 patch，并写入 `canvas_operation_sets.pathes_json`；`preview_canvas_blocks` 根据当前文章块快照和 `@bN` 引用生成块级 `operations_json`；`ask_question_card` 生成提问卡片并等待用户回答。
+5. `create_note` 生成 `change_type='create'` 的文件级 patch，`preview_patch_files` 生成修改已有文件的文件级 patch，并写入 `canvas_operation_sets.pathes_json`；`preview_canvas_blocks` 根据当前文章块快照和 `@bN` 引用生成块级 `operations_json`；`ask_question_card` 只在任务明确但缺少必要结构化槽位，或用户明确要求先提问时生成提问卡片并等待用户回答。本轮仅有附件/外部材料且没有写入当前文档意图时，不得用提问卡片追问写入位置，应先总结附件或用普通文本询问用途。
 6. 自动确认模式在服务端自动调用文件级应用逻辑，patch 状态标记为 `auto_applied`；手动确认模式保持 `pending`。
 7. Loop 结束后，最终助手消息底部展示摘要卡；应用、回滚或废弃只调用 `/api/agent/loop/apply`，不会再次请求 LLM。
 
@@ -288,6 +289,7 @@ Agentic Loop 生成文件级预览后，前端按确认方式处理：
 
 - 自动确认：后端在 Loop 完成前自动应用所有文件，前端展示“已自动应用”摘要卡，用户仍可在详情弹窗中逐文件回滚。
 - 手动确认：前端在对应助手消息底部保留摘要卡，用户打开详情弹窗逐文件点击“应用修改”或“回滚修改”，也可全部应用；点击后立即生效，不弹二次确认。应用/回滚只在生成该预览的当前对话内有效，新建或切换对话后旧预览只保留查看、导出和日志复盘。
+- DiffDialog 高度限制在视口内，左侧文件列表和右侧 diff 内容分别滚动；diff 内容区同时支持横向和纵向滚动，底部应用、回滚和全部应用按钮始终保持可见。
 
 应用时：
 
@@ -452,4 +454,4 @@ Agentic Loop 生成文件级预览后，前端按确认方式处理：
 - 当前文档所在目录会作为 Agentic Loop 默认授权路径；自动确认和手动确认都直接使用该授权范围启动。无当前文档时仍先创建一篇 AI 创作草稿。
 - session_created / snapshot_done / loop_start / thinking / tool_start / tool_done / loop_done 会累计为设计稿工具过程和文件变更卡片；最终 assistant 消息保留完整工具步骤，历史会话中仍可展开查看每一步的说明、工具输入和结果。
 - 批量修改预览、应用和取消能力继续保留；文件级 patch 的 old/new 内容在 DiffDialog 中展示，应用或回滚通过 `/api/agent/loop/apply` 写回 Markdown 并更新 patch 状态，不再携带 session_id 续跑。
-- 输入框会随请求携带当前模型、解析附件元数据、联网搜索状态和单选搜索服务商；上传附件与网页链接解析会进入 Agent Loop 上下文。联网搜索打开时，创作页 Agent Loop 会注入 `web_search` 工具，搜索结果以同会话 `web_search_context` 持久化并在后续联网任务中复用；输入框上方不展示预制问题列表。
+- 输入框会随请求携带当前模型、解析附件元数据、联网搜索状态、单选搜索服务商和用户本轮原始输入 `user_query`；上传附件与用户本轮输入中的网页链接解析会进入 Agent Loop 上下文，当前文档和块快照中的链接不会被自动解析。联网搜索打开时，创作页 Agent Loop 会注入 `web_search` 工具，搜索结果以同会话 `web_search_context` 持久化并在后续联网任务中复用；输入框上方不展示预制问题列表。

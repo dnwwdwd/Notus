@@ -109,6 +109,34 @@ function buildEventStep(event = {}) {
       result: `${event.snapshot_count || 0} 个文件`,
     };
   }
+  if (event.type === 'attachment_parse_start') {
+    const source = String(event.source || '附件');
+    return {
+      id: `attachment-${source}`,
+      label: event.source_kind === 'url' ? '解析网页链接' : '解析上传附件',
+      status: 'running',
+      detail: `正在读取：${source}`,
+      tool: event.source_kind === 'url' ? 'parse_url' : 'parse_document',
+      input: source,
+    };
+  }
+  if (event.type === 'attachment_parse_done') {
+    const source = String(event.source || '附件');
+    const failed = event.status === 'error';
+    const duplicate = Boolean(event.duplicate);
+    return {
+      id: `attachment-${source}`,
+      label: event.source_kind === 'url' ? '解析网页链接' : '解析上传附件',
+      status: failed ? 'error' : 'done',
+      detail: failed
+        ? (event.warning || '解析失败')
+        : duplicate
+          ? '已在本次对话中导入，跳过重复解析。'
+          : `已读取 ${Number(event.textLength || 0)} 字。${event.warning ? `\n${event.warning}` : ''}`,
+      tool: event.source_kind === 'url' ? 'parse_url' : 'parse_document',
+      result: failed ? (event.errorCode || 'PARSE_FAILED') : `${Number(event.textLength || 0)} 字`,
+    };
+  }
   if (event.type === 'loop_start') {
     return {
       id: `loop-${loop}`,
@@ -167,6 +195,16 @@ function buildEventStep(event = {}) {
       result: event.operation_set_id ? `预览 #${event.operation_set_id}` : '预览已生成',
     };
   }
+  if (event.type === 'interaction_request') {
+    return {
+      id: `question-card-${event.interaction?.id || loop || 'current'}`,
+      label: '等待回答提问卡片',
+      status: 'done',
+      detail: '已生成提问卡片，请回答后继续执行。',
+      tool: 'ask_question_card',
+      result: event.interaction?.id ? `提问卡片 #${event.interaction.id}` : '提问卡片已生成',
+    };
+  }
   if (event.type === 'loop_done') {
     return {
       id: `loop-done-${event.reason || 'done'}`,
@@ -198,6 +236,11 @@ function normalizeOperationSets(rows = []) {
   return (Array.isArray(rows) ? rows : []).filter((item) => item?.id);
 }
 
+const FILE_MUTATION_TOOL_NAMES = new Set([
+  'create_note',
+  'preview_patch_files',
+]);
+
 export function useAgentLoopController({
   onAppendUserMessage,
   onAppendAssistantMessage,
@@ -205,8 +248,10 @@ export function useAgentLoopController({
   onConversationSettled,
   onOperationSets,
   onOperationSetHandled,
+  onInteractionRequest,
   onApplySuccess,
   onRollbackSuccess,
+  onFilesMayHaveChanged,
   onError,
 } = {}) {
   const [pendingAgentTask, setPendingAgentTask] = useState(null);
@@ -219,6 +264,7 @@ export function useAgentLoopController({
   const sessionRef = useRef(null);
   const stepsRef = useRef([]);
   const assistantTextRef = useRef('');
+  const filesMayHaveChangedRef = useRef(false);
 
   useEffect(() => () => {
     controllerRef.current?.abort();
@@ -261,6 +307,14 @@ export function useAgentLoopController({
     setPendingAgentTask(null);
   }, []);
 
+  const clearActiveAgentSession = useCallback(() => {
+    setPendingAgentTask(null);
+    setActiveAgentSession(null);
+    setSteps([]);
+    setStreamText('');
+    setError('');
+  }, [setActiveAgentSession, setSteps]);
+
   const fetchSessionDetails = useCallback(async (sessionId, token) => {
     const id = toPositiveInt(sessionId);
     if (!id || !token) return null;
@@ -288,6 +342,12 @@ export function useAgentLoopController({
     });
   }, [onAppendAssistantMessage]);
 
+  const notifyFilesMayHaveChanged = useCallback(async (context = {}) => {
+    if (!filesMayHaveChangedRef.current) return;
+    filesMayHaveChangedRef.current = false;
+    await onFilesMayHaveChanged?.(context);
+  }, [onFilesMayHaveChanged]);
+
   const startAgentLoop = useCallback(async (input, options = {}) => {
     const resumeSessionId = toPositiveInt(input?.session_id || input?.id);
     const resumeToken = input?.session_token || input?.token || sessionRef.current?.token || '';
@@ -296,10 +356,14 @@ export function useAgentLoopController({
       ? {
         session_id: resumeSessionId,
         session_token: resumeToken,
+        interaction_id: input?.interaction_id || input?.interactionId || undefined,
         llm_config_id: input?.llm_config_id || input?.llmConfigId || undefined,
       }
       : {
         goal: input?.goal,
+        user_query: input?.user_query || input?.userQuery || input?.display_query || input?.displayQuery || input?.input_text || input?.inputText || '',
+        display_query: input?.display_query || input?.displayQuery || input?.user_query || input?.userQuery || '',
+        input_text: input?.input_text || input?.inputText || input?.user_query || input?.userQuery || input?.display_query || input?.displayQuery || '',
         kind: input?.kind || 'agent',
         authorized_paths: input?.authorized_paths || [''],
         authorized_ops: input?.authorized_ops || ['modify', 'create'],
@@ -308,12 +372,17 @@ export function useAgentLoopController({
         active_file_id: input?.active_file_id || undefined,
         llm_config_id: input?.llm_config_id || input?.llmConfigId || undefined,
         search_knowledge_limit: input?.search_knowledge_limit === undefined ? 5 : input.search_knowledge_limit,
+        attachments: Array.isArray(input?.attachments) ? input.attachments : [],
+        web_search_enabled: Boolean(input?.web_search_enabled ?? input?.webSearchEnabled),
+        search_provider: input?.search_provider || input?.searchProvider || undefined,
+        tool_profile: input?.tool_profile || input?.toolProfile || undefined,
       };
 
     controllerRef.current?.abort();
     const controller = new AbortController();
     controllerRef.current = controller;
     assistantTextRef.current = '';
+    filesMayHaveChangedRef.current = false;
     setLoading(true);
     setError('');
     setStreamText('');
@@ -329,6 +398,8 @@ export function useAgentLoopController({
         meta: {
           agent_loop: true,
           route_reason: input.route_reason || '',
+          web_search_enabled: Boolean(input?.web_search_enabled ?? input?.webSearchEnabled),
+          search_provider: input?.search_provider || input?.searchProvider || null,
         },
       });
     }
@@ -349,6 +420,12 @@ export function useAgentLoopController({
         if (step) appendStep(step);
         if (event.conversation_id) {
           onConversationId?.(Number(event.conversation_id));
+        }
+        if (
+          FILE_MUTATION_TOOL_NAMES.has(event.tool_name)
+          || (Array.isArray(event.changed_files) && event.changed_files.length > 0)
+        ) {
+          filesMayHaveChangedRef.current = true;
         }
 
         if (event.type === 'session_created') {
@@ -412,9 +489,24 @@ export function useAgentLoopController({
           });
           setStreamText('');
           setLoading(false);
+        } else if (event.type === 'interaction_request') {
+          const current = sessionRef.current || {};
+          const token = current.token || resumeToken;
+          setActiveAgentSession({
+            id: event.session_id || current.id,
+            token,
+            conversation_id: event.conversation_id || current.conversation_id || null,
+            status: 'waiting_confirm',
+            reason: event.reason || 'question_card_requested',
+            interaction_id: event.interaction?.id || event.interaction_id || null,
+          });
+          if (event.interaction) onInteractionRequest?.(event.interaction);
+          setStreamText('');
+          setLoading(false);
         } else if (event.type === 'loop_done') {
           const current = sessionRef.current || {};
           const hardLimit = event.reason === 'hard_limit_reached';
+          const waitingQuestionCard = event.reason === 'question_card_requested';
           const failed = ['consecutive_tool_failure', 'deadloop_detected', 'no_progress'].includes(event.reason);
           let operationSet = null;
           if (event.operation_set_id) {
@@ -429,9 +521,10 @@ export function useAgentLoopController({
             id: event.session_id || current.id,
             token: current.token || resumeToken,
             conversation_id: event.conversation_id || current.conversation_id || null,
-            status: hardLimit ? 'waiting_confirm' : failed ? 'failed' : 'completed',
+            status: hardLimit || waitingQuestionCard ? 'waiting_confirm' : failed ? 'failed' : 'completed',
             loop_count: Number(event.loop_index || current.loop_count || 0),
             reason: event.reason || '',
+            interaction_id: event.interaction_id || current.interaction_id || null,
           });
           setSteps((prev) => completeSteps(upsertStep(prev, buildEventStep(event))));
           appendAssistant({
@@ -439,8 +532,9 @@ export function useAgentLoopController({
             meta: {
               agent_loop: true,
               session_id: event.session_id || current.id,
-              status: hardLimit ? 'waiting_confirm' : failed ? 'failed' : 'completed',
+              status: hardLimit || waitingQuestionCard ? 'waiting_confirm' : failed ? 'failed' : 'completed',
               reason: event.reason || '',
+              interaction_id: event.interaction_id || current.interaction_id || null,
               operation_set_id: event.operation_set_id || operationSet?.id || null,
             },
             operationSet,
@@ -449,11 +543,13 @@ export function useAgentLoopController({
           setStreamText('');
           setLoading(false);
           onConversationSettled?.(event.conversation_id || current.conversation_id || null);
+          await notifyFilesMayHaveChanged({ reason: event.reason || 'loop_done', event });
         } else if (event.type === 'cancelled') {
           setActiveAgentSession((prev) => ({ status: 'cancelled', reason: 'cancelled' }));
           setSteps((prev) => completeSteps(upsertStep(prev, buildEventStep(event))));
           setStreamText('');
           setLoading(false);
+          await notifyFilesMayHaveChanged({ reason: 'cancelled', event });
         } else if (event.type === 'error') {
           const nextError = new Error(event.error || 'Agent Loop 请求失败');
           nextError.code = event.code;
@@ -471,6 +567,10 @@ export function useAgentLoopController({
       }
       setStreamText('');
       setLoading(false);
+      await notifyFilesMayHaveChanged({
+        reason: nextError.name === 'AbortError' ? 'cancelled' : 'error',
+        error: nextError,
+      });
       if (nextError.name === 'AbortError') return;
       throw nextError;
     } finally {
@@ -482,10 +582,12 @@ export function useAgentLoopController({
     appendAssistant,
     appendStep,
     fetchSessionDetails,
+    notifyFilesMayHaveChanged,
     onAppendUserMessage,
     onConversationId,
     onConversationSettled,
     onError,
+    onInteractionRequest,
     setActiveAgentSession,
     setSteps,
   ]);
@@ -511,6 +613,7 @@ export function useAgentLoopController({
         session_id: session.id,
         session_token: session.token,
         operation_set_id: operationSetId,
+        current_conversation_id: options.currentConversationId || session.conversation_id || undefined,
         action,
         patch_index: options.patchIndex === undefined ? undefined : options.patchIndex,
         file_path: options.filePath || undefined,
@@ -651,6 +754,7 @@ export function useAgentLoopController({
     error,
     createAgentTask,
     cancelAgentTask,
+    clearActiveAgentSession,
     confirmAgentTask,
     startAgentLoop,
     stopAgentLoop,

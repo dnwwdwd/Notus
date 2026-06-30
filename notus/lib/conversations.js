@@ -54,6 +54,7 @@ function parseMessageRow(row) {
     ...row,
     id: Number(row.id),
     conversation_id: Number(row.conversation_id),
+    type: row.type || 'text',
     citations: row.citations ? JSON.parse(row.citations) : [],
     meta: row.meta ? JSON.parse(row.meta) : null,
   };
@@ -111,10 +112,10 @@ function listConversations({ kind = null, fileId, draftKey, limit = 20 } = {}) {
   const rows = db.prepare(`
     SELECT
       c.*,
-      COALESCE((SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id), 0) AS message_count,
+      COALESCE((SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id AND m.role IN ('user','assistant')), 0) AS message_count,
       COALESCE((SELECT COUNT(*) FROM agent_sessions s WHERE s.conversation_id = c.id), 0) AS agent_session_count,
-      COALESCE((SELECT m.content FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1), '') AS preview,
-      COALESCE((SELECT m.role FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1), '') AS preview_role
+      COALESCE((SELECT m.content FROM messages m WHERE m.conversation_id = c.id AND m.role IN ('user','assistant') ORDER BY m.id DESC LIMIT 1), '') AS preview,
+      COALESCE((SELECT m.role FROM messages m WHERE m.conversation_id = c.id AND m.role IN ('user','assistant') ORDER BY m.id DESC LIMIT 1), '') AS preview_role
     FROM conversations c
     ${where}
     ORDER BY c.updated_at DESC, c.id DESC
@@ -162,13 +163,14 @@ function ensureConversation({ conversationId, kind = 'knowledge', title, fileId 
   return createConversation({ kind, title, fileId, draftKey, scopes });
 }
 
-function appendConversationMessage({ conversationId, role, content, citations = null, meta = null } = {}) {
+function appendConversationMessage({ conversationId, role, type = 'text', content, citations = null, meta = null } = {}) {
   const db = getDb();
   const normalizedConversationId = normalizeNullablePositiveInt(conversationId);
   if (!normalizedConversationId) {
     throw new Error('conversation_id is required');
   }
-  const normalizedRole = ['user', 'assistant', 'tool'].includes(role) ? role : 'user';
+  const normalizedRole = ['user', 'assistant', 'tool', 'system'].includes(role) ? role : 'user';
+  const normalizedType = String(type || 'text').trim() || 'text';
   const messageContent = String(content || '');
   const serializedCitations = citations === null || citations === undefined
     ? null
@@ -178,9 +180,9 @@ function appendConversationMessage({ conversationId, role, content, citations = 
     : JSON.stringify(meta);
 
   const result = db.prepare(`
-    INSERT INTO messages (conversation_id, role, content, citations, meta)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(normalizedConversationId, normalizedRole, messageContent, serializedCitations, serializedMeta);
+    INSERT INTO messages (conversation_id, role, type, content, citations, meta)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(normalizedConversationId, normalizedRole, normalizedType, messageContent, serializedCitations, serializedMeta);
 
   return Number(result.lastInsertRowid);
 }
@@ -315,6 +317,7 @@ function getConversationHistory(conversationId, { limit = 12, includeTool = fals
     FROM messages
     WHERE conversation_id = ?
     ${roleClause}
+      AND COALESCE(type, 'text') = 'text'
     ORDER BY id DESC
     LIMIT ?
   `).all(normalizedConversationId, normalizedLimit).reverse();

@@ -105,6 +105,74 @@ function assetAbsolutePath(relativePath) {
   return path.join(getEffectiveConfig().assetsDir, relativePath);
 }
 
+function isLocalImageSource(src = '') {
+  const value = String(src || '').trim();
+  if (!value || value.startsWith('data:')) return false;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value)) return false;
+  if (value.startsWith('//') || value.startsWith('/api/')) return false;
+  return true;
+}
+
+function assertInsideDirectory(baseDir, targetPath) {
+  const base = path.resolve(baseDir);
+  const resolved = path.resolve(targetPath);
+  if (resolved !== base && !resolved.startsWith(`${base}${path.sep}`)) {
+    throw new Error('图片路径越界');
+  }
+  return resolved;
+}
+
+function resolveLocalImagePath(fileId, src) {
+  const file = getFileById(fileId);
+  if (!file) throw new Error('File not found');
+  const config = getEffectiveConfig();
+  const notesRoot = path.resolve(config.notesDir);
+  const assetsRoot = path.resolve(config.assetsDir);
+  const noteDir = path.dirname(path.join(notesRoot, file.path));
+  const decoded = decodeURIComponent(String(src || '').split('#')[0].split('?')[0]);
+  const candidate = path.resolve(noteDir, decoded);
+  const insideNotes = candidate === notesRoot || candidate.startsWith(`${notesRoot}${path.sep}`);
+  const insideAssets = candidate === assetsRoot || candidate.startsWith(`${assetsRoot}${path.sep}`);
+  if (!insideNotes && !insideAssets) throw new Error('图片路径越界');
+  if (!fs.existsSync(candidate)) throw new Error('图片不存在');
+  return {
+    absolutePath: candidate,
+    relativePath: insideAssets
+      ? path.relative(assetsRoot, candidate).replace(/\\/g, '/')
+      : path.relative(notesRoot, candidate).replace(/\\/g, '/'),
+    mimeType: `image/${mimeToExtension('', candidate)}`,
+    contentLength: fs.statSync(candidate).size,
+  };
+}
+
+function buildMarkdownImagePath(filePath, assetRelativePath) {
+  const config = getEffectiveConfig();
+  const noteRelativePath = String(filePath || '').replace(/\\/g, '/');
+  const noteDir = path.dirname(path.join(config.notesDir, noteRelativePath));
+  const assetPath = path.join(config.assetsDir, assetRelativePath);
+  return path.relative(noteDir, assetPath).replace(/\\/g, '/');
+}
+
+function storeLocalImageBuffer(buffer, { mimeType = '', originalName = '', filePath = '' } = {}) {
+  const content = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer || '');
+  if (content.length <= 0) throw new Error('图片内容为空');
+  if (content.length > MAX_IMAGE_BYTES) throw new Error('图片体积超过上限');
+  const normalizedMime = String(mimeType || '').split(';')[0].trim().toLowerCase();
+  if (normalizedMime && !normalizedMime.startsWith('image/')) throw new Error('只支持图片文件');
+  const relativePath = assetRelativePathFromBuffer(content, normalizedMime || 'image/*', originalName);
+  const absolutePath = assetAbsolutePath(relativePath);
+  assertInsideDirectory(getEffectiveConfig().assetsDir, absolutePath);
+  fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+  if (!fs.existsSync(absolutePath)) fs.writeFileSync(absolutePath, content);
+  return {
+    relativePath,
+    absolutePath,
+    markdownSrc: filePath ? buildMarkdownImagePath(filePath, relativePath) : relativePath,
+    mimeType: normalizedMime || 'image/*',
+    contentLength: content.length,
+  };
+}
+
 function updateImageRecordById(id, values) {
   if (!id) return;
   const entries = Object.entries(values).filter(([, value]) => value !== undefined);
@@ -336,6 +404,10 @@ async function ensureImageAvailableForRequest(fileId, src) {
     throw new Error('File not found');
   }
 
+  if (isLocalImageSource(src)) {
+    return resolveLocalImagePath(fileId, src);
+  }
+
   const record = getImageRecord(fileId, src) || { id: null, url: src, local_path: null };
   const cache = await ensureImageCached(record);
 
@@ -354,6 +426,9 @@ async function ensureImageAvailableForRequest(fileId, src) {
 module.exports = {
   MAX_IMAGE_BYTES,
   buildImageProxyUrl,
+  isLocalImageSource,
+  buildMarkdownImagePath,
+  storeLocalImageBuffer,
   getImageRecord,
   deleteImageVectorsByFileId,
   processImagesForFile,

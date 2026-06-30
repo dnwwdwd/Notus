@@ -2,6 +2,8 @@ const { completeToolChat } = require('./llm');
 const { getEffectiveConfig } = require('./config');
 const { getStyleContext } = require('./style');
 const { buildInitialUserMessage, buildLoopSystemPrompt } = require('./agentLoopPrompt');
+const { loadAttachments, formatAttachmentsForPrompt } = require('./parsedAttachmentStore');
+const { formatWebSearchContextsForPrompt } = require('./webSearchContextStore');
 const {
   clearMessagesCheckpoint,
   detectDeadloop,
@@ -18,6 +20,10 @@ const {
 } = require('./agentSession');
 const { applyPreviewWithConflictCheck, buildToolDefinitions, executeToolSafely, summarizeInput, validateToolUseBlock } = require('./agentTools');
 const { estimateChatRequestTokens } = require('./llmBudget');
+const {
+  buildInteractionAnswerSummary,
+  getInteractionById,
+} = require('./conversationInteractions');
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -32,6 +38,7 @@ function buildCompactSummary(parsed) {
   if (Array.isArray(parsed?.results)) return `检索到 ${parsed.results.length} 条结果`;
   if (parsed?.content) return `读取 ${String(parsed.content).length} 字`;
   if (parsed?.operation_set_id) return `生成预览 ${parsed.operation_set_id}`;
+  if (parsed?.interaction_id) return `生成提问卡片 ${parsed.interaction_id}`;
   if (parsed?.path) return `文件 ${parsed.path}`;
   return '工具调用已完成';
 }
@@ -100,7 +107,41 @@ async function loadStyleContext(session) {
   }
 }
 
-async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMode = 'auto_confirm' } = {}) {
+function buildQuestionCardToolResult(interactionId, sessionId) {
+  const interaction = getInteractionById(interactionId);
+  if (!interaction) {
+    return {
+      isError: true,
+      content: JSON.stringify({ error: 'INTERACTION_NOT_FOUND', message: '提问卡片不存在或已过期' }),
+    };
+  }
+  if (
+    interaction.source !== 'agent_loop'
+    || Number(interaction.payload?.agent_session_id || 0) !== Number(sessionId || 0)
+  ) {
+    return {
+      isError: true,
+      content: JSON.stringify({ error: 'INTERACTION_SESSION_MISMATCH', message: '提问卡片不属于当前 Agent 任务' }),
+    };
+  }
+  if (interaction.status !== 'answered') {
+    return {
+      isError: true,
+      content: JSON.stringify({ error: 'INTERACTION_NOT_ANSWERED', message: '提问卡片尚未完成回答' }),
+    };
+  }
+  return {
+    isError: false,
+    content: JSON.stringify({
+      answered: true,
+      interaction_id: interaction.id,
+      answers: interaction.response?.answers || {},
+      summary: buildInteractionAnswerSummary(interaction, interaction.response || {}),
+    }),
+  };
+}
+
+async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMode = 'auto_confirm', resumeInteractionId = null } = {}) {
   let session = getSession(sessionId);
   const config = getEffectiveConfig();
   const emit = typeof onStream === 'function' ? onStream : () => {};
@@ -113,21 +154,40 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMo
 
   const styleContext = await loadStyleContext(session);
   const tools = buildToolDefinitions(session);
-  const systemPrompt = buildLoopSystemPrompt(session, { styleContext });
+  const attachmentContext = session.conversation_id
+    ? formatAttachmentsForPrompt(loadAttachments(session.conversation_id))
+    : '';
+  const webSearchContext = session.conversation_id && session.web_search_enabled
+    ? formatWebSearchContextsForPrompt(session.conversation_id)
+    : '';
+  const systemPrompt = [
+    buildLoopSystemPrompt(session, { styleContext }),
+    attachmentContext,
+    webSearchContext,
+  ].filter(Boolean).join('\n\n');
   const checkpoint = loadMessagesCheckpoint(session.id);
   let messages;
   if (checkpoint) {
     messages = checkpoint.messages;
     if (checkpoint.appliedToolUseId) {
+      const questionCardResult = resumeInteractionId
+        ? buildQuestionCardToolResult(resumeInteractionId, session.id)
+        : null;
       messages.push({ role: 'assistant', content: checkpoint.lastResponseContent || [] });
       messages.push({
         role: 'user',
         content: [{
           type: 'tool_result',
           tool_use_id: checkpoint.appliedToolUseId,
-          content: JSON.stringify({ applied: true, message: '修改已写入文件' }),
+          content: questionCardResult?.content || JSON.stringify({ applied: true, message: '修改已写入文件' }),
+          is_error: Boolean(questionCardResult?.isError),
         }],
       });
+      if (questionCardResult?.isError) {
+        updateSessionStatus(session.id, 'failed');
+        emit({ type: 'loop_done', reason: 'question_card_resume_failed', loop_index: Number(session.loop_count || 0) });
+        return { status: 'failed', reason: 'question_card_resume_failed' };
+      }
     }
     clearMessagesCheckpoint(session.id);
   } else {
@@ -243,9 +303,33 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMo
         is_error: failed,
       });
 
-      if (toolUse.name === 'preview_patch_files' && !failed) {
+      if (toolUse.name === 'ask_question_card' && !failed) {
+        saveMessagesCheckpoint(session.id, messages, content, toolUse.id);
+        updateSessionStatus(session.id, 'waiting_confirm');
+        emit({
+          type: 'interaction_request',
+          loop_index: loopIndex,
+          interaction: result.interaction,
+          reason: 'question_card_requested',
+        });
+        emit({
+          type: 'loop_done',
+          reason: 'question_card_requested',
+          loop_index: loopIndex,
+          interaction_id: result.interaction_id,
+        });
+        return {
+          status: 'waiting_confirm',
+          reason: 'question_card_requested',
+          interaction: result.interaction,
+          interaction_id: result.interaction_id,
+        };
+      }
+
+      if (['create_note', 'preview_patch_files', 'preview_canvas_blocks'].includes(toolUse.name) && !failed && result.operation_set_id) {
         let previewResult = result;
-        if (normalizedApprovalMode === 'auto_confirm') {
+        const canAutoApply = ['create_note', 'preview_patch_files'].includes(toolUse.name) && normalizedApprovalMode === 'auto_confirm';
+        if (canAutoApply) {
           previewResult = await applyPreviewWithConflictCheck(result.operation_set_id, session.id, {
             approvalMode: normalizedApprovalMode,
             auto: true,
@@ -263,7 +347,7 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMo
           content: JSON.stringify({
             ...result,
             approval_mode: normalizedApprovalMode,
-            applied: normalizedApprovalMode === 'auto_confirm',
+            applied: canAutoApply,
             changed_files: previewResult.changed_files || [],
           }),
           is_error: false,
@@ -277,8 +361,15 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMo
         let finalResponse = null;
         let finalThinking = '';
         try {
+          const finalInstruction = toolUse.name === 'preview_canvas_blocks'
+            ? '现在不要再调用任何工具。请用简短中文总结刚才生成的块级修改预览，并提醒用户可以在对话底部的预览卡片中确认或取消。'
+            : toolUse.name === 'create_note'
+              ? (normalizedApprovalMode === 'auto_confirm'
+                ? '现在不要再调用任何工具。请用简短中文总结刚才新建的文件，并提醒用户可以在对话底部的 diff 卡片中查看或回滚。'
+                : '现在不要再调用任何工具。请用简短中文总结刚才生成的新建文件预览，并提醒用户可以在对话底部的 diff 卡片中应用或回滚。')
+              : '现在不要再调用任何工具。请用简短中文总结刚才生成的文件修改，并提醒用户可以在对话底部的 diff 卡片中按文件确认或回滚。';
           finalResponse = await callLLMWithRetry({
-            system: `${systemPrompt}\n\n现在不要再调用任何工具。请用简短中文总结刚才生成的文件修改，并提醒用户可以在对话底部的 diff 卡片中按文件确认或回滚。`,
+            system: `${systemPrompt}\n\n${finalInstruction}`,
             messages: compactMessages(messages, Number(llmConfig?.llmContextWindowTokens || config.llmContextWindowTokens || 60000)),
             tools: [],
             llmConfig,
@@ -289,9 +380,15 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMo
           finalThinking = finalParsed.textBlocks.map((block) => block.text).join('\n').trim();
           finalParsed.textBlocks.forEach((block) => emit({ type: 'thinking', text: block.text, loop_index: loopIndex }));
         } catch {
-          finalThinking = normalizedApprovalMode === 'auto_confirm'
-            ? '修改已自动确认并写入文件，可在下方 diff 卡片中逐文件查看或回滚。'
-            : '修改预览已生成，请在下方 diff 卡片中逐文件应用或回滚。';
+          finalThinking = toolUse.name === 'preview_canvas_blocks'
+            ? '块级修改预览已生成，请在下方预览卡片中确认或取消。'
+            : toolUse.name === 'create_note'
+              ? (normalizedApprovalMode === 'auto_confirm'
+                ? '新文件已自动创建，可在下方 diff 卡片中查看或回滚。'
+                : '新建文件预览已生成，请在下方 diff 卡片中应用或回滚。')
+              : normalizedApprovalMode === 'auto_confirm'
+                ? '修改已自动确认并写入文件，可在下方 diff 卡片中逐文件查看或回滚。'
+                : '修改预览已生成，请在下方 diff 卡片中逐文件应用或回滚。';
           emit({ type: 'thinking', text: finalThinking, loop_index: loopIndex });
         }
         logToolCall({

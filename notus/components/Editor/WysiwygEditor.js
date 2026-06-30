@@ -1,7 +1,7 @@
 // WysiwygEditor — Tiptap-based WYSIWYG markdown editor (Typora-like)
 // Loaded with ssr:false from files/index.js
 // Accepts `onEditorReady(editor)` to lift the editor instance to the parent
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useEditor, EditorContent } from '@tiptap/react';
 import { DOMParser, Slice } from '@tiptap/pm/model';
 import StarterKit from '@tiptap/starter-kit';
@@ -70,6 +70,35 @@ function readFileAsDataUrl(file) {
     reader.onerror = () => reject(reader.error || new Error('图片读取失败'));
     reader.readAsDataURL(file);
   });
+}
+
+function isLocalImageSource(src = '') {
+  const value = String(src || '').trim();
+  if (!value || value.startsWith('data:')) return false;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value)) return false;
+  if (value.startsWith('//') || value.startsWith('/api/')) return false;
+  return true;
+}
+
+function resolveEditorImageSrc(src = '', fileId = null) {
+  const value = String(src || '').trim();
+  if (!fileId || !isLocalImageSource(value)) return value;
+  return `/api/files/${encodeURIComponent(fileId)}/content-image?src=${encodeURIComponent(value)}`;
+}
+
+async function uploadEditorImage(fileId, file) {
+  if (!fileId || !file) return null;
+  const formData = new FormData();
+  formData.append('image', file);
+  const response = await fetch(`/api/files/${encodeURIComponent(fileId)}/images`, {
+    method: 'POST',
+    body: formData,
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || '图片上传失败');
+  }
+  return payload;
 }
 
 function convertMarkdownTableAroundSelection(editorInstance) {
@@ -236,7 +265,7 @@ function ImagePreviewOverlay({ preview, onClose, onMove }) {
   );
 }
 
-export const WysiwygEditor = ({ value, onChange, onSave, onEditorReady }) => {
+export const WysiwygEditor = ({ value, onChange, onSave, onEditorReady, fileId = null }) => {
   const { shortcuts, matchShortcut } = useShortcuts();
   const editorRef = useRef(null);
   const editorRootRef = useRef(null);
@@ -244,6 +273,16 @@ export const WysiwygEditor = ({ value, onChange, onSave, onEditorReady }) => {
   const syncFrameRef = useRef(null);
   const [mathDialog, setMathDialog] = useState(null);
   const [imagePreview, setImagePreview] = useState(null);
+
+  const LocalImage = useMemo(() => Image.extend({
+    renderHTML({ HTMLAttributes }) {
+      return ['img', {
+        ...HTMLAttributes,
+        src: resolveEditorImageSrc(HTMLAttributes.src, fileId),
+        'data-notus-src': HTMLAttributes.src || '',
+      }];
+    },
+  }), [fileId]);
 
   const openMathDialog = useCallback((mode, node, pos) => {
     setMathDialog({
@@ -271,7 +310,7 @@ export const WysiwygEditor = ({ value, onChange, onSave, onEditorReady }) => {
         openOnClick: false,
         HTMLAttributes: { rel: 'noopener noreferrer' },
       }),
-      Image.configure({
+      LocalImage.configure({
         inline: false,
         allowBase64: true,
       }),
@@ -313,7 +352,10 @@ export const WysiwygEditor = ({ value, onChange, onSave, onEditorReady }) => {
         const imageFile = getClipboardImageFile(event);
         if (imageFile) {
           event.preventDefault();
-          readFileAsDataUrl(imageFile)
+          const readImage = fileId
+            ? uploadEditorImage(fileId, imageFile).then((payload) => payload.src)
+            : readFileAsDataUrl(imageFile);
+          readImage
             .then((src) => {
               if (!src || !editorRef.current) return;
               const chain = editorRef.current.chain().focus();
@@ -371,7 +413,7 @@ export const WysiwygEditor = ({ value, onChange, onSave, onEditorReady }) => {
         convertMarkdownTableAroundSelection(currentEditor);
       });
     },
-  });
+  }, [fileId]);
 
   // Lift editor instance to parent once ready
   useEffect(() => {

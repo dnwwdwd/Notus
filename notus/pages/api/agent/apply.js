@@ -57,7 +57,7 @@ function validateWriteScope(operationSet) {
   };
 }
 
-function validateOperationSetForApply({ operationSetId, article, requestFileHash }) {
+function validateOperationSetForApply({ operationSetId, article, requestFileHash, currentConversationId }) {
   if (!operationSetId) return { ok: true, operationSet: null };
   const operationSet = getOperationSetById(operationSetId);
   if (!operationSet) {
@@ -67,6 +67,25 @@ function validateOperationSetForApply({ operationSetId, article, requestFileHash
       code: 'OPERATION_SET_NOT_FOUND',
       error: '预览记录不存在或已过期',
       operationSet: null,
+    };
+  }
+  const currentId = normalizePositiveInt(currentConversationId);
+  if (!currentId) {
+    return {
+      ok: false,
+      status: 400,
+      code: 'CURRENT_CONVERSATION_REQUIRED',
+      error: '缺少当前对话，不能应用这组预览',
+      operationSet,
+    };
+  }
+  if (normalizePositiveInt(operationSet.conversation_id) !== currentId) {
+    return {
+      ok: false,
+      status: 409,
+      code: 'CURRENT_CONVERSATION_MISMATCH',
+      error: '这组修改不属于当前对话，已不能继续应用',
+      operationSet,
     };
   }
   if (operationSet.status !== 'pending') {
@@ -126,6 +145,7 @@ export default async function handler(req, res) {
     operation,
     operations,
     operation_set_id: operationSetId,
+    current_conversation_id: currentConversationId,
     action = 'apply',
   } = req.body || {};
 
@@ -170,6 +190,7 @@ export default async function handler(req, res) {
     operationSetId,
     article,
     requestFileHash: getRequestFileHash(req.body || {}),
+    currentConversationId,
   });
   if (!validation.ok) {
     logger.warn('canvas.operation_set.apply_rejected', {

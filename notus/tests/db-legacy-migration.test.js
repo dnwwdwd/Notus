@@ -104,6 +104,7 @@ function runTests() {
   const chunkColumns = db.prepare('PRAGMA table_info(chunks)').all().map((row) => row.name);
   const conversationColumns = db.prepare('PRAGMA table_info(conversations)').all().map((row) => row.name);
   const messageColumns = db.prepare('PRAGMA table_info(messages)').all().map((row) => row.name);
+  const agentSessionColumns = db.prepare('PRAGMA table_info(agent_sessions)').all().map((row) => row.name);
   const files = getAllFiles();
 
   [
@@ -127,6 +128,17 @@ function runTests() {
   });
 
   assert.ok(messageColumns.includes('meta'), 'missing messages.meta');
+  assert.ok(messageColumns.includes('type'), 'missing messages.type');
+  ['web_search_enabled', 'web_search_provider', 'web_search_mode', 'web_search_count', 'tool_profile'].forEach((column) => {
+    assert.ok(agentSessionColumns.includes(column), `missing agent_sessions.${column}`);
+  });
+  const conversationId = db.prepare("INSERT INTO conversations (kind, title) VALUES ('canvas', '系统消息测试')").run().lastInsertRowid;
+  assert.doesNotThrow(() => {
+    db.prepare(`
+      INSERT INTO messages (conversation_id, role, type, content)
+      VALUES (?, 'system', 'parsed_attachment', '已解析内容')
+    `).run(conversationId);
+  });
   assert.strictEqual(files.length, 1);
   assert.strictEqual(files[0].path, 'typora_files/legacy-note.md');
 

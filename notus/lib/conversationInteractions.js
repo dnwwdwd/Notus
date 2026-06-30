@@ -689,6 +689,7 @@ function normalizeInteractionResponse(interaction, input = {}) {
 
 function summarizeAnswerValue(answer = {}, payload = {}) {
   if (!answer) return '';
+  if (answer.type === 'text_input' && answer.text) return answer.text;
   if (answer.question_id === 'primary_intent') {
     if (answer.value === 'edit') return '直接改文档';
     if (answer.value === 'text') return '继续讨论';
@@ -727,7 +728,11 @@ function buildInteractionAnswerSummary(interaction, normalizedResponse) {
   const answers = normalizedResponse?.answers || {};
   const primaryIntent = normalizePrimaryIntentValue(answers.primary_intent?.value || payload.primary_intent || 'edit');
   const parts = [];
-  SLOT_ORDER.forEach((slot) => {
+  const questionSlots = (Array.isArray(payload.questions) ? payload.questions : [])
+    .map((question) => question?.id || question?.slot)
+    .filter(Boolean);
+  const orderedSlots = [...SLOT_ORDER, ...questionSlots.filter((slot) => !SLOT_ORDER.includes(slot))];
+  orderedSlots.forEach((slot) => {
     if (
       (primaryIntent === 'text' || primaryIntent === 'analyze')
       && ['source_content_ref', 'target_location', 'write_mode'].includes(slot)
@@ -753,12 +758,12 @@ function buildInteractionAnswerSummary(interaction, normalizedResponse) {
                 ? '时间范围'
                 : slot === 'knowledge_counterpart'
                   ? '对比对象'
-          : slot;
+          : (Array.isArray(payload.questions) ? payload.questions : []).find((question) => question.id === slot)?.label || slot;
     parts.push(`${slotLabel}=${label}`);
   });
   const note = String(answers.additional_note?.text || '').trim();
   if (note) parts.push(`补充说明=${note}`);
-  return parts.length > 0 ? `已回答提问抽屉：${parts.join('；')}` : '已回答提问抽屉。';
+  return parts.length > 0 ? `已回答提问卡片：${parts.join('；')}` : '已回答提问卡片。';
 }
 
 function resolveSourceSnapshot(interaction) {

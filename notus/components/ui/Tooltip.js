@@ -94,9 +94,11 @@ export const Tooltip = ({ content, children, placement = 'top', gap = GAP, disab
             fontSize: 'var(--text-xs)',
             lineHeight: 1.4,
             boxShadow: 'var(--shadow-md)',
-            maxWidth: 220,
+            maxWidth: 'min(280px, calc(100vw - 24px))',
             pointerEvents: 'none',
-            whiteSpace: 'nowrap',
+            whiteSpace: 'normal',
+            overflowWrap: 'anywhere',
+            textAlign: 'left',
           }}
         >
           {content}

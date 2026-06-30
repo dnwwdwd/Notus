@@ -473,7 +473,7 @@ export function ClarifyDrawer({
             当前内容已经变化
           </div>
           <div style={{ fontSize: 'var(--text-sm)', lineHeight: 1.7, color: 'var(--text-secondary)' }}>
-            这张澄清抽屉对应的上下文已经失效，请重新发起一次请求。
+            这张提问卡片对应的上下文已经失效，请重新发起一次请求。
           </div>
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
             <Button type="button" variant="ghost" size="sm" onClick={() => onCancel?.(interaction)}>

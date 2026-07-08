@@ -1,7 +1,7 @@
 # 创作页 Chat 全流程业务文档
 
-> 更新时间：2026-06-25
-> 适用范围：`/canvas` 当前真实实现的大纲生成、Agentic Loop 创作任务、`@b` 块级预览工具、附件/网页链接解析、风格仿写、文件级预览、自动确认、逐文件应用/回滚与废弃链路
+> 更新时间：2026-07-03
+> 适用范围：`/canvas` 当前真实实现的大纲生成、Agentic Loop 创作任务、`@b` 块级预览工具、附件/网页链接解析、风格仿写、file revision 暂存修订、文件级预览、文件/目录操作预览、自动确认、逐项应用/回滚与废弃链路
 
 ---
 
@@ -21,17 +21,20 @@
 ## 2. 当前产品口径
 
 - 创作页仍然是“围绕当前文章做协作编辑”的工作台；右侧主输入入口默认使用 Agentic Loop 自动确认模式，发送后直接调用 `/api/agent/loop/start`，不再把创作页主输入发送到旧的 `/api/agent/run`。
-- 输入框左下角提供“自动确认 / 手动确认”选择器，仅在创作页展示，选择值持久化到浏览器本机。两种模式都不显示前置任务确认卡；差异只发生在文件级 diff 生成后的应用策略。
-- 当前文章改写、整篇生成/重写、新建笔记、文件夹分析、链接检查等任务都通过 Agentic Loop 执行；默认授权路径优先使用当前文章所在目录，检索次数使用当前前端配置。
-- 当前文章中明确带有 `@b1`、`@b2`、`@b3` 等块引用的局部修改任务优先通过 Agent Loop 的 `preview_canvas_blocks` 工具生成块级 operation set；该链路复用旧创作页块级预览和 `/api/agent/apply` 应用能力，用于减少文件级 patch 匹配和 Agent Loop 轮次。
+- 右侧聊天区支持消息级操作：用户消息正文可复制和改写，复制 tooltip 为“复制”；改写编辑态按钮文案为“发送”，Enter 发送，Shift+Enter 换行，Esc 取消，确认后复用原附件重新发送。改写历史用户消息时，该消息之后的所有消息先淡出再移除，服务端同步截断后续消息、Agent session checkpoint、未完成 interaction 和未完成 operation set；重新发送时不重复追加用户消息。AI 回复正文下方左侧可复制、按上一条对应用户消息重试，复制 tooltip 为“复制”，重试 tooltip 文案为“重试”。用户离开底部时，输入框上方中间显示仅 icon 的回底按钮，一键平滑滚回底部。
+- 输入框左下角提供“自动确认 / 手动确认”选择器，仅在创作页展示，选择值持久化到浏览器本机。两种模式都不显示前置任务确认卡；差异只发生在文件级 diff 或 file revision 生成后的应用策略。
+- 当前文章改写、整篇生成/重写、新建笔记、文件夹分析、链接检查等任务都通过 Agentic Loop 执行；当前文章路径用于帮助 Agent 明确工作对象，非删除写入默认覆盖整个笔记库，检索次数使用当前前端配置。
+- 当前文章中明确带有 `@b1`、`@b2`、`@b3` 等块引用的局部修改任务优先通过 Agent Loop 的 `preview_canvas_blocks` 工具生成块级 operation set；该链路复用旧创作页块级预览和 `/api/agent/apply` 应用能力，用于减少文件级 patch 匹配和 Agent Loop 轮次。未明确块引用的单文件大规模或碎片化正文修改优先通过 `preview_file_revision` 提交完整 Markdown 草稿，系统用代码生成 diff 并用 hash 校验应用/回滚；自动确认模式会先检查草稿是否疑似截断、缩水、丢 frontmatter 或结构不完整，高风险时只保留预览并要求用户手动确认；旧 `preview_patch_files` 继续保留为小范围或多文件 patch 兼容工具。
 - 创作页输入框启用解析附件模式：支持 PDF/DOCX/MD/TXT 上传、剪贴板文件、超过 100 字符的粘贴文本转 `.txt` 附件，每条消息最多 5 个解析附件，并自动解析用户本轮输入中的网页链接正文；知识库页不启用该模式。PDF 解析依赖 LiteParse/PDFium 原生文件，standalone 与 `.lpk` 产物必须包含对应平台 optional package、`.node` 和 `libpdfium.so`。
+- 已发送附件在用户消息附件 chip 中提供查看入口：弹窗展示解析正文和告警，MD/TXT/DOCX 支持复制内容，PDF 只允许查看不提供复制。附件 chip 不承载用户消息复制/改写或 AI 回复复制/重试。
+- 历史会话恢复后，若原用户消息 `meta.attachments` 存在，前端仍需保留这些附件元数据，供 AI 回复重试和附件内容弹窗继续复用。
 - 大纲可以先生成，但必须保存为正式文档后，才能继续稳定对话和应用 AI 改写。
 - 从文件页或知识库页携带 `?fileId=` 进入创作页时，目标文章加载完成前显示“正在打开文档…”骨架态，不再短暂显示新建创作入口。
 - 事实参考继续走后台自动补充，前台不单独展示事实来源配置。
 - 风格来源前台只保留：
   - 自动匹配
   - 手动指定文章
-- 全文改写始终保持块级结构和用户确认，不做整篇 raw text 覆盖。
+- 全文改写在块级场景仍保持块级结构和用户确认；进入 Agentic Loop 的单文件正文修订会保存 base/draft 暂存记录并展示代码 diff，不让 LLM 直接生成碎片化 `old/new` 作为预览依据；如果完整草稿安全分析判定为高风险，自动确认不会写入正式文件。
 
 ---
 
@@ -223,17 +226,17 @@ SSE 过程会返回：
 
 创作页右侧主输入收到用户请求后，不直接进入旧块级执行器，而是先读取创作页输入框里的确认方式。
 
-- 自动确认：默认模式。前端直接启动 Agentic Loop；`create_note` 和 `preview_patch_files` 生成文件级 operation set 后由后端自动应用所有文件，完成消息底部显示文件变更摘要卡，详情弹窗中显示已自动应用状态并保留回滚。`preview_canvas_blocks` 生成块级预览卡片，由用户在创作页确认后应用到当前画布并保存 Markdown。
+- 自动确认：默认模式。前端直接启动 Agentic Loop；`create_note`、安全的 `preview_file_revision` 和 `preview_patch_files` 生成文件级 operation set 后由后端自动应用所有文件，完成消息底部显示文件变更摘要卡，详情弹窗中显示已自动应用状态并保留回滚。高风险 `preview_file_revision` 只生成 pending 预览并在详情弹窗显示原因，不自动写入。`preview_canvas_blocks` 生成块级预览卡片，由用户在创作页确认后应用到当前画布并保存 Markdown。
 - 手动确认：前端同样直接启动 Agentic Loop；`create_note` 和 `preview_patch_files` 生成后在对话底部显示文件变更摘要卡，由用户打开详情弹窗逐文件应用或回滚，也可全部应用。新建文件只有在用户点击应用后才真正创建。
-- 前端消息列表和历史抽屉不按文件名或当前文章过滤，创作页历史只按 `kind=canvas` 读取全局创作对话；但每次启动 Loop 时必须拆分 `goal` 和 `user_query`：`goal` 包含当前打开文档的可见名称、当前文章路径、块快照和授权范围，帮助 Agent 明确本轮工作对象；`user_query` 只包含用户本轮输入框提交的原始文字，用于输入源解析边界。
+- 前端消息列表和历史抽屉不按文件名或当前文章过滤，创作页历史只按 `kind=canvas` 读取全局创作对话；但每次启动 Loop 时必须拆分 `goal` 和 `user_query`：`goal` 包含当前打开文档的可见名称、当前文章路径、块快照和写入能力说明，帮助 Agent 明确本轮工作对象；`user_query` 只包含用户本轮输入框提交的原始文字，用于输入源解析边界。
 
 启动后前端调用 `/api/agent/loop/start`，服务端会：
 
-1. 创建 `agent_sessions`，保存目标、授权路径、授权操作和检索次数上限；`create_note` 按目录粒度校验新建权限并生成新建文件预览，后端兼容旧任务只授权当前 `.md` 文件时在父目录准备新文件，但不会扩大同目录其他文件的修改权限。
-2. 解析本轮上传附件和 `user_query/input_text/display_query` 中的网页链接；成功或部分成功的解析结果以 `system + parsed_attachment` 消息写入当前 conversation。服务端不得从完整 `goal`、当前文档内容、块快照、文章路径或历史任务中提取 URL。
+1. 创建 `agent_sessions`，保存目标、历史路径记录、授权操作和检索次数上限；写入校验保留 session 与操作类型检查，非删除写入不再按当前文档目录拦截。
+2. 解析本轮上传附件和 `user_query/input_text/display_query` 中的网页链接；成功或部分成功的解析结果以 `system + parsed_attachment` 消息写入当前 conversation。服务端不得从完整 `goal`、当前文档内容、块快照、文章路径或历史任务中提取 URL。用户消息 meta 需要保留附件 `stored_name/extension/source_kind`，便于新上传附件内容弹窗读取临时文件；历史恢复时则按 `parsed_attachment.meta.source` 关联正文。
 3. 在执行前写入 `agent_snapshots`。
-4. 通过 Agent Loop 多轮调用 `search_knowledge / read_file / create_note / preview_patch_files / preview_canvas_blocks / ask_question_card / analyze_folder / check_links`。
-5. `create_note` 生成 `change_type='create'` 的文件级 patch，`preview_patch_files` 生成修改已有文件的文件级 patch，并写入 `canvas_operation_sets.pathes_json`；`preview_canvas_blocks` 根据当前文章块快照和 `@bN` 引用生成块级 `operations_json`；`ask_question_card` 只在任务明确但缺少必要结构化槽位，或用户明确要求先提问时生成提问卡片并等待用户回答。本轮仅有附件/外部材料且没有写入当前文档意图时，不得用提问卡片追问写入位置，应先总结附件或用普通文本询问用途。
+4. 通过 Agent Loop 多轮调用 `search_knowledge / read_file / create_note / preview_patch_files / preview_canvas_blocks / preview_file_operations / ask_question_card / analyze_folder / check_links`。
+5. `create_note` 生成 `change_type='create'` 的文件级 patch，`preview_patch_files` 生成修改已有文件的文件级 patch，`preview_file_operations` 生成移动文件、新建/重命名/移动目录的文件系统 patch，并写入 `canvas_operation_sets.pathes_json`；`preview_canvas_blocks` 根据当前文章块快照和 `@bN` 引用生成块级 `operations_json`；`ask_question_card` 只在任务明确但缺少必要结构化槽位，或用户明确要求先提问时生成提问卡片并等待用户回答。本轮仅有附件/外部材料且没有写入当前文档意图时，不得用提问卡片追问写入位置，应先总结附件或用普通文本询问用途。Agent 不支持删除目录或删除文件。
 6. 自动确认模式在服务端自动调用文件级应用逻辑，patch 状态标记为 `auto_applied`；手动确认模式保持 `pending`。
 7. Loop 结束后，最终助手消息底部展示摘要卡；应用、回滚或废弃只调用 `/api/agent/loop/apply`，不会再次请求 LLM。
 
@@ -289,7 +292,7 @@ Agentic Loop 生成文件级预览后，前端按确认方式处理：
 
 - 自动确认：后端在 Loop 完成前自动应用所有文件，前端展示“已自动应用”摘要卡，用户仍可在详情弹窗中逐文件回滚。
 - 手动确认：前端在对应助手消息底部保留摘要卡，用户打开详情弹窗逐文件点击“应用修改”或“回滚修改”，也可全部应用；点击后立即生效，不弹二次确认。应用/回滚只在生成该预览的当前对话内有效，新建或切换对话后旧预览只保留查看、导出和日志复盘。
-- DiffDialog 高度限制在视口内，左侧文件列表和右侧 diff 内容分别滚动；diff 内容区同时支持横向和纵向滚动，底部应用、回滚和全部应用按钮始终保持可见。
+- DiffDialog 高度限制在视口内，左侧文件/目录操作列表和右侧 diff 内容分别滚动；内容 patch 展示 old/new 文本，file revision 展示代码生成 hunks 与高风险原因，文件系统 patch 展示原路径/新路径或目录快照；diff 内容区同时支持横向和纵向滚动，底部应用、回滚、废弃和全部应用按钮始终保持可见。
 
 应用时：
 
@@ -451,7 +454,7 @@ Agentic Loop 生成文件级预览后，前端按确认方式处理：
 
 - 创作页继续保留旧的块画布、文章分片预览、块编辑和批量修改预览，不再整页替换为 Agent Workspace。
 - 右侧聊天消息区、工具链和底部输入框按 Notus-design-draft/notus-agent.html 还原；聊天顶部不显示 Agent Workspace 标题，也不显示模型配置和搜索配置按钮。
-- 当前文档所在目录会作为 Agentic Loop 默认授权路径；自动确认和手动确认都直接使用该授权范围启动。无当前文档时仍先创建一篇 AI 创作草稿。
+- 当前文档路径和块快照会作为 Agentic Loop 任务上下文；Agent 的非删除写入能力覆盖整个笔记库，自动确认和手动确认只决定生成的文件变更是否自动落地。无当前文档时仍先创建一篇 AI 创作草稿。
 - session_created / snapshot_done / loop_start / thinking / tool_start / tool_done / loop_done 会累计为设计稿工具过程和文件变更卡片；最终 assistant 消息保留完整工具步骤，历史会话中仍可展开查看每一步的说明、工具输入和结果。
 - 批量修改预览、应用和取消能力继续保留；文件级 patch 的 old/new 内容在 DiffDialog 中展示，应用或回滚通过 `/api/agent/loop/apply` 写回 Markdown 并更新 patch 状态，不再携带 session_id 续跑。
-- 输入框会随请求携带当前模型、解析附件元数据、联网搜索状态、单选搜索服务商和用户本轮原始输入 `user_query`；上传附件与用户本轮输入中的网页链接解析会进入 Agent Loop 上下文，当前文档和块快照中的链接不会被自动解析。联网搜索打开时，创作页 Agent Loop 会注入 `web_search` 工具，搜索结果以同会话 `web_search_context` 持久化并在后续联网任务中复用；输入框上方不展示预制问题列表。
+- 输入框会随请求携带当前模型、解析附件元数据、联网搜索状态、单选搜索服务商和用户本轮原始输入 `user_query`；模型选择会写回全局默认 LLM 配置；创作页和知识库页输入框共用同一份浏览器本地联网搜索偏好，包含联网开关与单选搜索服务商。上传附件与用户本轮输入中的网页链接解析会进入 Agent Loop 上下文，当前文档和块快照中的链接不会被自动解析。联网搜索打开时，创作页 Agent Loop 会注入 `web_search` 工具，搜索结果以同会话 `web_search_context` 持久化并在后续联网任务中复用；输入框上方不展示预制问题列表。已发送附件 chip 可打开附件内容弹窗，非 PDF 文本附件可复制正文。改写旧用户消息重新启动 Agent Loop 时，前端会携带 `skip_user_message_append`，Loop 只使用已更新的历史用户消息和新的 `goal/user_query`，不再额外写入一条重复用户消息。

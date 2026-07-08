@@ -213,19 +213,23 @@
 - `search_knowledge`
 - `read_file`
 - `create_note`
+- `preview_file_revision`
 - `preview_patch_files`
+- `preview_file_operations`
 - `preview_canvas_blocks`
 - `ask_question_card`
 - `analyze_folder`
 - `check_links`
 
-其中 `create_note` 生成新建文件预览，写入 `old='' / new=完整新文件内容 / change_type='create'` 的文件级 patch，手动确认模式下用户应用后才创建文件，自动确认模式下后端自动创建。`preview_patch_files` 生成修改已有文件的文件级 patch 预览，并按文件记录 `pending / applied / auto_applied / rolled_back / discarded / failed` 状态；创建预览前会把空白差异下的唯一近似 `old` 对齐到当前文件精确片段，无法唯一匹配时返回明确错误。`preview_canvas_blocks` 服务创作页 `@b1/@b2/@b3` 块级修改，按当前文章块快照生成 `operations_json` 块级 operation set，前端确认后通过 `/api/agent/apply` 应用到画布并保存 Markdown。`ask_question_card` 只在当前任务明确但缺少必要结构化槽位，或用户明确要求先提问时生成提问卡片并暂停同一个 Agent Loop；本轮只有附件/外部材料且没有写入当前文档意图时，不得追问写入位置。用户回答后把答案作为 tool result 注入后续推理。文件级消息流只展示文件变更摘要，old/new 详情、逐文件应用、回滚和全部应用放在 DiffDialog 中。应用/回滚必须属于当前对话；新建或切换对话后旧预览只保留查看、导出和日志复盘。真正落盘由 `/api/agent/loop/apply` 或文章保存链路完成，并在写入后触发增量索引。删除文件、重命名、移动和系统命令不作为当前 Agent 能力开放。
+其中 `create_note` 生成新建文件预览，写入 `old='' / new=完整新文件内容 / change_type='create'` 的文件级 patch，手动确认模式下用户应用后才创建文件，自动确认模式下后端自动创建。`preview_file_revision` 生成单文件暂存修订：Agent 只提交修改后的完整 Markdown 草稿，系统保存正式文件 base 内容和 draft 内容，代码生成 diff hunks；应用前校验当前文件 hash 等于 `base_hash`，回滚前校验当前文件 hash 等于 `applied_hash`，冲突时只标记 `stale` 或 `rollback_conflict`，不覆盖正式文件；自动确认模式还会检查草稿是否疑似空白、短摘要、截断、大比例删除、丢 frontmatter 或 Markdown 结构不完整，高风险时只保留 pending 预览并在 DiffDialog 显示原因。`preview_patch_files` 保留为旧小范围或多文件 patch 兼容工具，并按文件记录 `pending / applied / auto_applied / rolled_back / discarded / failed` 状态；创建预览前会把空白差异下的唯一近似 `old` 对齐到当前文件精确片段，无法唯一匹配时返回明确错误。`preview_file_operations` 生成文件/目录结构操作预览，支持 `move_file`、`create_folder`、`rename_folder`、`move_folder`，同样进入 DiffDialog，自动确认模式自动应用，手动确认模式等待用户逐项应用或回滚；目录移动和重命名会连同目录下文件一起移动并更新索引；删除目录和删除文件不向 Agent 开放。侧边栏文件树中的右键新建文件、目录新建、目录重命名、目录删除和文件移动属于用户显式文件管理动作，改为直接调用文件接口或文件操作接口并立即刷新文件树，不再经过 DiffDialog；右键目录新建文件落在目录内，右键文件新建文件落在同级目录内，新建后按更新时间显示在同级文件列表第一个。`preview_canvas_blocks` 服务创作页 `@b1/@b2/@b3` 块级修改，按当前文章块快照生成 `operations_json` 块级 operation set，前端确认后通过 `/api/agent/apply` 应用到画布并保存 Markdown。`ask_question_card` 只在当前任务明确但缺少必要结构化槽位，或用户明确要求先提问时生成提问卡片并暂停同一个 Agent Loop；本轮只有附件/外部材料且没有写入当前文档意图时，不得追问写入位置。用户回答后把答案作为 tool result 注入后续推理。文件级消息流只展示文件变更摘要，old/new、代码 hunk diff、路径变更详情、逐项应用、废弃、回滚和全部应用放在 DiffDialog 中；预览生成后的最终提示由后端确定性生成，不再把完整草稿带入二次 LLM 总结。应用/回滚必须属于当前对话；新建或切换对话后旧预览只保留查看、导出和日志复盘。真正落盘由 `/api/agent/loop/apply`、文件操作接口或文章保存链路完成，并在写入后触发增量索引。系统命令和删除文件/目录不作为当前 Agent 能力开放。
 
 ### 8.5 Agentic Loop 任务安全边界
 
-创作页主输入和知识库页写作类任务会创建 `agent_sessions`。创作页默认自动确认，发送后直接创建 session；切换为手动确认时也直接执行，只是在生成文件级预览后等待用户在详情弹窗中逐文件应用或回滚。每次 Loop 开始前先完成 `agent_snapshots`；写入类工具必须经过 `validateWrite()` 校验授权路径、授权操作和 session token。前端新建/切换对话时会清空 active Agent session，后端应用/回滚接口还会校验 `current_conversation_id`、session 与 operation set 归属一致。`create_note` 按目录粒度校验新建权限并先生成预览；如果历史任务只授权了当前 `.md` 文件，后端只兼容允许在该文件父目录准备新文件，不会把同目录其他文件的 `modify` 权限一并放开。知识库页普通问答不创建 Loop session，继续走 `/api/chat`。
+创作页主输入和知识库页写作类任务会创建 `agent_sessions`。创作页默认自动确认，发送后直接创建 session；切换为手动确认时也直接执行，只是在生成文件级预览或 file revision 后等待用户在详情弹窗中逐文件应用、废弃或回滚。每次 Loop 开始前先完成 `agent_snapshots`；写入类工具必须经过 `validateWrite()` 校验 session token、会话状态、操作类型和删除禁用规则。非删除写入默认覆盖整个笔记库，不再按当前打开文档所在目录拦截。前端新建/切换对话时会清空 active Agent session，后端应用/回滚接口还会校验 `current_conversation_id`、session 与 operation set 归属一致。知识库页普通问答不创建 Loop session，继续走 `/api/chat`。
 
-创作页 Agent Loop 在创建或确认 conversation 后会解析输入源：PDF/DOCX/MD/TXT 上传文件、剪贴板文件、超长粘贴文本生成的 TXT 附件，以及用户本轮 `user_query/input_text/display_query` 中的网页链接正文。`goal` 仍可包含当前文档、路径、块快照和授权范围，但不得作为 URL 提取来源。解析成功或部分成功的结果写入 `messages` 的 `system + parsed_attachment` 记录，后续每轮 system prompt 会按预算拼接这些材料；解析失败只作为本轮工具过程反馈，不进入长期上下文。该链路不等同于联网搜索；真实联网搜索由输入框联网开关控制的 `web_search` 工具完成。
+创作页 Agent Loop 在创建或确认 conversation 后会解析输入源：PDF/DOCX/MD/TXT 上传文件、剪贴板文件、超长粘贴文本生成的 TXT 附件，以及用户本轮 `user_query/input_text/display_query` 中的网页链接正文。`goal` 仍可包含当前文档、路径、块快照和写入能力说明，但不得作为 URL 提取来源。解析成功或部分成功的结果写入 `messages` 的 `system + parsed_attachment` 记录，后续每轮 system prompt 会按预算拼接这些材料；解析失败只作为本轮工具过程反馈，不进入长期上下文。用户消息 meta 需要保留附件 `stored_name/extension/source_kind`，用于新上传附件的内容弹窗；历史会话恢复时，前端会把 `parsed_attachment` 正文按来源文件名关联回用户消息附件。附件内容弹窗允许查看解析文本，MD/TXT/DOCX 支持复制，PDF 仅查看不复制。该链路不等同于联网搜索；真实联网搜索由输入框联网开关控制的 `web_search` 工具完成。
+
+用户在知识库页或创作页改写历史用户消息时，会话从该消息重新分叉。前端先让该消息之后的所有消息淡出，再调用 `/api/conversations/:id/truncate` 更新目标用户消息正文并删除后续 `messages`；服务端同时清空或取消后续 Agent session checkpoint、未完成提问卡片 interaction 与未完成 operation set。随后重新发送携带 `skip_user_message_append`，知识库 `/api/chat` 与 Agent Loop 都复用已更新的用户消息作为上下文起点，不再写入重复用户消息。
 
 任务运行中会记录 `agent_run_logs`，设置页日志视图会按 session 和轮次展示工具调用、结果摘要、失败状态和耗时；历史抽屉中包含 Agent Loop 的会话会显示日志入口，并跳转到设置页按 `conversation_id` 过滤。运行时同时检测以下异常：
 
@@ -277,4 +281,4 @@
 - 知识库页和创作页保留原有业务主区域：知识库文档预览/编辑、创作块画布、文章分片预览和批量修改预览不移除。
 - AgentWorkspace 仅作为右侧聊天面板承载聊天消息、工具过程、底部输入框和文件变更详情；底层知识库检索、创作规划、operation set 和文件保存链路继续复用现有实现。
 - 工具过程由现有 SSE 事件映射：知识库映射检索和回答，创作映射 thinking、batch 进度和修改预览。
-- 搜索服务商配置保留在设置菜单；Agent Loop 请求会携带联网搜索开关和单选服务商。开关打开且 provider 可用时注入 `web_search`，成功结果写入同会话 `web_search_context`；开关关闭时不注入工具，也不拼入历史联网上下文。
+- 搜索服务商配置保留在设置菜单；知识库页和创作页输入框共用同一份浏览器本地联网搜索偏好，Agent Loop 请求会携带这份偏好中的联网搜索开关和单选服务商。开关打开且 provider 可用时注入 `web_search`，成功结果写入同会话 `web_search_context`；开关关闭时不注入工具，也不拼入历史联网上下文。

@@ -1,6 +1,6 @@
 # Notus 项目进度
 
-> 最后更新：2026-06-30
+> 最后更新：2026-07-02
 > 对应文档：`docs/Notus_PDD.md` / `docs/Notus_PRD.md` / `docs/Notus_UI_Guide.md` / `docs/Notus_Business_Logic_Upgrade.md` / `docs/Notus_Desktop_Roadmap.md` / `docs/Notus_Release_Notes.md`
 
 ---
@@ -38,8 +38,8 @@
 | 子任务 | 文件 | 状态 | 备注 |
 |--------|------|------|------|
 | M2-01 App Shell（TopBar + Sidebar + Shell） | `components/Layout/` | ✅ | Shell 已同步全局 `activePage`；侧边栏折叠、文件树展开、文件树 / 大纲 tab 与各 tab 滚动位置现已持久化；知识库页已开放文章大纲 |
-| M2-02 FileTree 组件（前端交互） | `components/Layout/Sidebar.js` `contexts/AppContext.js` `pages/api/files/` | ✅ | 已接真实文件系统与 SQLite；新建文件无需输入 `.md` 后缀，索引告警不再阻断文件创建；搜索已加 `useDeferredValue` 防抖；已添加右键上下文菜单（重命名/删除），并支持在开启设置项后将侧边栏重命名反向同步到正文首个 H1；同一文档可在文件、知识库、创作页恢复最近阅读位置 |
-| M2-03 WYSIWYG Markdown 编辑器 | `components/Editor/WysiwygEditor.js` `components/Editor/EditorToolbar.js` | ✅ | Tiptap + Markdown 双向转换；支持标题、链接、加粗、斜体、下划线、列表、任务列表、引用、代码块、分隔线、图片；代码块已接入 lowlight 语法高亮与语言选择；工具栏底部添加橙色脉冲条以指示未保存状态 |
+| M2-02 FileTree 组件（前端交互） | `components/Layout/Sidebar.js` `contexts/AppContext.js` `pages/api/files/` | ✅ | 已接真实文件系统与 SQLite；新建文件无需输入 `.md` 后缀，索引告警不再阻断文件创建；搜索已加 `useDeferredValue` 防抖；右键上下文菜单支持新建文件、文件移动，以及目录新建、重命名和删除，并改为直接应用后刷新文件树，不再弹出文件操作预览组件；文件重命名继续支持开启设置项后反向同步正文首个 H1；同一文档可在文件、知识库、创作页恢复最近阅读位置 |
+| M2-03 WYSIWYG Markdown 编辑器 | `components/Editor/WysiwygEditor.js` `components/Editor/EditorToolbar.js` `utils/editorClipboard.js` | ✅ | Tiptap + Markdown 双向转换；支持标题、链接、加粗、斜体、下划线、列表、任务列表、引用、代码块、分隔线、图片；代码块已接入 lowlight 语法高亮与语言选择；工具栏底部添加橙色脉冲条以指示未保存状态，并新增“复制全文”将整篇笔记以富文本 + Markdown 复制到剪贴板，本地图片会内嵌到复制结果 |
 | M2-04 MarkdownRenderer | `components/Editor/MarkdownPreview.js` | ✅ | remark-gfm，待接入 rehype-katex |
 | M2-05 TocTree | `components/Layout/Sidebar.js` `hooks/useEditorToc.js` `pages/files/index.js` `pages/knowledge.js` | ✅ | 文件页和知识库页共用真实 H1-H6 大纲；支持点击精确跳转、滚动联动高亮和 tab 往返后的正确选中状态 |
 | M2-06 URL hash 来源跳转 + 高亮淡出 | `pages/files/index.js` `components/ui/SourceCard.js` | ✅ | 来源卡片已支持按 fileId + lineStart/lineEnd 跳转并高亮淡出；已补充 `#L24-L28` hash 格式解析（mount 时读 `window.location.hash`，清理后注入现有滚动流程）与 Tiptap 光标定位（`posAtDOM` + `setTextSelection`） |
@@ -71,8 +71,8 @@
 | M4-03 创作规划器 + 执行器主链路 | `lib/canvasRequestPlanner.js` `lib/canvasAgent.js` | ✅ | 已从旧的单块工具循环升级为“规则规划 + 单次 helper + 执行器”主链路，支持单块、多块、全文与文本回复/文章分析；多轮续聊现会沿用最近目标块、最近操作类型和最近建议摘要 |
 | M4-04 旧 intent 链路清理 | `pages/api/agent/intent.js` `lib/agent.js` | ✅ | 旧的独立 intent 接口和 legacy Canvas 工具循环已移除，当前只保留内置请求规划主链路 |
 | M4-05 大纲生成 `/api/agent/outline` SSE | `pages/api/agent/outline.js` `lib/prompt.js` | ✅ | 已接 LLM 大纲生成，并改为复用 `getStyleContext()`，让大纲和改写共用同一套风格上下文 |
-| M4-06 Agentic Loop 运行 `/api/agent/loop/start` SSE | `pages/api/agent/loop/start.js` `hooks/useAgentLoopController.js` | ✅ | 创作页主输入已切到 Agentic Loop；默认自动确认模式跳过任务确认卡，文件级预览生成后由后端自动应用；手动确认模式通过消息摘要卡打开 DiffDialog 逐文件应用、回滚或全部应用，`create_note` 新建文件也先生成 diff 预览，应用动作不再续跑；创作页上传附件和用户本轮输入中的网页链接解析会进入本轮上下文，`goal` 中的当前文档/块快照/历史任务不再参与 URL 解析，PDF 解析原生依赖已纳入 standalone / LPK 打包口径 |
-| M4-07 CanvasBlock 组件 | `components/Canvas/CanvasBlock.js` `pages/canvas.js` | ✅ | 块级编辑组件继续保留；创作页右侧聊天面板使用设计稿样式，当前打开文档名称和文章路径会进入 Agentic Loop 任务 goal，当前文章所在目录作为默认授权路径，顶部 Agent Loop 任务/回滚卡片已移除 |
+| M4-06 Agentic Loop 运行 `/api/agent/loop/start` SSE | `pages/api/agent/loop/start.js` `hooks/useAgentLoopController.js` | ✅ | 创作页主输入已切到 Agentic Loop；默认自动确认模式跳过任务确认卡，文件级预览生成后由后端自动应用；手动确认模式通过消息摘要卡打开 DiffDialog 逐文件应用、回滚或全部应用，Agent 非删除写入覆盖整个笔记库，`create_note` 新建文件也先生成 diff 预览，`preview_file_operations` 支持移动文件、新建/重命名/移动目录且不开放删除目录/文件，应用动作不再续跑；创作页上传附件和用户本轮输入中的网页链接解析会进入本轮上下文，用户消息附件 chip 可查看解析内容，非 PDF 文本附件可复制，`goal` 中的当前文档/块快照/历史任务不再参与 URL 解析，PDF 解析原生依赖已纳入 standalone / LPK 打包口径 |
+| M4-07 CanvasBlock 组件 | `components/Canvas/CanvasBlock.js` `pages/canvas.js` | ✅ | 块级编辑组件继续保留；创作页右侧聊天面板使用设计稿样式，当前打开文档名称和文章路径会进入 Agentic Loop 任务 goal，Agent 写入不再受当前文章所在目录限制，顶部 Agent Loop 任务/回滚卡片已移除 |
 | M4-08 AIPanel + 批量预览恢复 | `components/AIPanel/BatchOperationCard.js` `pages/canvas.js` | ✅ | 已支持整组预览、整组应用/取消、刷新恢复全部未应用预览、文章变更后 `stale` 提示；文件级 DiffDialog 支持大 diff 的横向/纵向滚动并保持底部操作按钮可见；AIPanel 继续保留后台自动事实补充 + 前台风格来源配置；历史会话抽屉支持二次确认删除 |
 | M4-09 新建创作入口页 | `pages/canvas.js` CanvasEntry | ✅ | 话题输入 + 最近列表全部可点击，"从空白开始"按钮可用；侧边栏选中文件后会在当前页基于该文章进入创作；携带 `?fileId=` 打开已有文档时先显示文档加载骨架，不再露出新建入口；新主题内容可保存为 Markdown 并索引 |
 | M4-10 编辑器"AI 创作"按钮 | `components/Editor/EditorToolbar.js` | ✅ | 点击跳转 `/canvas?fileId=...`，创作页在目标文章加载完成前显示“正在打开文档…”骨架态 |
@@ -85,7 +85,7 @@
 
 | 子任务 | 文件 | 状态 | 备注 |
 |--------|------|------|------|
-| M5-01 设置页（模型/搜索/个性化/存储/日志/关于） | `pages/settings/[section].js` `components/Settings/SettingsScreen.js` | ✅ | 模型配置现统一为设计稿暖色单栏卡片：手动填写 Base URL / 模型名 / API Key，Embedding 维度测试后由后端记录；LLM 新增/编辑支持 OpenAI API 与 Anthropic 兼容协议选择，使用 448px 暖白弹窗，保存不再强制测试连通性；搜索配置已加入设置菜单，联网搜索总开关实时保存，服务商/模式/结果数/API Key 仍手动保存；联网搜索已接入 Agent Loop `web_search` 工具并持久化同会话搜索上下文；个性化页提供“标题与文件名双向绑定”开关，默认关闭；存储页已接真实重建/清除索引；日志页可查询服务端 JSONL 日志 |
+| M5-01 设置页（模型/搜索/个性化/存储/日志/关于） | `pages/settings/[section].js` `components/Settings/SettingsScreen.js` | ✅ | 模型配置现统一为设计稿暖色单栏卡片：手动填写 Base URL / 模型名 / API Key，Embedding 维度测试后由后端记录；LLM 新增/编辑支持 OpenAI API 与 Anthropic 兼容协议选择，使用 448px 暖白弹窗，提供商默认按 Base URL/模型自动识别，但允许手动修改，不再手填配置名称；知识库页与创作页模型下拉按提供商分组，并将当前选择写回全局默认模型；搜索配置已加入设置菜单，联网搜索总开关实时保存，服务商/模式/结果数/API Key 仍手动保存；知识库页与创作页共用同一份输入框联网开关与搜索服务商偏好；联网搜索已接入 Agent Loop `web_search` 工具并持久化同会话搜索上下文；共用 `AgentWorkspace` 现补齐仅 icon 回底按钮、用户消息复制/改写、AI 回复复制/重试，复制 tooltip 统一为“复制”，改写旧用户消息会截断后续消息并清理 Agent 上下文，附件 chip 收口为附件查看入口；个性化页提供“标题与文件名双向绑定”开关，默认关闭；存储页已接真实重建/清除索引；日志页可查询服务端 JSONL 日志 |
 | M5-02 CommandPalette（cmdk） | `components/Layout/TopBar.js` | ⚠️ 部分 | 已提供全局文章搜索弹层和 ⌘K 快捷键；空输入时不再展示文章；完整命令面板仍未实现 |
 | M5-03 快捷键绑定 | `contexts/ShortcutsContext.js` `components/Editor/WysiwygEditor.js` `components/Layout/TopBar.js` `components/ChatArea/InputBar.js` `components/Canvas/CanvasBlock.js` | ✅ | 常用快捷键已集中到 `/settings/shortcuts` 维护，并接入搜索、发送、保存文档、保存块编辑、取消块编辑；用户可见提示已按平台显示 Command / Ctrl；Electron 已补充固定系统级搜索快捷键 |
 | M5-04 Toast 全局错误降级 | `components/ui/Toast.js` `lib/errors.js` | ✅ | `lib/errors.js` 已补充 `HTTP_ERROR_MESSAGES` 映射表（400/401/403/429/500/502/503）与 `httpErrorMessage()` 工具函数，供所有 API 路由与前端错误分支调用 |
@@ -107,9 +107,9 @@
 - 旧的“知识库问答 + 普通文件改写”只能描述当前部分能力，不能作为最终产品定义。
 - 文件系统仍是真相来源；数据库只保存索引、缓存、会话、预览和运行状态。
 - 后续 Agent 能力应围绕工作区工具扩展，包括读取文件、搜索工作区、创建笔记、更新 frontmatter、多文件预览、整理目录和检查内部链接。
-- 创作页和知识库页已接入 Agentic Loop：创作页主输入默认自动确认，发送后直接启动 Loop，文件预览生成后自动应用并在消息中保留可打开详情的摘要卡；创作页也可切换为手动确认，在 DiffDialog 中逐文件处理或全部应用。创作页上传附件、超过 100 字符的粘贴文本和用户本轮输入中的网页链接正文可作为 Agent 上下文，每条消息最多 5 个解析附件；Agent 执行上下文 `goal` 可包含当前文档和块快照，但不会被输入源解析器扫描。知识库页普通问答继续走 `/api/chat`，写作类任务通过保守关键词规则进入工具调用、文件级预览、逐文件应用/回滚和未处理项废弃。
+- 创作页和知识库页已接入 Agentic Loop：创作页主输入默认自动确认，发送后直接启动 Loop，文件预览生成后自动应用并在消息中保留可打开详情的摘要卡；创作页也可切换为手动确认，在 DiffDialog 中逐文件/目录操作处理或全部应用。单文件大规模/碎片化正文修改优先使用 `preview_file_revision` 暂存完整草稿，由代码生成 diff、校验 `base_hash` 后应用，并在应用后用 `applied_hash` 支持安全回滚；自动确认模式会对完整草稿做安全分析，疑似截断、缩水、大比例删除、丢 frontmatter 或 Markdown 结构不完整时只保留 pending 预览，不自动落盘；旧 `preview_patch_files` 继续兼容小范围或多文件 patch。创作页上传附件、超过 100 字符的粘贴文本和用户本轮输入中的网页链接正文可作为 Agent 上下文，每条消息最多 5 个解析附件；用户消息附件可弹窗查看解析正文，MD/TXT/DOCX 可复制内容，PDF 不提供复制；Agent 执行上下文 `goal` 可包含当前文档和块快照，但不会被输入源解析器扫描。改写历史用户消息时，会话会删除该消息之后的消息并清理后续 Agent 上下文，再从更新后的用户消息重新发送。知识库页普通问答继续走 `/api/chat`，写作类任务通过保守关键词规则进入工具调用、文件级预览、文件/目录操作预览、逐项应用/回滚和未处理项废弃。
 - 检索范围、写入范围和风格参考范围应逐步升级为会话级可见状态，而不是仅作为单次请求参数。
-- 所有写入 Markdown 的能力都必须先生成可审查结果；创作页明确 `@b` 引用时使用 `preview_canvas_blocks` 块级预览，多文件或文件级修改使用批量预览。Agentic Loop 的文件级预览在创建前会先把空白差异下的唯一近似 `old` 对齐为当前文件精确片段。
+- 所有写入 Markdown 的能力都必须先生成可审查结果；创作页明确 `@b` 引用时使用 `preview_canvas_blocks` 块级预览，单文件正文修订优先使用 `file_revision` 暂存修订，多文件或旧小范围修改继续使用批量预览。Agentic Loop 的旧文件级 patch 预览在创建前会先把空白差异下的唯一近似 `old` 对齐为当前文件精确片段；file revision 的高风险草稿会在自动应用前降级为手动确认。
 - 知识库页以 Agent 问答为主，但保留旧的文档预览/编辑分栏；文档上下文继续作为请求上下文和引用来源参与回答。
 - 知识库回答已从“只给来源入口”升级为“基于章节证据自然回答”，并新增查询规划、标题命中、章节上下文扩展、澄清追问、条件重排、弱证据/冲突模式与证据不足保守回答。
 - 知识库页历史会话仍统一保留在全局空间；页面首次进入默认新对话，不再自动恢复最近一条历史，只有用户主动选择旧会话时才续聊。
@@ -173,6 +173,7 @@
 | `/api/articles/save` | POST | ✅ |
 | `/api/conversations` | GET / POST | ✅ | 已支持按 `kind + file_id/draft_key` 过滤最近会话列表；知识库页当前默认只按 `kind=knowledge` 读取全局历史 |
 | `/api/conversations/:id` | GET / DELETE | ✅ | 已供知识库页与创作页恢复旧会话消息 |
+| `/api/conversations/:id/truncate` | POST | ✅ | 用户改写历史消息时更新目标消息、删除后续消息并清理后续 Agent 上下文 |
 | `/api/settings` | GET / PUT | ✅ |
 | `/api/settings/test` | POST | ✅ |
 

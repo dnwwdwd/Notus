@@ -19,7 +19,7 @@
 | 中文分词 | jieba-wasm（应用层分词，失败时回退简化分词） |
 | 文件监听 | chokidar（usePolling:true, interval:3000ms, awaitWriteFinish） |
 | Embedding | 用户在设置页手动填写 Base URL、模型名与 API Key；设置页与 /setup 第 1 步首次进入时表单先以空态呈现，读取到服务端已保存配置后只回填 Base URL 与模型名，API Key 不明文回显，也不展示“已保存密钥”类提示；系统根据 Base URL 和模型名自动识别兼容厂商，可选文本或多模态，测试通过后在后端记录向量维度并用于索引 |
-| LLM | 用户在设置页手动填写 Base URL、模型名与 API Key，并在新增/编辑弹窗选择兼容协议：OpenAI API 或 Anthropic；默认协议为 OpenAI API，历史配置按 OpenAI API 迁移；系统根据 Base URL 和模型名自动识别 Provider name，流式输出；LLM 配置保存不要求先测试连通性，设置页和引导页使用 notus-agent.html 的暖白单栏卡片、朴素列表和 448px 表单弹窗样式，知识库页与创作页以输入框模型下拉框当前选择作为全局模型选择 |
+| LLM | 用户在设置页手动填写 Base URL、模型名与 API Key，并在新增/编辑弹窗选择兼容协议：OpenAI API 或 Anthropic；默认协议为 OpenAI API，历史配置按 OpenAI API 迁移；该协议下拉复用项目共享的 `DropdownSelect` 组件，不再单独使用原生 `select`。系统根据 Base URL 和模型名自动识别 Provider name，但不再把推断结果直接写进输入框，只通过 `OpenAI/Anthropic` placeholder 提示，用户留空时在保存阶段再使用该推断值兜底；API Key 不明文回显，若后端已保存则在字段标题显示 `已保存` tag，并用“已保存，留空不修改”提示覆盖行为；Anthropic 官方地址使用 `x-api-key` + `anthropic-version`，第三方 Anthropic-compatible 地址改为 `Authorization: Bearer <token>`；Anthropic 兼容链路在 Base URL 只有根域名时自动补齐 `/v1` 再拼接 `/messages` 与 `/models`；LLM 配置保存不要求先测试连通性，设置页和引导页使用 notus-agent.html 的暖白单栏卡片、朴素列表和 448px 表单弹窗样式，知识库页与创作页以输入框模型下拉框当前选择作为全局模型选择；设置页、模型发现与连通性测试相关前端请求必须先校验响应是否为 JSON，若服务端返回 HTML 错误页则降级显示可读错误文案 |
 | 运行平台 | Web + Electron 桌面端主线，保留对懒猫运行时的代码兼容；业务层统一依赖平台中间层解析路径与能力 |
 
 **不用 TypeScript / App Router / shadcn-ui / Python sidecar** —— 减少复杂度、减少 AI 自动生成时的路由混淆、不依赖默认主题。
@@ -33,7 +33,7 @@ Notus 的长期形态不是“知识库问答 + 普通文件改写”，而是�
 - 任何写入 Markdown 的能力都必须先形成可审查结果；单文件使用块级 diff，多文件使用批量预览。
 - 检索范围、写入范围和风格参考范围要逐步从请求参数升级为会话级产品状态，并在 UI 中可见。
 - 通用知识和用户笔记依据必须分开表达，服务端不能把模型自身知识混入“来自笔记”的证据链。
-- 新能力优先以工作区工具形式扩展，例如读取文件、搜索工作区、创建笔记、更新 frontmatter、生成多文件预览、整理目录和检查内部链接。
+- 新能力优先以工作区工具形式扩展，例如读取文件、搜索工作区、创建笔记、更新 frontmatter、生成多文件预览、移动文件、整理目录和检查内部链接。删除文件和删除目录默认不向 Agent 开放。
 
 ---
 
@@ -77,6 +77,7 @@ Notus/
 │   │   ├── canvasOperationSets.js  # 批量预览持久化
 │   │   ├── agentSession.js         # Agentic Loop 会话、权限、快照和回滚
 │   │   ├── agentTools.js           # Agentic Loop 工具集
+│   │   ├── fileSystemPatches.js    # 文件/目录操作预览、应用与回滚
 │   │   ├── agentLoop.js            # Agentic Loop 主循环
 │   │   ├── agentLoopPrompt.js      # Agentic Loop Prompt 模板
 │   │   ├── diff.js                 # str_replace 引擎 + diff 计算
@@ -310,6 +311,19 @@ CREATE TABLE IF NOT EXISTS canvas_operation_sets (
   operations_json TEXT NOT NULL,                 -- 旧块级 operation set
   pathes_json     TEXT,                          -- Agentic Loop 文件级 patches；字段名按已确认口径保留 pathes_json
   status          TEXT NOT NULL DEFAULT 'pending',
+  revision_type   TEXT,                          -- file_revision 时启用
+  revision_file_path TEXT,
+  revision_base_hash TEXT,
+  revision_draft_hash TEXT,
+  revision_applied_hash TEXT,
+  revision_base_content TEXT,
+  revision_draft_content TEXT,
+  revision_error TEXT,
+  revision_parent_id INTEGER REFERENCES canvas_operation_sets(id) ON DELETE SET NULL,
+  revision_sequence_no INTEGER NOT NULL DEFAULT 0,
+  revision_applied_at DATETIME,
+  revision_discarded_at DATETIME,
+  revision_rolled_back_at DATETIME,
   expires_at      DATETIME,
   created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -384,7 +398,7 @@ db.exec(`
 
 ### 4.0 工作区 Agent 目标分层
 
-当前版本的知识库问答和创作画布已经接入工作区 Agent 基础能力：创作页主输入统一进入 Agentic Loop，并在输入框提供“自动确认 / 手动确认”模式选择；知识库页普通问答继续走 `/api/chat`，写作类任务按保守关键词规则进入 Agentic Loop。Loop 会话在开始执行前创建快照，写入前做系统层权限校验，并支持对话底部逐文件确认、回滚和废弃。旧 `/api/agent/run` 保留为历史兼容接口，不作为创作页主入口。
+当前版本的知识库问答和创作画布已经接入工作区 Agent 基础能力：创作页主输入统一进入 Agentic Loop，并在输入框提供“自动确认 / 手动确认”模式选择；知识库页普通问答继续走 `/api/chat`，写作类任务按保守关键词规则进入 Agentic Loop。Loop 会话在开始执行前创建快照，写入前做系统层权限校验；默认允许 Agent 在整个笔记库内创建、修改、重命名和移动文件/目录，但删除文件和删除目录始终不开放。文件级变更支持对话底部逐文件确认、回滚和废弃。旧 `/api/agent/run` 保留为历史兼容接口，不作为创作页主入口。
 
 ```
 用户界面层
@@ -405,20 +419,21 @@ db.exec(`
 
 工作区工具层
   - search_knowledge / read_file
-  - create_note / preview_patch_files
+  - create_note / preview_file_revision / preview_patch_files
   - analyze_folder / check_links
 
 执行与审查层
   - 单文件块级 diff
+  - 单文件暂存修订 + 代码生成 diff
   - 多文件批量预览
   - 高风险操作确认
   - 应用后自动索引
   - 任务级快照与文件级确认/回滚
 ```
 
-当前工具集不开放删除、重命名、移动或系统命令能力；删除在任意 Agentic Loop 写入校验路径下都会被拒绝。
+当前工具集开放新建、修改、重命名和移动文件/目录能力，不开放删除或系统命令能力；删除在任意 Agentic Loop 写入校验路径下都会被拒绝。
 
-`validateWrite()` 按操作类型区分授权边界：`modify` 只允许精确授权文件或授权目录下的文件；`create` 允许在授权目录下新建文件，如果授权项是某个 `.md` 文件，则只额外允许在该文件父目录中新建文件，不扩大同目录其他文件的修改权限。
+`validateWrite()` 校验 session token、会话状态、过期时间、操作类型和删除禁用规则；`create/modify` 类写入不再按 `authorized_paths` 做路径拦截，避免当前打开文档目录误限制 Agent 整理全库结构。
 
 ### 4.1 `lib/db.js`
 
@@ -958,6 +973,9 @@ GET    /api/conversations            ?kind=knowledge|canvas&file_id?&draft_key?&
 POST   /api/conversations            Body: { title?, kind?, file_id?, draft_key? } → Conversation
 GET    /api/conversations/:id        → { ...conversation, messages, pending_operation_sets, pending_interactions, agent_sessions }
 DELETE /api/conversations/:id
+POST   /api/conversations/:id/truncate
+       Body: { message_id, content }
+       → 更新目标 user 消息，删除该消息之后的 messages，并清理后续 Agent session checkpoint、未完成 interaction 与未完成 operation set
 ```
 
 - 知识库页默认只按 `kind=knowledge` 读取全局历史，不再用 `file_id` 分桶。
@@ -1001,7 +1019,8 @@ POST /api/settings/test              Body: { kind: 'embedding'|'llm', config }
 - 创作页保存当前可见 block 的 `blockId`、正文文本、`viewportOffset` 和 `scrollProgress`；编辑器与创作块之间允许通过正文文本互相匹配
 - 普通滚动仅在停止 `240ms` 后保存；`routeChangeStart / beforeunload / pagehide` 同步写入。恢复未完成时禁止初始化滚动覆盖共享位置
 - `pendingCitation`、URL 行号 / 预览参数和 hash 行号属于显式定位，优先级高于历史浏览位置
-- AI 聊天滚动位置不保存，继续维持自动滚到最新消息
+- AI 聊天滚动位置不保存；只有用户原本停留在底部时才自动跟随到最新消息。用户上滑后，输入框上方中间位置显示仅 icon 的回底按钮，点击后平滑滚回最底部
+- 知识库页与创作页共用的 AgentWorkspace 消息项需要提供用户消息复制 / 改写，以及助手消息复制 / 重试；用户消息和助手消息的复制 tooltip 均为“复制”，用户消息改写编辑态确认按钮为“发送”，Enter 发送，Shift+Enter 换行，Esc 取消。用户消息改写默认复用原用户消息附件元数据、当前模型选择与当前联网搜索偏好重新发送；如果改写历史用户消息，前端先让后续消息淡出，再调用 `/api/conversations/:id/truncate` 删除目标消息之后的所有消息，并用 `skip_user_message_append` 让 `/api/chat` 或 `/api/agent/loop/start` 复用已更新的目标用户消息，不重复追加一条用户消息。助手消息重试默认复用最近一条对应用户消息的文本、附件元数据、当前模型选择与当前联网搜索偏好。复制、改写、重试 icon 均不画外边框，重试 tooltip 文案为“重试”。附件 chip 只负责查看附件内容，不放置消息复制、改写或重试入口
 
 ---
 
@@ -1059,11 +1078,11 @@ POST /api/settings/test              Body: { kind: 'embedding'|'llm', config }
 
 创作 Agent 当前主流程为 Agentic Loop：
 
-1. 创作页主输入按当前执行模式创建 `agent_sessions`：自动确认和手动确认都会直接启动 Loop，不再生成前置任务确认卡；前端构造任务时必须同时传 `goal` 与 `user_query`：`goal` 显式包含当前打开文档的可见名称、当前文章路径和块快照等执行上下文，`user_query` 只保留用户本轮输入框提交的原始文字，消息列表本身不额外绑定展示文件名；Loop 按 LLM 工具调用自主执行多轮，工具包括 `search_knowledge`、`read_file`、`create_note`、`preview_patch_files`、`preview_canvas_blocks`、`ask_question_card`、`analyze_folder`、`check_links`。
-2. 写入前置：每次 Loop 开始前先写入 `agent_snapshots`；`create_note` 与 `preview_patch_files` 必须通过 `validateWrite()`；删除操作始终拒绝。
-3. 预览、提问与应用：`create_note`、`preview_patch_files`、`preview_canvas_blocks` 和 `ask_question_card` 在单轮内必须是唯一工具调用。`create_note` 不直接落盘，而是生成 `old='' / new=完整新文件内容 / change_type='create'` 的文件级 operation set；手动确认模式等待用户应用后才创建文件，自动确认模式由后端自动应用，已创建的新文件可从同一 DiffDialog 回滚删除。`preview_patch_files` 创建 operation set 前会对 `old` 文本做精确匹配、首尾裁剪匹配和空白折叠后的唯一匹配，匹配成功后使用当前文件中的精确片段写入文件级 patches；patches 存入 `canvas_operation_sets.pathes_json`，每个 patch 额外记录 `pending / applied / auto_applied / rolled_back / discarded / failed` 状态。`preview_canvas_blocks` 用当前创作页块快照和 `@bN` 引用生成 `operations_json` 块级 operation set，并通过 `/api/agent/apply` 应用到当前画布后保存 Markdown。`ask_question_card` 创建 `source='agent_loop'` 的 `conversation_interactions` 记录，将 session 置为 `waiting_confirm` 并保存消息 checkpoint；用户回答后通过同一 session 恢复 Loop，把答案作为 tool result 注入后续推理。自动确认模式下，后端在 Loop 完成前自动应用全部文件级 patch；块级预览仍显示确认卡片。手动确认模式下，消息流只展示摘要卡，用户打开详情弹窗逐文件点击应用或回滚，也可全部应用，接口只写文件和更新状态，不再续跑 Loop 或触发 LLM 总结；应用/回滚必须携带当前对话 ID，并要求 session、operation set 与当前对话一致。前端在应用或回滚后必须刷新文件树；若当前创作页打开的文件已被回滚删除，应清空当前文章状态、跳回 `/canvas` 生成大纲空态，并提示“您打开的文档已被删除”。
+1. 创作页主输入按当前执行模式创建 `agent_sessions`：自动确认和手动确认都会直接启动 Loop，不再生成前置任务确认卡；前端构造任务时必须同时传 `goal` 与 `user_query`：`goal` 显式包含当前打开文档的可见名称、当前文章路径和块快照等执行上下文，`user_query` 只保留用户本轮输入框提交的原始文字，消息列表本身不额外绑定展示文件名；Loop 按 LLM 工具调用自主执行多轮，工具包括 `search_knowledge`、`read_file`、`create_note`、`preview_file_revision`、`preview_patch_files`、`preview_canvas_blocks`、`preview_file_operations`、`ask_question_card`、`analyze_folder`、`check_links`。
+2. 写入前置：每次 Loop 开始前先写入 `agent_snapshots`；`create_note`、`preview_file_revision`、`preview_patch_files` 与 `preview_file_operations` 必须通过 session 和操作类型校验；非删除写入默认覆盖整个笔记库，删除目录和删除文件始终不向 Agent 开放。
+3. 预览、提问与应用：`create_note`、`preview_file_revision`、`preview_patch_files`、`preview_canvas_blocks`、`preview_file_operations` 和 `ask_question_card` 在单轮内必须是唯一工具调用。`create_note` 不直接落盘，而是生成 `old='' / new=完整新文件内容 / change_type='create'` 的文件级 operation set；手动确认模式等待用户应用后才创建文件，自动确认模式由后端自动应用，已创建的新文件可从同一 DiffDialog 回滚删除。`preview_file_revision` 用于单文件大规模或碎片化正文修订：Agent 只提交完整 `draft_content`，系统读取当前正式文件作为 `base_content`，计算 `base_hash/draft_hash`，存入 `canvas_operation_sets` 的 revision 字段，并用代码生成行级 diff hunks；同一会话同一文件的新 revision 会把旧 pending revision 标记为 `superseded`，`base_hash === draft_hash` 时返回 `no_change` 不生成卡片。生成与自动应用 revision 时必须执行草稿安全分析：空草稿、草稿体量或行数相对原文骤降、大比例删除、包含截断标记、丢失原 frontmatter、Markdown 代码围栏未闭合等都视为高风险；自动确认模式遇到高风险时返回 `requires_confirmation=true`，operation set 保持 `pending`，DiffDialog 展示风险原因，正式文件不写入。应用 revision 前必须重新读取正式文件并校验 `current_hash === base_hash`，一致时通过临时文件 + fsync + rename 写入 `draft_content` 并记录 `applied_hash`；不一致时标记 `stale` 且不修改文件。回滚 revision 前必须校验 `current_hash === applied_hash`，一致时写回 `base_content` 并标记 `rolled_back`；不一致时标记 `rollback_conflict`。`preview_patch_files` 继续作为旧小范围 patch 或多文件 patch 兼容工具，创建 operation set 前会对 `old` 文本做精确匹配、首尾裁剪匹配和空白折叠后的唯一匹配，匹配成功后使用当前文件中的精确片段写入文件级 patches。`preview_file_operations` 生成 `create_folder / rename_folder / move_folder / move_file` 文件系统 patch，存入 `canvas_operation_sets.pathes_json`，自动确认模式由后端调用 `fileSystemPatches` 自动应用，手动确认模式在 DiffDialog 中逐项应用或回滚；收到删除类操作时返回 `DELETE_NOT_SUPPORTED`。侧边栏文件树中的右键新建文件、目录新建、目录重命名、目录删除和文件移动属于用户显式操作，直接调用 `/api/files` 或 `/api/files/operations` 应用并刷新文件树，不进入 DiffDialog；右键目录新建文件使用该目录，右键文件新建文件使用当前文件父目录，新建后按更新时间排在同级文件列表第一个。`preview_canvas_blocks` 用当前创作页块快照和 `@bN` 引用生成 `operations_json` 块级 operation set，并通过 `/api/agent/apply` 应用到当前画布后保存 Markdown。`ask_question_card` 创建 `source='agent_loop'` 的 `conversation_interactions` 记录，将 session 置为 `waiting_confirm` 并保存消息 checkpoint；用户回答后通过同一 session 恢复 Loop，把答案作为 tool result 注入后续推理。自动确认模式下，后端在 Loop 完成前自动应用全部安全的文件级 patch 或 file revision；块级预览仍显示确认卡片。文件级预览工具完成后的助手总结由后端确定性生成，不再把完整 `draft_content` 带入二次 LLM 总结。手动确认模式下，消息流只展示摘要卡，用户打开详情弹窗逐项点击应用、废弃或回滚，也可全部应用，接口只写文件/目录和更新状态，不再续跑 Loop 或触发 LLM 总结；应用/回滚必须携带当前对话 ID，并要求 session、operation set 与当前对话一致。前端在应用或回滚后必须刷新文件树；若当前创作页打开的文件已被回滚删除，应清空当前文章状态、跳回 `/canvas` 生成大纲空态，并提示“您打开的文档已被删除”。
 4. 异常终止：软上限提醒、硬上限暂停、连续工具失败、重复工具结果死循环、连续无工具无进展都会结束或暂停本次任务。
-5. 回滚与废弃：回滚以文件级 patch 为单位执行，已应用文件使用 `new -> old` 恢复，未应用文件直接标记为 `rolled_back`；新建文件回滚删除时必须先删除磁盘文件，再通过 `indexer.removeFile()` 清理 `files/chunks/chunks_vec/FTS`，sqlite-vec 向量虚表不能依赖外键级联；下一条 prompt 发出前会把上一条任务仍未处理的 patch 标记为 `discarded`，不影响同任务中已经应用的文件；新建/切换对话、会话权限过期、预览已处理或文件内容变化后，旧预览不再允许应用或回滚。
+5. 回滚与废弃：旧 patch 回滚以文件级 patch 为单位执行，已应用文件使用 `new -> old` 恢复，未应用文件直接标记为 `rolled_back`；file revision 回滚以整文件 hash 校验为前置，只在当前正式文件仍等于 `applied_hash` 时写回 `base_content`。新建文件回滚删除时必须先删除磁盘文件，再通过 `indexer.removeFile()` 清理 `files/chunks/chunks_vec/FTS`，sqlite-vec 向量虚表不能依赖外键级联；下一条 prompt 发出前会把上一条任务仍未处理的 patch 或 file revision 标记为 `discarded`，不影响同任务中已经应用的文件；新建/切换对话、会话权限过期、预览已处理或文件内容变化后，旧预览不再允许应用或回滚。
 
 Agentic Loop 的 LLM 调用适配 OpenAI-compatible `tool_calls` 和 Anthropic `tool_use/tool_result` 两种协议；system prompt 继续接入 `getStyleContext()` 产生的风格画像、相关原文摘录，以及同一 conversation 中已解析的附件/网页正文。Prompt 明确要求用户本轮输入优先于历史任务：历史上下文只能辅助理解，不能替代本轮明确指令；只有当前任务已经明确但缺少必要结构化槽位，或用户要求“生成提问卡片 / 先问我几个问题”时，才调用 `ask_question_card`。如果本轮只有附件或外部材料且用户没有明确要求写入、更新、修改或合并当前文档，默认读取并总结附件，或用普通文本询问用途，不自动把附件关联到历史写作任务。
 
@@ -1071,8 +1090,9 @@ Agentic Loop 的 LLM 调用适配 OpenAI-compatible `tool_calls` 和 Anthropic `
 
 - 前端只在创作页为 `AgentWorkspace` 开启 `attachmentMode="parsed"`；知识库页保持现有附件展示，不调用解析上传接口。
 - `/api/agent/attachments/upload` 接受 `.pdf/.docx/.md/.markdown/.txt`，使用 `formidable` 暂存到运行时 `sessionDir/attachments`；前端也会做格式校验。
+- `/api/agent/attachments/content` 用于附件内容弹窗：优先按 `conversation_id + source` 读取已保存的 `parsed_attachment`，否则按上传返回的 `stored_name` 在 `sessionDir/attachments` 中重新解析临时文件。接口返回 `text/contentType/status/warning/pageCount/canCopy`；PDF 的 `canCopy=false`，前端只允许查看不允许复制。
 - `/api/agent/loop/start` 在创建或确认 conversation 后，先解析本轮上传附件和 `user_query/input_text/display_query` 中的 `http/https` 网页链接，再写入用户消息；不得从完整 `goal`、当前打开文档内容、当前块快照、文章路径或历史任务中提取 URL。PDF 使用 LiteParse 且关闭 OCR，standalone / `.lpk` 产物必须包含 LiteParse 对应平台 optional package、`.node` 与 `libpdfium.so`；DOCX 使用 mammoth，MD/TXT 使用 UTF-8，网页正文优先用 Readability，失败时用 HTML 正文提取兜底。
-- 解析结果为 `success` 或 `partial` 时，以 `role='system'`、`type='parsed_attachment'` 写入 `messages`；`error` 只进入本轮解析摘要和工具过程，不污染后续上下文。
+- 解析结果为 `success` 或 `partial` 时，以 `role='system'`、`type='parsed_attachment'` 写入 `messages`；`error` 只进入本轮解析摘要和工具过程，不污染后续上下文。`mapConversationMessages()` 恢复历史会话时需按 `meta.source` 把这些系统解析结果关联回用户消息 `meta.attachments`，供附件内容弹窗直接展示。
 - `runAgentLoop()` 每轮按 conversation 读取解析来源，拼接到 system prompt；单来源默认最多 12,000 字符，总预算保留较新的来源优先。
 - 网页链接解析只处理用户本轮显式提供 URL 的正文提取，不等同于联网搜索；旧客户端如果只传 `goal` 而没有 `user_query/input_text/display_query`，URL 解析应跳过。搜索供应商选择进入 Agent Loop 请求和消息 meta，并仅在用户打开联网搜索开关时用于注入 `web_search` 工具。
 
@@ -1128,6 +1148,10 @@ function applyOperation(article, op) {
 - 预览层需要支持 `ArrowLeft` / `ArrowRight` 切换上一张或下一张图片，支持 `Escape` 关闭
 - 文档内容变化时，如果预览仍处于打开状态，前端应重新同步当前文档图片列表；若图片列表已为空，则自动关闭预览层
 - 预览打开期间需要锁定页面滚动，避免底层编辑区跟随方向键或滚轮产生干扰
+- 文件页与知识库页共用的编辑器工具栏需要提供“复制全文”按钮，复制范围是当前可见编辑区整篇内容，而不是当前选区
+- “复制全文”优先写入富剪贴板 `text/html + text/plain`；`text/plain` 使用当前编辑器 Markdown 源，`text/html` 使用编辑器当前渲染结果
+- 对于 Markdown 中的本地相对路径图片，复制时必须通过 `/api/files/:id/content-image?src=...` 读取真实图片内容，再转成 data URL 内嵌到 `text/html`，避免外部粘贴目标依赖当前工作区的预览 API 地址
+- 若运行环境不支持富剪贴板或富剪贴板写入失败，前端必须回退为 Markdown 文本复制，并明确提示用户“图片未写入剪贴板”
 - 标题层级下拉按钮打开菜单时，触发器 tooltip 必须立即关闭，不能残留遮挡菜单内容
 
 ---
@@ -1333,6 +1357,7 @@ exec node server.js
   - 前端所有可见文档标签统一优先 `title`，其次显示去掉 `.md` 的文件名，最后才使用占位文案；禁止显示 `article_xxx`、`notus_xxx`、裸 `fileId` 这类技术标识
   - 侧边栏显式重命名属于强制改名操作；若目标文件已存在，整次重命名必须失败，不能覆盖已有文件
   - 当 `editor.title_filename_binding_enabled=true` 时，侧边栏显式重命名后需要同步更新正文首个可见 H1；若正文没有 H1，则自动补一个新的一级标题
+  - 侧边栏文件树中的右键新建文件、目录新建、目录重命名、目录删除和文件移动直接应用并刷新文件树，不弹出 DiffDialog；右键目录新建文件落在目录内，右键文件新建文件落在同级目录内；只有 Agent 生成的文件级或文件系统预览才进入消息摘要卡和 DiffDialog
 - M2-03 WYSIWYG Markdown 编辑器 + Typora 风格 CSS
   - 文件页、知识库页和创作页的可见编辑区都必须隐藏仅包含系统 `id` 的 frontmatter；保存时再与正文重新合并，避免在编辑区直接暴露内部 fileId 风格文案
   - 当 `editor.title_filename_binding_enabled=true` 时，文件页与知识库页在手动保存 Markdown 时，需要读取正文首个可见 H1，规范化后尝试同步文件名；若目标文件名冲突，正文保存仍需成功，但响应里要返回 `title_binding_warning`
@@ -1363,8 +1388,10 @@ exec node server.js
 - 知识库页与创作页在流式回复开始后，都必须立即渲染 AI 气泡占位；首 token 到来前使用固定占位的柔和三点等待态，避免布局跳动。知识库检索状态必须进入 AI loading 气泡内部，按“分析问题 / 检索笔记 / 找到证据 / 组织答案”等步骤动态切换，不作为独立状态条固定在回复外部
 - 输入框生成中只保留停止按钮；真正的“AI 正在回复”反馈只能放在 AI 回复气泡区，不能继续放在输入框内部
 - AgentWorkspace 输入框上方不得展示预制问题列表；知识库页和创作页都只保留直接输入、附件、联网搜索、搜索商单选、模型选择和发送/停止控件
+- 知识库页与创作页的输入框默认单行显示；当文本换行时必须自动增高，最高约 5 行，超过后仅输入框自身出现纵向滚动
 - AgentWorkspace 聊天滚动必须采用贴底跟随策略：仅当用户原本处于底部阈值内时，才随 `token`、工具链步骤、消息和任务结果继续滚动；用户上滑或生成中手动滚动后不得继续抢滚，模型切换、搜索商切换和自动/手动模式切换也不得触发消息定位
 - AI 回复气泡本体不显示边框；来源卡片、状态徽标等内部组件可按自身语义保留必要边界
+- AI 回复中的长段落、长链接和行内代码必须在消息容器内换行；代码块允许自身横向滚动，但不能把整个聊天区撑出水平滚动条
   - 模型选择器必须固定在输入框右下角发送/停止按钮左侧；触发器在窄宽度下单行 `ellipsis` 缩略显示，菜单项仍展示完整模型名
 
 ### M4 AI 创作画布
@@ -1421,7 +1448,7 @@ exec node server.js
 
 - 共享 AgentWorkspace 前端组件改为右侧聊天面板，不再整页替换知识库页和创作页；页面业务主区域继续使用原有文档编辑、块画布和批量预览组件。
 - `/api/settings/search-providers` 用 settings 表保存搜索启用状态、当前服务商、调用模式、结果数和 API Key；响应只返回 `api_key_set` 和 provider 是否需要 Key，不返回明文密钥。设置页联网搜索总开关可单独 PUT `{ enabled }` 实时保存，服务商、模式、结果数和 API Key 仍由保存按钮提交；Firecrawl 允许无 Key，Tavily、Exa、智谱必须配置 Key。
-- AgentWorkspace 输入框接受 `webSearchEnabled`、`searchProvider`、`attachments` 和 `modelConfigId` 兼容字段；`/api/agent/loop/start` 将联网开关、provider 和工具 profile 写入 `agent_sessions`。联网开关打开且 provider 可用时，Agent Loop 注入 `web_search` 工具；关闭时不注入工具，也不拼入历史联网上下文。知识库页联网问答走只读 Agent Loop，创作页仍使用可写 Agent Loop。
+- AgentWorkspace 输入框接受 `webSearchEnabled`、`searchProvider`、`attachments` 和 `modelConfigId` 兼容字段；知识库页与创作页共用同一份浏览器本地输入框联网偏好，持久化联网开关和单选搜索服务商，模型选择会写回全局 `active_llm_config_id`；`/api/agent/loop/start` 将联网开关、provider 和工具 profile 写入 `agent_sessions`。联网开关打开且 provider 可用时，Agent Loop 注入 `web_search` 工具；关闭时不注入工具，也不拼入历史联网上下文。知识库页联网问答走只读 Agent Loop，创作页仍使用可写 Agent Loop。
 - `web_search` 工具通过官方 npm SDK 调用 Firecrawl、Tavily、Exa、智谱（`firecrawl@1.20.0`、`@tavily/core`、`exa-js`、`openai`），Notus 只做统一参数映射与返回结构归一化，返回 `{ query, provider, results, durationMs }`，不手写维护各 Provider 的 HTTP 请求细节。成功搜索结果以 `messages.role='system'`、`type='web_search_context'` 持久化到同一 conversation，后续仅在本会话且联网开关打开时按预算拼入 system prompt；结果不进入知识库索引。
 - 创作页主输入在自动确认或手动确认模式下都直接进入 `/api/agent/loop/start`，不再生成 `pendingAgentTask`；应用、回滚和废弃文件级预览通过 `/api/agent/loop/apply` 完成，成功后只更新文件内容与 operation set 状态，不携带 `session_id` 续跑；新建/切换对话时前端清空 active Agent session，历史对话恢复不返回 `session_token`，旧预览只能查看和导出。
 - 搜索配置进入设置菜单 /settings/search；聊天顶部不再提供模型配置和搜索配置入口。
@@ -1429,12 +1456,12 @@ exec node server.js
 - `AgentWorkspace.ToolChain` 以 `notus-agent.html` 为视觉基准：外层为顶部状态图标 + border-top 步骤列表；步骤行使用 button 控制折叠状态，`aria-expanded` 暴露展开状态，运行态使用圆环持续旋转，不使用 refresh 图标；失败态使用警示图标，完成态使用 check；展开区使用左侧细线、13.5px 说明文本、浅色工具卡片、monospace input/result 和三点等待态。
 - 创作页 `/canvas` 在 `/api/agent/loop/start` SSE 过程中累计 `session_created / snapshot_done / loop_start / thinking / tool_start / tool_done / loop_done` 对应的工具步骤，写入最终 assistant message 的 `toolSteps`，历史会话中不丢失中间步骤；旧 `waiting_preview_confirm` 事件仅作为历史兼容分支保留。
 - AgentWorkspace 的已完成 AI 消息和流式 AI 消息都通过 `StreamingText` 渲染，保持 Markdown、GFM、数学公式和代码高亮一致。
-- 创作页文件变更消息使用摘要卡承载文件数量和状态，`DiffDialog` 展示逐文件 old/new diff、状态、应用、回滚和全部应用；弹窗高度必须限制在视口内，diff 内容区独立提供横向和纵向滚动，底部操作按钮始终可见；弹窗底部说明应用/回滚只在当前对话有效，且在新建/切换对话、预览已处理、权限过期或文件内容变化后失效。
+- 创作页文件变更消息使用摘要卡承载文件数量和状态，`DiffDialog` 展示逐文件 old/new diff、file revision 代码生成 hunks、状态、应用、废弃、回滚和全部应用；弹窗高度必须限制在视口内，diff 内容区独立提供横向和纵向滚动，底部操作按钮始终可见；弹窗底部说明应用/回滚只在当前对话有效，且在新建/切换对话、预览已处理、权限过期或文件内容变化后失效。
 
 # 2026-06-19 Agentic Loop 技术口径
 
 - 创作页和知识库页继续复用 AgentWorkspace 输入入口；创作页主输入默认以自动确认进入 `/api/agent/loop/start`，也可切换为手动确认后逐文件处理 diff；知识库页写作类任务进入 `/api/agent/loop/start`，普通问答继续走 `/api/chat`。
-- `canvas_operation_sets` 新增可空 `agent_session_id` 与 `pathes_json`；旧 `operations_json` 继续服务块级 operation set，新文件级 patch 使用 `{ file_path, old, new }` 存入 `pathes_json`。
-- Agentic Loop 新增 `agent_sessions`、`agent_snapshots`、`agent_run_logs`；任务开始前必须完成快照，写入走 `validateWrite()`，删除能力不开放。
-- `lib/agentTools.js` 提供八个基础工具：`search_knowledge`、`read_file`、`create_note`、`preview_patch_files`、`preview_canvas_blocks`、`ask_question_card`、`analyze_folder`、`check_links`；联网搜索打开时额外注入 `web_search`。`create_note`、`preview_patch_files`、`preview_canvas_blocks` 与 `ask_question_card` 单轮唯一；`create_note` 生成新建文件预览，`preview_patch_files` 创建预览前会先把空白差异下的唯一近似 `old` 对齐到当前文件精确片段，块级工具根据 `@bN` 生成 `operations_json`，提问卡片工具暂停 Loop 并等待用户回答。
+- `canvas_operation_sets` 新增可空 `agent_session_id`、`pathes_json` 与 `revision_*` 字段；旧 `operations_json` 继续服务块级 operation set，file revision 使用 `revision_type='file_revision'` 和 `revision_base_content/revision_draft_content/revision_base_hash/revision_draft_hash/revision_applied_hash` 保存单文件暂存修订，查询时只回传 diff hunks 与元数据；文件级内容 patch 使用 `{ file_path, old, new }` 存入 `pathes_json`，文件系统 patch 使用 `{ change_type, old_path, new_path, folder_path }` 存入同一字段。
+- Agentic Loop 新增 `agent_sessions`、`agent_snapshots`、`agent_run_logs`；任务开始前必须完成快照，写入走 `validateWrite()` 校验 session 与操作类型，非删除写入不按路径授权拦截，删除能力不开放。
+- `lib/agentTools.js` 提供基础工具：`search_knowledge`、`read_file`、`create_note`、`preview_file_revision`、`preview_patch_files`、`preview_canvas_blocks`、`preview_file_operations`、`ask_question_card`、`analyze_folder`、`check_links`；联网搜索打开时额外注入 `web_search`。`create_note`、`preview_file_revision`、`preview_patch_files`、`preview_canvas_blocks`、`preview_file_operations` 与 `ask_question_card` 单轮唯一；`create_note` 生成新建文件预览，`preview_file_revision` 提交完整草稿并由代码生成 diff 与 hash 校验应用，`preview_patch_files` 创建预览前会先把空白差异下的唯一近似 `old` 对齐到当前文件精确片段，`preview_file_operations` 只允许移动文件、新建/重命名/移动目录，块级工具根据 `@bN` 生成 `operations_json`，提问卡片工具暂停 Loop 并等待用户回答。
 - `lib/agentLoop.js` 负责多轮工具调用、context 压缩、LLM 429 退避、SSE 断开取消、软/硬轮数上限、连续失败、重复结果和无进展检测。

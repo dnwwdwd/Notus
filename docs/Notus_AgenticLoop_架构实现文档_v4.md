@@ -46,12 +46,12 @@
 
 **修改已有文件**：必须通过 `preview_patch_files` 生成批量预览。自动确认模式由服务端在 Loop 完成前自动落盘；手动确认模式通过消息摘要卡打开 DiffDialog 后逐文件应用或回滚。
 
-**新建文件**：通过 `create_note` 即时写入磁盘，不走预览流程。理由：新建文件不存在覆盖风险，且每次新建都打断 loop 等待确认会破坏 Agent 执行的连续性。新建的文件路径会记录在 `created_files` 字段，回滚时一并处理（含冲突检测）。
+**新建文件**：通过 `create_note` 生成文件级预览；自动确认模式由后端自动创建，手动确认模式等待用户在 DiffDialog 中应用。新建的文件路径会记录在 `created_files` 字段，回滚时一并处理（含冲突检测）。
 
 **其他硬性边界：**
-- Agent **只能在用户授权范围内写入**，不执行系统命令；除用户显式输入的网页链接正文解析外，只有在输入框联网开关打开且注入 `web_search` 工具时才做外部搜索
+- Agent 默认具备整个笔记库内的非删除写入能力，不执行系统命令；除用户显式输入的网页链接正文解析外，只有在输入框联网开关打开且注入 `web_search` 工具时才做外部搜索
 - **删除权限永远不开放**，当前阶段直接拒绝 delete 操作
-- **读取不受授权路径限制**：`search_knowledge` 和 `read_file` 可访问全库内容，授权路径只限制写入。这是有意的设计决策：限制读取会严重削弱检索能力，而读取本身不会造成数据损坏
+- **读取不受路径限制**：`search_knowledge` 和 `read_file` 可访问全库内容；写入同样不按当前文档目录拦截，但必须经过 session、操作类型和删除禁用校验。
 - `search_knowledge` 单次任务调用上限由前端启动参数传入（默认值见 §1.4）
 - Loop 软提示上限 **15 轮**，硬上限 **30 轮**（详见 §2.4）
 
@@ -277,11 +277,11 @@ function startSessionCleaner() {
 
 ### 3.1 设计原则
 
-- **令牌化授权**：Agent 拿到的是本次任务的有限写权限，不是工作区的全局权限
+- **令牌化会话**：Agent 写入仍必须携带当前任务 session token，不允许脱离会话直接落盘
 - **任务级粒度**：每次任务单独授权，任务结束后 token 自动过期（24 小时）
 - **操作类型分离**：modify 和 create 独立控制，delete 永远不在授权范围内
-- **目录级新建**：新建文件授权到目录粒度，不授权到具体文件名；兼容旧任务只授权当前 `.md` 文件时，仅允许在该文件父目录中新建，不扩大同目录其他文件的修改权限
-- **读取不受限**：检索和读取可访问全库，只有写入受 `authorized_paths` 约束
+- **全库非删除写入**：create/modify 类写入不再受 `authorized_paths` 限制，目录重命名、移动文件和移动目录可跨当前文档所在目录执行
+- **读取不受限**：检索和读取可访问全库
 - **系统层拦截**：校验函数与 Agent 逻辑完全解耦，Agent 绕不过去
 
 ### 3.2 `lib/agentSession.js` 完整实现
@@ -368,9 +368,8 @@ function validateWrite(token, targetPath, operation) {
   if (!authorizedOps.includes(operation))
     return { valid: false, reason: `OPERATION_NOT_AUTHORIZED: ${operation}` };
 
-  const authorizedPaths = JSON.parse(row.authorized_paths);
-  if (!isPathSafe(targetPath, authorizedPaths, operation))
-    return { valid: false, reason: `PATH_NOT_AUTHORIZED: ${targetPath}` };
+  if (!targetPath && operation !== 'create')
+    return { valid: false, reason: 'PATH_REQUIRED' };
 
   return { valid: true };
 }
@@ -1311,8 +1310,8 @@ async function callLLMWithRetry({ system, messages, tools, llmConfig }, maxRetri
 ## 工具使用约束
 
 - search_knowledge：剩余调用次数在每次结果中返回，合理分配
-- 写入工具只能操作授权范围内的文件
-- 禁止删除文件
+- 写入工具可操作整个 notes 工作区内的文件和目录
+- 禁止删除文件和目录
 
 ## 知识库搜索策略
 
@@ -1332,9 +1331,10 @@ async function callLLMWithRetry({ system, messages, tools, llmConfig }, maxRetri
 文件变更：[创建/修改了哪些文件]
 未完成：[如有，说明原因]
 
-## 当前任务授权写入范围
+## 当前任务写入能力
 
-{{authorized_paths_list}}
+- 可创建、修改、重命名和移动整个 notes 工作区内的 Markdown 文件与目录。
+- 禁止删除文件或目录；收到删除类需求时说明当前 Agent 不支持删除。
 ```
 
 ### 6.2 初始 User Message
@@ -1349,8 +1349,8 @@ function buildInitialUserMessage(goal, session) {
 
 ${goal}
 
-写入授权范围：
-${session.authorized_paths.map(p => `- ${p}`).join('\n')}
+写入能力：
+可创建、修改、重命名和移动整个 notes 工作区内的 Markdown 文件与目录；禁止删除文件或目录。
 
 知识库检索上限：${limitText}
 

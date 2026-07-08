@@ -290,6 +290,7 @@ EmptyState：icon 📁, "还没有笔记", "导入 Markdown 文件开始使用",
 | 分组分隔线 | w:1px h:20px bg:--border-subtle, mx:--space-1 |
 | H 下拉 | Select 组件，H1–H6 + 正文，各级带字号预览 |
 | 分栏预览 | toggle 按钮，激活后 Editor Area 左右 50/50 |
+| 复制全文 | toolbar icon + tooltip，复制当前整篇笔记，优先输出富文本与 Markdown，并把本地图片内嵌到复制结果；成功后 icon 切到 check 约 3s |
 | AI 创作 | primary Button(sm)，跳转画布携带当前文章 |
 | 宽度 < 640px | 列表组 + 块级格式组收入 `···` 溢出菜单（ContextMenu 样式下拉） |
 
@@ -301,7 +302,7 @@ EmptyState：icon 📁, "还没有笔记", "导入 Markdown 文件开始使用",
 - 代码块：bg:--bg-secondary, radius:--radius-md, padding:--space-4, font:--font-mono --text-sm
 - 引用块：左边框 3px --accent, pl:--space-4, color:--text-secondary
 - 表格：外框 1px --border-primary, radius:--radius-md, th/td 单元格边框 1px --border-primary, th bg:--bg-secondary, padding:9px 12px, 选中单元格使用 accent 低透明度高亮
-- 图片：max-width:100%, radius:--radius-md, shadow:--shadow-sm；本地图片以相对路径写入 Markdown，编辑器只在渲染层转为本地预览 API 地址
+- 图片：max-width:100%, radius:--radius-md, shadow:--shadow-sm；本地图片以相对路径写入 Markdown，编辑器只在渲染层转为本地预览 API 地址；“复制全文”时再把这些本地图片转成剪贴板内嵌图片
 - 来源高亮：URL hash `#L24-L28` → 目标行 bg:--bg-diff-modified, 3s fadeOut
 
 ### 5.4 分栏预览模式
@@ -354,9 +355,9 @@ AI 页面当前沿用既有页面壳层和侧边栏行为，本轮不单独改�
 
 ### 6.2 ChatArea
 
-**用户消息：** 右对齐, bg:--bg-user-bubble, radius:--radius-lg, padding:--space-3 --space-4, max-width:80%
+**用户消息：** 右对齐, bg:--bg-user-bubble, radius:--radius-lg, padding:--space-3 --space-4, max-width:80%；消息正文下方右侧提供复制和改写 icon，icon 不画外边框；复制 tooltip 固定为“复制”，仅复制用户消息正文；改写进入编辑态，确认按钮文案为“发送”，Enter 发送，Shift+Enter 换行，Esc 取消。确认后用编辑后的文本复用原附件、当前模型和联网偏好重新发送；如果改写的是历史用户消息，该消息之后的所有消息先淡出再移除，服务端同步截断后续消息和 Agent 上下文。附件 chip 只作为附件查看入口，使用 eye icon 打开内容弹窗，不放置复制、改写或重试 icon
 
-**AI 回复：** 左对齐, 无边框, 外层上下间距 16px, 头部 ✨+Notus label(--text-sm --text-secondary)，头部与正文间距 8px，普通正文不使用带背景和 padding 的正文气泡，直接渲染 markdown + StreamingText 组件；补充说明、文档摘要和 SourceCard 垂直来源列表沿正文自然向下排列，并保留来源选中态；默认自然中文对话，不固定套用“结论 / 整理 / 证据”标题。首 token 到来前固定渲染 AI 气泡占位，并在气泡内使用柔和三点等待态；知识库检索状态作为 AI 回复内部的动态步骤切换，例如“分析问题 / 检索笔记 / 找到证据 / 组织答案”，不单独占用固定状态条。聊天区滚动采用贴底跟随：只有用户原本在底部时才随流式输出和工具步骤继续滚动，用户上滑后不抢滚，切换模型或自动/手动模式不触发消息定位。
+**AI 回复：** 左对齐, 无边框, 外层上下间距 16px, 头部 ✨+Notus label(--text-sm --text-secondary)，正文下方左侧提供复制和重试 icon，icon 不画外边框，复制 tooltip 固定为“复制”，重试 tooltip 文案为“重试”；头部与正文间距 8px，普通正文不使用带背景和 padding 的正文气泡，直接渲染 markdown + StreamingText 组件；补充说明、文档摘要和 SourceCard 垂直来源列表沿正文自然向下排列，并保留来源选中态；默认自然中文对话，不固定套用“结论 / 整理 / 证据”标题。首 token 到来前固定渲染 AI 气泡占位，并在气泡内使用柔和三点等待态；知识库检索状态作为 AI 回复内部的动态步骤切换，例如“分析问题 / 检索笔记 / 找到证据 / 组织答案”，不单独占用固定状态条。长段落、长链接和行内代码默认在消息容器内换行；代码块自身可横向滚动，但不得把整个聊天区撑出水平滚动条。聊天区滚动采用贴底跟随：只有用户原本在底部时才随流式输出和工具步骤继续滚动，用户上滑后不抢滚，切换模型或自动/手动模式不触发消息定位；离开底部后，输入框上方中间位置显示仅 icon 的回底按钮，点击后平滑滚回底部。
 
 **参考来源区：** 顶部使用 segmented control 切换“自动匹配 / 手动指定”。手动模式下展示可搜索的下拉选择器和已选文章 Badge 列表。
 
@@ -367,10 +368,12 @@ Sticky 底部，bg:--bg-elevated, padding:--space-3 --space-4, border-top:1px --
 | 元素 | 样式 |
 |------|------|
 | 模型选择 | 输入框专用紧凑按钮，固定在发送/停止按钮左侧；trigger 单行省略，菜单项展示完整模型名 |
-| 输入框 | TextArea, flex:1 |
+| 输入框 | TextArea, flex:1；默认单行，内容换行后自动增高，最高约 5 行，超过后输入框内部滚动 |
 | 发送 | 40x40, bg:--accent, color:--text-on-accent, radius:--radius-full, disabled opacity:0.4 |
 
-生成中输入栏只保留停止按钮，不再额外显示 loading 点阵。知识库页不启用解析附件模式；创作页附件入口用于解析 PDF/DOCX/MD/TXT、剪贴板文件和超过 100 字符的粘贴文本附件，每条消息最多 5 个解析附件；网页链接解析只扫描用户本轮输入，不扫描当前文档内容或块快照。
+生成中输入栏只保留停止按钮，不再额外显示 loading 点阵。知识库页不启用解析附件模式；创作页附件入口用于解析 PDF/DOCX/MD/TXT、剪贴板文件和超过 100 字符的粘贴文本附件，每条消息最多 5 个解析附件；网页链接解析只扫描用户本轮输入，不扫描当前文档内容或块快照。已发送的解析附件可在用户消息附件 chip 中打开内容弹窗查看，弹窗展示文件类型、大小、页数、解析告警和正文；MD/TXT/DOCX 提供“复制内容”，PDF 显示“PDF 不支持复制”。
+
+输入框上方中间位置允许出现悬浮回底按钮，仅在聊天区已经离开底部时展示，不常驻占位；按钮视觉上只保留向下 icon，不显示“最新消息”等文字。
 
 ### 6.4 页面状态
 
@@ -416,7 +419,7 @@ Sticky 底部，bg:--bg-elevated, padding:--space-3 --space-4, border-top:1px --
 
 **分栏宽度：** 画布区与右侧 AI 面板之间支持拖拽调宽，并记住上次宽度。左侧创作块区与文件页、知识库页共享同一文档的最近阅读位置，返回时优先按 block id 或正文锚点恢复。
 
-**输入栏：** 同知识库 InputBar，支持 `@b2` 引用块号（`@` 触发当前文档块 autocomplete popup，并插入块引用）；候选列表支持 `ArrowUp / ArrowDown / Enter / Esc`，中文输入法组合态不抢键；创作页额外在左下角展示“自动 / 手动”分段确认控件，只显示两个短标签；自动项使用闪电图标，手动项使用手型图标，说明文案进入 tooltip，不使用下拉框、齿轮、滑块、wand 或 eye。模型选择器固定在右下角发送/停止按钮左侧，trigger 单行省略，菜单项展示完整模型名；生成中输入栏只保留停止按钮。创作页 `+` 附件入口启用解析模式，只接受 PDF/DOCX/MD/TXT；支持粘贴剪贴板文件，超过 100 字符的纯文本粘贴自动生成 TXT 附件 chip，并与上传文件共用每条消息最多 5 个附件的限制。系统后台只把相关块包、少量最近历史、请求内摘要和已解析输入源送入模型；解析网页链接时只使用用户本轮输入文本，不使用当前文档、块快照或历史任务。若当前只是未保存的大纲草稿，则输入栏整体禁用，并显示“先保存当前大纲为文档”的引导文案。
+**输入栏：** 同知识库 InputBar，支持 `@b2` 引用块号（`@` 触发当前文档块 autocomplete popup，并插入块引用）；候选列表支持 `ArrowUp / ArrowDown / Enter / Esc`，中文输入法组合态不抢键；创作页额外在左下角展示“自动 / 手动”分段确认控件，只显示两个短标签；自动项使用闪电图标，手动项使用手型图标，说明文案进入 tooltip，不使用下拉框、齿轮、滑块、wand 或 eye。模型选择器固定在右下角发送/停止按钮左侧，trigger 单行省略，菜单项展示完整模型名；生成中输入栏只保留停止按钮。创作页 `+` 附件入口启用解析模式，只接受 PDF/DOCX/MD/TXT；支持粘贴剪贴板文件，超过 100 字符的纯文本粘贴自动生成 TXT 附件 chip，并与上传文件共用每条消息最多 5 个附件的限制。用户消息中的附件 chip 可打开内容弹窗；弹窗里的文本附件可复制，PDF 附件不可复制。系统后台只把相关块包、少量最近历史、请求内摘要和已解析输入源送入模型；解析网页链接时只使用用户本轮输入文本，不使用当前文档、块快照或历史任务。若当前只是未保存的大纲草稿，则输入栏整体禁用，并显示“先保存当前大纲为文档”的引导文案。
 
 **提问卡片：** 当明确任务仍需要用户确认结构化槽位时，提问卡片会固定在右侧 AI 面板底部，覆盖原输入栏。卡片使用列表状态布局，只保留标题、状态、问题、选项、自定义输入和按钮，不在消息流里再次内联渲染卡片或重试块；最后一题不会自动续跑，而是先进入回顾态，用户确认后再继续生成预览或恢复 Agent Loop。本轮仅上传附件或外部材料且没有写入当前文档意图时，不应直接展示询问写入位置的提问卡片。
 
@@ -474,7 +477,7 @@ Canvas 无文章时显示，居中 max-width:480px mt:20vh：
 
 ### 8.3 模型配置
 
-Embedding 模型（Base URL Input + 模型名 Input + API Key Input + 多模态向量开关）+ LLM 配置朴素列表（名称 / Provider name / 模型 / Base URL）+ 创建或编辑表单（兼容协议 Select + 配置名称 Input + Base URL Input + 模型名 Input + API Key Input）+ [保存]
+Embedding 模型（Base URL Input + 模型名 Input + API Key Input + 多模态向量开关）+ LLM 配置朴素列表（名称 / Provider name / 模型 / Base URL）+ 创建或编辑表单（兼容协议 DropdownSelect + 提供商 Input + Base URL Input + 模型名 Input + API Key Input）+ [保存]
 
 **API Key 字段状态：**
 
@@ -487,7 +490,7 @@ Embedding 模型（Base URL Input + 模型名 Input + API Key Input + 多模态�
 
 **Embedding 测试连接按钮：** 默认 secondary → 测试中 loading → 成功 Toast + 按钮闪绿 → 失败 Toast + 按钮闪红
 
-**模型配置输入：** 不暴露 Provider 选择器和模型候选下拉；用户手动填写 Base URL、模型名称和 API Key，Embedding 维度在测试后由后端记录，不在页面中单独展示。LLM 新增/编辑弹窗额外提供兼容协议下拉框，选项为 `OpenAI API` 与 `Anthropic`，默认 `OpenAI API`。模型配置页和引导页使用设计稿暖色单栏卡片风格：内容宽度约 672px，白色卡片、#E5E3D8 边框、#FDFCFB 次级背景、#D97757 强调色；LLM 弹窗宽度约 448px，列表只展示 Provider name 一次，不展示密钥状态、默认配置提示或兼容协议，保存 LLM 配置不要求先测试连通性。
+**模型配置输入：** 不暴露 Embedding 的 Provider 选择器和模型候选下拉；用户手动填写 Base URL、模型名称和 API Key，Embedding 维度在测试后由后端记录，不在页面中单独展示。LLM 新增/编辑弹窗额外提供兼容协议下拉框，选项为 `OpenAI API` 与 `Anthropic`，默认 `OpenAI API`；弹窗不再让用户手填“配置名称”，而是展示可编辑的提供商输入框。该输入框本身不自动回填默认值，只用 placeholder 提示 `OpenAI` 或 `Anthropic`，用户不填时保存阶段再按 Base URL 和模型名推断兜底；Anthropic 兼容配置若只输入根域名，系统会自动补齐 `/v1`。API Key 不明文回显；若后端已保存该密钥，则字段标题右侧显示 `已保存` tag，输入框 placeholder 显示“已保存，留空不修改”。模型配置页和引导页使用设计稿暖色单栏卡片风格：内容宽度约 672px，白色卡片、#E5E3D8 边框、#FDFCFB 次级背景、#D97757 强调色；LLM 弹窗宽度约 448px，列表只展示 Provider name 一次，不展示默认配置提示或兼容协议，保存 LLM 配置不要求先测试连通性。
 
 ### 8.4 搜索配置
 
@@ -764,15 +767,16 @@ bg:--danger-subtle radius:--radius-md padding:--space-2 --space-3。✕(--danger
 - 知识库页和创作页保留原有业务布局：知识库页继续常驻文档预览/编辑区，创作页继续常驻块画布、文章分片和批量修改预览能力。
 - 只将右侧聊天区域按 Notus-design-draft/notus-agent.html 还原：暖白背景、白色输入卡片、低饱和棕橙强调色、轻阴影和 16px 以上圆角。
 - 聊天顶部不显示“Notus Agent Workspace”，也不显示“模型配置”“搜索配置”按钮。
-- 底部输入框固定在右侧聊天面板底部，支持附件、联网开关、搜索服务商单选、模型选择、发送和停止；创作页附件为解析模式，知识库页不启用解析模式；输入框上方不展示预制问题按钮。选择未配置 API Key 的搜索服务商时弹窗提示前往设置，确认后跳转 `/settings/search?provider=<provider>` 并自动切到对应服务商 tab；Firecrawl 不触发 Key 缺失提示。
+- 底部输入框固定在右侧聊天面板底部，支持附件、联网开关、搜索服务商单选、模型选择、发送和停止；创作页附件为解析模式，知识库页不启用解析模式；输入框上方不展示预制问题按钮。知识库页和创作页共用同一份联网搜索偏好，任一页面切换联网开关或搜索服务商后，另一个页面重新进入时同步恢复；模型下拉按提供商分组，并沿用当前全局默认模型。选择未配置 API Key 的搜索服务商时弹窗提示前往设置，确认后跳转 `/settings/search?provider=<provider>` 并自动切到对应服务商 tab；Firecrawl 不触发 Key 缺失提示。
 - AI 回复使用 Notus Agent 头像、标题、工具过程和正文直排；工具过程可展开查看 detail / input / result。
 - AI 回复正文使用 Markdown 富文本渲染，流式输出时保留光标，支持 GFM、数学公式、代码高亮、表格、引用和链接。
 - 工具过程按 `notus-agent.html` 复刻：顶部状态图标单独占一行；步骤区以 `#E5E3D8` 细分隔线开头；步骤行为 32px 左右高度、4px 水平间距、8px 圆角 hover 浅灰背景；展开后内容左侧缩进 25px 并加竖线，说明文字 13.5px / 1.75，工具卡片背景 `#F9F9F8`、8px 圆角、12px 内边距；chevron 展开旋转 90°。
 - 工具过程运行态使用圆环持续旋转，不使用 refresh 图标；失败态使用 warn，完成态使用 check。
-- 文件变更摘要卡常驻在对应助手消息底部，使用 `#F9F9F8` 背景、12px 圆角、16px 内边距；左侧为文件列表和状态点，右侧提供“查看详情”入口。详细 old/new diff、绿色“应用修改”、红色“回滚修改”和全部应用放在 DiffDialog 中；已自动应用/已应用文件仍保留回滚入口。
+- 文件变更摘要卡常驻在对应助手消息底部，使用 `#F9F9F8` 背景、12px 圆角、16px 内边距；左侧为文件列表和状态点，右侧提供“查看详情”入口。详细 old/new diff、file revision 代码生成 hunks、绿色“应用修改”、灰色“废弃预览”、红色“回滚修改”和全部应用放在 DiffDialog 中；已自动应用/已应用文件仍保留回滚入口。
 - 模型配置在设置页和引导页展示；搜索配置作为设置菜单项展示，不在聊天顶部切换。
-- Agentic Loop 不再显示顶部任务确认卡；自动确认和手动确认都直接开始执行。执行过程迁移到右侧工具链可视化区，文件修改迁移到对应助手消息底部摘要卡和 DiffDialog。
+- Agentic Loop 不再显示顶部任务确认卡；自动确认和手动确认都直接开始执行。Agent 的非删除写入能力覆盖整个笔记库，执行过程迁移到右侧工具链可视化区，文件修改迁移到对应助手消息底部摘要卡和 DiffDialog。
 - Agentic Loop 不再显示顶部会话状态/回滚卡；达到硬上限时仍可在工具链结果中暴露继续入口，普通完成态不占用主编辑区顶部空间。
 - 设置页日志增加 Agent Loop 执行日志区块：按 session 和轮次分组，展示工具名、结果摘要、失败状态和耗时；失败条目使用 danger 弱背景与边框高亮。历史抽屉中包含 Agent Loop 的会话显示日志入口图标，点击跳转到设置页并按该会话过滤。
-- 文件级预览使用消息摘要卡常驻展示，点击“查看详情”打开 `DiffDialog`；当 operation set 含 `patches` 时，弹窗按文件展示 `old/new` diff 和 `pending / applied / auto_applied / rolled_back / discarded / failed` 状态，并提供逐文件应用、逐文件回滚和全部应用。弹窗高度限制在视口内，左侧文件列表和右侧 diff 内容独立滚动；diff 内容区同时支持横向和纵向滚动，底部应用、回滚和全部应用按钮始终可见。弹窗底部说明文案为“仅当前对话可应用或回滚修改；新建/切换对话、预览已处理、会话权限过期或文件内容变化后，应用与回滚会失效。”
+- 文件级预览使用消息摘要卡常驻展示，点击“查看详情”打开 `DiffDialog`；当 operation set 含 `patches` 时，弹窗按文件或目录操作展示 `old/new` 文本 diff、路径变更 diff 或目录快照 diff；当 operation set 为 `file_revision` 时，弹窗展示代码根据 base/draft 生成的 hunk diff，不展示完整 base/draft 原文存储字段。若服务端判定全文草稿高风险，右侧 diff 内容顶部显示危险色浅底提示，列出空草稿、截断、缩水、大比例删除、丢 frontmatter 或 Markdown 结构不完整等原因。弹窗展示 `pending / applied / auto_applied / rolled_back / discarded / failed / superseded / stale / apply_failed / rollback_conflict` 状态，提供逐项应用、废弃预览、逐项回滚和全部应用。弹窗高度限制在视口内，左侧文件/目录操作列表和右侧 diff 内容独立滚动；diff 内容区同时支持横向和纵向滚动，底部应用、废弃、回滚和全部应用按钮始终可见。弹窗底部说明文案为“仅当前对话可应用或回滚修改；新建/切换对话、预览已处理、会话权限过期或文件内容变化后，应用与回滚会失效。”
+- 侧边栏文件树右键菜单按对象类型展示：文件提供“新建文件 / 移动文件 / 重命名 / 删除”，目录提供“新建文件 / 新建目录 / 重命名目录 / 删除目录”。右键目录新建文件落在目录内，右键文件新建文件落在同级目录内，新建文件按更新时间显示在同级文件列表第一个；这些侧边栏显式文件管理动作都直接应用并刷新文件树，不弹出 `DiffDialog`；只有 Agent 生成的文件级或文件系统操作预览才进入消息摘要卡和 `DiffDialog`。
 - 普通知识问答不显示任务确认卡；创作页主输入默认直接进入 Agentic Loop 并自动确认文件预览，也可切换为手动确认后逐文件处理；知识库页写作类任务同样直接进入 Agentic Loop。

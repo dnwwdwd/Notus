@@ -146,6 +146,32 @@ function ensureAgentLoopSchema(database) {
       database.exec(`ALTER TABLE agent_sessions ADD COLUMN ${column} ${definition};`);
     }
   });
+
+  if (tableExists(database, 'canvas_operation_sets')) {
+    [
+      ['revision_type', 'TEXT'],
+      ['revision_file_path', 'TEXT'],
+      ['revision_base_hash', 'TEXT'],
+      ['revision_draft_hash', 'TEXT'],
+      ['revision_applied_hash', 'TEXT'],
+      ['revision_base_content', 'TEXT'],
+      ['revision_draft_content', 'TEXT'],
+      ['revision_error', 'TEXT'],
+      ['revision_parent_id', 'INTEGER'],
+      ['revision_sequence_no', 'INTEGER NOT NULL DEFAULT 0'],
+      ['revision_applied_at', 'TEXT'],
+      ['revision_discarded_at', 'TEXT'],
+      ['revision_rolled_back_at', 'TEXT'],
+    ].forEach(([column, definition]) => {
+      if (!hasColumn(database, 'canvas_operation_sets', column)) {
+        database.exec(`ALTER TABLE canvas_operation_sets ADD COLUMN ${column} ${definition};`);
+      }
+    });
+    database.exec(`
+      CREATE INDEX IF NOT EXISTS idx_canvas_operation_sets_revision_file
+        ON canvas_operation_sets(conversation_id, revision_type, revision_file_path, status, updated_at DESC);
+    `);
+  }
 }
 
 function ensureAgentLoopIndexes(database) {
@@ -718,6 +744,19 @@ function initDb() {
         mode            TEXT NOT NULL,
         operations_json TEXT NOT NULL,
         status          TEXT NOT NULL DEFAULT 'pending',
+        revision_type   TEXT,
+        revision_file_path TEXT,
+        revision_base_hash TEXT,
+        revision_draft_hash TEXT,
+        revision_applied_hash TEXT,
+        revision_base_content TEXT,
+        revision_draft_content TEXT,
+        revision_error TEXT,
+        revision_parent_id INTEGER,
+        revision_sequence_no INTEGER NOT NULL DEFAULT 0,
+        revision_applied_at TEXT,
+        revision_discarded_at TEXT,
+        revision_rolled_back_at TEXT,
         expires_at      TEXT,
         created_at      TEXT DEFAULT (datetime('now')),
         updated_at      TEXT DEFAULT (datetime('now'))

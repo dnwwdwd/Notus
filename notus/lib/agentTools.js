@@ -32,6 +32,19 @@ const { saveWebSearchContext } = require('./webSearchContextStore');
 const {
   createInteraction,
 } = require('./conversationInteractions');
+const {
+  applyFileSystemPatch,
+  isFileSystemPatch,
+  normalizeFileSystemPatch,
+  rollbackFileSystemPatch,
+} = require('./fileSystemPatches');
+const {
+  applyFileRevision,
+  discardFileRevision,
+  isFileRevisionSet,
+  previewFileRevision,
+  rollbackFileRevision,
+} = require('./fileRevisions');
 
 const ANALYZE_FOLDER_MAX_FILES = 200;
 
@@ -60,10 +73,10 @@ function buildToolDefinitions(session = {}) {
       scope_paths: { type: 'array', items: { type: 'string' }, description: '可选，限定检索目录或文件路径' },
       top_k: { type: 'integer', default: 5, description: '返回结果数，最大 10' },
     }, ['query']),
-    tool('read_file', '读取任意 Markdown 笔记全文。读取不受写入授权范围限制。', {
+    tool('read_file', '读取任意 Markdown 笔记全文。', {
       path: { type: 'string', description: '相对 notes 根目录的 Markdown 文件路径' },
     }, ['path']),
-    tool('create_note', '在授权范围内准备新建 Markdown 笔记，并生成文件级预览。自动确认模式会自动创建，手动确认模式等待用户在 diff 卡片中应用。必须作为该轮唯一工具调用。', {
+    tool('create_note', '准备新建 Markdown 笔记，并生成文件级预览。自动确认模式会自动创建，手动确认模式等待用户在 diff 卡片中应用。必须作为该轮唯一工具调用。', {
       path: { type: 'string', description: '新笔记路径，例如 drafts/article.md' },
       title: { type: 'string', description: '可选标题' },
       content: { type: 'string', description: 'Markdown 正文' },
@@ -82,6 +95,11 @@ function buildToolDefinitions(session = {}) {
         },
       },
     }, ['patches']),
+    tool('preview_file_revision', '为单个已有 Markdown 文件提交完整修订草稿，并由代码生成 diff 预览。适合大规模、碎片化或整篇改写；不要自己生成 old/new patch 数组。必须作为该轮唯一工具调用，用户确认后才写入，自动确认模式会自动应用。', {
+      file_path: { type: 'string', description: '要修改的 Markdown 文件路径。' },
+      draft_content: { type: 'string', description: '修改后的完整 Markdown 文件内容，必须保留未修改部分。' },
+      parent_operation_set_id: { type: 'integer', description: '可选，上一条相关修订记录 ID。' },
+    }, ['file_path', 'draft_content']),
     tool('preview_canvas_blocks', '为创作页当前文章生成块级修改预览。用户明确使用 @b1、@b2、@b3 等块引用时优先调用；它直接按块生成 replace/delete 操作，比文件级 patch 更准确、更快。必须作为该轮唯一工具调用，用户确认后才写入。', {
       file_path: { type: 'string', description: '可选，当前 Markdown 文件路径；不传则使用当前创作会话绑定的文件。' },
       edits: {
@@ -98,6 +116,23 @@ function buildToolDefinitions(session = {}) {
         },
       },
     }, ['edits']),
+    tool('preview_file_operations', '为文件系统操作生成预览。支持移动文件、新建目录、重命名目录、移动目录；不支持删除目录或删除文件。必须作为该轮唯一工具调用，自动确认模式会自动应用，手动确认模式等待用户在 diff 卡片中应用。', {
+      operations: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            change_type: { type: 'string', enum: ['move_file', 'create_folder', 'rename_folder', 'move_folder'] },
+            path: { type: 'string', description: 'create_folder 时为目录路径；其他操作可用 old_path/new_path。' },
+            old_path: { type: 'string', description: '移动或重命名前的文件/目录路径。' },
+            new_path: { type: 'string', description: '移动或重命名后的文件/目录路径。' },
+            dest: { type: 'string', description: '可选目标目录；move_file/move_folder 可用 dest 代替 new_path。' },
+            name: { type: 'string', description: 'rename_folder 可用的新目录名。' },
+          },
+          required: ['change_type'],
+        },
+      },
+    }, ['operations']),
     tool('ask_question_card', '生成一张提问卡片，暂停当前 Agent 任务并等待用户回答。适合 Agent 自己发现关键信息不足时主动提问，也适合用户明确要求“生成提问卡片/出几道问题/先问我几个问题”时调用。必须作为该轮唯一工具调用。', {
       title: { type: 'string', description: '卡片标题，默认“提问卡片”。' },
       intro: { type: 'string', description: '展示在助手消息里的简短说明。' },
@@ -416,6 +451,9 @@ async function executeCreateNote({ path: filePath, content = '', title = '' } = 
 }
 
 function normalizePatch(patch = {}) {
+  if (isFileSystemPatch(patch)) {
+    return normalizeFileSystemPatch(patch);
+  }
   const filePath = normalizeAgentPath(patch.file_path || patch.path, { ensureMarkdown: true });
   return {
     ...(patch || {}),
@@ -531,6 +569,26 @@ async function applyPreviewPatchFile(operationSetId, sessionId, {
     return { success: true, applied: true, changed_files: [file.path], operation_set: operationSet, patch_index: index };
   }
 
+  if (isFileSystemPatch(patch)) {
+    const result = await applyFileSystemPatch(patch, { force });
+    if (!result.success) return result.conflict ? result : patchConflict(result.error || 'FILE_OPERATION_FAILED', patch);
+    patches[index] = {
+      ...patch,
+      ...(result.patch || {}),
+      status: auto ? 'auto_applied' : 'applied',
+      handled_at: nowIso(),
+      error: '',
+    };
+    const operationSet = savePatchStates(set, patches);
+    return {
+      success: true,
+      applied: true,
+      changed_files: Array.isArray(result.changed_files) ? result.changed_files : [],
+      operation_set: operationSet,
+      patch_index: index,
+    };
+  }
+
   const file = getFileByPath(patch.file_path);
   if (!file) return patchConflict('FILE_NOT_FOUND', patch);
   const replacement = replaceUnique(file.content || '', patch.old, patch.new, 'OLD_REQUIRED');
@@ -584,6 +642,20 @@ async function rollbackPreviewPatchFile(operationSetId, sessionId, {
     patches[index] = { ...patch, status: 'rolled_back', handled_at: nowIso(), error: '' };
     const operationSet = savePatchStates(set, patches);
     return { success: true, rolled_back: true, changed_files: [patch.file_path], operation_set: operationSet, patch_index: index };
+  }
+
+  if (isFileSystemPatch(patch)) {
+    const result = await rollbackFileSystemPatch(patch, { force });
+    if (!result.success) return result.conflict ? result : patchConflict(result.error || 'FILE_OPERATION_ROLLBACK_FAILED', patch);
+    patches[index] = { ...patch, ...(result.patch || {}), status: 'rolled_back', handled_at: nowIso(), error: '' };
+    const operationSet = savePatchStates(set, patches);
+    return {
+      success: true,
+      rolled_back: true,
+      changed_files: Array.isArray(result.changed_files) ? result.changed_files : [],
+      operation_set: operationSet,
+      patch_index: index,
+    };
   }
 
   const file = getFileByPath(patch.file_path);
@@ -728,6 +800,43 @@ async function executePreviewPatchFiles({ patches = [] } = {}, sessionId) {
   return { operation_set_id: operationSet.id, patch_count: normalized.length, patches: normalized.map((patch) => ({ file_path: patch.file_path })) };
 }
 
+async function executePreviewFileOperations({ operations = [] } = {}, sessionId) {
+  const session = getSession(sessionId);
+  const normalized = (Array.isArray(operations) ? operations : []).map((operation) => {
+    try { return normalizeFileSystemPatch(operation); } catch { return null; }
+  }).filter(Boolean);
+  if (normalized.length === 0) return { error: 'OPERATIONS_REQUIRED', message: 'preview_file_operations 需要 operations' };
+  for (const operation of normalized) {
+    if (operation.change_type === 'delete_folder') {
+      return { error: 'DELETE_NOT_SUPPORTED', message: 'Agent 不支持删除目录或文件。' };
+    }
+    const targetPaths = [operation.old_path, operation.new_path, operation.folder_path].filter(Boolean);
+    const op = operation.change_type === 'create_folder' ? 'create' : 'modify';
+    for (const targetPath of targetPaths) {
+      const check = validateWrite(session.session_token, targetPath, op);
+      if (!check.valid) return { error: 'PERMISSION_DENIED', reason: check.reason, path: targetPath };
+    }
+  }
+  const operationSet = createOperationSet({
+    conversationId: session.conversation_id,
+    agentSessionId: session.id,
+    articleHash: sha256(JSON.stringify(normalized)),
+    mode: normalized.length > 1 ? 'multiple_file_operations' : 'single_file_operation',
+    operations: [],
+    patches: normalized,
+    status: 'pending',
+  });
+  return {
+    operation_set_id: operationSet.id,
+    patch_count: normalized.length,
+    operations: normalized.map((operation) => ({
+      change_type: operation.change_type,
+      old_path: operation.old_path || '',
+      new_path: operation.new_path || operation.folder_path || '',
+    })),
+  };
+}
+
 function normalizeCanvasBlockRef(ref = '') {
   const value = String(ref || '').trim();
   const match = value.match(/^@?b(\d+)$/i);
@@ -746,6 +855,7 @@ function extractUserTaskTextFromGoal(goal = '') {
       '\n\n当前文章路径：',
       '\n\n当前创作页文本块快照',
       '\n\n写入授权范围：',
+      '\n\n写入能力：',
     ]
       .map((boundary) => rest.indexOf(boundary))
       .filter((index) => index >= 0);
@@ -953,6 +1063,9 @@ async function applyPreviewWithConflictCheck(operationSetId, sessionId, { force 
   const set = getOperationSetById(operationSetId);
   if (!set) return { success: false, error: 'OPERATION_SET_NOT_FOUND' };
   if (Number(set.agent_session_id || 0) !== Number(sessionId)) return { success: false, error: 'SESSION_OPERATION_SET_MISMATCH' };
+  if (isFileRevisionSet(set)) return applyFileRevision(operationSetId, sessionId, {
+    auto: auto || approvalMode === 'auto_confirm' || approvalMode === 'auto_apply',
+  });
   const patches = normalizeStoredPatches(set.patches);
   if (patches.length === 0) return { success: false, error: 'PATCHES_REQUIRED' };
   const changed = [];
@@ -1068,7 +1181,7 @@ function executeCheckLinks({ scope_path: scopePath = '' } = {}, sessionId, notes
 
 function validateToolUseBlock(toolUseBlocks = []) {
   const blocks = Array.isArray(toolUseBlocks) ? toolUseBlocks : [];
-  const preview = blocks.find((block) => ['create_note', 'preview_patch_files', 'preview_canvas_blocks', 'ask_question_card'].includes(block.name));
+  const preview = blocks.find((block) => ['create_note', 'preview_patch_files', 'preview_file_revision', 'preview_canvas_blocks', 'preview_file_operations', 'ask_question_card'].includes(block.name));
   if (preview && blocks.length > 1) {
     return { error: true, errorToolUseId: preview.id, message: `${preview.name} 必须是该轮的唯一工具调用，请在下一轮单独调用它。` };
   }
@@ -1079,7 +1192,15 @@ function extractTargetPaths(toolUse = {}) {
   const input = toolUse.input || {};
   if (toolUse.name === 'create_note') return [input.path].filter(Boolean);
   if (toolUse.name === 'preview_patch_files') return (Array.isArray(input.patches) ? input.patches : []).map((patch) => patch.file_path || patch.path).filter(Boolean);
+  if (toolUse.name === 'preview_file_revision') return [input.file_path || input.path].filter(Boolean);
   if (toolUse.name === 'preview_canvas_blocks') return [input.file_path].filter(Boolean);
+  if (toolUse.name === 'preview_file_operations') {
+    return (Array.isArray(input.operations) ? input.operations : []).flatMap((operation) => [
+      operation.old_path || operation.path,
+      operation.new_path,
+      operation.dest,
+    ]).filter(Boolean);
+  }
   return [];
 }
 
@@ -1090,7 +1211,9 @@ function summarizeInput(toolUse = {}) {
   if (toolUse.name === 'read_file') return input.path || '';
   if (toolUse.name === 'create_note') return input.path || '';
   if (toolUse.name === 'preview_patch_files') return `${Array.isArray(input.patches) ? input.patches.length : 0} 个文件修改`; 
+  if (toolUse.name === 'preview_file_revision') return input.file_path || '单文件完整修订';
   if (toolUse.name === 'preview_canvas_blocks') return `${Array.isArray(input.edits) ? input.edits.length : 0} 个块级修改`;
+  if (toolUse.name === 'preview_file_operations') return `${Array.isArray(input.operations) ? input.operations.length : 0} 个文件系统操作`;
   if (toolUse.name === 'ask_question_card') return `${Array.isArray(input.questions) ? input.questions.length : 0} 个问题`;
   if (toolUse.name === 'analyze_folder') return input.folder_path || '根目录';
   if (toolUse.name === 'check_links') return input.scope_path || '全库';
@@ -1099,7 +1222,7 @@ function summarizeInput(toolUse = {}) {
 
 async function executeToolSafely(toolUse = {}, session, notesDir = getEffectiveConfig().notesDir) {
   try {
-    if (toolUse.name === 'preview_patch_files' && hasExplicitCanvasBlockMention(extractUserTaskTextFromGoal(session?.goal))) {
+    if (['preview_patch_files', 'preview_file_revision'].includes(toolUse.name) && hasExplicitCanvasBlockMention(extractUserTaskTextFromGoal(session?.goal))) {
       return {
         error: 'CANVAS_BLOCK_TOOL_REQUIRED',
         message: '用户已经明确使用 @b 块引用，本次只能调用 preview_canvas_blocks 生成块级预览，不能退化为文件级 patch。',
@@ -1116,7 +1239,7 @@ async function executeToolSafely(toolUse = {}, session, notesDir = getEffectiveC
         message: '本轮只有附件或外部材料输入，且用户没有明确要求写入当前文档；请先总结/说明附件内容，或用普通文本询问用途，不要直接生成写入位置提问卡片。',
       };
     }
-    if (['create_note', 'preview_patch_files', 'preview_canvas_blocks'].includes(toolUse.name)) {
+    if (['create_note', 'preview_patch_files', 'preview_file_revision', 'preview_canvas_blocks'].includes(toolUse.name)) {
       const paths = extractTargetPaths(toolUse);
       for (const targetPath of paths) {
         const operation = toolUse.name === 'create_note' ? 'create' : 'modify';
@@ -1138,7 +1261,9 @@ const TOOL_EXECUTORS = {
   read_file: executeReadFile,
   create_note: executeCreateNote,
   preview_patch_files: executePreviewPatchFiles,
+  preview_file_revision: previewFileRevision,
   preview_canvas_blocks: executePreviewCanvasBlocks,
+  preview_file_operations: executePreviewFileOperations,
   ask_question_card: executeAskQuestionCard,
   analyze_folder: executeAnalyzeFolder,
   check_links: executeCheckLinks,
@@ -1156,12 +1281,17 @@ module.exports = {
   executeReadFile,
   executeCreateNote,
   executePreviewPatchFiles,
+  previewFileRevision,
   executePreviewCanvasBlocks,
+  executePreviewFileOperations,
   executeAskQuestionCard,
   executeAnalyzeFolder,
   executeCheckLinks,
   applyPreviewWithConflictCheck,
   applyPreviewPatchFile,
+  applyFileRevision,
+  discardFileRevision,
+  rollbackFileRevision,
   rollbackPreviewPatchFile,
   discardPreviewPatchFile,
   discardPendingPreviewPatches,

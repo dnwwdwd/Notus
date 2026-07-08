@@ -1,14 +1,17 @@
 // EditorToolbar — formatting buttons for the Tiptap WYSIWYG editor
 // editor: Tiptap editor instance (lifted from WysiwygEditor via onEditorReady)
-import { useState, useCallback, useMemo, useRef } from 'react';
+import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import { Dialog } from '../ui/Dialog';
 import { DropdownSelect } from '../ui/DropdownSelect';
 import { Icons } from '../ui/Icons';
 import { TextInput } from '../ui/Input';
 import { Button } from '../ui/Button';
+import { Spinner } from '../ui/Spinner';
 import { Tooltip } from '../ui/Tooltip';
+import { useToast } from '../ui/Toast';
 import { navigateWithFallback } from '../../utils/navigation';
+import { copyEditorContentToClipboard } from '../../utils/editorClipboard';
 
 const Divider = () => (
   <div style={{ width: 1, height: 20, background: 'var(--border-subtle)', margin: '0 4px' }} />
@@ -191,7 +194,11 @@ const ImageDialog = ({ fileId, onConfirm, onClose }) => {
 
 export const EditorToolbar = ({ editor, fileId, showAICreate = true, isDirty = false, requestAction }) => {
   const router = useRouter();
+  const toast = useToast();
   const [dialogMode, setDialogMode] = useState(null);
+  const [copyingAll, setCopyingAll] = useState(false);
+  const [copiedAll, setCopiedAll] = useState(false);
+  const copiedTimerRef = useRef(null);
 
   const e = editor;
   const disabled = !e;
@@ -233,6 +240,58 @@ export const EditorToolbar = ({ editor, fileId, showAICreate = true, isDirty = f
     }
     action();
   };
+
+  const handleCopyAll = useCallback(async () => {
+    if (!e || copyingAll) return;
+
+    setCopyingAll(true);
+    try {
+      const result = await copyEditorContentToClipboard(e, { fileId });
+
+      if (result.mode === 'empty') {
+        toast('当前笔记没有可复制内容', 'info');
+        return;
+      }
+
+      if (result.mode === 'rich') {
+        toast('已复制全文，包含文字和图片', 'success');
+        setCopiedAll(true);
+        return;
+      }
+
+      toast(
+        result.reason === 'rich_unsupported'
+          ? '当前环境仅复制 Markdown 文本，图片未写入剪贴板'
+          : '富文本复制失败，已回退为 Markdown 文本',
+        'warning'
+      );
+      setCopiedAll(true);
+    } catch (error) {
+      toast(error?.message || '复制失败', 'danger');
+    } finally {
+      setCopyingAll(false);
+    }
+  }, [copyingAll, e, fileId, toast]);
+
+  useEffect(() => {
+    if (!copiedAll) return undefined;
+
+    if (copiedTimerRef.current) {
+      window.clearTimeout(copiedTimerRef.current);
+    }
+
+    copiedTimerRef.current = window.setTimeout(() => {
+      setCopiedAll(false);
+      copiedTimerRef.current = null;
+    }, 3000);
+
+    return () => {
+      if (copiedTimerRef.current) {
+        window.clearTimeout(copiedTimerRef.current);
+        copiedTimerRef.current = null;
+      }
+    };
+  }, [copiedAll]);
 
   const headingOptions = useMemo(() => ([
     { value: 'paragraph', label: '正文' },
@@ -438,6 +497,14 @@ export const EditorToolbar = ({ editor, fileId, showAICreate = true, isDirty = f
         </ToolbarButton>
 
         <div style={{ flex: 1 }} />
+        <ToolbarButton
+          title={copiedAll ? '已复制' : '复制全文'}
+          active={copiedAll}
+          disabled={disabled || copyingAll}
+          onClick={handleCopyAll}
+        >
+          {copyingAll ? <Spinner size={14} /> : copiedAll ? <Icons.check size={15} /> : <Icons.copy size={15} />}
+        </ToolbarButton>
 
         {/* AI 创作 */}
         {showAICreate && (

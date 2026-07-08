@@ -174,7 +174,7 @@ const FileRow = ({ item, isActive, onSelect, onToggle, onContextMenu }) => {
   return (
     <div
       onClick={() => isFolder ? onToggle(item.path) : onSelect(item)}
-      onContextMenu={!isFolder && onContextMenu ? (e) => { e.preventDefault(); onContextMenu(item, e.clientX, e.clientY); } : undefined}
+      onContextMenu={onContextMenu ? (e) => { e.preventDefault(); onContextMenu(item, e.clientX, e.clientY); } : undefined}
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -244,7 +244,6 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
     setSidebarScroll,
     toggleSidebarCollapsed,
     createFile,
-    createFolder,
     refreshFiles,
   } = useApp();
 
@@ -262,6 +261,10 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
   const [renameNode, setRenameNode] = useState(null);
   const [renameName, setRenameName] = useState('');
   const [renameSubmitting, setRenameSubmitting] = useState(false);
+  const [moveOpen, setMoveOpen] = useState(false);
+  const [moveNode, setMoveNode] = useState(null);
+  const [moveDest, setMoveDest] = useState('');
+  const [moveSubmitting, setMoveSubmitting] = useState(false);
   const contextMenuRef = useRef(null);
   const [hydrated, setHydrated] = useState(false);
   const sidebarScrollByTabRef = useRef(sidebarScrollByTab);
@@ -376,8 +379,48 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
   const handleContextRename = useCallback(() => {
     if (!contextMenu) return;
     setRenameNode(contextMenu.node);
-    setRenameName(contextMenu.node.name.replace(/\.md$/i, ''));
+    setRenameName(contextMenu.node.type === 'folder' ? contextMenu.node.name : contextMenu.node.name.replace(/\.md$/i, ''));
     setRenameOpen(true);
+    setContextMenu(null);
+  }, [contextMenu]);
+
+  const applySidebarFileOperation = useCallback(async (patch) => {
+    const response = await fetch('/api/files/operations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'apply', patch }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.success) {
+      throw new Error(payload.error || payload.code || '执行文件操作失败');
+    }
+    await refreshFiles({ background: false });
+    return payload;
+  }, [refreshFiles]);
+
+  const handleContextMove = useCallback(() => {
+    if (!contextMenu?.node || contextMenu.node.type !== 'file') return;
+    setMoveNode(contextMenu.node);
+    setMoveDest(extractParentPath(contextMenu.node.path));
+    setMoveOpen(true);
+    setContextMenu(null);
+  }, [contextMenu]);
+
+  const handleContextCreateFolder = useCallback(() => {
+    if (!contextMenu?.node) return;
+    const node = contextMenu.node;
+    setCreateMode('folder');
+    setParentPath(node.type === 'folder' ? node.path : extractParentPath(node.path));
+    setNewName('');
+    setContextMenu(null);
+  }, [contextMenu]);
+
+  const handleContextCreateFile = useCallback(() => {
+    if (!contextMenu?.node) return;
+    const node = contextMenu.node;
+    setCreateMode('file');
+    setParentPath(node.type === 'folder' ? node.path : extractParentPath(node.path));
+    setNewName('');
     setContextMenu(null);
   }, [contextMenu]);
 
@@ -385,6 +428,16 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
     if (!contextMenu) return;
     const { node } = contextMenu;
     setContextMenu(null);
+    if (node.type === 'folder') {
+      if (!window.confirm(`确定删除目录「${node.path}」吗？该操作会直接生效。`)) return;
+      try {
+        await applySidebarFileOperation({ change_type: 'delete_folder', path: node.path });
+        toast('目录已删除', 'success');
+      } catch (error) {
+        toast(error.message || '删除目录失败', 'error');
+      }
+      return;
+    }
     if (!window.confirm(`确定删除文件「${getVisibleDocumentLabel(node, '未命名文档')}」吗？此操作不可撤销。`)) return;
     try {
       const response = await fetch(`/api/files/${node.id}`, { method: 'DELETE' });
@@ -397,12 +450,23 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
     } catch (error) {
       toast(error.message || '删除失败', 'error');
     }
-  }, [contextMenu, refreshFiles, toast]);
+  }, [applySidebarFileOperation, contextMenu, refreshFiles, toast]);
 
   const handleRenameSubmit = useCallback(async () => {
     if (!renameNode || !renameName.trim()) return;
     setRenameSubmitting(true);
     try {
+      if (renameNode.type === 'folder') {
+        await applySidebarFileOperation({
+          change_type: 'rename_folder',
+          old_path: renameNode.path,
+          name: renameName.trim(),
+        });
+        toast('目录已重命名', 'success');
+        setRenameOpen(false);
+        setRenameNode(null);
+        return;
+      }
       const response = await fetch('/api/files/rename', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -421,7 +485,26 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
     } finally {
       setRenameSubmitting(false);
     }
-  }, [refreshFiles, renameName, renameNode, toast]);
+  }, [applySidebarFileOperation, refreshFiles, renameName, renameNode, toast]);
+
+  const handleMoveSubmit = useCallback(async () => {
+    if (!moveNode || moveNode.type !== 'file') return;
+    setMoveSubmitting(true);
+    try {
+      await applySidebarFileOperation({
+        change_type: 'move_file',
+        old_path: moveNode.path,
+        dest: moveDest,
+      });
+      toast('文件已移动', 'success');
+      setMoveOpen(false);
+      setMoveNode(null);
+    } catch (error) {
+      toast(error.message || '移动文件失败', 'error');
+    } finally {
+      setMoveSubmitting(false);
+    }
+  }, [applySidebarFileOperation, moveDest, moveNode, toast]);
 
   const filteredTree = useMemo(() => filterTree(files, deferredSearchQuery), [files, deferredSearchQuery]);
   const orderedTree = useMemo(
@@ -560,7 +643,10 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
     setSubmitting(true);
     try {
       if (createMode === 'folder') {
-        await createFolder({ parentPath, name: newName.trim() });
+        await applySidebarFileOperation({
+          change_type: 'create_folder',
+          path: [parentPath, newName.trim()].filter(Boolean).join('/'),
+        });
         toast('目录已创建', 'success');
       } else {
         const created = await createFile(
@@ -809,6 +895,43 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
               onKeyDown={(event) => {
                 if (event.key === 'Enter') handleCreate();
               }}
+            />
+          </div>
+        </div>
+      </Dialog>
+
+      <Dialog
+        open={moveOpen}
+        onClose={() => {
+          if (moveSubmitting) return;
+          setMoveOpen(false);
+          setMoveNode(null);
+        }}
+        title="移动文件"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setMoveOpen(false)} disabled={moveSubmitting}>取消</Button>
+            <Button variant="primary" loading={moveSubmitting} onClick={handleMoveSubmit}>
+              移动文件
+            </Button>
+          </>
+        }
+      >
+        <div style={{ display: 'grid', gap: 14 }}>
+          <div>
+            <div style={{ fontSize: 'var(--text-sm)', fontWeight: 500, marginBottom: 6 }}>文件</div>
+            <div style={{ padding: '10px 12px', borderRadius: 'var(--radius-md)', background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', whiteSpace: 'normal', overflowWrap: 'anywhere' }}>
+              {moveNode?.path || ''}
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: 'var(--text-sm)', fontWeight: 500, marginBottom: 6 }}>移动到</div>
+            <DropdownSelect
+              value={moveDest}
+              options={folderOptions}
+              onChange={(nextValue) => setMoveDest(nextValue)}
+              searchable
+              searchPlaceholder="搜索目录"
             />
           </div>
         </div>
@@ -1503,7 +1626,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
           style={{
             position: 'fixed',
             left: Math.min(contextMenu.x, window.innerWidth - 160),
-            top: Math.min(contextMenu.y, window.innerHeight - 80),
+            top: Math.min(contextMenu.y, window.innerHeight - 180),
             zIndex: 60,
             background: 'var(--bg-elevated)',
             border: '1px solid var(--border-primary)',
@@ -1513,10 +1636,20 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
             minWidth: 140,
           }}
         >
-          {[
-            { label: '重命名', icon: <Icons.edit size={13} />, action: handleContextRename },
-            { label: '删除', icon: <Icons.x size={13} />, action: handleContextDelete, danger: true },
-          ].map((item) => (
+          {(contextMenu.node.type === 'folder'
+            ? [
+              { label: '新建文件', icon: <Icons.filePlus size={13} />, action: handleContextCreateFile },
+              { label: '新建目录', icon: <Icons.folderPlus size={13} />, action: handleContextCreateFolder },
+              { label: '重命名目录', icon: <Icons.edit size={13} />, action: handleContextRename },
+              { label: '删除目录', icon: <Icons.trash size={13} />, action: handleContextDelete, danger: true },
+            ]
+            : [
+              { label: '新建文件', icon: <Icons.filePlus size={13} />, action: handleContextCreateFile },
+              { label: '移动文件', icon: <Icons.folderOpen size={13} />, action: handleContextMove },
+              { label: '重命名', icon: <Icons.edit size={13} />, action: handleContextRename },
+              { label: '删除', icon: <Icons.x size={13} />, action: handleContextDelete, danger: true },
+            ]
+          ).map((item) => (
             <button
               key={item.label}
               type="button"
@@ -1551,11 +1684,13 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
         <Dialog
           open
           onClose={() => { setRenameOpen(false); setRenameNode(null); }}
-          title="重命名文件"
+          title={renameNode?.type === 'folder' ? '重命名目录' : '重命名文件'}
           footer={
             <>
               <Button variant="ghost" onClick={() => { setRenameOpen(false); setRenameNode(null); }}>取消</Button>
-              <Button variant="primary" loading={renameSubmitting} disabled={!renameName.trim()} onClick={handleRenameSubmit}>确认</Button>
+              <Button variant="primary" loading={renameSubmitting} disabled={!renameName.trim()} onClick={handleRenameSubmit}>
+                {renameNode?.type === 'folder' ? '生成预览' : '确认'}
+              </Button>
             </>
           }
         >
@@ -1567,7 +1702,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
               if (e.key === 'Enter') handleRenameSubmit();
               if (e.key === 'Escape') { setRenameOpen(false); setRenameNode(null); }
             }}
-            placeholder="文件名（不含 .md 后缀）"
+            placeholder={renameNode?.type === 'folder' ? '目录名' : '文件名（不含 .md 后缀）'}
           />
         </Dialog>
       )}

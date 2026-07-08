@@ -6,7 +6,7 @@ import rehypeHighlight from 'rehype-highlight';
 import rehypeKatex from 'rehype-katex';
 
 export const StreamingText = ({ text, streaming, className = '', style = {} }) => (
-  <div className={className} style={{ fontSize: 'var(--text-sm)', lineHeight: 1.7, color: 'var(--text-primary)', ...style }}>
+  <div className={className} style={{ fontSize: 'var(--text-sm)', lineHeight: 1.7, color: 'var(--text-primary)', maxWidth: '100%', minWidth: 0, overflow: 'hidden', ...style }}>
     <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeHighlight, rehypeKatex]}>
       {text || ''}
     </ReactMarkdown>

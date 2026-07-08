@@ -1,6 +1,6 @@
 {
   "name": "notus",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "engines": {
     "node": "20.19.x"
@@ -13,7 +13,8 @@
     "test:platform": "node tests/platform.test.js",
     "test:agent-session": "node tests/agent-session-paths.test.js",
     "test:knowledge-routing": "node tests/knowledge-routing.test.js",
-    "test:knowledge-retrieval": "node tests/knowledge-retrieval.test.js"
+    "test:knowledge-retrieval": "node tests/knowledge-retrieval.test.js",
+    "test:file-revisions": "node tests/file-revisions.test.js"
   },
   "dependencies": {
     "@codemirror/commands": "^6.7.1",

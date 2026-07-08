@@ -306,6 +306,105 @@ function getConversationMessageById(messageId) {
   return row ? parseMessageRow(row) : null;
 }
 
+function rewriteConversationFromMessage({ conversationId, messageId, content } = {}) {
+  const db = getDb();
+  const normalizedConversationId = normalizeNullablePositiveInt(conversationId);
+  const normalizedMessageId = normalizeNullablePositiveInt(messageId);
+  if (!normalizedConversationId) throw new Error('conversation_id is required');
+  if (!normalizedMessageId) throw new Error('message_id is required');
+
+  const nextContent = String(content || '').trim();
+  if (!nextContent) throw new Error('content is required');
+
+  return db.transaction(() => {
+    const anchor = db.prepare(`
+      SELECT *
+      FROM messages
+      WHERE id = ? AND conversation_id = ? AND role = 'user'
+    `).get(normalizedMessageId, normalizedConversationId);
+    if (!anchor) {
+      const error = new Error('目标用户消息不存在');
+      error.code = 'MESSAGE_NOT_FOUND';
+      throw error;
+    }
+
+    const previousMeta = anchor.meta ? JSON.parse(anchor.meta) : null;
+    const nextMeta = {
+      ...(previousMeta && typeof previousMeta === 'object' ? previousMeta : {}),
+      rewritten: true,
+      rewritten_at: new Date().toISOString(),
+    };
+
+    db.prepare(`
+      UPDATE messages
+      SET content = ?, meta = ?
+      WHERE id = ?
+    `).run(nextContent, JSON.stringify(nextMeta), normalizedMessageId);
+
+    const futureRows = db.prepare(`
+      SELECT id
+      FROM messages
+      WHERE conversation_id = ? AND id > ?
+      ORDER BY id ASC
+    `).all(normalizedConversationId, normalizedMessageId);
+    const deletedMessageIds = futureRows.map((row) => Number(row.id));
+
+    db.prepare(`
+      DELETE FROM messages
+      WHERE conversation_id = ? AND id > ?
+    `).run(normalizedConversationId, normalizedMessageId);
+
+    const cutoff = String(anchor.created_at || '');
+    db.prepare(`
+      UPDATE agent_sessions
+      SET status = CASE
+          WHEN status IN ('completed', 'failed', 'cancelled', 'rolled_back') THEN status
+          ELSE 'cancelled'
+        END,
+        messages_checkpoint = NULL,
+        checkpoint_tool_use_id = NULL,
+        updated_at = datetime('now')
+      WHERE conversation_id = ?
+        AND (created_at >= ? OR updated_at >= ?)
+    `).run(normalizedConversationId, cutoff, cutoff);
+
+    db.prepare(`
+      UPDATE conversation_interactions
+      SET status = 'cancelled', updated_at = datetime('now')
+      WHERE conversation_id = ?
+        AND status IN ('pending', 'failed', 'stale')
+        AND (
+          COALESCE(message_id, 0) > ?
+          OR COALESCE(answer_message_id, 0) > ?
+          OR created_at >= ?
+        )
+    `).run(normalizedConversationId, normalizedMessageId, normalizedMessageId, cutoff);
+
+    db.prepare(`
+      UPDATE canvas_operation_sets
+      SET status = CASE
+          WHEN status IN ('applied', 'rolled_back', 'discarded', 'cancelled', 'superseded') THEN status
+          ELSE 'cancelled'
+        END,
+        updated_at = datetime('now')
+      WHERE conversation_id = ?
+        AND (
+          COALESCE(message_id, 0) > ?
+          OR created_at >= ?
+        )
+    `).run(normalizedConversationId, normalizedMessageId, cutoff);
+
+    touchConversation(normalizedConversationId);
+
+    return {
+      conversation: getConversation(normalizedConversationId),
+      message: getConversationMessageById(normalizedMessageId),
+      deleted_message_ids: deletedMessageIds,
+      deleted_count: deletedMessageIds.length,
+    };
+  })();
+}
+
 function getConversationHistory(conversationId, { limit = 12, includeTool = false } = {}) {
   const db = getDb();
   const normalizedConversationId = normalizeNullablePositiveInt(conversationId);
@@ -342,6 +441,7 @@ module.exports = {
   getConversationHistory,
   listConversations,
   rebindDraftConversations,
+  rewriteConversationFromMessage,
   resetConversationScopes,
   syncConversationBinding,
   touchConversation,

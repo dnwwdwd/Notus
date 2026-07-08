@@ -11,7 +11,9 @@ import { useToast } from '../ui/Toast';
 import { StreamingText } from '../ui/StreamingText';
 import { LlmConfigCardsSection } from '../Settings/LlmConfigCardsSection';
 import { findEmbeddingModelMeta, inferEmbeddingProvider } from '../../lib/embeddingForm';
+import { resolveLlmProviderLabel } from '../../lib/llmForm';
 import { navigateWithFallback } from '../../utils/navigation';
+import { readAgentInputPreference, writeAgentInputPreference } from '../../utils/agentInputPreferences';
 
 const SEARCH_PROVIDER_FALLBACKS = [
   { id: 'firecrawl', name: 'Firecrawl', quota_url: 'https://www.firecrawl.dev/', max_limit: 20, requires_api_key: false },
@@ -56,6 +58,7 @@ const AGENT_CONFIRM_MODE_OPTIONS = [
   },
 ];
 const CHAT_STICKY_BOTTOM_THRESHOLD = 56;
+const CHAT_JUMP_BUTTON_OFFSET = 152;
 const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
 
 function isNearScrollBottom(container) {
@@ -68,10 +71,48 @@ function scrollContainerToBottom(container, behavior = 'auto') {
   container.scrollTo({ top: container.scrollHeight, behavior });
 }
 
+function wait(ms) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+async function copyMessageText(text = '') {
+  const value = String(text || '');
+  if (!value.trim()) throw new Error('当前消息没有可复制内容');
+
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+
+  const textarea = document.createElement('textarea');
+  textarea.value = value;
+  textarea.setAttribute('readonly', 'true');
+  textarea.style.position = 'fixed';
+  textarea.style.top = '-9999px';
+  textarea.style.left = '-9999px';
+  document.body.appendChild(textarea);
+  textarea.select();
+
+  let copied = false;
+  try {
+    copied = document.execCommand('copy');
+  } finally {
+    document.body.removeChild(textarea);
+  }
+
+  if (!copied) {
+    throw new Error('当前环境不支持复制到剪贴板');
+  }
+}
+
 const PARSED_ATTACHMENT_ACCEPT = '.pdf,.docx,.md,.markdown,.txt,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const PARSED_ATTACHMENT_EXTENSIONS = new Set(['.pdf', '.docx', '.md', '.markdown', '.txt']);
 const LONG_PASTE_ATTACHMENT_THRESHOLD = 100;
 const MAX_PARSED_ATTACHMENTS = 5;
+const AGENT_INPUT_TEXTAREA_MIN_HEIGHT = 24;
+const AGENT_INPUT_TEXTAREA_MAX_ROWS = 5;
 
 const C = {
   page: '#FDFCFB',
@@ -104,7 +145,7 @@ function normalizeApiProtocol(value) {
 
 function providerLabel(config) {
   if (!config) return '未配置';
-  return normalizeApiProtocol(config.api_protocol) === 'anthropic' ? 'Anthropic' : (config.provider || 'OpenAI');
+  return resolveLlmProviderLabel(config.provider);
 }
 
 function modelLabel(config) {
@@ -143,6 +184,26 @@ function fileSize(size) {
   return (value / 1024 / 1024).toFixed(1) + ' MB';
 }
 
+function syncAgentInputTextareaHeight(
+  textarea,
+  minHeight = AGENT_INPUT_TEXTAREA_MIN_HEIGHT,
+  maxRows = AGENT_INPUT_TEXTAREA_MAX_ROWS
+) {
+  if (!textarea || typeof window === 'undefined') return;
+  const computed = window.getComputedStyle(textarea);
+  const lineHeight = Number.parseFloat(computed.lineHeight) || 24;
+  const paddingTop = Number.parseFloat(computed.paddingTop) || 0;
+  const paddingBottom = Number.parseFloat(computed.paddingBottom) || 0;
+  const borderTop = Number.parseFloat(computed.borderTopWidth) || 0;
+  const borderBottom = Number.parseFloat(computed.borderBottomWidth) || 0;
+  const maxHeight = Math.round(lineHeight * maxRows + paddingTop + paddingBottom + borderTop + borderBottom);
+
+  textarea.style.height = `${minHeight}px`;
+  const nextHeight = Math.min(Math.max(textarea.scrollHeight, minHeight), maxHeight);
+  textarea.style.height = `${nextHeight}px`;
+  textarea.style.overflowY = textarea.scrollHeight > maxHeight ? 'auto' : 'hidden';
+}
+
 function fileExtension(name = '') {
   const match = String(name || '').toLowerCase().match(/(\.[^.]+)$/);
   return match ? match[1] : '';
@@ -157,21 +218,18 @@ function toDisplayAttachment(file) {
   return rest;
 }
 
-function FileChip({ file, onRemove, readOnly }) {
+function isPdfAttachment(file = {}) {
+  const name = String(file?.name || file?.source || '').toLowerCase();
+  const type = String(file?.type || file?.contentType || file?.parsed?.contentType || '').toLowerCase();
+  const extension = String(file?.extension || '').toLowerCase();
+  return type.includes('pdf') || extension === '.pdf' || name.endsWith('.pdf');
+}
+
+function FileChip({ file, onRemove, readOnly, onOpen }) {
   const type = fileType(file);
-  return (
-    <div style={{
-      position: 'relative',
-      display: 'inline-flex',
-      alignItems: 'center',
-      gap: 10,
-      maxWidth: 220,
-      padding: '8px 12px',
-      borderRadius: 14,
-      background: '#fff',
-      boxShadow: '0 1px 6px rgba(45,45,45,0.08), inset 0 0 0 1px rgba(229,227,216,0.9)',
-      color: C.text,
-    }}>
+  const canOpen = readOnly && typeof onOpen === 'function';
+  const content = (
+    <>
       <span style={{
         minWidth: 30,
         height: 30,
@@ -188,6 +246,39 @@ function FileChip({ file, onRemove, readOnly }) {
         <span style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name || '未命名附件'}</span>
         <span style={{ fontSize: 11, color: C.tertiary }}>{file.sizeLabel || fileSize(file.size)}</span>
       </span>
+      {canOpen ? <Icons.eye size={14} style={{ color: C.tertiary, flexShrink: 0 }} /> : null}
+    </>
+  );
+  const commonStyle = {
+    position: 'relative',
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 10,
+    maxWidth: 240,
+    padding: '8px 12px',
+    borderRadius: 14,
+    background: '#fff',
+    boxShadow: '0 1px 6px rgba(45,45,45,0.08), inset 0 0 0 1px rgba(229,227,216,0.9)',
+    color: C.text,
+    border: 'none',
+    textAlign: 'left',
+    cursor: canOpen ? 'pointer' : 'default',
+  };
+  return (
+    <div style={{ position: 'relative', display: 'inline-flex', maxWidth: 240 }}>
+      {canOpen ? (
+        <button
+          type="button"
+          aria-label={`查看附件内容：${file.name || '未命名附件'}`}
+          onClick={() => onOpen?.(file)}
+          className="notus-agent-pressable"
+          style={transitionButton(commonStyle)}
+        >
+          {content}
+        </button>
+      ) : (
+        <div style={commonStyle}>{content}</div>
+      )}
       {!readOnly ? (
         <button
           type="button"
@@ -214,6 +305,125 @@ function FileChip({ file, onRemove, readOnly }) {
   );
 }
 
+function AttachmentContentDialog({ open, attachment, message, onClose }) {
+  const toast = useToast();
+  const [loading, setLoading] = useState(false);
+  const [payload, setPayload] = useState(null);
+  const [error, setError] = useState('');
+  const [copied, setCopied] = useState(false);
+  const copyDisabled = isPdfAttachment(attachment) || payload?.canCopy === false || !String(payload?.text || '').trim();
+
+  useEffect(() => {
+    if (!open || !attachment) return undefined;
+    let cancelled = false;
+    const parsed = attachment.parsed && typeof attachment.parsed === 'object' ? attachment.parsed : null;
+    const parsedText = String(parsed?.text || '');
+    if (parsedText.trim()) {
+      setPayload({
+        source: parsed.source || attachment.name || '附件',
+        contentType: parsed.contentType || parsed.type || 'plaintext',
+        status: parsed.status || 'success',
+        warning: parsed.warning || null,
+        pageCount: parsed.pageCount ?? null,
+        parsedAt: parsed.parsedAt || '',
+        text: parsedText,
+        canCopy: !isPdfAttachment(attachment),
+      });
+      setError('');
+      setLoading(false);
+      setCopied(false);
+      return undefined;
+    }
+
+    setLoading(true);
+    setPayload(null);
+    setError('');
+    setCopied(false);
+    fetch('/api/agent/attachments/content', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        conversation_id: message?.conversationId || message?.conversation_id || null,
+        attachment,
+      }),
+    }).then(async (response) => {
+      const nextPayload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(nextPayload.error || '附件内容读取失败');
+      if (!cancelled) setPayload(nextPayload);
+    }).catch((fetchError) => {
+      if (!cancelled) setError(fetchError.message || '附件内容读取失败');
+    }).finally(() => {
+      if (!cancelled) setLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [attachment, message?.conversationId, message?.conversation_id, open]);
+
+  const handleCopy = useCallback(async () => {
+    if (copyDisabled) return;
+    try {
+      await copyMessageText(payload?.text || '');
+      setCopied(true);
+      toast('已复制附件内容', 'success');
+      window.setTimeout(() => setCopied(false), 2200);
+    } catch (copyError) {
+      toast(copyError.message || '复制失败', 'error');
+    }
+  }, [copyDisabled, payload?.text, toast]);
+
+  const footer = (
+    <>
+      <Button variant="ghost" onClick={onClose}>关闭</Button>
+      <Button variant="primary" onClick={handleCopy} disabled={copyDisabled || loading}>
+        {copied ? '已复制' : isPdfAttachment(attachment) ? 'PDF 不支持复制' : '复制内容'}
+      </Button>
+    </>
+  );
+
+  return (
+    <Dialog open={open} onClose={onClose} title={attachment?.name || '附件内容'} maxWidth={720} footer={footer}>
+      <div style={{ display: 'grid', gap: 12, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 12, color: C.tertiary }}>
+          <span>{fileType(attachment)}</span>
+          <span>{attachment?.sizeLabel || fileSize(attachment?.size)}</span>
+          {payload?.pageCount ? <span>{payload.pageCount} 页</span> : null}
+          {payload?.status && payload.status !== 'success' ? <span>{payload.status === 'partial' ? '部分解析' : '解析异常'}</span> : null}
+        </div>
+        {payload?.warning ? (
+          <div style={{ padding: '10px 12px', borderRadius: 10, background: 'rgba(217,119,87,0.08)', color: C.accentDark, fontSize: 13, lineHeight: 1.7 }}>
+            {payload.warning}
+          </div>
+        ) : null}
+        {loading ? (
+          <div style={{ minHeight: 220, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.tertiary, fontSize: 14 }}>
+            <InlineActionSpinner size={16} />
+            <span style={{ marginLeft: 8 }}>正在读取附件内容...</span>
+          </div>
+        ) : error ? (
+          <div style={{ minHeight: 180, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.accentDark, fontSize: 14, textAlign: 'center', lineHeight: 1.7 }}>
+            {error}
+          </div>
+        ) : (
+          <pre style={{
+            margin: 0,
+            maxHeight: 'min(56vh, 520px)',
+            overflow: 'auto',
+            padding: 14,
+            borderRadius: 12,
+            background: C.soft,
+            color: C.text,
+            border: `1px solid ${C.border}`,
+            fontSize: 13,
+            lineHeight: 1.7,
+            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
+            whiteSpace: 'pre-wrap',
+            overflowWrap: 'anywhere',
+          }}>{payload?.text || '没有可展示的附件文本内容。'}</pre>
+        )}
+      </div>
+    </Dialog>
+  );
+}
+
 function ToolStatusIcon({ status, size = 14 }) {
   if (status === 'failed') return <Icons.warn size={size} style={{ color: C.accent }} />;
   if (status === 'running') {
@@ -234,6 +444,95 @@ function ToolStatusIcon({ status, size = 14 }) {
     );
   }
   return <Icons.check size={size} stroke={2.4} style={{ color: C.tertiary }} />;
+}
+
+function InlineActionSpinner({ size = 14, color = C.accent }) {
+  return (
+    <span
+      aria-hidden="true"
+      style={{
+        width: size,
+        height: size,
+        borderRadius: 999,
+        display: 'inline-block',
+        boxSizing: 'border-box',
+        border: '2px solid rgba(217,119,87,0.20)',
+        borderTopColor: color,
+        animation: 'spin 0.82s linear infinite',
+      }}
+    />
+  );
+}
+
+function MessageIconButton({ label, onClick, disabled, active = false, children }) {
+  return (
+    <Tooltip content={label} placement="top" disabled={disabled}>
+      <button
+        type="button"
+        aria-label={label}
+        disabled={disabled}
+        onClick={onClick}
+        className="notus-agent-pressable"
+        style={transitionButton({
+          width: 28,
+          height: 28,
+          borderRadius: 9,
+          background: active ? 'rgba(251,228,210,0.42)' : 'transparent',
+          color: active ? C.accent : C.secondary,
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          opacity: disabled ? 0.5 : 1,
+          cursor: disabled ? 'not-allowed' : 'pointer',
+          flexShrink: 0,
+        })}
+      >
+        {children}
+      </button>
+    </Tooltip>
+  );
+}
+
+function CopyMessageButton({ text, successMessage = '已复制消息', disabled = false }) {
+  const toast = useToast();
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef(null);
+
+  const handleCopy = useCallback(async () => {
+    try {
+      await copyMessageText(text);
+      toast(successMessage, 'success');
+      setCopied(true);
+    } catch (error) {
+      toast(error.message || '复制失败', 'error');
+    }
+  }, [successMessage, text, toast]);
+
+  useEffect(() => {
+    if (!copied) return undefined;
+
+    if (timerRef.current) {
+      window.clearTimeout(timerRef.current);
+    }
+
+    timerRef.current = window.setTimeout(() => {
+      setCopied(false);
+      timerRef.current = null;
+    }, 3000);
+
+    return () => {
+      if (timerRef.current) {
+        window.clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, [copied]);
+
+  return (
+    <MessageIconButton label="复制" onClick={handleCopy} disabled={disabled} active={copied}>
+      {copied ? <Icons.check size={14} /> : <Icons.copy size={14} />}
+    </MessageIconButton>
+  );
 }
 
 function ToolChain({ steps, loading }) {
@@ -262,8 +561,8 @@ function ToolChain({ steps, loading }) {
   const chainStatus = hasFailed ? 'failed' : hasRunning ? 'running' : 'done';
 
   return (
-    <div style={{ width: '100%', margin: '16px 0', display: 'flex', flexDirection: 'column' }}>
-      <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8, padding: '0 4px' }}>
+    <div style={{ width: '100%', minWidth: 0, maxWidth: '100%', margin: '16px 0', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8, padding: '0 4px', minWidth: 0 }}>
         <ToolStatusIcon status={chainStatus} size={14} />
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 4, borderTop: '1px solid ' + C.border, paddingTop: 8 }}>
@@ -275,7 +574,7 @@ function ToolChain({ steps, loading }) {
           const open = Boolean(expanded[stepId]);
           const rowStatus = failed ? 'failed' : running ? 'running' : 'done';
           return (
-            <div key={stepId} style={{ display: 'flex', flexDirection: 'column' }}>
+        <div key={stepId} style={{ display: 'flex', flexDirection: 'column', minWidth: 0, maxWidth: '100%' }}>
               <button
                 type="button"
                 aria-expanded={open}
@@ -309,16 +608,16 @@ function ToolChain({ steps, loading }) {
                 <Icons.chevronRight size={14} className={open ? 'notus-agent-tool-chevron is-open' : 'notus-agent-tool-chevron'} style={{ color: '#BDBBB3' }} />
               </button>
               {open ? (
-                <div style={{ marginLeft: 25, padding: '8px 0 10px 16px', borderLeft: '1px solid ' + C.border, display: 'grid', gap: 12, marginBottom: 2, marginTop: 1 }}>
-                  {step.detail ? <div style={{ fontSize: 13.5, lineHeight: 1.75, color: C.secondary, whiteSpace: 'pre-wrap' }}>{step.detail}{running ? <span style={{ display: 'inline-block', width: 6, height: 14, background: 'rgba(217,119,87,0.6)', marginLeft: 5, verticalAlign: 'text-bottom', animation: 'notus-agent-pulse 1s ease-in-out infinite' }} /> : null}</div> : null}
+                <div style={{ marginLeft: 25, padding: '8px 0 10px 16px', borderLeft: '1px solid ' + C.border, display: 'grid', gap: 12, marginBottom: 2, marginTop: 1, minWidth: 0, maxWidth: 'calc(100% - 25px)', overflow: 'hidden' }}>
+                  {step.detail ? <div style={{ minWidth: 0, maxWidth: '100%', fontSize: 13.5, lineHeight: 1.75, color: C.secondary, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', wordBreak: 'break-word' }}>{step.detail}{running ? <span style={{ display: 'inline-block', width: 6, height: 14, background: 'rgba(217,119,87,0.6)', marginLeft: 5, verticalAlign: 'text-bottom', animation: 'notus-agent-pulse 1s ease-in-out infinite' }} /> : null}</div> : null}
                   {step.tool ? (
-                    <div style={{ background: C.soft, borderRadius: 8, padding: 12, color: C.secondary, fontSize: 12.5 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 700, color: C.text, marginBottom: 8 }}>
-                        <Icons.code size={12} style={{ color: C.tertiary }} /> {step.tool}
+                    <div style={{ minWidth: 0, maxWidth: '100%', overflow: 'hidden', background: C.soft, borderRadius: 8, padding: 12, color: C.secondary, fontSize: 12.5 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 700, color: C.text, marginBottom: 8, minWidth: 0 }}>
+                        <Icons.code size={12} style={{ color: C.tertiary, flexShrink: 0 }} /> <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{step.tool}</span>
                       </div>
-                      {step.input ? <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{step.input}</pre> : null}
+                      {step.input ? <pre style={{ margin: 0, maxWidth: '100%', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', wordBreak: 'break-word', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{step.input}</pre> : null}
                       {step.result ? (
-                        <pre style={{ margin: '8px 0 0', paddingTop: 8, borderTop: '1px solid ' + C.border, whiteSpace: 'pre-wrap', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{step.result}</pre>
+                        <pre style={{ margin: '8px 0 0', paddingTop: 8, maxWidth: '100%', borderTop: '1px solid ' + C.border, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', wordBreak: 'break-word', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{step.result}</pre>
                       ) : running ? (
                         <div style={{ display: 'flex', gap: 4, marginTop: 8, paddingTop: 8, borderTop: '1px solid ' + C.border }}>
                           <span style={{ width: 6, height: 6, borderRadius: 999, background: '#C2C0B6', animation: 'notus-agent-bounce 1s infinite' }} />
@@ -342,13 +641,31 @@ function ToolChain({ steps, loading }) {
 
 function operationItems(operationSet) {
   if (!operationSet) return [];
+  if (operationSet.revision_type === 'file_revision' || operationSet.revision?.type === 'file_revision') {
+    const revision = operationSet.revision || {};
+    return [{
+      id: `revision-${operationSet.id}`,
+      patchIndex: 0,
+      type: 'file_revision',
+      change_type: 'file_revision',
+      file_path: revision.file_path || operationSet.revision_file_path || '',
+      old_path: '',
+      new_path: '',
+      status: operationSet.status || 'pending',
+      handled_at: revision.applied_at || revision.discarded_at || revision.rolled_back_at || null,
+      error: revision.error_message || '',
+      diff_hunks: Array.isArray(revision.diff_hunks) ? revision.diff_hunks : [],
+    }];
+  }
   if (Array.isArray(operationSet.patches) && operationSet.patches.length > 0) {
     return operationSet.patches.map((patch, index) => ({
       id: patch.patch_id || patch.id || 'patch-' + index,
       patchIndex: index,
       type: 'str_replace',
-      file_path: patch.file_path,
+      file_path: patch.file_path || patch.folder_path || patch.path || patch.old_path || patch.new_path || '',
       change_type: patch.change_type || patch.type || '',
+      old_path: patch.old_path || '',
+      new_path: patch.new_path || '',
       old: patch.old,
       new: patch.new,
       status: patch.status || 'pending',
@@ -365,6 +682,10 @@ function patchStatusMeta(status) {
   if (normalized === 'auto_applied') return { label: '已自动应用', color: '#166534', bg: 'rgba(187,247,208,0.50)' };
   if (normalized === 'rolled_back') return { label: '已回滚', color: '#991B1B', bg: 'rgba(254,202,202,0.52)' };
   if (normalized === 'discarded') return { label: '已废弃', color: C.tertiary, bg: C.muted };
+  if (normalized === 'superseded') return { label: '已被新预览替代', color: C.tertiary, bg: C.muted };
+  if (normalized === 'stale') return { label: '文件已变化', color: C.accentDark, bg: 'rgba(217,119,87,0.12)' };
+  if (normalized === 'apply_failed') return { label: '应用失败', color: C.accentDark, bg: 'rgba(217,119,87,0.12)' };
+  if (normalized === 'rollback_conflict') return { label: '回滚冲突', color: C.accentDark, bg: 'rgba(217,119,87,0.12)' };
   if (normalized === 'failed') return { label: '处理失败', color: C.accentDark, bg: 'rgba(217,119,87,0.12)' };
   return { label: '待确认', color: C.accent, bg: 'rgba(251,228,210,0.42)' };
 }
@@ -374,7 +695,53 @@ function isPatchPending(item) {
   return status === 'pending' || status === 'failed';
 }
 
+function isFileSystemOperation(operation = {}) {
+  return ['create_folder', 'rename_folder', 'move_folder', 'move_file', 'delete_folder'].includes(String(operation?.change_type || '').trim());
+}
+
+function operationLabel(operation = {}) {
+  const type = String(operation.change_type || '').trim();
+  return {
+    file_revision: '全文修订',
+    create_folder: '新建目录',
+    rename_folder: '重命名目录',
+    move_folder: '移动目录',
+    move_file: '移动文件',
+    delete_folder: '删除目录',
+    create: '新建文件',
+  }[type] || '修改文件';
+}
+
 function buildDiffLines(operation = {}) {
+  if (operation.change_type === 'file_revision' && Array.isArray(operation.diff_hunks)) {
+    return operation.diff_hunks.flatMap((hunk, hunkIndex) => [
+      { type: 'hunk', content: `@@ -${hunk.oldStart || 0},${hunk.oldLines || 0} +${hunk.newStart || 0},${hunk.newLines || 0} @@`, key: `hunk-${hunkIndex}` },
+      ...(Array.isArray(hunk.lines) ? hunk.lines.map((line) => ({
+        type: line.type === 'insert' ? 'add' : line.type === 'delete' ? 'remove' : 'context',
+        content: line.content || '',
+        oldLineNumber: line.oldLineNumber,
+        newLineNumber: line.newLineNumber,
+      })) : []),
+    ]);
+  }
+  if (isFileSystemOperation(operation)) {
+    const type = String(operation.change_type || '').trim();
+    const removed = [];
+    const added = [];
+    if (type === 'create_folder') {
+      added.push(`目录：${operation.new_path || operation.file_path || operation.new || ''}`);
+    } else if (type === 'delete_folder') {
+      removed.push(`目录：${operation.old_path || operation.file_path || operation.old || ''}`);
+      String(operation.old || '').split('\n').filter(Boolean).forEach((line) => removed.push(`包含：${line}`));
+    } else {
+      removed.push(`原路径：${operation.old_path || operation.old || ''}`);
+      added.push(`新路径：${operation.new_path || operation.new || ''}`);
+    }
+    return [
+      ...removed.map((content) => ({ type: 'remove', content })),
+      ...added.map((content) => ({ type: 'add', content })),
+    ];
+  }
   return [
     ...(operation.old ? String(operation.old).split('\n').map((line) => ({ type: 'remove', content: line })) : []),
     ...(operation.new ? String(operation.new).split('\n').map((line) => ({ type: 'add', content: line })) : []),
@@ -384,19 +751,33 @@ function buildDiffLines(operation = {}) {
 
 function operationSetSummary(operationSet) {
   const operations = operationItems(operationSet);
-  const fileCount = new Set(operations.map((item) => item.file_path || item.path).filter(Boolean)).size || operations.length;
+  const fileCount = new Set(
+    operations
+      .map((item) => item.file_path || item.new_path || item.old_path || item.path)
+      .filter(Boolean)
+  ).size || operations.length;
   const pendingCount = operations.filter(isPatchPending).length;
   const autoAppliedCount = operations.filter((item) => String(item.status || '') === 'auto_applied').length;
   const appliedCount = operations.filter((item) => ['applied', 'auto_applied'].includes(String(item.status || ''))).length;
   const rolledBackCount = operations.filter((item) => String(item.status || '') === 'rolled_back').length;
   const discardedCount = operations.filter((item) => String(item.status || '') === 'discarded').length;
   const failedCount = operations.filter((item) => String(item.status || '') === 'failed').length;
-  let detail = '本次任务的文件修改预览已生成';
+  const staleCount = operations.filter((item) => String(item.status || '') === 'stale').length;
+  const applyFailedCount = operations.filter((item) => String(item.status || '') === 'apply_failed').length;
+  const rollbackConflictCount = operations.filter((item) => String(item.status || '') === 'rollback_conflict').length;
+  const supersededCount = operations.filter((item) => String(item.status || '') === 'superseded').length;
+  const revisionMode = operations.some((item) => item.change_type === 'file_revision');
+  const fileSystemMode = operations.some((item) => isFileSystemOperation(item));
+  let detail = revisionMode ? '本次任务的全文修订预览已生成' : fileSystemMode ? '本次任务的文件/目录操作预览已生成' : '本次任务的文件修改预览已生成';
   if (pendingCount > 0) detail = `${pendingCount} 个文件待确认`;
   else if (autoAppliedCount === operations.length && operations.length > 0) detail = '已自动应用，可查看详情或逐文件回滚';
   else if (appliedCount > 0 || rolledBackCount > 0 || discardedCount > 0) detail = `已应用 ${appliedCount} 个，已回滚 ${rolledBackCount} 个，已废弃 ${discardedCount} 个`;
   if (failedCount > 0) detail = `${detail}，${failedCount} 个处理失败`;
-  return { operations, fileCount, pendingCount, detail };
+  if (staleCount > 0) detail = `${staleCount} 个文件已变化，需要重新生成`;
+  if (applyFailedCount > 0) detail = `${applyFailedCount} 个文件应用失败`;
+  if (rollbackConflictCount > 0) detail = `${rollbackConflictCount} 个文件无法安全回滚`;
+  if (supersededCount > 0) detail = `${supersededCount} 个预览已被新修订替代`;
+  return { operations, fileCount, pendingCount, detail, fileSystemMode, revisionMode };
 }
 
 function OperationSetCard({ operationSet, onOpenDetail }) {
@@ -421,7 +802,7 @@ function OperationSetCard({ operationSet, onOpenDetail }) {
           <Icons.edit size={15} />
         </span>
         <div style={{ display: 'grid', gap: 3, minWidth: 0 }}>
-          <div style={{ fontSize: 13, fontWeight: 800, color: C.text }}>{summary.fileCount} 个文件发生变更</div>
+          <div style={{ fontSize: 13, fontWeight: 800, color: C.text }}>{summary.fileCount} {summary.revisionMode ? '个文件全文修订' : summary.fileSystemMode ? '项文件/目录操作' : '个文件发生变更'}</div>
           <div style={{ fontSize: 11, color: C.tertiary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{summary.detail}</div>
         </div>
       </div>
@@ -430,7 +811,7 @@ function OperationSetCard({ operationSet, onOpenDetail }) {
   );
 }
 
-function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRollbackFile }) {
+function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRollbackFile, onDiscardFile }) {
   const operations = operationItems(operationSet);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [busyKey, setBusyKey] = useState('');
@@ -439,13 +820,16 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
   }, [operationSet?.id, operations.length]);
   if (!open) return null;
   const activeOperation = operations[Math.min(selectedIndex, Math.max(operations.length - 1, 0))] || {};
-  const activePath = activeOperation.file_path || activeOperation.path || '全文';
+  const activePath = activeOperation.new_path || activeOperation.file_path || activeOperation.old_path || activeOperation.path || '全文';
   const diffLines = buildDiffLines(activeOperation);
   const activeStatus = patchStatusMeta(activeOperation.status);
   const pendingCount = operations.filter(isPatchPending).length;
-  const canApply = isPatchPending(activeOperation) && typeof onApplyFile === 'function';
+  const isRevision = activeOperation.change_type === 'file_revision';
+  const activeNormalizedStatus = String(activeOperation.status || 'pending');
+  const canApply = (isRevision ? activeNormalizedStatus === 'pending' : isPatchPending(activeOperation)) && typeof onApplyFile === 'function';
   const canApplyAll = pendingCount > 0 && typeof onApplyAll === 'function';
-  const canRollback = !['rolled_back', 'discarded'].includes(String(activeOperation.status || 'pending')) && typeof onRollbackFile === 'function';
+  const canRollback = (isRevision ? ['applied', 'rollback_conflict'].includes(activeNormalizedStatus) : !['rolled_back', 'discarded'].includes(activeNormalizedStatus)) && typeof onRollbackFile === 'function';
+  const canDiscard = isRevision && ['pending', 'stale', 'apply_failed', 'rollback_conflict'].includes(activeNormalizedStatus) && typeof onDiscardFile === 'function';
   const moveToNextPending = () => {
     const next = operations.findIndex((item, index) => index !== selectedIndex && isPatchPending(item));
     if (next >= 0) setSelectedIndex(next);
@@ -455,6 +839,7 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
     setBusyKey(key);
     try {
       if (kind === 'apply') await onApplyFile?.(operationSet, activeOperation.patchIndex);
+      else if (kind === 'discard') await onDiscardFile?.(operationSet, activeOperation.patchIndex);
       else await onRollbackFile?.(operationSet, activeOperation.patchIndex);
       moveToNextPending();
     } finally {
@@ -484,13 +869,13 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
         <div style={{ display: 'grid', gridTemplateColumns: '220px minmax(0, 1fr)', minHeight: 0, flex: 1, overflow: 'hidden' }}>
           <div style={{ borderRight: '1px solid ' + C.border, background: C.page, padding: 8, overflowY: 'auto' }}>
             {operations.map((operation, index) => {
-              const pathText = operation.file_path || operation.path || '全文';
+              const pathText = operation.new_path || operation.file_path || operation.old_path || operation.path || '全文';
               const active = index === selectedIndex;
               const statusMeta = patchStatusMeta(operation.status);
               return (
                 <button key={operation.id || index} type="button" onClick={() => setSelectedIndex(index)} style={transitionButton({ width: '100%', textAlign: 'left', display: 'grid', gap: 4, padding: '9px 10px', borderRadius: 10, background: active ? '#fff' : 'transparent', color: active ? C.text : C.secondary, boxShadow: active ? 'inset 0 0 0 1px rgba(229,227,216,0.92)' : 'none' })}>
                   <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                    <span style={{ minWidth: 0, fontSize: 12, fontWeight: 800, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{String(pathText).split('/').pop()}</span>
+                    <span style={{ minWidth: 0, fontSize: 12, fontWeight: 800, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{operationLabel(operation)}</span>
                     <span style={{ flexShrink: 0, width: 7, height: 7, borderRadius: 999, background: statusMeta.color }} />
                   </span>
                   <span style={{ fontSize: 10.5, color: C.tertiary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pathText}</span>
@@ -504,13 +889,19 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
               <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 800, color: activeStatus.color, background: activeStatus.bg, borderRadius: 999, padding: '4px 8px' }}>{activeStatus.label}</span>
             </div>
             <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '12px 0', overscrollBehavior: 'contain' }}>
+              {activeOperation.error ? (
+                <div style={{ margin: '0 12px 12px', padding: '10px 12px', borderRadius: 10, background: 'rgba(217,119,87,0.10)', color: C.accentDark, fontSize: 12, lineHeight: 1.65, boxShadow: 'inset 0 0 0 1px rgba(217,119,87,0.18)' }}>
+                  {activeOperation.error}
+                </div>
+              ) : null}
               <div style={{ minWidth: 'max-content', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12.5, lineHeight: 1.65 }}>
                 {diffLines.length === 0 ? <div style={{ padding: '0 14px', color: C.tertiary }}>没有可展示的 diff 内容。</div> : diffLines.map((line, index) => {
+                  const hunk = line.type === 'hunk';
                   const remove = line.type === 'remove';
                   const add = line.type === 'add';
                   return (
-                    <div key={index} style={{ display: 'flex', minWidth: '100%', padding: '0 14px', background: add ? 'rgba(187,247,208,0.45)' : remove ? 'rgba(254,202,202,0.45)' : 'transparent', color: add ? '#166534' : remove ? '#991B1B' : C.secondary, textDecoration: remove ? 'line-through' : 'none' }}>
-                      <span style={{ width: 20, flex: '0 0 auto', color: '#BDBBB3', textAlign: 'right', paddingRight: 8, userSelect: 'none' }}>{add ? '+' : remove ? '-' : ' '}</span>
+                    <div key={index} style={{ display: 'flex', minWidth: '100%', padding: '0 14px', background: hunk ? 'rgba(229,227,216,0.45)' : add ? 'rgba(187,247,208,0.45)' : remove ? 'rgba(254,202,202,0.45)' : 'transparent', color: hunk ? C.tertiary : add ? '#166534' : remove ? '#991B1B' : C.secondary, textDecoration: remove ? 'line-through' : 'none' }}>
+                      <span style={{ width: 20, flex: '0 0 auto', color: '#BDBBB3', textAlign: 'right', paddingRight: 8, userSelect: 'none' }}>{hunk ? ' ' : add ? '+' : remove ? '-' : ' '}</span>
                       <span style={{ flex: '0 0 auto', whiteSpace: 'pre' }}>{line.content}</span>
                     </div>
                   );
@@ -520,6 +911,9 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
             <div style={{ minHeight: 56, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '10px 12px', borderTop: '1px solid ' + C.border, background: '#fff' }}>
               <span style={{ flex: 1, minWidth: 0, fontSize: 12, lineHeight: 1.6, color: C.tertiary }}>仅当前对话可应用或回滚修改；新建/切换对话、预览已处理、会话权限过期或文件内容变化后，应用与回滚会失效。</span>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                {canDiscard ? (
+                  <button type="button" disabled={Boolean(busyKey)} onClick={() => runFileAction('discard')} style={transitionButton({ height: 32, padding: '0 11px', borderRadius: 9, background: C.muted, color: C.secondary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: busyKey ? 'not-allowed' : 'pointer' })}>废弃预览</button>
+                ) : null}
                 <button type="button" disabled={!canRollback || Boolean(busyKey)} onClick={() => runFileAction('rollback')} style={transitionButton({ height: 32, padding: '0 11px', borderRadius: 9, background: canRollback ? 'rgba(254,202,202,0.65)' : C.muted, color: canRollback ? '#991B1B' : C.tertiary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: (!canRollback || busyKey) ? 'not-allowed' : 'pointer' })}>回滚修改</button>
                 <button type="button" disabled={!canApply || Boolean(busyKey)} onClick={() => runFileAction('apply')} style={transitionButton({ height: 32, padding: '0 12px', borderRadius: 9, background: canApply ? '#16A34A' : C.muted, color: canApply ? '#fff' : C.tertiary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: (!canApply || busyKey) ? 'not-allowed' : 'pointer' })}>应用修改</button>
                 <button type="button" disabled={!canApplyAll || Boolean(busyKey)} onClick={runApplyAll} style={transitionButton({ height: 32, padding: '0 13px', borderRadius: 9, background: canApplyAll ? C.accent : C.muted, color: canApplyAll ? '#fff' : C.tertiary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: (!canApplyAll || busyKey) ? 'not-allowed' : 'pointer' })}>全部应用</button>
@@ -532,7 +926,145 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
   );
 }
 
-function MessageList({ messages, streamText, loading, activeSteps, onOpenOperationSet, onCitationClick, citationSelection }) {
+function UserMessageRow({ message, disabled, removing = false, onResendMessage, onOpenAttachment }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(String(message.content || ''));
+  const [sending, setSending] = useState(false);
+  const canEdit = Boolean(String(message.content || '').trim()) && typeof onResendMessage === 'function';
+
+  useEffect(() => {
+    if (!editing) setDraft(String(message.content || ''));
+  }, [editing, message.content]);
+
+  const submitEdit = useCallback(async () => {
+    const nextContent = String(draft || '').trim();
+    if (!canEdit || !nextContent || sending) return;
+    setSending(true);
+    try {
+      const sent = await onResendMessage(message, {
+        reason: 'rewrite',
+        content: nextContent,
+      });
+      if (sent !== false) setEditing(false);
+    } finally {
+      setSending(false);
+    }
+  }, [canEdit, draft, message, onResendMessage, sending]);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8, minWidth: 0, maxWidth: '100%', overflow: 'hidden', opacity: removing ? 0 : 1, transform: removing ? 'translateY(-6px)' : 'translateY(0)', transition: 'opacity 220ms ease, transform 220ms ease' }}>
+      {Array.isArray(message.attachments) && message.attachments.length > 0 ? (
+        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8, minWidth: 0, maxWidth: '100%' }}>
+          {message.attachments.map((file) => (
+            <FileChip
+              key={file.id || file.name}
+              file={file}
+              readOnly
+              onOpen={onOpenAttachment ? (attachment) => onOpenAttachment(attachment, message) : undefined}
+            />
+          ))}
+        </div>
+      ) : null}
+      {editing ? (
+        <div style={{ width: 'min(80%, 560px)', minWidth: 0, display: 'grid', gap: 8 }}>
+          <textarea
+            value={draft}
+            disabled={disabled || sending}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                void submitEdit();
+              }
+              if (event.key === 'Escape') {
+                event.preventDefault();
+                setEditing(false);
+                setDraft(String(message.content || ''));
+              }
+            }}
+            autoFocus
+            style={{ width: '100%', minHeight: 96, maxHeight: 220, resize: 'vertical', boxSizing: 'border-box', padding: '12px 14px', borderRadius: 16, border: `1px solid ${C.border}`, outline: 'none', background: '#fff', color: C.text, fontSize: 14, lineHeight: 1.7, fontFamily: 'inherit', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}
+          />
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <button type="button" disabled={sending} onClick={() => { setEditing(false); setDraft(String(message.content || '')); }} style={transitionButton({ height: 30, padding: '0 10px', borderRadius: 9, background: C.soft, color: C.secondary, fontSize: 12, fontWeight: 800, opacity: sending ? 0.55 : 1, cursor: sending ? 'not-allowed' : 'pointer' })}>取消</button>
+            <button type="button" disabled={disabled || sending || !String(draft || '').trim()} onClick={() => { void submitEdit(); }} style={transitionButton({ height: 30, padding: '0 12px', borderRadius: 9, background: C.accent, color: '#fff', fontSize: 12, fontWeight: 800, opacity: (disabled || sending || !String(draft || '').trim()) ? 0.55 : 1, cursor: (disabled || sending || !String(draft || '').trim()) ? 'not-allowed' : 'pointer' })}>{sending ? '发送中...' : '发送'}</button>
+          </div>
+        </div>
+      ) : String(message.content || '').trim() ? (
+        <div style={{ maxWidth: '80%', minWidth: 0, padding: '13px 18px', borderRadius: '20px 20px 6px 20px', background: C.muted, color: C.text, fontSize: 15, lineHeight: 1.7, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', wordBreak: 'break-word' }}>{message.content}</div>
+      ) : null}
+      {!editing && String(message.content || '').trim() ? (
+        <div aria-label="用户消息操作" style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 4, minHeight: 28 }}>
+          <CopyMessageButton text={message.content} disabled={disabled} successMessage="已复制用户消息" />
+          <MessageIconButton label="改写" onClick={() => setEditing(true)} disabled={disabled || !canEdit}>
+            <Icons.edit size={14} />
+          </MessageIconButton>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function AssistantMessageRow({ message, disabled, removing = false, onRetryMessage, previousUserMessage, onOpenOperationSet, onCitationClick, citationSelection }) {
+  const [retrying, setRetrying] = useState(false);
+  const canRetry = Boolean(previousUserMessage?.content) && typeof onRetryMessage === 'function';
+
+  const handleRetry = useCallback(async () => {
+    if (!canRetry || retrying) return;
+    setRetrying(true);
+    try {
+      await onRetryMessage(previousUserMessage, {
+        reason: 'retry',
+        assistantMessage: message,
+      });
+    } finally {
+      setRetrying(false);
+    }
+  }, [canRetry, message, onRetryMessage, previousUserMessage, retrying]);
+
+  return (
+    <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start', minWidth: 0, maxWidth: '100%', overflow: 'hidden', opacity: removing ? 0 : 1, transform: removing ? 'translateY(-6px)' : 'translateY(0)', transition: 'opacity 220ms ease, transform 220ms ease' }}>
+      <div style={{ width: 34, height: 34, borderRadius: '50%', background: C.accent, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'Georgia, Songti SC, STSong, serif', fontWeight: 800, boxShadow: '0 4px 12px rgba(217,119,87,0.22)', flexShrink: 0, marginTop: 3 }}>N</div>
+      <div style={{ flex: 1, minWidth: 0, maxWidth: '100%', overflow: 'hidden' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, margin: '5px 0 2px' }}>
+          <div style={{ fontSize: 14, fontWeight: 800, color: C.text }}>Notus Agent</div>
+        </div>
+        <ToolChain steps={message.toolSteps || []} />
+        {message.content ? <StreamingText className="notus-agent-markdown" text={message.content} streaming={false} style={{ fontSize: 15, lineHeight: 1.85, color: C.text }} /> : null}
+        {Array.isArray(message.citations) && message.citations.length > 0 ? (
+          <div style={{ display: 'grid', gap: 8, marginTop: 12, minWidth: 0, maxWidth: '100%', overflow: 'hidden' }}>
+            <div style={{ fontSize: 12, color: C.tertiary }}>
+              {(Number(message.sourceCount) > 0 ? Number(message.sourceCount) : message.citations.length)} 个来源
+            </div>
+            {message.citations.map((citation, index) => (
+              <SourceCard
+                key={citation.file_id || citation.file || index}
+                file={citation.file}
+                path={citation.path}
+                quote={citation.quote || citation.preview}
+                lines={citation.lines}
+                imageProxyUrl={citation.image_proxy_url}
+                imageAltText={citation.image_alt_text}
+                imageCaption={citation.image_caption}
+                selected={citationSelection?.messageId === message.id && citationSelection?.citationIndex === index}
+                onClick={() => onCitationClick?.(citation, { messageId: message.id, citationIndex: index })}
+              />
+            ))}
+          </div>
+        ) : null}
+        {message.operationSet ? <OperationSetCard operationSet={message.operationSet} onOpenDetail={onOpenOperationSet} /> : null}
+        <div aria-label="AI 回复操作" style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', gap: 4, marginTop: 10, minHeight: 30 }}>
+          <CopyMessageButton text={message.content} disabled={false} successMessage="已复制 AI 回复" />
+          <MessageIconButton label="重试" onClick={() => { void handleRetry(); }} disabled={disabled || !canRetry || retrying}>
+            {retrying ? <InlineActionSpinner size={14} /> : <Icons.refresh size={14} />}
+          </MessageIconButton>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MessageList({ messages, streamText, loading, activeSteps, removingMessageIds, onOpenOperationSet, onCitationClick, citationSelection, actionDisabled = false, onResendMessage, onRetryMessage, onOpenAttachment }) {
   if (messages.length === 0 && !loading) {
     return (
       <div style={{ minHeight: '42vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', color: C.tertiary }}>
@@ -546,58 +1078,42 @@ function MessageList({ messages, streamText, loading, activeSteps, onOpenOperati
   }
 
   return (
-    <div style={{ display: 'grid', gap: 22 }}>
-      {messages.map((message) => {
+    <div style={{ display: 'grid', gap: 22, minWidth: 0, maxWidth: '100%', overflow: 'hidden' }}>
+      {messages.map((message, index) => {
+        const removing = removingMessageIds?.has?.(String(message.id)) || false;
         if (message.role === 'user') {
           return (
-            <div key={message.id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
-              {Array.isArray(message.attachments) && message.attachments.length > 0 ? (
-                <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8 }}>
-                  {message.attachments.map((file) => <FileChip key={file.id || file.name} file={file} readOnly />)}
-                </div>
-              ) : null}
-              <div style={{ maxWidth: '80%', padding: '13px 18px', borderRadius: '20px 20px 6px 20px', background: C.muted, color: C.text, fontSize: 15, lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>{message.content}</div>
-            </div>
+            <UserMessageRow
+              key={message.id}
+              message={message}
+              disabled={actionDisabled}
+              removing={removing}
+              onResendMessage={onResendMessage}
+              onOpenAttachment={onOpenAttachment}
+            />
           );
         }
 
+        const previousUserMessage = [...messages.slice(0, index)].reverse().find((item) => item.role === 'user') || null;
+
         return (
-          <div key={message.id} style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
-            <div style={{ width: 34, height: 34, borderRadius: '50%', background: C.accent, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'Georgia, Songti SC, STSong, serif', fontWeight: 800, boxShadow: '0 4px 12px rgba(217,119,87,0.22)', flexShrink: 0, marginTop: 3 }}>N</div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 14, fontWeight: 800, color: C.text, margin: '5px 0 2px' }}>Notus Agent</div>
-              <ToolChain steps={message.toolSteps || []} />
-              {message.content ? <StreamingText className="notus-agent-markdown" text={message.content} streaming={false} style={{ fontSize: 15, lineHeight: 1.85, color: C.text }} /> : null}
-              {Array.isArray(message.citations) && message.citations.length > 0 ? (
-                <div style={{ display: 'grid', gap: 8, marginTop: 12 }}>
-                  <div style={{ fontSize: 12, color: C.tertiary }}>
-                    {(Number(message.sourceCount) > 0 ? Number(message.sourceCount) : message.citations.length)} 个来源
-                  </div>
-                  {message.citations.map((citation, index) => (
-                    <SourceCard
-                      key={citation.file_id || citation.file || index}
-                      file={citation.file}
-                      path={citation.path}
-                      quote={citation.quote || citation.preview}
-                      lines={citation.lines}
-                      imageProxyUrl={citation.image_proxy_url}
-                      imageAltText={citation.image_alt_text}
-                      imageCaption={citation.image_caption}
-                      selected={citationSelection?.messageId === message.id && citationSelection?.citationIndex === index}
-                      onClick={() => onCitationClick?.(citation, { messageId: message.id, citationIndex: index })}
-                    />
-                  ))}
-                </div>
-              ) : null}
-              {message.operationSet ? <OperationSetCard operationSet={message.operationSet} onOpenDetail={onOpenOperationSet} /> : null}
-            </div>
-          </div>
+          <AssistantMessageRow
+            key={message.id}
+            message={message}
+            disabled={actionDisabled}
+            removing={removing}
+            onRetryMessage={onRetryMessage}
+            previousUserMessage={previousUserMessage}
+            onOpenOperationSet={onOpenOperationSet}
+            onCitationClick={onCitationClick}
+            citationSelection={citationSelection}
+          />
         );
       })}
       {loading ? (
-        <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
-          <div style={{ width: 34, height: 34, borderRadius: '50%', background: C.accent, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'Georgia, Songti SC, STSong, serif', fontWeight: 800, flexShrink: 0, marginTop: 3 }}>N</div>
-          <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start', minWidth: 0, maxWidth: '100%', overflow: 'hidden' }}>
+            <div style={{ width: 34, height: 34, borderRadius: '50%', background: C.accent, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'Georgia, Songti SC, STSong, serif', fontWeight: 800, flexShrink: 0, marginTop: 3 }}>N</div>
+          <div style={{ flex: 1, minWidth: 0, maxWidth: '100%', overflow: 'hidden' }}>
             <div style={{ fontSize: 14, fontWeight: 800, color: C.text, margin: '5px 0 2px' }}>Notus Agent</div>
             <ToolChain steps={activeSteps} loading />
             {streamText ? <StreamingText className="notus-agent-markdown" text={streamText} streaming style={{ fontSize: 15, lineHeight: 1.85, color: C.text }} /> : null}
@@ -666,12 +1182,13 @@ function AgentConfirmModeSelect({ value, onChange, disabled }) {
   );
 }
 
-function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigChange, onSend, onStop, searchConfig, onRequireSearchConfig, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [] }) {
+function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigChange, onSend, onStop, searchConfig, searchPreference, onSearchPreferenceChange, onRequireSearchConfig, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [] }) {
   const [value, setValue] = useState('');
   const [files, setFiles] = useState([]);
   const [uploading, setUploading] = useState(false);
   const [focused, setFocused] = useState(false);
-  const [selectedSearchProvider, setSelectedSearchProvider] = useState('');
+  const [selectedSearchProvider, setSelectedSearchProvider] = useState(String(searchPreference?.searchProvider || '').trim());
+  const [webSearchPreferenceEnabled, setWebSearchPreferenceEnabled] = useState(Boolean(searchPreference?.webSearchEnabled));
   const [searchOpen, setSearchOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
   const [cursorIndex, setCursorIndex] = useState(0);
@@ -688,7 +1205,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
   const busy = loading || uploading;
   const providers = searchConfig.providers || SEARCH_PROVIDER_FALLBACKS;
   const preferredSearchProvider = providers.find((provider) => provider.id === searchConfig.selected_provider)?.id || providers[0]?.id || 'firecrawl';
-  const webSearchSelected = Boolean(selectedSearchProvider);
+  const webSearchSelected = Boolean(searchConfig.enabled && webSearchPreferenceEnabled && selectedSearchProvider);
   const searchProviderList = webSearchSelected ? [selectedSearchProvider] : [];
   const isSearchProviderReady = (providerId) => {
     const provider = providers.find((item) => item.id === providerId);
@@ -711,16 +1228,30 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
     return groups;
   }, [llmConfigs]);
 
+  const commitSearchPreference = useCallback((nextPreference = {}) => {
+    const normalizedProvider = String(nextPreference.searchProvider || '').trim();
+    const normalizedEnabled = Boolean(nextPreference.webSearchEnabled);
+    setSelectedSearchProvider(normalizedProvider);
+    setWebSearchPreferenceEnabled(normalizedEnabled);
+    onSearchPreferenceChange?.({
+      webSearchEnabled: normalizedEnabled,
+      searchProvider: normalizedProvider,
+    });
+  }, [onSearchPreferenceChange]);
+
   useEffect(() => {
-    if (!searchConfig.enabled && selectedSearchProvider) {
-      setSelectedSearchProvider('');
-      setSearchOpen(false);
-      return;
-    }
+    setSelectedSearchProvider(String(searchPreference?.searchProvider || '').trim());
+    setWebSearchPreferenceEnabled(Boolean(searchPreference?.webSearchEnabled));
+  }, [searchPreference]);
+
+  useEffect(() => {
     if (selectedSearchProvider && !providers.some((provider) => provider.id === selectedSearchProvider)) {
-      setSelectedSearchProvider(preferredSearchProvider);
+      commitSearchPreference({
+        webSearchEnabled: webSearchPreferenceEnabled,
+        searchProvider: preferredSearchProvider,
+      });
     }
-  }, [preferredSearchProvider, providers, searchConfig.enabled, selectedSearchProvider]);
+  }, [commitSearchPreference, preferredSearchProvider, providers, selectedSearchProvider, webSearchPreferenceEnabled]);
 
   const activeMention = useMemo(() => {
     if (!mentionOptions.length || disabled) return null;
@@ -775,6 +1306,12 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
     }
   }, [activeMention?.options?.length, activeMentionIndex]);
 
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    syncAgentInputTextareaHeight(textarea);
+  }, [value]);
+
   const applyMention = (option) => {
     if (!activeMention) return;
     const token = option?.token || option?.value;
@@ -788,6 +1325,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
     window.requestAnimationFrame(() => {
       const textarea = textareaRef.current;
       if (!textarea) return;
+      syncAgentInputTextareaHeight(textarea);
       textarea.focus();
       textarea.setSelectionRange(nextCursor, nextCursor);
     });
@@ -928,17 +1466,24 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
       onRequireSearchConfig?.({ reason: 'disabled', selectProvider: preferredSearchProvider });
       return;
     }
+    const nextProvider = selectedSearchProvider || preferredSearchProvider;
     if (webSearchSelected) {
-      setSelectedSearchProvider('');
+      commitSearchPreference({
+        webSearchEnabled: false,
+        searchProvider: nextProvider,
+      });
       setSearchOpen(false);
       return;
     }
-    if (!isSearchProviderReady(preferredSearchProvider)) {
-      onRequireSearchConfig?.({ reason: 'missing_api_key', selectProvider: preferredSearchProvider });
+    if (!isSearchProviderReady(nextProvider)) {
+      onRequireSearchConfig?.({ reason: 'missing_api_key', selectProvider: nextProvider });
       return;
     }
     setModelOpen(false);
-    setSelectedSearchProvider(preferredSearchProvider);
+    commitSearchPreference({
+      webSearchEnabled: true,
+      searchProvider: nextProvider,
+    });
     setSearchOpen(true);
   };
   const selectSearchProvider = (providerId) => {
@@ -947,7 +1492,10 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
       setSearchOpen(false);
       return;
     }
-    setSelectedSearchProvider(providerId);
+    commitSearchPreference({
+      webSearchEnabled: true,
+      searchProvider: providerId,
+    });
     setSearchOpen(false);
   };
 
@@ -989,6 +1537,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
               setValue(event.target.value);
               setCursorIndex(event.target.selectionStart || 0);
               setDismissedMentionKey('');
+              syncAgentInputTextareaHeight(event.currentTarget);
             }}
             onClick={(event) => setCursorIndex(event.currentTarget.selectionStart || 0)}
             onKeyUp={(event) => setCursorIndex(event.currentTarget.selectionStart || 0)}
@@ -997,9 +1546,10 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
             onCompositionEnd={(event) => {
               setIsComposing(false);
               setCursorIndex(event.currentTarget.selectionStart || 0);
+              syncAgentInputTextareaHeight(event.currentTarget);
             }}
             onKeyDown={handleKeyDown}
-            style={{ width: '100%', minHeight: 24, maxHeight: '40vh', resize: 'none', border: 'none', outline: 'none', background: 'transparent', color: disabled ? C.tertiary : C.text, fontSize: 15, lineHeight: 1.65, padding: 0, fontFamily: 'inherit', overflowY: 'auto' }}
+            style={{ width: '100%', minHeight: AGENT_INPUT_TEXTAREA_MIN_HEIGHT, resize: 'none', border: 'none', outline: 'none', background: 'transparent', color: disabled ? C.tertiary : C.text, fontSize: 15, lineHeight: 1.65, padding: 0, fontFamily: 'inherit', boxSizing: 'border-box', overflowY: 'hidden', whiteSpace: 'pre-wrap', overflowWrap: 'break-word', wordBreak: 'normal' }}
           />
           {activeMention ? (
             <div style={{ position: 'absolute', left: 14, right: 14, bottom: 'calc(100% + 8px)', padding: 8, borderRadius: 16, background: '#fff', boxShadow: '0 -10px 40px -10px rgba(0,0,0,0.14), inset 0 0 0 1px rgba(229,227,216,0.95)', zIndex: 24 }}>
@@ -1295,16 +1845,29 @@ function SearchConfigView({ config, onSaved, onBack, selectProvider }) {
   );
 }
 
-export function AgentWorkspace({ messages, streamText, loading, error, activeSteps, llmConfigs, selectedConfigId, onConfigChange, onSend, onStop, onApplyOperationSet, onApplyOperationFile, onRollbackOperationFile, onCitationClick, citationSelection, disabled, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [] }) {
+export function AgentWorkspace({ messages, streamText, loading, error, activeSteps, llmConfigs, selectedConfigId, onConfigChange, onSend, onStop, onApplyOperationSet, onApplyOperationFile, onRollbackOperationFile, onDiscardOperationFile, onCitationClick, citationSelection, disabled, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [] }) {
   const router = useRouter();
+  const toast = useToast();
   const [searchConfig, setSearchConfig] = useState({ enabled: false, selected_provider: 'firecrawl', modes: {}, counts: {}, api_key_set: {}, providers: SEARCH_PROVIDER_FALLBACKS });
+  const [searchPreference, setSearchPreference] = useState(() => readAgentInputPreference());
   const [searchPromptOpen, setSearchPromptOpen] = useState(false);
   const [searchViewProvider, setSearchViewProvider] = useState('');
   const [searchPromptReason, setSearchPromptReason] = useState('disabled');
   const [detailOperationSet, setDetailOperationSet] = useState(null);
+  const [attachmentDetail, setAttachmentDetail] = useState(null);
+  const [showJumpToBottom, setShowJumpToBottom] = useState(false);
+  const [rewrittenMessages, setRewrittenMessages] = useState({});
+  const [removingMessageIds, setRemovingMessageIds] = useState(() => new Set());
+  const [hiddenMessageIds, setHiddenMessageIds] = useState(() => new Set());
   const scrollContainerRef = useRef(null);
   const shouldStickToBottomRef = useRef(true);
-  const visibleMessages = Array.isArray(messages) ? messages : [];
+  const sourceMessages = useMemo(() => (Array.isArray(messages) ? messages : []), [messages]);
+  const visibleMessages = sourceMessages
+    .filter((message) => !hiddenMessageIds.has(String(message.id)))
+    .map((message) => {
+      const rewritten = rewrittenMessages[String(message.id)];
+      return rewritten === undefined ? message : { ...message, content: rewritten };
+    });
   const visibleActiveSteps = Array.isArray(activeSteps) ? activeSteps : [];
   const lastMessage = visibleMessages[visibleMessages.length - 1] || null;
   const messageScrollKey = [
@@ -1318,8 +1881,29 @@ export function AgentWorkspace({ messages, streamText, loading, error, activeSte
     .map((step) => [step?.id || '', step?.status || '', step?.label || '', step?.detail || '', step?.result || ''].join('/'))
     .join('|');
 
+  useEffect(() => {
+    const currentIds = new Set(sourceMessages.map((message) => String(message.id)));
+    setHiddenMessageIds((prev) => {
+      const next = new Set([...prev].filter((id) => currentIds.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+    setRemovingMessageIds((prev) => {
+      const next = new Set([...prev].filter((id) => currentIds.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+    setRewrittenMessages((prev) => {
+      const next = {};
+      Object.keys(prev).forEach((id) => {
+        if (currentIds.has(id)) next[id] = prev[id];
+      });
+      return Object.keys(next).length === Object.keys(prev).length ? prev : next;
+    });
+  }, [sourceMessages]);
+
   const handleChatScroll = useCallback((event) => {
-    shouldStickToBottomRef.current = isNearScrollBottom(event.currentTarget);
+    const nearBottom = isNearScrollBottom(event.currentTarget);
+    shouldStickToBottomRef.current = nearBottom;
+    setShowJumpToBottom(!nearBottom);
   }, []);
 
   useEffect(() => {
@@ -1330,12 +1914,29 @@ export function AgentWorkspace({ messages, streamText, loading, error, activeSte
     return () => { cancelled = true; };
   }, []);
 
+  useEffect(() => {
+    setSearchPreference(readAgentInputPreference());
+  }, []);
+
+  const handleSearchPreferenceChange = useCallback((nextPreference) => {
+    setSearchPreference(nextPreference);
+    writeAgentInputPreference(null, nextPreference);
+  }, []);
+
+  const handleOpenAttachment = useCallback((attachment, message) => {
+    setAttachmentDetail({ attachment, message });
+  }, []);
+
   useIsomorphicLayoutEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
-    if (!shouldStickToBottomRef.current && !isNearScrollBottom(container)) return;
+    if (!shouldStickToBottomRef.current && !isNearScrollBottom(container)) {
+      setShowJumpToBottom(true);
+      return;
+    }
     scrollContainerToBottom(container);
     shouldStickToBottomRef.current = true;
+    setShowJumpToBottom(false);
   }, [messageScrollKey, String(streamText || '').length, Boolean(loading), activeStepsScrollKey, error]);
 
   useEffect(() => {
@@ -1346,14 +1947,14 @@ export function AgentWorkspace({ messages, streamText, loading, error, activeSte
     if (next && next !== detailOperationSet) setDetailOperationSet(next);
   }, [detailOperationSet, messages]);
 
-  const requireSearchConfig = ({ selectProvider = '', quiet = false, reason = 'disabled' } = {}) => {
+  const requireSearchConfig = useCallback(({ selectProvider = '', quiet = false, reason = 'disabled' } = {}) => {
     if (selectProvider) {
       setSearchViewProvider(selectProvider);
       setSearchConfig((prev) => ({ ...prev, selected_provider: selectProvider }));
     }
     setSearchPromptReason(reason);
     if (!quiet) setSearchPromptOpen(true);
-  };
+  }, []);
   const promptProvider = (searchConfig.providers || SEARCH_PROVIDER_FALLBACKS).find((provider) => provider.id === searchViewProvider)
     || (searchConfig.providers || SEARCH_PROVIDER_FALLBACKS).find((provider) => provider.id === searchConfig.selected_provider)
     || SEARCH_PROVIDER_FALLBACKS[0];
@@ -1362,17 +1963,173 @@ export function AgentWorkspace({ messages, streamText, loading, error, activeSte
     ? `${promptProvider?.name || '该搜索服务商'} 需要先配置 API Key。前往设置后会自动切换到对应服务商。`
     : '需要开启联网搜索功能才能使用，请前往设置 → 搜索配置 → 启用联网搜索。';
   const searchSettingsHref = `/settings/search${promptProvider?.id ? `?provider=${encodeURIComponent(promptProvider.id)}` : ''}`;
+  const selectedModelId = selectedConfigId || llmConfigs?.[0]?.id || null;
+  const activeSearchProvider = String(searchPreference?.searchProvider || '').trim();
+  const activeWebSearchEnabled = Boolean(searchConfig.enabled && searchPreference?.webSearchEnabled && activeSearchProvider);
+
+  const isSearchProviderReady = useCallback((providerId) => {
+    const provider = (searchConfig.providers || SEARCH_PROVIDER_FALLBACKS).find((item) => item.id === providerId);
+    if (!provider) return false;
+    if (!providerNeedsApiKey(provider)) return true;
+    return Boolean(searchConfig.api_key_set?.[providerId]);
+  }, [searchConfig.api_key_set, searchConfig.providers]);
+
+  const handleResendMessage = useCallback(async (sourceMessage, options = {}) => {
+    const nextContent = String(options.content ?? sourceMessage?.content ?? '').trim();
+    if (!nextContent) {
+      toast('当前消息没有可发送内容', 'warning');
+      return false;
+    }
+    if (!selectedModelId) {
+      toast('请先在模型配置中新增至少一个 LLM 配置', 'warning');
+      return false;
+    }
+    if (activeWebSearchEnabled && !searchConfig.enabled) {
+      requireSearchConfig({ reason: 'disabled', selectProvider: activeSearchProvider });
+      return false;
+    }
+    if (activeWebSearchEnabled && !isSearchProviderReady(activeSearchProvider)) {
+      requireSearchConfig({ reason: 'missing_api_key', selectProvider: activeSearchProvider });
+      return false;
+    }
+
+    try {
+      const isRewrite = options.reason === 'rewrite';
+      if (isRewrite) {
+        const sourceId = sourceMessage?.id;
+        const conversationId = Number(sourceMessage?.conversationId || sourceMessage?.conversation_id || 0) || null;
+        const sourceKey = String(sourceId || '');
+        const sourceIndex = sourceMessages.findIndex((message) => String(message.id) === sourceKey);
+        const futureMessages = sourceIndex >= 0 ? sourceMessages.slice(sourceIndex + 1) : [];
+        const futureIds = futureMessages.map((message) => String(message.id));
+
+        setRewrittenMessages((prev) => ({ ...prev, [sourceKey]: nextContent }));
+        setRemovingMessageIds((prev) => {
+          const next = new Set(prev);
+          futureIds.forEach((id) => next.add(id));
+          return next;
+        });
+
+        try {
+          if (conversationId && Number.isFinite(Number(sourceId)) && Number(sourceId) > 0) {
+            const response = await fetch(`/api/conversations/${conversationId}/truncate`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                message_id: Number(sourceId),
+                content: nextContent,
+              }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(payload.error || '清理后续对话失败');
+          }
+          if (futureIds.length > 0) await wait(220);
+          setHiddenMessageIds((prev) => {
+            const next = new Set(prev);
+            futureIds.forEach((id) => next.add(id));
+            return next;
+          });
+          setRemovingMessageIds((prev) => {
+            const next = new Set(prev);
+            futureIds.forEach((id) => next.delete(id));
+            return next;
+          });
+        } catch (truncateError) {
+          setRewrittenMessages((prev) => {
+            const next = { ...prev };
+            delete next[sourceKey];
+            return next;
+          });
+          setRemovingMessageIds((prev) => {
+            const next = new Set(prev);
+            futureIds.forEach((id) => next.delete(id));
+            return next;
+          });
+          throw truncateError;
+        }
+      }
+
+      await onSend?.(nextContent, {
+        llmConfigId: selectedModelId,
+        attachments: Array.isArray(sourceMessage?.attachments) ? sourceMessage.attachments : [],
+        webSearchEnabled: activeWebSearchEnabled,
+        searchProvider: activeWebSearchEnabled ? activeSearchProvider : null,
+        searchProviders: activeWebSearchEnabled ? [activeSearchProvider] : [],
+        skipUserMessageAppend: options.reason === 'rewrite',
+      });
+      return true;
+    } catch (sendError) {
+      toast(sendError.message || (options.reason === 'retry' ? '重试失败' : '重新发送失败'), 'error');
+      return false;
+    }
+  }, [
+    activeSearchProvider,
+    activeWebSearchEnabled,
+    isSearchProviderReady,
+    onSend,
+    requireSearchConfig,
+    searchConfig.enabled,
+    selectedModelId,
+    sourceMessages,
+    toast,
+  ]);
 
   return (
-    <div style={{ position: 'relative', height: '100%', minHeight: 0, background: C.page, color: C.text, overflow: 'hidden', WebkitFontSmoothing: 'antialiased', MozOsxFontSmoothing: 'grayscale' }}>
-      <main ref={scrollContainerRef} onScroll={handleChatScroll} style={{ height: '100%', overflowY: 'auto', padding: '32px 16px 190px' }}>
-        <div style={{ maxWidth: 768, margin: '0 auto' }}>
-          <MessageList messages={visibleMessages} streamText={streamText || ''} loading={Boolean(loading)} activeSteps={visibleActiveSteps} onOpenOperationSet={setDetailOperationSet} onCitationClick={onCitationClick} citationSelection={citationSelection} />
+    <div style={{ position: 'relative', height: '100%', minHeight: 0, minWidth: 0, maxWidth: '100%', background: C.page, color: C.text, overflow: 'hidden', WebkitFontSmoothing: 'antialiased', MozOsxFontSmoothing: 'grayscale' }}>
+      <main ref={scrollContainerRef} onScroll={handleChatScroll} style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden', padding: '32px 16px 190px' }}>
+        <div style={{ width: '100%', maxWidth: 768, minWidth: 0, margin: '0 auto', overflow: 'hidden' }}>
+          <MessageList
+            messages={visibleMessages}
+            streamText={streamText || ''}
+            loading={Boolean(loading)}
+            activeSteps={visibleActiveSteps}
+            removingMessageIds={removingMessageIds}
+            onOpenOperationSet={setDetailOperationSet}
+            onCitationClick={onCitationClick}
+            citationSelection={citationSelection}
+            actionDisabled={Boolean(disabled) || Boolean(loading)}
+            onResendMessage={handleResendMessage}
+            onRetryMessage={handleResendMessage}
+            onOpenAttachment={handleOpenAttachment}
+          />
           {error ? <div style={{ marginTop: 16, padding: '12px 14px', borderRadius: 14, background: 'rgba(217,119,87,0.08)', color: C.accentDark, fontSize: 13, lineHeight: 1.7 }}>{error}</div> : null}
           <div style={{ height: 12 }} />
         </div>
       </main>
-      <AgentInput loading={Boolean(loading)} disabled={Boolean(disabled)} llmConfigs={llmConfigs || []} selectedConfigId={selectedConfigId} onConfigChange={onConfigChange} onSend={onSend} onStop={onStop} searchConfig={searchConfig} onRequireSearchConfig={requireSearchConfig} placeholder={placeholder} agentConfirmMode={agentConfirmMode} onAgentConfirmModeChange={onAgentConfirmModeChange} attachmentMode={attachmentMode} mentionOptions={mentionOptions} />
+      {showJumpToBottom && (visibleMessages.length > 0 || loading) ? (
+        <button
+          type="button"
+          aria-label="滚动到最新消息"
+          onClick={() => {
+            const container = scrollContainerRef.current;
+            if (!container) return;
+            scrollContainerToBottom(container, 'smooth');
+            shouldStickToBottomRef.current = true;
+            setShowJumpToBottom(false);
+          }}
+          className="notus-agent-pressable"
+          style={transitionButton({
+            position: 'absolute',
+            left: '50%',
+            bottom: CHAT_JUMP_BUTTON_OFFSET,
+            transform: 'translateX(-50%)',
+            width: 34,
+            height: 34,
+            padding: 0,
+            borderRadius: 999,
+            background: '#fff',
+            color: C.secondary,
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            boxShadow: '0 10px 28px rgba(45,45,45,0.12), inset 0 0 0 1px rgba(229,227,216,0.95)',
+            zIndex: 9,
+          })}
+        >
+          <Icons.chevronDown size={14} />
+        </button>
+      ) : null}
+      <AgentInput loading={Boolean(loading)} disabled={Boolean(disabled)} llmConfigs={llmConfigs || []} selectedConfigId={selectedConfigId} onConfigChange={onConfigChange} onSend={onSend} onStop={onStop} searchConfig={searchConfig} searchPreference={searchPreference} onSearchPreferenceChange={handleSearchPreferenceChange} onRequireSearchConfig={requireSearchConfig} placeholder={placeholder} agentConfirmMode={agentConfirmMode} onAgentConfirmModeChange={onAgentConfirmModeChange} attachmentMode={attachmentMode} mentionOptions={mentionOptions} />
       <Dialog open={searchPromptOpen} onClose={() => setSearchPromptOpen(false)} title={promptTitle} maxWidth={420} footer={<><Button variant="ghost" onClick={() => setSearchPromptOpen(false)}>取消</Button><Button variant="primary" onClick={() => { setSearchPromptOpen(false); navigateWithFallback(router, searchSettingsHref); }}>前往设置</Button></>}>
         <div style={{ fontSize: 14, color: C.secondary, lineHeight: 1.8 }}>{promptMessage}</div>
       </Dialog>
@@ -1383,6 +2140,13 @@ export function AgentWorkspace({ messages, streamText, loading, error, activeSte
         onApplyAll={onApplyOperationSet}
         onApplyFile={onApplyOperationFile}
         onRollbackFile={onRollbackOperationFile}
+        onDiscardFile={onDiscardOperationFile}
+      />
+      <AttachmentContentDialog
+        open={Boolean(attachmentDetail)}
+        attachment={attachmentDetail?.attachment || null}
+        message={attachmentDetail?.message || null}
+        onClose={() => setAttachmentDetail(null)}
       />
     </div>
   );

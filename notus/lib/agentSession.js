@@ -203,7 +203,7 @@ function validateWrite(token, targetPath, operation) {
   const op = String(operation || '').trim();
   if (op === 'delete') return { valid: false, reason: 'DELETE_NEVER_ALLOWED' };
   if (!session.authorized_ops.includes(op)) return { valid: false, reason: `OPERATION_NOT_AUTHORIZED: ${op}` };
-  if (!isPathSafe(targetPath, session.authorized_paths, op)) return { valid: false, reason: `PATH_NOT_AUTHORIZED: ${targetPath}` };
+  if (!targetPath && op !== 'create') return { valid: false, reason: 'PATH_REQUIRED' };
   return { valid: true, session };
 }
 
@@ -421,7 +421,14 @@ function summarizeToolResult(toolName, result) {
     case 'read_file': return { file_path: result?.file_path, char_count: String(result?.content || '').length };
     case 'create_note': return { path: result?.path, created: Boolean(result?.created) };
     case 'preview_patch_files': return { operation_set_id: result?.operation_set_id, patch_count: result?.patch_count || 0 };
+    case 'preview_file_revision': return {
+      operation_set_id: result?.operation_set_id,
+      file_path: result?.file_path,
+      status: result?.status || '',
+      no_change: Boolean(result?.no_change),
+    };
     case 'preview_canvas_blocks': return { operation_set_id: result?.operation_set_id, operation_count: result?.operation_count || 0 };
+    case 'preview_file_operations': return { operation_set_id: result?.operation_set_id, patch_count: result?.patch_count || 0 };
     case 'ask_question_card': return { interaction_id: result?.interaction_id, question_count: result?.question_count || 0 };
     case 'analyze_folder': return { file_count: result?.file_count || 0, total_count: result?.total_count || 0, truncated: Boolean(result?.truncated) };
     case 'check_links': return { orphan_count: result?.orphan_count || 0, broken_count: result?.broken_count || 0 };

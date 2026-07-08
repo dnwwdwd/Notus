@@ -255,6 +255,8 @@ export default async function handler(req, res) {
     searchProvider = null,
     attachments = [],
     interaction_id: interactionId,
+    skip_user_message_append: skipUserMessageAppend = false,
+    skipUserMessageAppend: skipUserMessageAppendCamel = false,
   } = req.body || {};
   let interaction = interactionId ? getInteractionById(interactionId) : null;
   const isInteractionResume = Boolean(interaction?.id);
@@ -333,8 +335,9 @@ export default async function handler(req, res) {
       enableWeakEvidenceSupplement: Boolean(featureConfig.knowledgeEnableWeakEvidenceSupplement),
       enableConflictMode: Boolean(featureConfig.knowledgeEnableConflictMode),
     };
+    const appendUserMessage = !isInteractionResume && !Boolean(skipUserMessageAppend || skipUserMessageAppendCamel);
     const conversationHistory = getConversationHistory(conversation.id, { limit: 12 });
-    if (!isInteractionResume) {
+    if (appendUserMessage) {
       appendConversationMessage({
         conversationId: conversation.id,
         role: 'user',
@@ -346,6 +349,9 @@ export default async function handler(req, res) {
             name: item?.name || '',
             type: item?.type || '',
             size: item?.size || 0,
+            extension: item?.extension || '',
+            stored_name: item?.stored_name || item?.storedName || '',
+            source_kind: item?.source_kind || 'file',
           })).filter((item) => item.name) : [],
         },
       });
@@ -362,7 +368,7 @@ export default async function handler(req, res) {
     });
     const helperPressureHigh = llmConfig
       ? isPromptNearCompactionThreshold(
-        [...conversationHistory, ...(isInteractionResume ? [] : [{ role: 'user', content: requestedQuery }])],
+        [...conversationHistory, ...(appendUserMessage ? [{ role: 'user', content: requestedQuery }] : [])],
         llmConfig,
         { model, taskType: 'knowledge_answer', ratio: 0.9 }
       )

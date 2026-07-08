@@ -1,9 +1,19 @@
 const { getDb } = require('./db');
 const { sha256 } = require('./files');
+const { createDiffHunks } = require('./fileRevisionDiff');
 
 const DEFAULT_EXPIRE_DAYS = 7;
 const ACTIVE_STATUSES = ['pending', 'stale'];
-const TERMINAL_STATUSES = ['applied', 'cancelled', 'partial'];
+const TERMINAL_STATUSES = [
+  'applied',
+  'cancelled',
+  'partial',
+  'discarded',
+  'superseded',
+  'apply_failed',
+  'rolled_back',
+  'rollback_conflict',
+];
 const PATCH_STATUSES = ['pending', 'applied', 'auto_applied', 'rolled_back', 'discarded', 'failed'];
 const PATCH_APPLIED_STATUSES = ['applied', 'auto_applied'];
 const PATCH_CANCELLED_STATUSES = ['rolled_back', 'discarded'];
@@ -77,6 +87,27 @@ function deriveOperationSetStatus(patches = []) {
 
 function formatRow(row) {
   if (!row) return null;
+  const revisionType = String(row.revision_type || '').trim();
+  const revisionBaseContent = String(row.revision_base_content || '');
+  const revisionDraftContent = String(row.revision_draft_content || '');
+  const revision = revisionType === 'file_revision'
+    ? {
+      type: revisionType,
+      file_path: String(row.revision_file_path || ''),
+      base_hash: String(row.revision_base_hash || ''),
+      draft_hash: String(row.revision_draft_hash || ''),
+      applied_hash: String(row.revision_applied_hash || ''),
+      error_message: String(row.revision_error || ''),
+      parent_operation_set_id: normalizeNullablePositiveInt(row.revision_parent_id),
+      sequence_no: Number(row.revision_sequence_no || 0),
+      applied_at: row.revision_applied_at || null,
+      discarded_at: row.revision_discarded_at || null,
+      rolled_back_at: row.revision_rolled_back_at || null,
+      diff_hunks: createDiffHunks(revisionBaseContent, revisionDraftContent),
+      base_line_count: revisionBaseContent ? revisionBaseContent.split('\n').length : 0,
+      draft_line_count: revisionDraftContent ? revisionDraftContent.split('\n').length : 0,
+    }
+    : null;
   return {
     id: Number(row.id),
     conversation_id: normalizeNullablePositiveInt(row.conversation_id),
@@ -85,6 +116,10 @@ function formatRow(row) {
     message_id: normalizeNullablePositiveInt(row.message_id),
     article_hash: String(row.article_hash || ''),
     mode: normalizeMode(row.mode),
+    type: revisionType || normalizeMode(row.mode),
+    revision_type: revisionType || '',
+    revision_file_path: revision?.file_path || '',
+    revision,
     operations: parseOperations(row.operations_json),
     patches: normalizePatchStates(parsePatches(row.pathes_json)),
     status: normalizeStatus(row.status),
@@ -132,6 +167,32 @@ function createOperationSet({
   operations = [],
   patches = [],
   status = 'pending',
+  revisionType = '',
+  revision_type: snakeRevisionType = '',
+  revisionFilePath = '',
+  revision_file_path: snakeRevisionFilePath = '',
+  revisionBaseHash = '',
+  revision_base_hash: snakeRevisionBaseHash = '',
+  revisionDraftHash = '',
+  revision_draft_hash: snakeRevisionDraftHash = '',
+  revisionAppliedHash = '',
+  revision_applied_hash: snakeRevisionAppliedHash = '',
+  revisionBaseContent = '',
+  revision_base_content: snakeRevisionBaseContent = '',
+  revisionDraftContent = '',
+  revision_draft_content: snakeRevisionDraftContent = '',
+  revisionError = '',
+  revision_error: snakeRevisionError = '',
+  revisionParentId = null,
+  revision_parent_id: snakeRevisionParentId = null,
+  revisionSequenceNo = 0,
+  revision_sequence_no: snakeRevisionSequenceNo = 0,
+  revisionAppliedAt = null,
+  revision_applied_at: snakeRevisionAppliedAt = null,
+  revisionDiscardedAt = null,
+  revision_discarded_at: snakeRevisionDiscardedAt = null,
+  revisionRolledBackAt = null,
+  revision_rolled_back_at: snakeRevisionRolledBackAt = null,
   expireDays = DEFAULT_EXPIRE_DAYS,
 } = {}) {
   const database = getDb();
@@ -160,6 +221,21 @@ function createOperationSet({
   pushColumn('operations_json', serializedOperations);
   if (hasColumn(database, 'canvas_operation_sets', 'pathes_json')) pushColumn('pathes_json', serializedPatches);
   pushColumn('status', normalizeStatus(status));
+  if (hasColumn(database, 'canvas_operation_sets', 'revision_type')) {
+    pushColumn('revision_type', String(revisionType || snakeRevisionType || ''));
+    pushColumn('revision_file_path', String(revisionFilePath || snakeRevisionFilePath || ''));
+    pushColumn('revision_base_hash', String(revisionBaseHash || snakeRevisionBaseHash || ''));
+    pushColumn('revision_draft_hash', String(revisionDraftHash || snakeRevisionDraftHash || ''));
+    pushColumn('revision_applied_hash', String(revisionAppliedHash || snakeRevisionAppliedHash || ''));
+    pushColumn('revision_base_content', String(revisionBaseContent || snakeRevisionBaseContent || ''));
+    pushColumn('revision_draft_content', String(revisionDraftContent || snakeRevisionDraftContent || ''));
+    pushColumn('revision_error', String(revisionError || snakeRevisionError || ''));
+    pushColumn('revision_parent_id', normalizeNullablePositiveInt(revisionParentId || snakeRevisionParentId));
+    pushColumn('revision_sequence_no', Math.max(0, Number(revisionSequenceNo || snakeRevisionSequenceNo) || 0));
+    pushColumn('revision_applied_at', revisionAppliedAt || snakeRevisionAppliedAt || null);
+    pushColumn('revision_discarded_at', revisionDiscardedAt || snakeRevisionDiscardedAt || null);
+    pushColumn('revision_rolled_back_at', revisionRolledBackAt || snakeRevisionRolledBackAt || null);
+  }
   columns.push('expires_at');
   placeholders.push("datetime('now', ?)");
   params.push(`+${Math.max(1, Number(expireDays) || DEFAULT_EXPIRE_DAYS)} days`);
@@ -220,6 +296,26 @@ function updateOperationSet(id, updates = {}) {
     sets.push('pathes_json = ?');
     params.push(JSON.stringify(normalizePatchStates(Array.isArray(updates.patches) ? updates.patches : [])));
   }
+  [
+    ['revisionType', 'revision_type', (value) => String(value || '')],
+    ['revisionFilePath', 'revision_file_path', (value) => String(value || '')],
+    ['revisionBaseHash', 'revision_base_hash', (value) => String(value || '')],
+    ['revisionDraftHash', 'revision_draft_hash', (value) => String(value || '')],
+    ['revisionAppliedHash', 'revision_applied_hash', (value) => String(value || '')],
+    ['revisionBaseContent', 'revision_base_content', (value) => String(value ?? '')],
+    ['revisionDraftContent', 'revision_draft_content', (value) => String(value ?? '')],
+    ['revisionError', 'revision_error', (value) => String(value || '')],
+    ['revisionParentId', 'revision_parent_id', normalizeNullablePositiveInt],
+    ['revisionSequenceNo', 'revision_sequence_no', (value) => Math.max(0, Number(value) || 0)],
+    ['revisionAppliedAt', 'revision_applied_at', (value) => value || null],
+    ['revisionDiscardedAt', 'revision_discarded_at', (value) => value || null],
+    ['revisionRolledBackAt', 'revision_rolled_back_at', (value) => value || null],
+  ].forEach(([key, column, normalize]) => {
+    if (Object.prototype.hasOwnProperty.call(updates, key) && hasColumn(database, 'canvas_operation_sets', column)) {
+      sets.push(`${column} = ?`);
+      params.push(normalize(updates[key]));
+    }
+  });
   if (sets.length === 0) return getOperationSetById(normalizedId);
   sets.push("updated_at = datetime('now')");
   database.prepare(`
@@ -240,6 +336,7 @@ function markConversationOperationSetsStale(conversationId, articleHash) {
     WHERE conversation_id = ?
       AND status = 'pending'
       AND article_hash != ?
+      AND COALESCE(revision_type, '') != 'file_revision'
   `).run(normalizedConversationId, String(articleHash));
   return Number(result.changes || 0);
 }
@@ -254,7 +351,7 @@ function listOperationSetsByConversation(conversationId, options = {}) {
 
   const statuses = Array.isArray(options.statuses) && options.statuses.length > 0
     ? options.statuses.map((item) => normalizeStatus(item)).filter(Boolean)
-    : ['pending', 'stale', 'partial', 'applied', 'cancelled'];
+    : ['pending', 'stale', 'partial', 'applied', 'cancelled', 'discarded', 'superseded', 'apply_failed', 'rolled_back', 'rollback_conflict'];
 
   const rows = database.prepare(`
     SELECT *
@@ -275,7 +372,7 @@ function listOperationSetsBySession(sessionId, options = {}) {
   if (!normalizedSessionId) return [];
   const statuses = Array.isArray(options.statuses) && options.statuses.length > 0
     ? options.statuses.map((item) => normalizeStatus(item)).filter(Boolean)
-    : ['pending', 'stale', 'partial', 'applied', 'cancelled'];
+    : ['pending', 'stale', 'partial', 'applied', 'cancelled', 'discarded', 'superseded', 'apply_failed', 'rolled_back', 'rollback_conflict'];
   const rows = database.prepare(`
     SELECT *
     FROM canvas_operation_sets

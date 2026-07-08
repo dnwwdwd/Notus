@@ -16,6 +16,7 @@ const TASK_OUTPUT_BUDGETS = {
   style_fingerprint: 1024,
   style_profile: 1024,
   settings_test: 256,
+  agent_loop: 32768,
 };
 
 const KNOWN_MODEL_BUDGETS = {

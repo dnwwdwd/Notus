@@ -27,6 +27,8 @@ function runTests() {
   assert.ok(!sidebar.includes('activeTocKey'));
   assert.ok(sidebar.includes('const selected = Boolean(t.active);'));
   assert.ok(sidebar.includes('var(--accent-subtle)'));
+  assert.ok(sidebar.includes("body: JSON.stringify({ action: 'apply', patch })"));
+  assert.ok(!sidebar.includes("body: JSON.stringify({ action: 'preview', patches })"));
 
   const dropdownSelect = read('components/ui/DropdownSelect.js');
   assert.ok(dropdownSelect.includes('menuZIndex = 2100'));
@@ -53,7 +55,16 @@ function runTests() {
   assert.ok(agentWorkspace.includes('const activeMention = useMemo'));
   assert.ok(agentWorkspace.includes('function AgentWorkspace({'));
   assert.ok(agentWorkspace.includes('mentionOptions={mentionOptions}'));
+  assert.ok(agentWorkspace.includes('function isFileSystemOperation(operation = {})'));
+  assert.ok(agentWorkspace.includes('const activePath = activeOperation.new_path || activeOperation.file_path || activeOperation.old_path || activeOperation.path || \'全文\''));
+  assert.ok(agentWorkspace.includes("removed.push(`原路径：${operation.old_path || operation.old || ''}`);"));
   assert.ok(!agentWorkspace.includes('function AgentDiffCard'));
+
+  const llmConfigSection = read('components/Settings/LlmConfigCardsSection.js');
+  assert.ok(llmConfigSection.includes("placeholder={draft.apiProtocol === 'anthropic' ? 'Anthropic' : 'OpenAI'}"));
+  assert.ok(llmConfigSection.includes("badge={draft.apiKeySet ? '已保存' : ''}"));
+  assert.ok(llmConfigSection.includes("placeholder={draft.apiKeySet ? '已保存，留空不修改' : 'sk-••••••••••••'}"));
+  assert.ok(!llmConfigSection.includes("value={selectedProvider}"));
 
   const canvasPage = read('pages/canvas.js');
   assert.ok(canvasPage.includes('attachmentMode="parsed"'));

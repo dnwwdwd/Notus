@@ -47,20 +47,22 @@ export default async function handler(req, res) {
       conversationId = session.conversation_id;
       send(res, { type: 'session_resumed', session_id: sessionId, conversation_id: conversationId });
     } else {
-      const goal = String(body.goal || '').trim();
-      if (!goal) {
+      const rawGoal = String(body.goal || '').trim();
+      if (!rawGoal) {
         send(res, { type: 'error', error: 'goal is required', code: 'GOAL_REQUIRED' });
         return res.end();
       }
+      const appendUserMessage = !Boolean(body.skip_user_message_append || body.skipUserMessageAppend);
       const userInputText = String(body.user_query ?? body.userQuery ?? body.input_text ?? body.inputText ?? body.display_query ?? body.displayQuery ?? '').trim();
       const displayQuery = String(body.display_query ?? body.displayQuery ?? userInputText).trim();
       const conversation = ensureConversation({
         conversationId,
         kind: body.kind || 'agent',
-        title: displayQuery || goal,
+        title: displayQuery || rawGoal,
         fileId: body.active_file_id || null,
       });
       conversationId = conversation.id;
+      const goal = rawGoal;
       // Only parse sources explicitly provided by the user this turn. Do not scan
       // the full Agent goal, because it contains workspace context and block snapshots.
       const parsedAttachments = await parseAgentInputSources({
@@ -69,28 +71,32 @@ export default async function handler(req, res) {
         userInputText,
         onEvent: (event) => send(res, { ...event, conversation_id: conversationId }),
       });
-      appendConversationMessage({
-        conversationId,
-        role: 'user',
-        content: displayQuery || userInputText || goal,
-        meta: {
-          agent_loop: true,
-          agent_goal: goal,
-          user_query: userInputText,
-          attachments: Array.isArray(body.attachments) ? body.attachments.map((item) => ({
-            name: item?.name || '',
-            size: item?.size || 0,
-            type: item?.type || '',
-            source_kind: item?.source_kind || 'file',
-          })) : [],
-          parsed_attachments: parsedAttachments,
-          authorized_paths: body.authorized_paths || [],
-          search_knowledge_limit: body.search_knowledge_limit === undefined ? 5 : body.search_knowledge_limit,
-          web_search_enabled: webSearchEnabled,
-          search_provider: searchProvider || null,
-          tool_profile: toolProfile,
-        },
-      });
+      if (appendUserMessage) {
+        appendConversationMessage({
+          conversationId,
+          role: 'user',
+          content: displayQuery || userInputText || rawGoal,
+          meta: {
+            agent_loop: true,
+            agent_goal: goal,
+            user_query: userInputText,
+            attachments: Array.isArray(body.attachments) ? body.attachments.map((item) => ({
+              name: item?.name || '',
+              size: item?.size || 0,
+              type: item?.type || '',
+              extension: item?.extension || '',
+              stored_name: item?.stored_name || item?.storedName || '',
+              source_kind: item?.source_kind || 'file',
+            })) : [],
+            parsed_attachments: parsedAttachments,
+            authorized_paths: body.authorized_paths || [],
+            search_knowledge_limit: body.search_knowledge_limit === undefined ? 5 : body.search_knowledge_limit,
+            web_search_enabled: webSearchEnabled,
+            search_provider: searchProvider || null,
+            tool_profile: toolProfile,
+          },
+        });
+      }
       const created = createSession({
         goal,
         authorizedPaths: body.authorized_paths || [''],

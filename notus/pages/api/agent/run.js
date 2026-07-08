@@ -444,6 +444,9 @@ export default async function handler(req, res) {
           name: item?.name || '',
           type: item?.type || '',
           size: item?.size || 0,
+          extension: item?.extension || '',
+          stored_name: item?.stored_name || item?.storedName || '',
+          source_kind: item?.source_kind || 'file',
         })).filter((item) => item.name) : [],
       },
     });

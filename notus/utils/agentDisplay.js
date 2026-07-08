@@ -4,7 +4,9 @@ export const TOOL_DISPLAY = {
   read_file: '读取文件',
   create_note: '新建笔记',
   preview_patch_files: '生成修改预览',
+  preview_file_revision: '生成全文修订预览',
   preview_canvas_blocks: '生成块级预览',
+  preview_file_operations: '生成文件操作预览',
   ask_question_card: '生成提问卡片',
   analyze_folder: '分析目录',
   check_links: '检查链接',
@@ -19,6 +21,7 @@ export function getAgentLoopReasonLabel(reason = '') {
     goal_achieved: '任务已完成',
     hard_limit_reached: '已达到本次执行轮次上限，可选择继续执行',
     consecutive_tool_failure: '同一工具连续失败，任务已停止',
+    preview_auto_apply_failed: '自动应用预览失败，文件未被修改',
     deadloop_detected: '检测到重复执行，任务已停止',
     no_progress: '连续未取得有效进展，任务已停止',
     waiting_preview_confirm: '已生成修改预览，等待确认',
@@ -36,6 +39,7 @@ export function getAgentToolResultSummary(result = null) {
   if (result.file_path) return `${result.file_path}${result.char_count ? `，${result.char_count} 字` : ''}`;
   if (result.path) return `${result.created ? '已创建' : '文件'}：${result.path}`;
   if (result.operation_set_id) {
+    if (result.file_path && result.status !== undefined) return `全文修订预览 #${result.operation_set_id}：${result.file_path}`;
     if (result.operation_count !== undefined) return `块级预览 #${result.operation_set_id}，${result.operation_count || 0} 个块`;
     return `修改预览 #${result.operation_set_id}，${result.patch_count || 0} 个文件`;
   }

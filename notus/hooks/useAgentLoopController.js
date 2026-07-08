@@ -239,6 +239,8 @@ function normalizeOperationSets(rows = []) {
 const FILE_MUTATION_TOOL_NAMES = new Set([
   'create_note',
   'preview_patch_files',
+  'preview_file_revision',
+  'preview_file_operations',
 ]);
 
 export function useAgentLoopController({
@@ -376,6 +378,7 @@ export function useAgentLoopController({
         web_search_enabled: Boolean(input?.web_search_enabled ?? input?.webSearchEnabled),
         search_provider: input?.search_provider || input?.searchProvider || undefined,
         tool_profile: input?.tool_profile || input?.toolProfile || undefined,
+        skip_user_message_append: Boolean(input?.skip_user_message_append || input?.skipUserMessageAppend),
       };
 
     controllerRef.current?.abort();
@@ -389,7 +392,7 @@ export function useAgentLoopController({
     setSteps([]);
     if (!isResume) setPendingAgentTask(null);
 
-    if (options.appendUserMessage && input?.goal) {
+    if (options.appendUserMessage && input?.goal && !body.skip_user_message_append) {
       onAppendUserMessage?.({
         id: makeMessageId('agent-loop-user'),
         role: 'user',
@@ -507,7 +510,7 @@ export function useAgentLoopController({
           const current = sessionRef.current || {};
           const hardLimit = event.reason === 'hard_limit_reached';
           const waitingQuestionCard = event.reason === 'question_card_requested';
-          const failed = ['consecutive_tool_failure', 'deadloop_detected', 'no_progress'].includes(event.reason);
+          const failed = ['consecutive_tool_failure', 'deadloop_detected', 'no_progress', 'preview_auto_apply_failed'].includes(event.reason);
           let operationSet = null;
           if (event.operation_set_id) {
             try {
@@ -596,7 +599,7 @@ export function useAgentLoopController({
     const target = task || pendingAgentTask;
     if (!target?.goal) return;
     try {
-      await startAgentLoop(target, { appendUserMessage: true });
+      await startAgentLoop(target, { appendUserMessage: !Boolean(target.skip_user_message_append || target.skipUserMessageAppend) });
     } catch {}
   }, [pendingAgentTask, startAgentLoop]);
 
@@ -623,6 +626,9 @@ export function useAgentLoopController({
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok || !payload.success) {
+      if (payload.operation_set) {
+        onOperationSetHandled?.(operationSetId, action, payload.operation_set);
+      }
       if (payload.conflict) {
         throw new Error('文件已经变化，请检查冲突后重新确认');
       }

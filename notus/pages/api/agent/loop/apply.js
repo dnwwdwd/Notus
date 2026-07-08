@@ -1,9 +1,12 @@
 const { ensureRuntime } = require('../../../../lib/runtime');
 const {
+  applyFileRevision,
   applyPreviewPatchFile,
   applyPreviewWithConflictCheck,
+  discardFileRevision,
   discardPendingPreviewPatches,
   discardPreviewPatchFile,
+  rollbackFileRevision,
   rollbackPreviewPatchFile,
 } = require('../../../../lib/agentTools');
 const { extendHardLimit, getSession, updateSessionStatus, validateSessionAccess } = require('../../../../lib/agentSession');
@@ -90,7 +93,18 @@ export default async function handler(req, res) {
   }
 
   let result;
-  if (action === 'apply_file') {
+  const isFileRevision = String(currentConversation.operationSet?.revision_type || currentConversation.operationSet?.type || currentConversation.operationSet?.mode || '') === 'file_revision';
+  if (isFileRevision) {
+    if (action === 'apply_file' || action === 'apply_all' || action === 'apply') {
+      result = await applyFileRevision(operationSetId, sessionId);
+    } else if (action === 'rollback_file' || action === 'rollback') {
+      result = await rollbackFileRevision(operationSetId, sessionId);
+    } else if (action === 'discard_file' || action === 'discard_pending') {
+      result = await discardFileRevision(operationSetId, sessionId);
+    } else {
+      return res.status(400).json({ error: `unsupported action: ${action}`, code: 'UNSUPPORTED_ACTION' });
+    }
+  } else if (action === 'apply_file') {
     result = await applyPreviewPatchFile(operationSetId, sessionId, { patchIndex, filePath, force });
   } else if (action === 'rollback_file') {
     result = await rollbackPreviewPatchFile(operationSetId, sessionId, { patchIndex, filePath, force });

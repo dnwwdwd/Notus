@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { readJsonResponse } from '../utils/fetchJson';
 
 function normalizeOptions(options = []) {
   const map = new Map();
@@ -48,7 +49,7 @@ export function useDiscoveredModels({ kind, provider, baseUrl, apiKey, fallbackO
             api_key: apiKey,
           }),
         });
-        const payload = await response.json();
+        const payload = await readJsonResponse(response, { fallbackMessage: '读取模型列表失败' });
         if (cancelled) return;
 
         const models = normalizeOptions(payload.models || []);

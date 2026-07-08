@@ -233,7 +233,7 @@ export default function KnowledgePage() {
     setCachedContent,
   } = useApp();
   const { status: appStatus, loading: appStatusLoading } = useAppStatus();
-  const { configs: llmConfigs, activeConfigId, loading: llmConfigsLoading } = useLlmConfigs();
+  const { configs: llmConfigs, activeConfigId, loading: llmConfigsLoading, setActiveConfig } = useLlmConfigs();
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
   const [streamText, setStreamText] = useState('');
@@ -298,6 +298,18 @@ export default function KnowledgePage() {
       return llmConfigs[0]?.id || null;
     });
   }, [activeConfigId, llmConfigs]);
+
+  const handleLlmConfigChange = useCallback((nextId) => {
+    if (!nextId) return;
+    setSelectedLlmConfigId(nextId);
+    setActiveConfig(nextId).catch((error) => {
+      const fallbackId = activeConfigId && llmConfigs.some((item) => String(item.id) === String(activeConfigId))
+        ? activeConfigId
+        : llmConfigs[0]?.id || null;
+      setSelectedLlmConfigId(fallbackId);
+      toast(error.message || '切换模型失败', 'error');
+    });
+  }, [activeConfigId, llmConfigs, setActiveConfig, toast]);
 
   useEffect(() => () => {
     requestControllerRef.current?.abort();
@@ -758,8 +770,16 @@ export default function KnowledgePage() {
       .map((message) => message.operationSet)
       .filter((operationSet) => (
         Number(operationSet?.agent_session_id || 0) > 0
-        && Array.isArray(operationSet?.patches)
-        && operationSet.patches.some((patch) => ['pending', 'failed'].includes(String(patch?.status || 'pending')))
+        && (
+          (
+            (operationSet.revision_type === 'file_revision' || operationSet.revision?.type === 'file_revision')
+            && ['pending', 'stale', 'apply_failed', 'rollback_conflict'].includes(String(operationSet.status || 'pending'))
+          )
+          || (
+            Array.isArray(operationSet?.patches)
+            && operationSet.patches.some((patch) => ['pending', 'failed'].includes(String(patch?.status || 'pending')))
+          )
+        )
       ));
     for (const operationSet of operationSets) {
       try {
@@ -1157,6 +1177,7 @@ export default function KnowledgePage() {
         search_provider: sendOptions.searchProvider || null,
         tool_profile: toolProfile,
         route_reason: sendOptions.webSearchEnabled && routeDecision.route !== 'loop' ? 'web_search_enabled' : routeDecision.reason,
+        skip_user_message_append: Boolean(sendOptions.skipUserMessageAppend),
       });
       return;
     }
@@ -1167,17 +1188,19 @@ export default function KnowledgePage() {
     setError(null);
     setLoading(true);
     setRetrievalStage({ stage: 'searching', sources: 0 });
-    setMessages((prev) => [...prev, {
-      id: Date.now(),
-      role: 'user',
-      content: query,
-      attachments: sendOptions.attachments || [],
-      meta: {
-        web_search_enabled: Boolean(sendOptions.webSearchEnabled),
-        search_provider: sendOptions.searchProvider || null,
-        search_providers: sendOptions.searchProviders || undefined,
-      },
-    }]);
+    if (!sendOptions.skipUserMessageAppend) {
+      setMessages((prev) => [...prev, {
+        id: Date.now(),
+        role: 'user',
+        content: query,
+        attachments: sendOptions.attachments || [],
+        meta: {
+          web_search_enabled: Boolean(sendOptions.webSearchEnabled),
+          search_provider: sendOptions.searchProvider || null,
+          search_providers: sendOptions.searchProviders || undefined,
+        },
+      }]);
+    }
     setStreamText('');
 
     try {
@@ -1203,6 +1226,7 @@ export default function KnowledgePage() {
           webSearchEnabled: Boolean(sendOptions.webSearchEnabled),
           searchProvider: sendOptions.searchProvider || null,
           attachments: sendOptions.attachments || [],
+          skip_user_message_append: Boolean(sendOptions.skipUserMessageAppend),
         }),
       });
       if (!response.ok) {
@@ -1313,6 +1337,17 @@ export default function KnowledgePage() {
     } catch (rollbackError) {
       toast(rollbackError.message || '回滚文件修改失败', 'error');
       throw rollbackError;
+    }
+  };
+
+  const handleDiscardOperationFile = async (operationSet) => {
+    try {
+      const currentConversationId = assertCurrentOperationSet(operationSet);
+      await agentLoop.discardPendingOperationSet(operationSet, { currentConversationId });
+      toast('修改预览已废弃', 'success');
+    } catch (discardError) {
+      toast(discardError.message || '废弃修改预览失败', 'error');
+      throw discardError;
     }
   };
 
@@ -1631,7 +1666,7 @@ export default function KnowledgePage() {
               activeSteps={agentLoop.activeSteps.length > 0 ? agentLoop.activeSteps : buildKnowledgeAgentSteps(retrievalStage)}
               llmConfigs={llmConfigs}
               selectedConfigId={selectedLlmConfigId}
-              onConfigChange={setSelectedLlmConfigId}
+              onConfigChange={handleLlmConfigChange}
               onSend={handleSend}
               onStop={() => {
                 if (agentLoop.loading) agentLoop.stopAgentLoop();
@@ -1641,6 +1676,7 @@ export default function KnowledgePage() {
               citationSelection={activeCitationSelection}
               onApplyOperationFile={handleApplyOperationFile}
               onRollbackOperationFile={handleRollbackOperationFile}
+              onDiscardOperationFile={handleDiscardOperationFile}
               activeAgentSession={agentLoop.activeAgentSession}
               disabled={knowledgeInputDisabled || aiRequestLoading || agentLoopInteractionLocked}
               placeholder="从你的知识库中查找答案…"
@@ -1709,7 +1745,7 @@ export default function KnowledgePage() {
             loading={aiRequestLoading}
             llmConfigs={llmConfigs}
             selectedConfigId={selectedLlmConfigId}
-            onConfigChange={setSelectedLlmConfigId}
+            onConfigChange={handleLlmConfigChange}
             disabled={knowledgeInputDisabled || aiRequestLoading || agentLoopInteractionLocked}
             showPlusMenu={false}
             textareaRef={inputTextareaRef}

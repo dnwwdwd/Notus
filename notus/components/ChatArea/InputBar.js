@@ -107,6 +107,24 @@ const MODEL_MENU_MIN_WIDTH = 260;
 const MODEL_MENU_MAX_WIDTH = 360;
 const MODEL_MENU_OFFSET = 3;
 const MODEL_MENU_EDGE_GAP = 8;
+const INPUT_TEXTAREA_MIN_HEIGHT = 40;
+const INPUT_TEXTAREA_MAX_ROWS = 5;
+
+function syncTextareaHeight(textarea, minHeight = INPUT_TEXTAREA_MIN_HEIGHT, maxRows = INPUT_TEXTAREA_MAX_ROWS) {
+  if (!textarea || typeof window === 'undefined') return;
+  const computed = window.getComputedStyle(textarea);
+  const lineHeight = Number.parseFloat(computed.lineHeight) || 24;
+  const paddingTop = Number.parseFloat(computed.paddingTop) || 0;
+  const paddingBottom = Number.parseFloat(computed.paddingBottom) || 0;
+  const borderTop = Number.parseFloat(computed.borderTopWidth) || 0;
+  const borderBottom = Number.parseFloat(computed.borderBottomWidth) || 0;
+  const maxHeight = Math.round(lineHeight * maxRows + paddingTop + paddingBottom + borderTop + borderBottom);
+
+  textarea.style.height = `${minHeight}px`;
+  const nextHeight = Math.min(Math.max(textarea.scrollHeight, minHeight), maxHeight);
+  textarea.style.height = `${nextHeight}px`;
+  textarea.style.overflowY = textarea.scrollHeight > maxHeight ? 'auto' : 'hidden';
+}
 
 function ModelPicker({ configs = [], selectedId, onChange, disabled, compact = false }) {
   const triggerRef = useRef(null);
@@ -417,8 +435,7 @@ export const InputBar = ({
   useEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
-    el.style.height = '40px';
-    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+    syncTextareaHeight(el);
   }, [value, isEmpty]);
 
   useEffect(() => {
@@ -835,6 +852,7 @@ export const InputBar = ({
                   setValue(event.target.value);
                   setCursorIndex(event.target.selectionStart || 0);
                   setDismissedMentionKey('');
+                  syncTextareaHeight(event.currentTarget);
                 }}
                 onKeyDown={handleKeyDown}
                 onClick={(event) => setCursorIndex(event.currentTarget.selectionStart || 0)}
@@ -843,6 +861,7 @@ export const InputBar = ({
                 onCompositionEnd={(event) => {
                   setIsComposing(false);
                   setCursorIndex(event.currentTarget.selectionStart || 0);
+                  syncTextareaHeight(event.currentTarget);
                 }}
                 onSelect={(event) => setCursorIndex(event.currentTarget.selectionStart || 0)}
                 onPaste={(event) => {
@@ -862,14 +881,14 @@ export const InputBar = ({
                 rows={1}
                 style={{
                   width: '100%',
-                  minHeight: 40,
-                  maxHeight: 200,
+                  minHeight: INPUT_TEXTAREA_MIN_HEIGHT,
                   padding: '7px 8px',
                   background: 'transparent',
                   border: 'none',
                   outline: 'none',
                   resize: 'none',
-                  overflowY: 'auto',
+                  overflowY: 'hidden',
+                  boxSizing: 'border-box',
                   color: disabled ? '#B0AEA5' : '#141413',
                   fontSize: 15,
                   lineHeight: 1.6,

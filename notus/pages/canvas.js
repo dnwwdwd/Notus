@@ -564,7 +564,7 @@ export default function CanvasPage() {
   const toast = useToast();
   const { status: appStatus, loading: appStatusLoading } = useAppStatus();
   const { allFiles, activeFile, refreshFiles, selectFile, getCachedContent, setCachedContent, clearCachedContent, loadingFiles } = useApp();
-  const { configs: llmConfigs, activeConfigId, loading: llmConfigsLoading } = useLlmConfigs();
+  const { configs: llmConfigs, activeConfigId, loading: llmConfigsLoading, setActiveConfig } = useLlmConfigs();
   const chatEndRef = useRef(null);
   const requestControllerRef = useRef(null);
   const canvasContentRef = useRef(null);
@@ -648,6 +648,18 @@ export default function CanvasPage() {
       return llmConfigs[0]?.id || null;
     });
   }, [activeConfigId, llmConfigs]);
+
+  const handleLlmConfigChange = useCallback((nextId) => {
+    if (!nextId) return;
+    setSelectedLlmConfigId(nextId);
+    setActiveConfig(nextId).catch((error) => {
+      const fallbackId = activeConfigId && llmConfigs.some((item) => String(item.id) === String(activeConfigId))
+        ? activeConfigId
+        : llmConfigs[0]?.id || null;
+      setSelectedLlmConfigId(fallbackId);
+      toast(error.message || '切换模型失败', 'error');
+    });
+  }, [activeConfigId, llmConfigs, setActiveConfig, toast]);
 
   useIsomorphicLayoutEffect(() => {
     const cached = readCanvasLayoutCache();
@@ -1128,9 +1140,9 @@ export default function CanvasPage() {
 
   const refreshFilesAfterAgentMayHaveChanged = useCallback(async () => {
     try {
-      await refreshFiles({ background: true });
+      await refreshCurrentArticleAfterAgentWrite();
     } catch {}
-  }, [refreshFiles]);
+  }, [refreshCurrentArticleAfterAgentWrite]);
 
   const handleAgentLoopOperationSets = useCallback((operationSets = []) => {
     setPendingOperationSets((prev) => (
@@ -1477,6 +1489,7 @@ export default function CanvasPage() {
       web_search_enabled: Boolean(options.webSearchEnabled),
       search_provider: options.searchProvider || null,
       route_reason: options.routeReason || 'canvas_main_input',
+      skip_user_message_append: Boolean(options.skipUserMessageAppend),
     };
   }, [
     activeConversationId,
@@ -1496,8 +1509,16 @@ export default function CanvasPage() {
   const discardPendingAgentDiffs = useCallback(async () => {
     const targets = pendingOperationSets.filter((operationSet) => (
       Number(operationSet?.agent_session_id || 0) > 0
-      && Array.isArray(operationSet?.patches)
-      && operationSet.patches.some((patch) => ['pending', 'failed'].includes(String(patch?.status || 'pending')))
+      && (
+        (
+          (operationSet.revision_type === 'file_revision' || operationSet.revision?.type === 'file_revision')
+          && ['pending', 'stale', 'apply_failed', 'rollback_conflict'].includes(String(operationSet.status || 'pending'))
+        )
+        || (
+          Array.isArray(operationSet?.patches)
+          && operationSet.patches.some((patch) => ['pending', 'failed'].includes(String(patch?.status || 'pending')))
+        )
+      )
     ));
     for (const operationSet of targets) {
       try {
@@ -1680,6 +1701,7 @@ export default function CanvasPage() {
         webSearchEnabled: Boolean(sendOptions.webSearchEnabled),
         searchProvider: sendOptions.searchProvider || null,
         routeReason: 'canvas_main_input',
+        skipUserMessageAppend: Boolean(sendOptions.skipUserMessageAppend),
       });
     } catch {}
   }, [
@@ -1845,6 +1867,17 @@ export default function CanvasPage() {
       toast('文件修改已回滚', 'success');
     } catch (error) {
       toast(error.message || '回滚文件修改失败', 'error');
+      throw error;
+    }
+  }, [agentLoop, assertCurrentOperationSet, toast]);
+
+  const handleDiscardOperationFile = useCallback(async (operationSet) => {
+    try {
+      const currentConversationId = assertCurrentOperationSet(operationSet);
+      await agentLoop.discardPendingOperationSet(operationSet, { currentConversationId });
+      toast('修改预览已废弃', 'success');
+    } catch (error) {
+      toast(error.message || '废弃修改预览失败', 'error');
       throw error;
     }
   }, [agentLoop, assertCurrentOperationSet, toast]);
@@ -2100,7 +2133,7 @@ export default function CanvasPage() {
           activeSteps={agentLoop.activeSteps.length > 0 ? agentLoop.activeSteps : activeSteps}
           llmConfigs={llmConfigs}
           selectedConfigId={selectedLlmConfigId}
-          onConfigChange={setSelectedLlmConfigId}
+          onConfigChange={handleLlmConfigChange}
           onSend={handleSend}
           onStop={() => {
             if (agentLoop.loading) agentLoop.stopAgentLoop();
@@ -2109,6 +2142,7 @@ export default function CanvasPage() {
           onApplyOperationSet={handleApplyOperationSet}
           onApplyOperationFile={handleApplyOperationFile}
           onRollbackOperationFile={handleRollbackOperationFile}
+          onDiscardOperationFile={handleDiscardOperationFile}
           activeAgentSession={agentLoop.activeAgentSession}
           agentConfirmMode={agentConfirmMode}
           onAgentConfirmModeChange={setAgentConfirmMode}
@@ -2164,7 +2198,10 @@ export default function CanvasPage() {
                 {msg.meta?.show_decision_summary && msg.meta?.decision_summary ? (
                   <DecisionSummaryCard summary={msg.meta.decision_summary} />
                 ) : null}
-                {msg.meta?.operation_set_id && pendingOperationSetById[String(msg.meta.operation_set_id)] ? (
+                {msg.meta?.operation_set_id
+                  && pendingOperationSetById[String(msg.meta.operation_set_id)]
+                  && Array.isArray(pendingOperationSetById[String(msg.meta.operation_set_id)]?.operations)
+                  && pendingOperationSetById[String(msg.meta.operation_set_id)].operations.length > 0 ? (
                   <BatchOperationCard
                     operationSet={pendingOperationSetById[String(msg.meta.operation_set_id)]}
                     blocks={blocks}
@@ -2196,7 +2233,7 @@ export default function CanvasPage() {
         injectedValue={aiInjected}
         llmConfigs={llmConfigs}
         selectedConfigId={selectedLlmConfigId}
-        onConfigChange={setSelectedLlmConfigId}
+        onConfigChange={handleLlmConfigChange}
         disabled={effectiveCanvasInputDisabled}
         showPlusMenu={false}
         mentionOptions={[{ value: '__all__', token: '@全文', label: '全文', preview: '对整篇文章生效', searchText: '全文 整篇 整文' }, ...mentionOptions]}

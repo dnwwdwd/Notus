@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { readJsonResponse } from '../utils/fetchJson';
 
 const LLM_CONFIGS_CACHE_KEY = 'notus-llm-configs-cache';
 
@@ -42,10 +43,7 @@ export function useLlmConfigs() {
     }
 
     const response = await fetch('/api/settings');
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(payload.error || '读取 LLM 配置失败');
-    }
+    const payload = await readJsonResponse(response, { fallbackMessage: '读取 LLM 配置失败' });
 
     const nextState = {
       configs: payload.llm_configs || [],
@@ -81,10 +79,7 @@ export function useLlmConfigs() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(input),
     });
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(payload.error || '新增 LLM 配置失败');
-    }
+    const payload = await readJsonResponse(response, { fallbackMessage: '新增 LLM 配置失败' });
     await refresh();
     return payload.item;
   }, [refresh]);
@@ -95,10 +90,7 @@ export function useLlmConfigs() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(input),
     });
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(payload.error || '更新 LLM 配置失败');
-    }
+    const payload = await readJsonResponse(response, { fallbackMessage: '更新 LLM 配置失败' });
     await refresh();
     return payload.item;
   }, [refresh]);
@@ -107,10 +99,7 @@ export function useLlmConfigs() {
     const response = await fetch(`/api/settings/llm-configs/${id}`, {
       method: 'DELETE',
     });
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(payload.error || '删除 LLM 配置失败');
-    }
+    const payload = await readJsonResponse(response, { fallbackMessage: '删除 LLM 配置失败' });
     await refresh();
     return payload;
   }, [refresh]);

@@ -18,6 +18,7 @@ import { findEmbeddingModelMeta, inferEmbeddingProvider } from '../../lib/embedd
 import { useShortcuts, normalizeShortcut, DEFAULT_SHORTCUTS } from '../../contexts/ShortcutsContext';
 import { navigateWithFallback } from '../../utils/navigation';
 import { desktop as desktopClient } from '../../utils/platformClient';
+import { readJsonResponse } from '../../utils/fetchJson';
 
 const APP_VERSION = packageMeta.version || '0.1.2';
 
@@ -172,9 +173,10 @@ const ModelConfig = () => {
 
   useEffect(() => {
     let cancelled = false;
-    fetch('/api/settings')
-      .then((response) => response.json())
-      .then((settings) => {
+    (async () => {
+      try {
+        const response = await fetch('/api/settings');
+        const settings = await readJsonResponse(response, { fallbackMessage: '读取配置失败' });
         if (cancelled) return;
         const savedEmbModel = String(settings.embedding?.model || '').trim();
         const savedEmbBaseUrl = String(settings.embedding?.base_url || '').trim();
@@ -194,8 +196,11 @@ const ModelConfig = () => {
         });
         setTestedSignature('');
         setVerificationToken('');
-      })
-      .catch(() => toast('读取配置失败', 'error'));
+      } catch (error) {
+        if (cancelled) return;
+        toast(error.message || '读取配置失败', 'error');
+      }
+    })();
     return () => {
       cancelled = true;
     };
@@ -222,7 +227,7 @@ const ModelConfig = () => {
           },
         }),
       });
-      const embeddingResult = await embeddingResponse.json();
+      const embeddingResult = await readJsonResponse(embeddingResponse, { fallbackMessage: 'Embedding 连接失败' });
       if (!embeddingResult.success) throw new Error(embeddingResult.error || 'Embedding 连接失败');
 
       setEmbProvider(embeddingResult.provider || resolvedEmbProvider);
@@ -300,8 +305,7 @@ const ModelConfig = () => {
           },
         }),
       });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || '保存失败');
+      const payload = await readJsonResponse(response, { fallbackMessage: '保存失败' });
       setEmbApiKey('');
       setEmbProvider(payload.embedding?.provider || resolvedEmbProvider);
       setEmbModel(String(payload.embedding?.model || embModel || '').trim());

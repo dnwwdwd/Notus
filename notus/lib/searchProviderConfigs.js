@@ -1,10 +1,10 @@
 const { getSetting, setSettings } = require('./db');
 
 const SEARCH_PROVIDERS = [
-  { id: 'firecrawl', name: 'Firecrawl', quota_url: 'https://www.firecrawl.dev/', max_limit: 20 },
-  { id: 'tavily', name: 'Tavily', quota_url: 'https://app.tavily.com/home', max_limit: 20 },
-  { id: 'exa', name: 'Exa', quota_url: 'https://dashboard.exa.ai/api-keys', max_limit: 100 },
-  { id: 'zhipu', name: '智谱', quota_url: 'https://bigmodel.cn/usercenter/proj-mgmt/overview', max_limit: 50 },
+  { id: 'firecrawl', name: 'Firecrawl', quota_url: 'https://www.firecrawl.dev/', max_limit: 20, requires_api_key: false },
+  { id: 'tavily', name: 'Tavily', quota_url: 'https://app.tavily.com/home', max_limit: 20, requires_api_key: true },
+  { id: 'exa', name: 'Exa', quota_url: 'https://dashboard.exa.ai/api-keys', max_limit: 100, requires_api_key: true },
+  { id: 'zhipu', name: '智谱', quota_url: 'https://bigmodel.cn/usercenter/proj-mgmt/overview', max_limit: 50, requires_api_key: true },
 ];
 
 const DEFAULT_MODES = {
@@ -96,6 +96,10 @@ function getSearchProviderConfig() {
   return publicConfigFromStored(parseStoredConfig());
 }
 
+function getStoredSearchProviderConfig() {
+  return normalizeConfig(parseStoredConfig());
+}
+
 function saveSearchProviderConfig(input = {}) {
   const previous = normalizeConfig(parseStoredConfig());
   const nextInput = {
@@ -128,12 +132,37 @@ function saveSearchProviderConfig(input = {}) {
 function hasConfiguredSearchProvider(providerId) {
   const stored = normalizeConfig(parseStoredConfig());
   const id = normalizeProviderId(providerId || stored.selected_provider);
+  const provider = SEARCH_PROVIDERS.find((item) => item.id === id);
+  if (provider && provider.requires_api_key === false) return true;
   return Boolean(stored.api_keys[id]);
+}
+
+function resolveWebSearchConfig(providerId = '') {
+  const stored = getStoredSearchProviderConfig();
+  const provider = normalizeProviderId(providerId || stored.selected_provider);
+  const providerMeta = SEARCH_PROVIDERS.find((item) => item.id === provider) || SEARCH_PROVIDERS[0];
+  const apiKey = stored.api_keys[provider] || '';
+  const missingApiKey = Boolean(providerMeta.requires_api_key && !apiKey);
+  return {
+    enabled: Boolean(stored.enabled),
+    provider,
+    provider_name: providerMeta.name,
+    requires_api_key: Boolean(providerMeta.requires_api_key),
+    api_key: apiKey,
+    api_key_set: Boolean(apiKey),
+    missing_api_key: missingApiKey,
+    mode: stored.modes[provider] || DEFAULT_MODES[provider] || 'default',
+    max_results: clampCount(provider, stored.counts[provider]),
+    quota_url: providerMeta.quota_url || '',
+  };
 }
 
 module.exports = {
   SEARCH_PROVIDERS,
+  normalizeProviderId,
   getSearchProviderConfig,
+  getStoredSearchProviderConfig,
   saveSearchProviderConfig,
   hasConfiguredSearchProvider,
+  resolveWebSearchConfig,
 };

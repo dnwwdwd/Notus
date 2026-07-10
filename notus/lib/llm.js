@@ -1,4 +1,5 @@
 const { getEffectiveConfig } = require('./config');
+const { buildAnthropicCompatibleAuthHeaders, normalizeAnthropicApiBaseUrl } = require('./anthropicCompat');
 const { createAppError } = require('./errors');
 const {
   compactMessageWindow,
@@ -147,9 +148,15 @@ function buildOpenAiHeaders(config) {
 function buildAnthropicHeaders(config) {
   return {
     'Content-Type': 'application/json',
-    'x-api-key': config.llmApiKey,
-    'anthropic-version': '2023-06-01',
+    ...buildAnthropicCompatibleAuthHeaders({
+      apiKey: config.llmApiKey,
+      baseUrl: config.llmBaseUrl,
+    }),
   };
+}
+
+function buildAnthropicRequestUrl(baseUrl, path) {
+  return `${normalizeAnthropicApiBaseUrl(baseUrl)}${path}`;
 }
 
 function buildBaseRequestBody(messages, options, budget, config) {
@@ -353,7 +360,7 @@ async function completeToolChat({ system = '', messages = [], tools = [], llmCon
   });
 
   const response = apiProtocol === 'anthropic'
-    ? await fetch(`${config.llmBaseUrl.replace(/\/+$/, '')}/messages`, {
+    ? await fetch(buildAnthropicRequestUrl(config.llmBaseUrl, '/messages'), {
       method: 'POST',
       headers: buildAnthropicHeaders(config),
       body: JSON.stringify(buildAnthropicToolRequestBody({ system, messages, tools, model, temperature }, budget, config)),
@@ -442,7 +449,7 @@ async function completeChat(messages, options = {}) {
 
   while (true) {
     const response = apiProtocol === 'anthropic'
-      ? await fetch(`${config.llmBaseUrl.replace(/\/+$/, '')}/messages`, {
+      ? await fetch(buildAnthropicRequestUrl(config.llmBaseUrl, '/messages'), {
         method: 'POST',
         headers: buildAnthropicHeaders(config),
         body: JSON.stringify(buildAnthropicRequestBody(currentMessages, {
@@ -551,7 +558,7 @@ async function streamChat(messages, options = {}) {
 
   while (true) {
     const response = apiProtocol === 'anthropic'
-      ? await fetch(`${config.llmBaseUrl.replace(/\/+$/, '')}/messages`, {
+      ? await fetch(buildAnthropicRequestUrl(config.llmBaseUrl, '/messages'), {
         method: 'POST',
         headers: buildAnthropicHeaders(config),
         body: JSON.stringify({

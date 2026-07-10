@@ -54,6 +54,7 @@ function parseMessageRow(row) {
     ...row,
     id: Number(row.id),
     conversation_id: Number(row.conversation_id),
+    type: row.type || 'text',
     citations: row.citations ? JSON.parse(row.citations) : [],
     meta: row.meta ? JSON.parse(row.meta) : null,
   };
@@ -111,10 +112,10 @@ function listConversations({ kind = null, fileId, draftKey, limit = 20 } = {}) {
   const rows = db.prepare(`
     SELECT
       c.*,
-      COALESCE((SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id), 0) AS message_count,
+      COALESCE((SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id AND m.role IN ('user','assistant')), 0) AS message_count,
       COALESCE((SELECT COUNT(*) FROM agent_sessions s WHERE s.conversation_id = c.id), 0) AS agent_session_count,
-      COALESCE((SELECT m.content FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1), '') AS preview,
-      COALESCE((SELECT m.role FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1), '') AS preview_role
+      COALESCE((SELECT m.content FROM messages m WHERE m.conversation_id = c.id AND m.role IN ('user','assistant') ORDER BY m.id DESC LIMIT 1), '') AS preview,
+      COALESCE((SELECT m.role FROM messages m WHERE m.conversation_id = c.id AND m.role IN ('user','assistant') ORDER BY m.id DESC LIMIT 1), '') AS preview_role
     FROM conversations c
     ${where}
     ORDER BY c.updated_at DESC, c.id DESC
@@ -162,13 +163,14 @@ function ensureConversation({ conversationId, kind = 'knowledge', title, fileId 
   return createConversation({ kind, title, fileId, draftKey, scopes });
 }
 
-function appendConversationMessage({ conversationId, role, content, citations = null, meta = null } = {}) {
+function appendConversationMessage({ conversationId, role, type = 'text', content, citations = null, meta = null } = {}) {
   const db = getDb();
   const normalizedConversationId = normalizeNullablePositiveInt(conversationId);
   if (!normalizedConversationId) {
     throw new Error('conversation_id is required');
   }
-  const normalizedRole = ['user', 'assistant', 'tool'].includes(role) ? role : 'user';
+  const normalizedRole = ['user', 'assistant', 'tool', 'system'].includes(role) ? role : 'user';
+  const normalizedType = String(type || 'text').trim() || 'text';
   const messageContent = String(content || '');
   const serializedCitations = citations === null || citations === undefined
     ? null
@@ -178,9 +180,9 @@ function appendConversationMessage({ conversationId, role, content, citations = 
     : JSON.stringify(meta);
 
   const result = db.prepare(`
-    INSERT INTO messages (conversation_id, role, content, citations, meta)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(normalizedConversationId, normalizedRole, messageContent, serializedCitations, serializedMeta);
+    INSERT INTO messages (conversation_id, role, type, content, citations, meta)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(normalizedConversationId, normalizedRole, normalizedType, messageContent, serializedCitations, serializedMeta);
 
   return Number(result.lastInsertRowid);
 }
@@ -304,6 +306,105 @@ function getConversationMessageById(messageId) {
   return row ? parseMessageRow(row) : null;
 }
 
+function rewriteConversationFromMessage({ conversationId, messageId, content } = {}) {
+  const db = getDb();
+  const normalizedConversationId = normalizeNullablePositiveInt(conversationId);
+  const normalizedMessageId = normalizeNullablePositiveInt(messageId);
+  if (!normalizedConversationId) throw new Error('conversation_id is required');
+  if (!normalizedMessageId) throw new Error('message_id is required');
+
+  const nextContent = String(content || '').trim();
+  if (!nextContent) throw new Error('content is required');
+
+  return db.transaction(() => {
+    const anchor = db.prepare(`
+      SELECT *
+      FROM messages
+      WHERE id = ? AND conversation_id = ? AND role = 'user'
+    `).get(normalizedMessageId, normalizedConversationId);
+    if (!anchor) {
+      const error = new Error('目标用户消息不存在');
+      error.code = 'MESSAGE_NOT_FOUND';
+      throw error;
+    }
+
+    const previousMeta = anchor.meta ? JSON.parse(anchor.meta) : null;
+    const nextMeta = {
+      ...(previousMeta && typeof previousMeta === 'object' ? previousMeta : {}),
+      rewritten: true,
+      rewritten_at: new Date().toISOString(),
+    };
+
+    db.prepare(`
+      UPDATE messages
+      SET content = ?, meta = ?
+      WHERE id = ?
+    `).run(nextContent, JSON.stringify(nextMeta), normalizedMessageId);
+
+    const futureRows = db.prepare(`
+      SELECT id
+      FROM messages
+      WHERE conversation_id = ? AND id > ?
+      ORDER BY id ASC
+    `).all(normalizedConversationId, normalizedMessageId);
+    const deletedMessageIds = futureRows.map((row) => Number(row.id));
+
+    db.prepare(`
+      DELETE FROM messages
+      WHERE conversation_id = ? AND id > ?
+    `).run(normalizedConversationId, normalizedMessageId);
+
+    const cutoff = String(anchor.created_at || '');
+    db.prepare(`
+      UPDATE agent_sessions
+      SET status = CASE
+          WHEN status IN ('completed', 'failed', 'cancelled', 'rolled_back') THEN status
+          ELSE 'cancelled'
+        END,
+        messages_checkpoint = NULL,
+        checkpoint_tool_use_id = NULL,
+        updated_at = datetime('now')
+      WHERE conversation_id = ?
+        AND (created_at >= ? OR updated_at >= ?)
+    `).run(normalizedConversationId, cutoff, cutoff);
+
+    db.prepare(`
+      UPDATE conversation_interactions
+      SET status = 'cancelled', updated_at = datetime('now')
+      WHERE conversation_id = ?
+        AND status IN ('pending', 'failed', 'stale')
+        AND (
+          COALESCE(message_id, 0) > ?
+          OR COALESCE(answer_message_id, 0) > ?
+          OR created_at >= ?
+        )
+    `).run(normalizedConversationId, normalizedMessageId, normalizedMessageId, cutoff);
+
+    db.prepare(`
+      UPDATE canvas_operation_sets
+      SET status = CASE
+          WHEN status IN ('applied', 'rolled_back', 'discarded', 'cancelled', 'superseded') THEN status
+          ELSE 'cancelled'
+        END,
+        updated_at = datetime('now')
+      WHERE conversation_id = ?
+        AND (
+          COALESCE(message_id, 0) > ?
+          OR created_at >= ?
+        )
+    `).run(normalizedConversationId, normalizedMessageId, cutoff);
+
+    touchConversation(normalizedConversationId);
+
+    return {
+      conversation: getConversation(normalizedConversationId),
+      message: getConversationMessageById(normalizedMessageId),
+      deleted_message_ids: deletedMessageIds,
+      deleted_count: deletedMessageIds.length,
+    };
+  })();
+}
+
 function getConversationHistory(conversationId, { limit = 12, includeTool = false } = {}) {
   const db = getDb();
   const normalizedConversationId = normalizeNullablePositiveInt(conversationId);
@@ -315,6 +416,7 @@ function getConversationHistory(conversationId, { limit = 12, includeTool = fals
     FROM messages
     WHERE conversation_id = ?
     ${roleClause}
+      AND COALESCE(type, 'text') = 'text'
     ORDER BY id DESC
     LIMIT ?
   `).all(normalizedConversationId, normalizedLimit).reverse();
@@ -339,6 +441,7 @@ module.exports = {
   getConversationHistory,
   listConversations,
   rebindDraftConversations,
+  rewriteConversationFromMessage,
   resetConversationScopes,
   syncConversationBinding,
   touchConversation,

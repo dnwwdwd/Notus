@@ -49,6 +49,14 @@ function pushTextBlock(lines, title, value) {
   lines.push('**' + title + '**', '', text, '');
 }
 
+function sanitizeVisibleContent(value) {
+  return asText(value)
+    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
+    .replace(/<thinking>[\s\S]*$/gi, '')
+    .replace(/<\/thinking>/gi, '')
+    .trim();
+}
+
 function formatToolSteps(lines, steps = []) {
   const list = Array.isArray(steps) ? steps : [];
   if (list.length === 0) return;
@@ -92,19 +100,23 @@ function formatOperationSetSummary(lines, operationSet) {
   pushJsonBlock(lines, '修改预览原始数据', operationSet);
 }
 
-function formatMessage(lines, message = {}, index = 0) {
+function formatMessage(lines, message = {}, index = 0, options = {}) {
+  const includeDebug = Boolean(options.includeDebug);
   lines.push('## ' + (index + 1) + '. ' + roleLabel(message.role), '');
   const time = formatTime(message.created_at || message.updated_at);
   if (time) lines.push('时间：' + time, '');
-  pushTextBlock(lines, '正文', message.content || '（空消息）');
+  pushTextBlock(lines, '正文', sanitizeVisibleContent(message.content) || '（空消息）');
   if (Array.isArray(message.attachments) && message.attachments.length > 0) pushJsonBlock(lines, '附件', message.attachments);
   formatCitations(lines, message.citations);
-  formatToolSteps(lines, message.toolSteps || message.tool_steps || message.meta?.tool_steps);
-  formatOperationSetSummary(lines, message.operationSet || message.operation_set);
-  pushJsonBlock(lines, '消息 Meta', message.meta);
+  if (includeDebug) {
+    formatToolSteps(lines, message.toolSteps || message.tool_steps || message.meta?.tool_steps);
+    formatOperationSetSummary(lines, message.operationSet || message.operation_set);
+    pushJsonBlock(lines, '消息 Meta', message.meta);
+  }
 }
 
-function formatAgentSessions(lines, sessions = []) {
+function formatAgentSessions(lines, sessions = [], options = {}) {
+  if (!options.includeDebug) return;
   const list = Array.isArray(sessions) ? sessions : [];
   if (list.length === 0) return;
   lines.push('# Agent Loop 运行记录', '');
@@ -160,6 +172,7 @@ export function formatConversationExportMarkdown({
   agentSessions = [],
   pendingOperationSets = [],
   source = 'Notus',
+  includeDebug = false,
 } = {}) {
   const lines = [];
   const title = getConversationTitle(conversation);
@@ -173,12 +186,12 @@ export function formatConversationExportMarkdown({
 
   const messageList = Array.isArray(messages) ? messages : [];
   lines.push('# 对话消息', '');
-  if (messageList.length > 0) messageList.forEach((message, index) => formatMessage(lines, message, index));
+  if (messageList.length > 0) messageList.forEach((message, index) => formatMessage(lines, message, index, { includeDebug }));
   else lines.push('暂无可导出的消息。', '');
 
-  formatAgentSessions(lines, agentSessions);
+  formatAgentSessions(lines, agentSessions, { includeDebug });
 
-  if (Array.isArray(pendingOperationSets) && pendingOperationSets.length > 0) {
+  if (includeDebug && Array.isArray(pendingOperationSets) && pendingOperationSets.length > 0) {
     lines.push('# 待处理修改预览', '');
     pendingOperationSets.forEach((operationSet) => formatOperationSetSummary(lines, operationSet));
   }

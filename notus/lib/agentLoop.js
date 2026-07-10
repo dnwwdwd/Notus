@@ -2,6 +2,9 @@ const { completeToolChat } = require('./llm');
 const { getEffectiveConfig } = require('./config');
 const { getStyleContext } = require('./style');
 const { buildInitialUserMessage, buildLoopSystemPrompt } = require('./agentLoopPrompt');
+const { getConversationHistory } = require('./conversations');
+const { loadAttachments, formatAttachmentsForPrompt } = require('./parsedAttachmentStore');
+const { formatWebSearchContextsForPrompt } = require('./webSearchContextStore');
 const {
   clearMessagesCheckpoint,
   detectDeadloop,
@@ -18,6 +21,10 @@ const {
 } = require('./agentSession');
 const { applyPreviewWithConflictCheck, buildToolDefinitions, executeToolSafely, summarizeInput, validateToolUseBlock } = require('./agentTools');
 const { estimateChatRequestTokens } = require('./llmBudget');
+const {
+  buildInteractionAnswerSummary,
+  getInteractionById,
+} = require('./conversationInteractions');
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -32,8 +39,40 @@ function buildCompactSummary(parsed) {
   if (Array.isArray(parsed?.results)) return `检索到 ${parsed.results.length} 条结果`;
   if (parsed?.content) return `读取 ${String(parsed.content).length} 字`;
   if (parsed?.operation_set_id) return `生成预览 ${parsed.operation_set_id}`;
+  if (parsed?.interaction_id) return `生成提问卡片 ${parsed.interaction_id}`;
   if (parsed?.path) return `文件 ${parsed.path}`;
   return '工具调用已完成';
+}
+
+function trimForContext(text = '', max = 1400) {
+  const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+  if (normalized.length <= max) return normalized;
+  return normalized.slice(0, max).trim() + '...';
+}
+
+function sanitizeAssistantVisibleText(text = '') {
+  const raw = String(text || '');
+  const withoutThinkingBlocks = raw
+    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
+    .replace(/<thinking>[\s\S]*$/gi, '')
+    .replace(/<\/thinking>/gi, '');
+  return withoutThinkingBlocks.trim();
+}
+
+function buildRecentConversationContext(session) {
+  if (!session?.conversation_id) return '';
+  const history = getConversationHistory(session.conversation_id, { limit: 10 });
+  const currentGoal = String(session.goal || '').trim();
+  const rows = history.filter((message) => {
+    if (!message?.content) return false;
+    if (message.role === 'user' && String(message.meta?.agent_goal || '').trim() === currentGoal) return false;
+    return message.role === 'user' || message.role === 'assistant';
+  }).slice(-8);
+  if (rows.length === 0) return '';
+  return rows.map((message) => {
+    const label = message.role === 'assistant' ? 'AI' : '用户';
+    return `${label}：${trimForContext(sanitizeAssistantVisibleText(message.content))}`;
+  }).join('\n');
 }
 
 function compactMessages(messages = [], tokenBudget = 60000) {
@@ -90,6 +129,39 @@ function normalizeApprovalMode(value) {
   return 'auto_confirm';
 }
 
+function buildPreviewCompletionText(toolName, {
+  approvalMode = 'auto_confirm',
+  applied = false,
+  requiresConfirmation = false,
+  result = {},
+} = {}) {
+  if (toolName === 'preview_canvas_blocks') {
+    return '块级修改预览已生成，请在下方预览卡片中确认或取消。';
+  }
+  if (toolName === 'preview_file_revision') {
+    if (requiresConfirmation) {
+      return result.message || '全文修订预览已生成；系统检测到高风险删除、截断或遗漏，已保留给你在下方 diff 卡片中手动确认，正式文件尚未修改。';
+    }
+    if (approvalMode === 'auto_confirm' && applied) {
+      return '全文修订已自动应用，可在下方 diff 卡片中查看或回滚。';
+    }
+    return '全文修订预览已生成，请在下方 diff 卡片中应用、废弃或回滚。';
+  }
+  if (toolName === 'create_note') {
+    return approvalMode === 'auto_confirm' && applied
+      ? '新文件已自动创建，可在下方 diff 卡片中查看或回滚。'
+      : '新建文件预览已生成，请在下方 diff 卡片中应用或回滚。';
+  }
+  if (toolName === 'preview_file_operations') {
+    return approvalMode === 'auto_confirm' && applied
+      ? '文件/目录操作已自动应用，可在下方 diff 卡片中查看或回滚。'
+      : '文件/目录操作预览已生成，请在下方 diff 卡片中应用或回滚。';
+  }
+  return approvalMode === 'auto_confirm' && applied
+    ? '修改已自动确认并写入文件，可在下方 diff 卡片中逐文件查看或回滚。'
+    : '修改预览已生成，请在下方 diff 卡片中逐文件应用或回滚。';
+}
+
 async function loadStyleContext(session) {
   try {
     const config = getEffectiveConfig();
@@ -100,7 +172,41 @@ async function loadStyleContext(session) {
   }
 }
 
-async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMode = 'auto_confirm' } = {}) {
+function buildQuestionCardToolResult(interactionId, sessionId) {
+  const interaction = getInteractionById(interactionId);
+  if (!interaction) {
+    return {
+      isError: true,
+      content: JSON.stringify({ error: 'INTERACTION_NOT_FOUND', message: '提问卡片不存在或已过期' }),
+    };
+  }
+  if (
+    interaction.source !== 'agent_loop'
+    || Number(interaction.payload?.agent_session_id || 0) !== Number(sessionId || 0)
+  ) {
+    return {
+      isError: true,
+      content: JSON.stringify({ error: 'INTERACTION_SESSION_MISMATCH', message: '提问卡片不属于当前 Agent 任务' }),
+    };
+  }
+  if (interaction.status !== 'answered') {
+    return {
+      isError: true,
+      content: JSON.stringify({ error: 'INTERACTION_NOT_ANSWERED', message: '提问卡片尚未完成回答' }),
+    };
+  }
+  return {
+    isError: false,
+    content: JSON.stringify({
+      answered: true,
+      interaction_id: interaction.id,
+      answers: interaction.response?.answers || {},
+      summary: buildInteractionAnswerSummary(interaction, interaction.response || {}),
+    }),
+  };
+}
+
+async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMode = 'auto_confirm', resumeInteractionId = null } = {}) {
   let session = getSession(sessionId);
   const config = getEffectiveConfig();
   const emit = typeof onStream === 'function' ? onStream : () => {};
@@ -113,25 +219,49 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMo
 
   const styleContext = await loadStyleContext(session);
   const tools = buildToolDefinitions(session);
-  const systemPrompt = buildLoopSystemPrompt(session, { styleContext });
+  const attachmentContext = session.conversation_id
+    ? formatAttachmentsForPrompt(loadAttachments(session.conversation_id))
+    : '';
+  const webSearchContext = session.conversation_id && session.web_search_enabled
+    ? formatWebSearchContextsForPrompt(session.conversation_id)
+    : '';
+  const systemPrompt = [
+    buildLoopSystemPrompt(session, { styleContext }),
+    attachmentContext,
+    webSearchContext,
+  ].filter(Boolean).join('\n\n');
   const checkpoint = loadMessagesCheckpoint(session.id);
   let messages;
   if (checkpoint) {
     messages = checkpoint.messages;
     if (checkpoint.appliedToolUseId) {
+      const questionCardResult = resumeInteractionId
+        ? buildQuestionCardToolResult(resumeInteractionId, session.id)
+        : null;
       messages.push({ role: 'assistant', content: checkpoint.lastResponseContent || [] });
       messages.push({
         role: 'user',
         content: [{
           type: 'tool_result',
           tool_use_id: checkpoint.appliedToolUseId,
-          content: JSON.stringify({ applied: true, message: '修改已写入文件' }),
+          content: questionCardResult?.content || JSON.stringify({ applied: true, message: '修改已写入文件' }),
+          is_error: Boolean(questionCardResult?.isError),
         }],
       });
+      if (questionCardResult?.isError) {
+        updateSessionStatus(session.id, 'failed');
+        emit({ type: 'loop_done', reason: 'question_card_resume_failed', loop_index: Number(session.loop_count || 0) });
+        return { status: 'failed', reason: 'question_card_resume_failed' };
+      }
     }
     clearMessagesCheckpoint(session.id);
   } else {
-    messages = [{ role: 'user', content: buildInitialUserMessage(session.goal, session) }];
+    messages = [{
+      role: 'user',
+      content: buildInitialUserMessage(session.goal, session, {
+        recentConversationContext: buildRecentConversationContext(session),
+      }),
+    }];
   }
 
   let loopIndex = Number(session.loop_count || 0);
@@ -170,9 +300,12 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMo
       temperature: 0.2,
     });
     const { textBlocks, toolUseBlocks, stopReason, content } = parseResponse(response);
-    const thinking = textBlocks.map((block) => block.text).join('\n').trim();
+    const thinking = sanitizeAssistantVisibleText(textBlocks.map((block) => block.text).join('\n'));
 
-    textBlocks.forEach((block) => emit({ type: 'thinking', text: block.text, loop_index: loopIndex }));
+    textBlocks.forEach((block) => {
+      const visibleText = sanitizeAssistantVisibleText(block.text);
+      if (visibleText) emit({ type: 'thinking', text: visibleText, loop_index: loopIndex });
+    });
 
     if (isGoalAchieved(stopReason, toolUseBlocks)) {
       logToolCall({ sessionId: session.id, loopIndex, toolName: null, toolInput: null, toolResult: null, thinking, status: 'success', durationMs: 0 });
@@ -243,57 +376,75 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMo
         is_error: failed,
       });
 
-      if (toolUse.name === 'preview_patch_files' && !failed) {
+      if (toolUse.name === 'ask_question_card' && !failed) {
+        saveMessagesCheckpoint(session.id, messages, content, toolUse.id);
+        updateSessionStatus(session.id, 'waiting_confirm');
+        emit({
+          type: 'interaction_request',
+          loop_index: loopIndex,
+          interaction: result.interaction,
+          reason: 'question_card_requested',
+        });
+        emit({
+          type: 'loop_done',
+          reason: 'question_card_requested',
+          loop_index: loopIndex,
+          interaction_id: result.interaction_id,
+        });
+        return {
+          status: 'waiting_confirm',
+          reason: 'question_card_requested',
+          interaction: result.interaction,
+          interaction_id: result.interaction_id,
+        };
+      }
+
+      if (['create_note', 'preview_patch_files', 'preview_file_revision', 'preview_canvas_blocks', 'preview_file_operations'].includes(toolUse.name) && !failed && result.operation_set_id) {
         let previewResult = result;
-        if (normalizedApprovalMode === 'auto_confirm') {
+        const canAutoApply = ['create_note', 'preview_patch_files', 'preview_file_revision', 'preview_file_operations'].includes(toolUse.name) && normalizedApprovalMode === 'auto_confirm';
+        if (canAutoApply && !result.applied) {
           previewResult = await applyPreviewWithConflictCheck(result.operation_set_id, session.id, {
             approvalMode: normalizedApprovalMode,
             auto: true,
           });
           if (!previewResult.success) {
             updateSessionStatus(session.id, 'failed');
-            emit({ type: 'loop_done', reason: 'consecutive_tool_failure', tool_name: toolUse.name, loop_index: loopIndex });
+            emit({
+              type: 'loop_done',
+              reason: 'preview_auto_apply_failed',
+              tool_name: toolUse.name,
+              loop_index: loopIndex,
+              operation_set_id: result.operation_set_id,
+            });
             return { status: 'failed', reason: 'preview_auto_apply_failed', operation_set_id: result.operation_set_id };
           }
         }
+        const actualApplied = Boolean(previewResult.applied || result.applied);
+        const requiresConfirmation = Boolean(previewResult.requires_confirmation || result.requires_confirmation);
+        const mergedPreviewResult = {
+          ...result,
+          ...previewResult,
+          approval_mode: normalizedApprovalMode,
+          applied: actualApplied,
+          requires_confirmation: requiresConfirmation,
+          changed_files: previewResult.changed_files || [],
+        };
 
         toolResults[toolResults.length - 1] = {
           type: 'tool_result',
           tool_use_id: toolUse.id,
-          content: JSON.stringify({
-            ...result,
-            approval_mode: normalizedApprovalMode,
-            applied: normalizedApprovalMode === 'auto_confirm',
-            changed_files: previewResult.changed_files || [],
-          }),
+          content: JSON.stringify(mergedPreviewResult),
           is_error: false,
         };
         messages.push({ role: 'assistant', content });
         messages.push({ role: 'user', content: toolResults });
-
-        loopIndex += 1;
-        updateSessionLoopCount(session.id, loopIndex);
-        emit({ type: 'loop_start', loop_index: loopIndex });
-        let finalResponse = null;
-        let finalThinking = '';
-        try {
-          finalResponse = await callLLMWithRetry({
-            system: `${systemPrompt}\n\n现在不要再调用任何工具。请用简短中文总结刚才生成的文件修改，并提醒用户可以在对话底部的 diff 卡片中按文件确认或回滚。`,
-            messages: compactMessages(messages, Number(llmConfig?.llmContextWindowTokens || config.llmContextWindowTokens || 60000)),
-            tools: [],
-            llmConfig,
-            taskType: 'agent_loop',
-            temperature: 0.2,
-          });
-          const finalParsed = parseResponse(finalResponse);
-          finalThinking = finalParsed.textBlocks.map((block) => block.text).join('\n').trim();
-          finalParsed.textBlocks.forEach((block) => emit({ type: 'thinking', text: block.text, loop_index: loopIndex }));
-        } catch {
-          finalThinking = normalizedApprovalMode === 'auto_confirm'
-            ? '修改已自动确认并写入文件，可在下方 diff 卡片中逐文件查看或回滚。'
-            : '修改预览已生成，请在下方 diff 卡片中逐文件应用或回滚。';
-          emit({ type: 'thinking', text: finalThinking, loop_index: loopIndex });
-        }
+        const finalThinking = buildPreviewCompletionText(toolUse.name, {
+          approvalMode: normalizedApprovalMode,
+          applied: actualApplied,
+          requiresConfirmation,
+          result: mergedPreviewResult,
+        });
+        emit({ type: 'thinking', text: finalThinking, loop_index: loopIndex });
         logToolCall({
           sessionId: session.id,
           loopIndex,
@@ -310,7 +461,7 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMo
           reason: 'goal_achieved',
           loop_index: loopIndex,
           operation_set_id: result.operation_set_id,
-          usage: finalResponse?.usage || null,
+          usage: response.usage || null,
         });
         return { status: 'completed', reason: 'goal_achieved', operation_set_id: result.operation_set_id };
       }
@@ -326,4 +477,5 @@ module.exports = {
   callLLMWithRetry,
   parseResponse,
   runAgentLoop,
+  sanitizeAssistantVisibleText,
 };

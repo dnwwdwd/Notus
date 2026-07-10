@@ -58,8 +58,29 @@ function normalizeFileName(inputName) {
   return ensureMarkdownPath(raw);
 }
 
+function normalizeFolderPath(inputPath) {
+  const normalized = normalizeRelativePath(inputPath);
+  if (/\.md$/i.test(normalized)) throw new Error('folder path must not be a markdown file');
+  return normalized;
+}
+
+function normalizeFolderName(inputName) {
+  const raw = String(inputName || '').replace(/\\/g, '/').trim();
+  if (!raw) throw new Error('name is required');
+  if (raw.includes('/')) throw new Error('name must not include path separators');
+  if (raw === '.' || raw === '..') throw new Error('invalid name');
+  if (/\.md$/i.test(raw)) throw new Error('folder name must not end with .md');
+  return raw;
+}
+
 function buildRenamedPath(relativePath, nextName) {
   const normalizedName = normalizeFileName(nextName);
+  const parentPath = getParentPath(relativePath);
+  return [parentPath, normalizedName].filter(Boolean).join('/');
+}
+
+function buildRenamedFolderPath(relativePath, nextName) {
+  const normalizedName = normalizeFolderName(nextName);
   const parentPath = getParentPath(relativePath);
   return [parentPath, normalizedName].filter(Boolean).join('/');
 }
@@ -482,7 +503,7 @@ function buildTree() {
 
 function createFolder(folderPath) {
   const config = getEffectiveConfig();
-  const target = resolveInside(config.notesDir, folderPath);
+  const target = resolveInside(config.notesDir, normalizeFolderPath(folderPath));
   fs.mkdirSync(target.absolutePath, { recursive: true });
   return {
     type: 'folder',
@@ -584,6 +605,116 @@ function deleteFile(id) {
   return true;
 }
 
+function folderExists(folderPath) {
+  const config = getEffectiveConfig();
+  const target = resolveInside(config.notesDir, normalizeFolderPath(folderPath));
+  return fs.existsSync(target.absolutePath) && fs.statSync(target.absolutePath).isDirectory();
+}
+
+function listMarkdownFilesUnderFolder(folderPath) {
+  const config = getEffectiveConfig();
+  const target = resolveInside(config.notesDir, normalizeFolderPath(folderPath));
+  if (!fs.existsSync(target.absolutePath) || !fs.statSync(target.absolutePath).isDirectory()) return [];
+  const root = path.resolve(config.notesDir);
+  const results = [];
+
+  function walk(dir) {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    entries.forEach((entry) => {
+      if (entry.name.startsWith('.')) return;
+      const absolute = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(absolute);
+      else if (entry.isFile() && /\.md$/i.test(entry.name)) {
+        results.push(path.relative(root, absolute).replace(/\\/g, '/'));
+      }
+    });
+  }
+
+  walk(target.absolutePath);
+  return results.sort((left, right) => left.localeCompare(right, 'zh-Hans-CN'));
+}
+
+function snapshotFolder(folderPath) {
+  const normalized = normalizeFolderPath(folderPath);
+  const files = listMarkdownFilesUnderFolder(normalized).map((filePath) => ({
+    path: filePath,
+    content: readMarkdownFile(filePath),
+  }));
+  return {
+    path: normalized,
+    files,
+  };
+}
+
+function renameFolder(oldPath, newPath) {
+  const config = getEffectiveConfig();
+  const oldFolder = resolveInside(config.notesDir, normalizeFolderPath(oldPath));
+  const newFolder = resolveInside(config.notesDir, normalizeFolderPath(newPath));
+  if (oldFolder.relativePath === newFolder.relativePath) {
+    if (!fs.existsSync(oldFolder.absolutePath)) throw new Error('folder not found');
+    return { type: 'folder', old_path: oldFolder.relativePath, new_path: newFolder.relativePath };
+  }
+  if (!fs.existsSync(oldFolder.absolutePath) || !fs.statSync(oldFolder.absolutePath).isDirectory()) {
+    throw new Error('folder not found');
+  }
+  if (newFolder.relativePath.startsWith(`${oldFolder.relativePath}/`)) {
+    throw new Error('cannot move folder into itself');
+  }
+  if (fs.existsSync(newFolder.absolutePath)) {
+    throw new Error(`目标目录已存在：${newFolder.relativePath}`);
+  }
+  fs.mkdirSync(path.dirname(newFolder.absolutePath), { recursive: true });
+  fs.renameSync(oldFolder.absolutePath, newFolder.absolutePath);
+
+  const db = getDb();
+  const oldPrefix = `${oldFolder.relativePath}/`;
+  const newPrefix = `${newFolder.relativePath}/`;
+  const rows = db.prepare('SELECT path FROM files WHERE path = ? OR path LIKE ?').all(oldFolder.relativePath, `${oldPrefix}%`);
+  const update = db.prepare('UPDATE files SET path = ?, updated_at = datetime(\'now\') WHERE path = ?');
+  db.transaction(() => {
+    rows.forEach((row) => {
+      const nextPath = row.path === oldFolder.relativePath
+        ? newFolder.relativePath
+        : `${newPrefix}${row.path.slice(oldPrefix.length)}`;
+      update.run(nextPath, row.path);
+    });
+  })();
+  listMarkdownFilesUnderFolder(newFolder.relativePath).forEach((filePath) => {
+    upsertFileRecord(filePath, readMarkdownFile(filePath), 0);
+  });
+  return { type: 'folder', old_path: oldFolder.relativePath, new_path: newFolder.relativePath };
+}
+
+function deleteFolder(folderPath) {
+  const config = getEffectiveConfig();
+  const target = resolveInside(config.notesDir, normalizeFolderPath(folderPath));
+  if (!fs.existsSync(target.absolutePath) || !fs.statSync(target.absolutePath).isDirectory()) {
+    throw new Error('folder not found');
+  }
+  const snapshot = snapshotFolder(target.relativePath);
+  fs.rmSync(target.absolutePath, { recursive: true, force: true });
+  const prefix = `${target.relativePath}/`;
+  getDb().prepare('DELETE FROM files WHERE path = ? OR path LIKE ?').run(target.relativePath, `${prefix}%`);
+  return snapshot;
+}
+
+function restoreFolderSnapshot(snapshot = {}) {
+  const files = Array.isArray(snapshot.files) ? snapshot.files : [];
+  files.forEach((file) => {
+    const filePath = ensureMarkdownPath(file.path);
+    writeMarkdownFile(filePath, String(file.content || ''));
+    upsertFileRecord(filePath, String(file.content || ''), 0);
+  });
+  if (files.length === 0 && snapshot.path) {
+    createFolder(snapshot.path);
+  }
+  return {
+    type: 'folder',
+    path: normalizeFolderPath(snapshot.path),
+    restored_files: files.map((file) => ensureMarkdownPath(file.path)),
+  };
+}
+
 function renameFile(oldPath, newPath) {
   const config = getEffectiveConfig();
   const oldTarget = resolveInside(config.notesDir, oldPath);
@@ -644,6 +775,12 @@ function moveFiles(paths, dest) {
   });
 }
 
+function moveFolder(folderPath, dest) {
+  const destination = dest ? normalizeFolderPath(dest) : '';
+  const baseName = getBaseName(folderPath);
+  return renameFolder(folderPath, destination ? `${destination}/${baseName}` : baseName);
+}
+
 function listFilesByIds(ids = []) {
   syncFilesFromDisk();
   const normalizedIds = ids.map((id) => Number(id)).filter((id) => Number.isFinite(id));
@@ -676,11 +813,14 @@ function listFilesByPaths(paths = []) {
 
 module.exports = {
   normalizeRelativePath,
+  normalizeFolderPath,
+  normalizeFolderName,
   ensureMarkdownPath,
   resolveInside,
   getParentPath,
   getBaseName,
   buildRenamedPath,
+  buildRenamedFolderPath,
   buildFileRecordPayload,
   extractTitle,
   sha256,
@@ -699,6 +839,13 @@ module.exports = {
   buildTree,
   createFile,
   createFolder,
+  deleteFolder,
+  folderExists,
+  listMarkdownFilesUnderFolder,
+  moveFolder,
+  renameFolder,
+  restoreFolderSnapshot,
+  snapshotFolder,
   saveFileByPath,
   updateFile,
   deleteFile,

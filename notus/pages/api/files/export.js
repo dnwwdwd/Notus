@@ -6,12 +6,12 @@ const { getEffectiveConfig } = require('../../../lib/config');
 const { listFilesByIds, listFilesByPaths, resolveInside } = require('../../../lib/files');
 
 function encodeContentDispositionFilename(filename = '') {
-  const original = String(filename || '').trim() || 'notus-export.md';
+  const original = String(filename || '').trim() || 'notus-export.zip';
   const asciiFallback = original
     .normalize('NFKD')
     .replace(/[^\x20-\x7E]/g, '')
     .replace(/["\\]/g, '_')
-    .trim() || 'notus-export.md';
+    .trim() || 'notus-export.zip';
   const encoded = encodeURIComponent(original)
     .replace(/['()]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`)
     .replace(/\*/g, '%2A');
@@ -54,21 +54,9 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: '至少选择一个文件', code: 'NO_FILES_SELECTED' });
   }
 
-  if (files.length === 1) {
-    const file = files[0];
-    const target = resolveInside(getEffectiveConfig().notesDir, file.path);
-    if (!fs.existsSync(target.absolutePath)) {
-      return res.status(404).json({ error: '文件不存在', code: 'FILE_NOT_FOUND' });
-    }
-
-    res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
-    res.setHeader('Content-Disposition', encodeContentDispositionFilename(path.basename(file.path)));
-    return res.status(200).send(fs.readFileSync(target.absolutePath, 'utf8'));
-  }
-
   const filename = `notus-export-${new Date().toISOString().replace(/[:.]/g, '-')}.zip`;
   res.setHeader('Content-Type', 'application/zip');
-  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.setHeader('Content-Disposition', encodeContentDispositionFilename(filename));
 
   const archive = archiver('zip', { zlib: { level: 9 } });
   archive.on('error', (error) => {
@@ -82,12 +70,23 @@ export default async function handler(req, res) {
   archive.pipe(res);
 
   const config = getEffectiveConfig();
+  const notesRootName = path.basename(path.resolve(config.notesDir)) || 'notes';
+  const notesRoot = path.resolve(config.notesDir);
+  const assetsRoot = path.resolve(config.assetsDir);
+  const assetsInsideNotes = assetsRoot === notesRoot || assetsRoot.startsWith(`${notesRoot}${path.sep}`);
+  const assetsArchiveRoot = assetsInsideNotes
+    ? path.posix.join(notesRootName, path.relative(notesRoot, assetsRoot).replace(/\\/g, '/'))
+    : (path.basename(assetsRoot) || 'assets');
   files.forEach((file) => {
     const target = resolveInside(config.notesDir, file.path);
     if (fs.existsSync(target.absolutePath)) {
-      archive.file(target.absolutePath, { name: file.path });
+      archive.file(target.absolutePath, { name: path.posix.join(notesRootName, file.path) });
     }
   });
+
+  if (fs.existsSync(config.assetsDir)) {
+    archive.directory(config.assetsDir, assetsArchiveRoot);
+  }
 
   await archive.finalize();
 }

@@ -24,5 +24,7 @@ export function inferLlmProvider({ baseUrl, model }) {
 }
 
 export function resolveLlmProviderLabel(providerValue) {
-  return LLM_PROVIDERS.find((provider) => provider.value === providerValue)?.label || '自定义兼容接口';
+  const normalized = String(providerValue || '').trim();
+  if (!normalized) return '自定义兼容接口';
+  return LLM_PROVIDERS.find((provider) => provider.value === normalized)?.label || normalized;
 }

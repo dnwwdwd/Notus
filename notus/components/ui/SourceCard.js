@@ -34,6 +34,9 @@ export const SourceCard = ({ file, path, quote, lines, imageProxyUrl, imageAltTe
         padding: 'var(--space-3)',
         cursor: onClick ? 'pointer' : 'default',
         boxShadow: baseBoxShadow,
+        minWidth: 0,
+        maxWidth: '100%',
+        overflow: 'hidden',
         transition: 'border-color var(--transition-fast), box-shadow var(--transition-fast), background-color var(--transition-fast)',
       }}
       onMouseEnter={(e) => {
@@ -49,13 +52,13 @@ export const SourceCard = ({ file, path, quote, lines, imageProxyUrl, imageAltTe
         e.currentTarget.style.background = baseBackground;
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-        <Icons.file size={13} />
-        <span style={{ fontSize: 'var(--text-sm)', fontWeight: 500 }}>{fileLabel}</span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4, minWidth: 0, maxWidth: '100%', overflow: 'hidden' }}>
+        <Icons.file size={13} style={{ flexShrink: 0 }} />
+        <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 'var(--text-sm)', fontWeight: 500 }}>{fileLabel}</span>
         {path && (
           <>
-            <span style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-xs)' }}>›</span>
-            <span style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-xs)' }}>{path}</span>
+            <span style={{ flexShrink: 0, color: 'var(--text-tertiary)', fontSize: 'var(--text-xs)' }}>›</span>
+            <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-tertiary)', fontSize: 'var(--text-xs)' }}>{path}</span>
           </>
         )}
         {lines && (
@@ -66,6 +69,7 @@ export const SourceCard = ({ file, path, quote, lines, imageProxyUrl, imageAltTe
             background: 'var(--accent-subtle)',
             padding: '1px 6px',
             borderRadius: 3,
+            flexShrink: 0,
           }}>{lines}</span>
         )}
         {imageHit && (
@@ -78,13 +82,14 @@ export const SourceCard = ({ file, path, quote, lines, imageProxyUrl, imageAltTe
             background: 'var(--bg-secondary)',
             padding: '1px 6px',
             borderRadius: 999,
+            flexShrink: 0,
           }}>
             <Icons.image size={10} />
             图片
           </span>
         )}
-        <div style={{ flex: 1 }} />
-        <Icons.chevronRight size={12} />
+        <div style={{ flex: 1, minWidth: 0 }} />
+        <Icons.chevronRight size={12} style={{ flexShrink: 0 }} />
       </div>
       {previewText && (
         <div style={{
@@ -95,6 +100,8 @@ export const SourceCard = ({ file, path, quote, lines, imageProxyUrl, imageAltTe
           WebkitBoxOrient: 'vertical',
           WebkitLineClamp: 2,
           overflow: 'hidden',
+          overflowWrap: 'anywhere',
+          wordBreak: 'break-word',
         }}>
           &quot;{previewText}&quot;
         </div>

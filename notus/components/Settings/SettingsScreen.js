@@ -18,6 +18,7 @@ import { findEmbeddingModelMeta, inferEmbeddingProvider } from '../../lib/embedd
 import { useShortcuts, normalizeShortcut, DEFAULT_SHORTCUTS } from '../../contexts/ShortcutsContext';
 import { navigateWithFallback } from '../../utils/navigation';
 import { desktop as desktopClient } from '../../utils/platformClient';
+import { readJsonResponse } from '../../utils/fetchJson';
 
 const APP_VERSION = packageMeta.version || '0.1.2';
 
@@ -172,9 +173,10 @@ const ModelConfig = () => {
 
   useEffect(() => {
     let cancelled = false;
-    fetch('/api/settings')
-      .then((response) => response.json())
-      .then((settings) => {
+    (async () => {
+      try {
+        const response = await fetch('/api/settings');
+        const settings = await readJsonResponse(response, { fallbackMessage: '读取配置失败' });
         if (cancelled) return;
         const savedEmbModel = String(settings.embedding?.model || '').trim();
         const savedEmbBaseUrl = String(settings.embedding?.base_url || '').trim();
@@ -194,8 +196,11 @@ const ModelConfig = () => {
         });
         setTestedSignature('');
         setVerificationToken('');
-      })
-      .catch(() => toast('读取配置失败', 'error'));
+      } catch (error) {
+        if (cancelled) return;
+        toast(error.message || '读取配置失败', 'error');
+      }
+    })();
     return () => {
       cancelled = true;
     };
@@ -222,7 +227,7 @@ const ModelConfig = () => {
           },
         }),
       });
-      const embeddingResult = await embeddingResponse.json();
+      const embeddingResult = await readJsonResponse(embeddingResponse, { fallbackMessage: 'Embedding 连接失败' });
       if (!embeddingResult.success) throw new Error(embeddingResult.error || 'Embedding 连接失败');
 
       setEmbProvider(embeddingResult.provider || resolvedEmbProvider);
@@ -300,8 +305,7 @@ const ModelConfig = () => {
           },
         }),
       });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || '保存失败');
+      const payload = await readJsonResponse(response, { fallbackMessage: '保存失败' });
       setEmbApiKey('');
       setEmbProvider(payload.embedding?.provider || resolvedEmbProvider);
       setEmbModel(String(payload.embedding?.model || embModel || '').trim());
@@ -451,6 +455,7 @@ const SEARCH_MODE_OPTIONS = {
 };
 
 const SearchConfig = () => {
+  const router = useRouter();
   const toast = useToast();
   const [config, setConfig] = useState({
     enabled: false,
@@ -464,22 +469,33 @@ const SearchConfig = () => {
   const [saving, setSaving] = useState(false);
   const [savingEnabled, setSavingEnabled] = useState(false);
   const savingEnabledRef = useRef(false);
-  const providers = config.providers || [];
+  const providers = useMemo(() => config.providers || [], [config.providers]);
+  const requestedProvider = String(router.query.provider || '').trim().toLowerCase();
   const selectedProvider = providers.find((item) => item.id === config.selected_provider) || providers[0] || { id: 'firecrawl', name: 'Firecrawl', max_limit: 20 };
   const modeOptions = SEARCH_MODE_OPTIONS[selectedProvider.id] || SEARCH_MODE_OPTIONS.firecrawl;
+  const patchConfig = (patch) => setConfig((prev) => ({ ...prev, ...patch }));
 
   useEffect(() => {
     let cancelled = false;
     fetch('/api/settings/search-providers')
       .then((response) => response.json())
       .then((payload) => {
-        if (!cancelled) setConfig((prev) => ({ ...prev, ...payload }));
+        if (!cancelled) {
+          const nextProviders = payload.providers || [];
+          const nextProvider = nextProviders.some((provider) => provider.id === requestedProvider) ? requestedProvider : payload.selected_provider;
+          setConfig((prev) => ({ ...prev, ...payload, selected_provider: nextProvider || payload.selected_provider || prev.selected_provider }));
+        }
       })
       .catch(() => toast('读取搜索配置失败', 'error'));
     return () => { cancelled = true; };
-  }, [toast]);
+  }, [requestedProvider, toast]);
 
-  const patchConfig = (patch) => setConfig((prev) => ({ ...prev, ...patch }));
+  useEffect(() => {
+    if (!requestedProvider || !providers.some((provider) => provider.id === requestedProvider)) return;
+    setConfig((prev) => ({ ...prev, selected_provider: requestedProvider }));
+    setApiKey('');
+  }, [providers, requestedProvider]);
+
   const setMode = (mode) => setConfig((prev) => ({ ...prev, modes: { ...(prev.modes || {}), [selectedProvider.id]: mode } }));
   const setCount = (count) => setConfig((prev) => ({ ...prev, counts: { ...(prev.counts || {}), [selectedProvider.id]: Number(count) || 1 } }));
 
@@ -625,7 +641,11 @@ const SearchConfig = () => {
               masked
               value={apiKey}
               onChange={(event) => setApiKey(event.target.value)}
-              placeholder={config.api_key_set?.[selectedProvider.id] ? '已保存，留空不修改' : 'sk-••••••••••••'}
+              placeholder={config.api_key_set?.[selectedProvider.id]
+                ? '已保存，留空不修改'
+                : selectedProvider.requires_api_key === false
+                  ? '可选；留空使用 Firecrawl 无 Key 模式'
+                  : '请输入该服务商 API Key'}
             />
           </div>
 

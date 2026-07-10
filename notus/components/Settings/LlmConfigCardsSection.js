@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useToast } from '../ui/Toast';
 import { Icons } from '../ui/Icons';
+import { DropdownSelect } from '../ui/DropdownSelect';
 import { useLlmConfigs } from '../../hooks/useLlmConfigs';
 import { inferLlmProvider, resolveLlmProviderLabel } from '../../lib/llmForm';
 
@@ -46,6 +47,8 @@ const LLM_CONFIG_STYLES = [
   '.notus-llm-modal-body { max-height: calc(88vh - 120px); overflow: auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; scrollbar-width: thin; scrollbar-color: #d8d5ca transparent; }',
   '.notus-llm-field { display: flex; flex-direction: column; gap: 7px; }',
   '.notus-llm-field span { color: #4b4944; font-size: 13px; line-height: 1.35; font-weight: 700; }',
+  '.notus-llm-field-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }',
+  '.notus-llm-field-badge { display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border-radius: 999px; background: #f2f0ea; color: #6b6963; font-size: 11px; line-height: 1; font-weight: 700; white-space: nowrap; }',
   '.notus-model-input { width: 100%; min-height: 38px; border: 1px solid #e5e3d8; border-radius: 9px; background: #fafafa; color: #2d2d2d; padding: 8px 12px; font-size: 13px; line-height: 1.4; font-family: inherit; outline: none; transition-property: border-color, box-shadow, background-color; transition-duration: 150ms; transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1); }',
   '.notus-model-input::placeholder { color: #a3a19a; }',
   '.notus-model-input:focus { border-color: rgba(217, 119, 87, 0.6); background: #fff; box-shadow: 0 0 0 3px rgba(217, 119, 87, 0.12); }',
@@ -71,24 +74,24 @@ function normalizeApiProtocol(value) {
 }
 
 function createDraft(config = null) {
-  const model = config?.model || '';
-  const baseUrl = config?.base_url || '';
   return {
     id: config?.id || null,
-    name: config?.name || '',
     apiProtocol: normalizeApiProtocol(config?.api_protocol),
-    provider: config?.provider || inferLlmProvider({ baseUrl, model }),
-    model,
-    baseUrl,
+    provider: config?.provider || '',
+    model: config?.model || '',
+    baseUrl: config?.base_url || '',
     apiKey: '',
     apiKeySet: Boolean(config?.api_key_set),
   };
 }
 
-function LlmField({ label, children }) {
+function LlmField({ label, badge = '', children }) {
   return (
     <label className="notus-llm-field">
-      <span>{label}</span>
+      <div className="notus-llm-field-header">
+        <span>{label}</span>
+        {badge ? <em className="notus-llm-field-badge">{badge}</em> : null}
+      </div>
       {children}
     </label>
   );
@@ -100,20 +103,18 @@ function ConfigRow({ item, onEdit, onDelete }) {
   return (
     <div className="notus-llm-row">
       <div className="notus-llm-row-main">
-        <div className="notus-llm-row-name">{item.name}</div>
+        <div className="notus-llm-row-name">{providerLabel}</div>
         <div className="notus-llm-row-meta">
-          <span className="notus-llm-provider">{providerLabel}</span>
-          <span className="notus-llm-dot" />
           <span className="notus-llm-code">{item.model}</span>
           <span className="notus-llm-dot" />
           <span className="notus-llm-code notus-llm-url">{item.base_url}</span>
         </div>
       </div>
       <div className="notus-llm-row-actions">
-        <button type="button" className="notus-llm-icon-button" aria-label={'编辑 ' + item.name} onClick={() => onEdit(item)}>
+        <button type="button" className="notus-llm-icon-button" aria-label={'编辑 ' + providerLabel + ' 配置'} onClick={() => onEdit(item)}>
           <Icons.edit size={15} />
         </button>
-        <button type="button" className="notus-llm-icon-button is-danger" aria-label={'删除 ' + item.name} onClick={() => onDelete(item)}>
+        <button type="button" className="notus-llm-icon-button is-danger" aria-label={'删除 ' + providerLabel + ' 配置'} onClick={() => onDelete(item)}>
           <Icons.trash size={15} />
         </button>
       </div>
@@ -148,9 +149,15 @@ export function LlmConfigCardsSection({
   const [draft, setDraft] = useState(createDraft());
   const [pendingDelete, setPendingDelete] = useState(null);
   const [submitting, setSubmitting] = useState(false);
-  const resolvedProvider = useMemo(
+  const inferredProvider = useMemo(
     () => inferLlmProvider({ baseUrl: draft.baseUrl, model: draft.model }),
     [draft.baseUrl, draft.model]
+  );
+  const selectedProvider = String(draft.provider || '').trim();
+  const effectiveProvider = selectedProvider || inferredProvider;
+  const resolvedProviderLabel = useMemo(
+    () => resolveLlmProviderLabel(effectiveProvider),
+    [effectiveProvider]
   );
 
   useEffect(() => {
@@ -174,15 +181,10 @@ export function LlmConfigCardsSection({
   };
 
   const handleSubmit = async () => {
-    const name = String(draft.name || '').trim();
     const model = String(draft.model || '').trim();
     const baseUrl = String(draft.baseUrl || '').trim();
     const apiKey = String(draft.apiKey || '').trim();
 
-    if (!name) {
-      toast('请填写配置名称', 'warning');
-      return;
-    }
     if (!model) {
       toast('请填写 LLM 模型名称', 'warning');
       return;
@@ -199,8 +201,8 @@ export function LlmConfigCardsSection({
     setSubmitting(true);
     try {
       const payload = {
-        name,
-        provider: resolvedProvider,
+        name: resolvedProviderLabel,
+        provider: effectiveProvider,
         api_protocol: normalizeApiProtocol(draft.apiProtocol),
         model,
         base_url: baseUrl,
@@ -226,7 +228,7 @@ export function LlmConfigCardsSection({
     if (!pendingDelete) return;
     try {
       await deleteConfig(pendingDelete.id);
-      toast('已删除“' + pendingDelete.name + '”', 'success');
+      toast('已删除“' + resolveLlmProviderLabel(pendingDelete.provider) + '”', 'success');
     } catch (error) {
       toast(error.message || '删除 LLM 配置失败', 'error');
     } finally {
@@ -281,23 +283,29 @@ export function LlmConfigCardsSection({
             </div>
             <div className="notus-llm-modal-body">
               <LlmField label="兼容协议">
-                <select
-                  className="notus-model-input"
+                <DropdownSelect
                   value={draft.apiProtocol}
-                  onChange={(event) => setDraft((prev) => ({ ...prev, apiProtocol: normalizeApiProtocol(event.target.value) }))}
-                >
-                  {API_PROTOCOL_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>{option.label}</option>
-                  ))}
-                </select>
+                  options={API_PROTOCOL_OPTIONS}
+                  onChange={(nextValue) => setDraft((prev) => ({ ...prev, apiProtocol: normalizeApiProtocol(nextValue) }))}
+                  menuZIndex={2205}
+                  buttonStyle={{
+                    minHeight: 38,
+                    background: '#fafafa',
+                    border: '1px solid #e5e3d8',
+                    borderRadius: 9,
+                    color: '#2d2d2d',
+                    fontSize: 13,
+                    lineHeight: 1.4,
+                  }}
+                />
               </LlmField>
 
-              <LlmField label="配置名称">
+              <LlmField label="提供商">
                 <input
                   className="notus-model-input"
-                  value={draft.name}
-                  onChange={(event) => setDraft((prev) => ({ ...prev, name: event.target.value }))}
-                  placeholder="例如：主力模型、备用模型"
+                  value={draft.provider}
+                  onChange={(event) => setDraft((prev) => ({ ...prev, provider: event.target.value }))}
+                  placeholder={draft.apiProtocol === 'anthropic' ? 'Anthropic' : 'OpenAI'}
                 />
               </LlmField>
 
@@ -319,17 +327,17 @@ export function LlmConfigCardsSection({
                 />
               </LlmField>
 
-              <LlmField label="API Key">
+              <LlmField label="API Key" badge={draft.apiKeySet ? '已保存' : ''}>
                 <input
                   className="notus-model-input"
                   type="password"
                   value={draft.apiKey}
                   onChange={(event) => setDraft((prev) => ({ ...prev, apiKey: event.target.value }))}
-                  placeholder="sk-••••••••••••"
+                  placeholder={draft.apiKeySet ? '已保存，留空不修改' : 'sk-••••••••••••'}
                 />
               </LlmField>
 
-              <div className="notus-llm-modal-note">保存后即可在知识库问答与创作页选用，无需先测试连通性。</div>
+              <div className="notus-llm-modal-note">提供商会根据 Base URL 和模型名自动识别，但这里只作为保存时的兜底推断；输入框本身不再自动回填默认值。保存后即可在知识库问答与创作页选用，无需先测试连通性。</div>
             </div>
             <div className="notus-llm-modal-footer">
               <button type="button" className="notus-llm-secondary-button" onClick={closeDialog} disabled={submitting}>取消</button>
@@ -346,7 +354,7 @@ export function LlmConfigCardsSection({
           <button type="button" className="notus-llm-modal-backdrop" aria-label="关闭删除确认" onClick={() => setPendingDelete(null)} />
           <section className="notus-llm-delete-modal" role="dialog" aria-modal="true" aria-label="删除 LLM 配置">
             <h3>删除 LLM 配置</h3>
-            <p>确定删除“{pendingDelete.name}”吗？如果它是当前回退配置，系统会自动切换到剩余的最新配置。</p>
+            <p>确定删除“{resolveLlmProviderLabel(pendingDelete.provider)}”吗？如果它是当前回退配置，系统会自动切换到剩余的最新配置。</p>
             <div className="notus-llm-delete-actions">
               <button type="button" className="notus-llm-secondary-button" onClick={() => setPendingDelete(null)}>取消</button>
               <button type="button" className="notus-llm-danger-button" onClick={confirmDelete}>删除</button>

@@ -34,6 +34,7 @@ export const Icons = {
   strike: (p) => <Icon {...p}><path d="M4 12h16M17 7a4 4 0 0 0-4-3H9a3 3 0 0 0 0 6h2M8 17a4 4 0 0 0 4 3h3a3 3 0 0 0 0-6"/></Icon>,
   link: (p) => <Icon {...p}><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></Icon>,
   image: (p) => <Icon {...p}><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/></Icon>,
+  copy: (p) => <Icon {...p}><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"/></Icon>,
   code: (p) => <Icon {...p}><path d="m8 8-4 4 4 4M16 8l4 4-4 4M14 4l-4 16"/></Icon>,
   quote: (p) => <Icon {...p}><path d="M7 7H4v6h5l-2 4M17 7h-3v6h5l-2 4"/></Icon>,
   divider: (p) => <Icon {...p}><path d="M4 12h16M8 6h8M8 18h8"/></Icon>,

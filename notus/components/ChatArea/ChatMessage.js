@@ -245,7 +245,7 @@ export const AiBubble = ({
   const hasBodyChildren = text !== undefined || children || retrievalStage || assistantNote || (citations && citations.length > 0) || (documents && documents.length > 0);
 
   return (
-  <div style={{ margin: '16px 0' }}>
+  <div style={{ margin: '16px 0', maxWidth: '100%', minWidth: 0 }}>
     <div style={{
       display: 'flex',
       alignItems: 'center',
@@ -276,8 +276,15 @@ export const AiBubble = ({
           <RetrievalStatus stage={retrievalStage.stage} sources={retrievalStage.sources} />
         ) : null}
         {text !== undefined
-          ? (showLoadingBubble ? <LoadingBubblePlaceholder retrievalStage={retrievalStage} /> : <StreamingText text={text} streaming={streaming} />)
-          : (children ? <div style={{ fontSize: 'var(--text-sm)', lineHeight: 1.7 }}>{children}</div> : null)}
+          ? (showLoadingBubble ? <LoadingBubblePlaceholder retrievalStage={retrievalStage} /> : (
+            <StreamingText
+              className="notus-agent-markdown"
+              text={text}
+              streaming={streaming}
+              style={{ maxWidth: '100%', minWidth: 0 }}
+            />
+          ))
+          : (children ? <div style={{ fontSize: 'var(--text-sm)', lineHeight: 1.7, maxWidth: '100%', minWidth: 0 }}>{children}</div> : null)}
         {text !== undefined && children}
         {assistantNote ? (
           <div style={{

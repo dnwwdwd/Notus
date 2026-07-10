@@ -24,6 +24,13 @@
 
 如果低优先级文档与高优先级规则冲突，以高优先级为准，并在回复中明确说明。
 
+## GitLab 拉取说明
+
+- `docs/GitLab_拉取与认证说明.md` 用来记录本仓库从 GitLab 拉取项目的方式、SSH 认证方式和基本原理。
+- 这份说明描述的是 LightOS 环境下连接 GitLab 的操作姿势，不是 mac 本机的访问方式。
+- LightOS 下使用 `192.168.18.133:1111` 这个 SSH 转发口，并配合本机 `~/.ssh/id_ed25519_gitlab` 认证。
+- mac 本机仍按原有域名方式访问 GitLab，不要把 LightOS 的转发口当成 mac 的标准配置。
+
 ---
 
 ## 需求记录流程
@@ -104,8 +111,8 @@
 - 不要用默认 SSH key 推送 GitLab；默认 key 可能对应 GitHub 或其他账号，会导致 Permission denied (publickey)。
 - 私有 GitLab 远程用于保留完整项目副本，默认应提交源码、文档、需求台账、懒猫兼容配置、脚本和其他项目源文件。
 - GitHub 远程默认只提交公开仓库应保留的源码与必要项目文件，不提交 `docs/` 和 `Notus-design-draft/` 目录。
-- 私有 GitLab 远程继续排除构建和打包产物，以及本地运行数据；至少包括 `*.lpk`、`web-dist/`、`desktop/dist/`、`desktop/resources/notus/`、`lzc-dist/`、`.next/`、`notus/.next/`、`node_modules/`、`notus/node_modules/`、环境变量文件、数据库文件、日志目录和本地笔记目录。
-- GitHub 远程同样继续排除构建和打包产物，以及本地运行数据；此外还应排除 `docs/`、`Notus-design-draft/`。
+- 私有 GitLab 远程继续排除构建和打包产物，以及本地运行数据；至少包括 `*.lpk`、`web-dist/`、`desktop/dist/`、`desktop/resources/notus/`、`lzc/`、`lzc-dist/`、`.next/`、`notus/.next/`、`node_modules/`、`notus/node_modules/`、环境变量文件、数据库文件、`logs/` 日志目录和 `notes/` 本地笔记目录。
+- GitHub 远程同样继续排除构建和打包产物，以及本地运行数据；至少包括 `*.lpk`、`web-dist/`、`desktop/dist/`、`desktop/resources/notus/`、`lzc/`、`lzc-dist/`、`.next/`、`notus/.next/`、`node_modules/`、`notus/node_modules/`、环境变量文件、数据库文件、`logs/` 日志目录和 `notes/` 本地笔记目录；此外还应排除 `docs/`、`Notus-design-draft/`。
 - 如无额外说明，涉及仓库同步时不要把“私有 GitLab 需要完整文件”误解为重新纳入上述构建产物；GitLab 提交范围以“完整源文件 + 排除构建产物和本地运行文件”为准，GitHub 提交范围以“公开源码文件 + 排除文档设计目录、构建产物和本地运行文件”为准。
 
 ---

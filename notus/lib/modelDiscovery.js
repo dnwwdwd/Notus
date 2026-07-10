@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { buildAnthropicCompatibleAuthHeaders, normalizeAnthropicApiBaseUrl } = require('./anthropicCompat');
 const { createAppError } = require('./errors');
 const { createLogger } = require('./logger');
 
@@ -71,6 +72,14 @@ function normalizeBaseUrl(value) {
   return String(value || '').replace(/\/+$/, '');
 }
 
+function normalizeModelBaseUrl(provider, value) {
+  const normalized = normalizeBaseUrl(value);
+  if (provider === 'anthropic') {
+    return normalizeAnthropicApiBaseUrl(normalized);
+  }
+  return normalized;
+}
+
 function getFallbackModels(kind, provider) {
   return (FALLBACK_MODELS[kind]?.[provider] || []).map((item) => ({ ...item, source: 'fallback' }));
 }
@@ -99,17 +108,18 @@ function toCacheKey(kind, provider, baseUrl, apiKey) {
   const signature = apiKey
     ? crypto.createHash('sha1').update(String(apiKey)).digest('hex').slice(0, 8)
     : 'no-key';
-  return [kind, provider || 'unknown', normalizeBaseUrl(baseUrl), signature].join('|');
+  return [kind, provider || 'unknown', normalizeModelBaseUrl(provider, baseUrl), signature].join('|');
 }
 
-function buildHeaders(provider, apiKey) {
+function buildHeaders(provider, apiKey, baseUrl) {
   const headers = { Accept: 'application/json' };
   if (!apiKey) return headers;
 
   if (provider === 'anthropic') {
-    headers['x-api-key'] = apiKey;
-    headers['anthropic-version'] = '2023-06-01';
-    return headers;
+    return {
+      ...headers,
+      ...buildAnthropicCompatibleAuthHeaders({ apiKey, baseUrl }),
+    };
   }
 
   headers.Authorization = `Bearer ${apiKey}`;
@@ -145,14 +155,14 @@ async function readFailure(response) {
 }
 
 async function fetchRemoteModels({ kind, provider, baseUrl, apiKey }) {
-  const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
+  const normalizedBaseUrl = normalizeModelBaseUrl(provider, baseUrl);
   if (!normalizedBaseUrl) {
     throw createAppError('MODEL_BASE_URL_REQUIRED', '模型列表地址未配置');
   }
 
   const response = await fetch(`${normalizedBaseUrl}/models`, {
     method: 'GET',
-    headers: buildHeaders(provider, apiKey),
+    headers: buildHeaders(provider, apiKey, normalizedBaseUrl),
   });
 
   if (!response.ok) {
@@ -193,7 +203,7 @@ async function getDiscoveredModels({ kind, provider, baseUrl, apiKey, context = 
       ...context,
       kind,
       provider,
-      base_url: normalizeBaseUrl(baseUrl),
+      base_url: normalizeModelBaseUrl(provider, baseUrl),
       error,
     });
 
@@ -211,4 +221,5 @@ module.exports = {
   getDiscoveredModels,
   getFallbackModels,
   mergeModels,
+  buildHeaders,
 };

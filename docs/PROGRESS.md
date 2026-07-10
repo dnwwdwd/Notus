@@ -38,7 +38,7 @@
 | 子任务 | 文件 | 状态 | 备注 |
 |--------|------|------|------|
 | M2-01 App Shell（TopBar + Sidebar + Shell） | `components/Layout/` | ✅ | Shell 已同步全局 `activePage`；侧边栏折叠、文件树展开、文件树 / 大纲 tab 与各 tab 滚动位置现已持久化；知识库页已开放文章大纲 |
-| M2-02 FileTree 组件（前端交互） | `components/Layout/Sidebar.js` `contexts/AppContext.js` `pages/api/files/` | ✅ | 已接真实文件系统与 SQLite；新建文件无需输入 `.md` 后缀，索引告警不再阻断文件创建；搜索已加 `useDeferredValue` 防抖；右键上下文菜单支持新建文件、文件移动，以及目录新建、重命名和删除，并改为直接应用后刷新文件树，不再弹出文件操作预览组件；文件重命名继续支持开启设置项后反向同步正文首个 H1；同一文档可在文件、知识库、创作页恢复最近阅读位置 |
+| M2-02 FileTree 组件（前端交互） | `components/Layout/Sidebar.js` `contexts/AppContext.js` `pages/api/files/` | ✅ | 已接真实文件系统与 SQLite；新建文件无需输入 `.md` 后缀，索引告警不再阻断文件创建；搜索已加 `useDeferredValue` 防抖；右键上下文菜单支持新建文件、文件移动，以及目录新建、移动、重命名和删除，并改为直接应用后刷新文件树，不再弹出文件操作预览组件；移动目录时目标列表排除当前目录及其子目录；文件重命名继续支持开启设置项后反向同步正文首个 H1；同一文档可在文件、知识库、创作页恢复最近阅读位置 |
 | M2-03 WYSIWYG Markdown 编辑器 | `components/Editor/WysiwygEditor.js` `components/Editor/EditorToolbar.js` `utils/editorClipboard.js` | ✅ | Tiptap + Markdown 双向转换；支持标题、链接、加粗、斜体、下划线、列表、任务列表、引用、代码块、分隔线、图片；代码块已接入 lowlight 语法高亮与语言选择；工具栏底部添加橙色脉冲条以指示未保存状态，并新增“复制全文”将整篇笔记以富文本 + Markdown 复制到剪贴板，本地图片会内嵌到复制结果 |
 | M2-04 MarkdownRenderer | `components/Editor/MarkdownPreview.js` | ✅ | remark-gfm，待接入 rehype-katex |
 | M2-05 TocTree | `components/Layout/Sidebar.js` `hooks/useEditorToc.js` `pages/files/index.js` `pages/knowledge.js` | ✅ | 文件页和知识库页共用真实 H1-H6 大纲；支持点击精确跳转、滚动联动高亮和 tab 往返后的正确选中状态 |
@@ -71,7 +71,7 @@
 | M4-03 创作规划器 + 执行器主链路 | `lib/canvasRequestPlanner.js` `lib/canvasAgent.js` | ✅ | 已从旧的单块工具循环升级为“规则规划 + 单次 helper + 执行器”主链路，支持单块、多块、全文与文本回复/文章分析；多轮续聊现会沿用最近目标块、最近操作类型和最近建议摘要 |
 | M4-04 旧 intent 链路清理 | `pages/api/agent/intent.js` `lib/agent.js` | ✅ | 旧的独立 intent 接口和 legacy Canvas 工具循环已移除，当前只保留内置请求规划主链路 |
 | M4-05 大纲生成 `/api/agent/outline` SSE | `pages/api/agent/outline.js` `lib/prompt.js` | ✅ | 已接 LLM 大纲生成，并改为复用 `getStyleContext()`，让大纲和改写共用同一套风格上下文 |
-| M4-06 Agentic Loop 运行 `/api/agent/loop/start` SSE | `pages/api/agent/loop/start.js` `hooks/useAgentLoopController.js` | ✅ | 创作页主输入已切到 Agentic Loop；默认自动确认模式跳过任务确认卡，文件级预览生成后由后端自动应用；手动确认模式通过消息摘要卡打开 DiffDialog 逐文件应用、回滚或全部应用，Agent 非删除写入覆盖整个笔记库，`create_note` 新建文件也先生成 diff 预览，`preview_file_operations` 支持移动文件、新建/重命名/移动目录且不开放删除目录/文件，应用动作不再续跑；创作页上传附件和用户本轮输入中的网页链接解析会进入本轮上下文，用户消息附件 chip 可查看解析内容，非 PDF 文本附件可复制，`goal` 中的当前文档/块快照/历史任务不再参与 URL 解析，PDF 解析原生依赖已纳入 standalone / LPK 打包口径 |
+| M4-06 Agentic Loop 运行 `/api/agent/loop/start` SSE | `pages/api/agent/loop/start.js` `hooks/useAgentLoopController.js` | ✅ | 创作页主输入已切到 Agentic Loop；默认自动确认模式跳过任务确认卡，文件级预览生成后由后端自动应用；手动确认模式通过消息摘要卡打开 DiffDialog 逐文件应用、回滚或全部应用，Agent 非删除写入覆盖整个笔记库，`create_note` 新建文件也先生成 diff 预览，`preview_file_operations` 支持移动文件、新建/重命名/移动目录且不开放删除目录/文件，应用动作不再续跑；目录类任务优先用 `analyze_folder` 查看实时子目录和 Markdown 文件列表，不用 `search_knowledge` 判断目录存在性；创作页上传附件和用户本轮输入中的网页链接解析会进入本轮上下文，用户消息附件 chip 可查看解析内容，非 PDF 文本附件可复制，`goal` 中的当前文档/块快照/历史任务不再参与 URL 解析，PDF 解析原生依赖已纳入 standalone / LPK 打包口径 |
 | M4-07 CanvasBlock 组件 | `components/Canvas/CanvasBlock.js` `pages/canvas.js` | ✅ | 块级编辑组件继续保留；创作页右侧聊天面板使用设计稿样式，当前打开文档名称和文章路径会进入 Agentic Loop 任务 goal，Agent 写入不再受当前文章所在目录限制，顶部 Agent Loop 任务/回滚卡片已移除 |
 | M4-08 AIPanel + 批量预览恢复 | `components/AIPanel/BatchOperationCard.js` `pages/canvas.js` | ✅ | 已支持整组预览、整组应用/取消、刷新恢复全部未应用预览、文章变更后 `stale` 提示；文件级 DiffDialog 支持大 diff 的横向/纵向滚动并保持底部操作按钮可见；AIPanel 继续保留后台自动事实补充 + 前台风格来源配置；历史会话抽屉支持二次确认删除 |
 | M4-09 新建创作入口页 | `pages/canvas.js` CanvasEntry | ✅ | 话题输入 + 最近列表全部可点击，"从空白开始"按钮可用；侧边栏选中文件后会在当前页基于该文章进入创作；携带 `?fileId=` 打开已有文档时先显示文档加载骨架，不再露出新建入口；新主题内容可保存为 Markdown 并索引 |

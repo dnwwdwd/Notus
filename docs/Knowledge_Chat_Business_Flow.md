@@ -48,7 +48,7 @@
 - 回答必须建立在知识库证据之上；证据不足时要保守回答。
 - 来源卡片点击后留在知识库页完成原文定位，不跳文件页。
 - 普通知识问答继续走 `/api/chat`；明确要求写入、新建笔记、整理成文章、跨文件整理或检查链接时，仍复用当前输入入口，但直接进入 Agentic Loop。
-- Agentic Loop 会先创建任务快照，非删除写入默认覆盖整个笔记库；单文件大规模或碎片化正文修改优先生成 `preview_file_revision` 暂存修订，由代码根据 base/draft 生成 diff；自动确认模式下仍会先做草稿安全分析，疑似空白、截断、缩水、大比例删除、丢 frontmatter 或 Markdown 结构不完整时只保留 pending 预览，不自动落盘；旧小范围或多文件 patch 继续生成 `preview_patch_files` 预览，文件/目录结构调整生成 `preview_file_operations` 预览，并通过消息摘要卡打开 DiffDialog 逐项应用、废弃或回滚；Agent 不开放删除目录或删除文件。
+- Agentic Loop 会先创建任务快照，非删除写入默认覆盖整个笔记库；单文件大规模或碎片化正文修改优先生成 `preview_file_revision` 暂存修订，由代码根据 base/draft 生成 diff；自动确认模式下仍会先做草稿安全分析，疑似空白、截断、缩水、大比例删除、丢 frontmatter 或 Markdown 结构不完整时只保留 pending 预览，不自动落盘；旧小范围或多文件 patch 继续生成 `preview_patch_files` 预览，文件/目录结构调整生成 `preview_file_operations` 预览，并通过消息摘要卡打开 DiffDialog 逐项应用、废弃或回滚；目录移动、重命名、新建和文件移动前应通过 `analyze_folder` 查看实时目录结构，不能用 `search_knowledge` 判断目录是否存在；Agent 不开放删除目录或删除文件。
 
 ---
 

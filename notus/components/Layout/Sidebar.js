@@ -54,6 +54,13 @@ function extractParentPath(filePath) {
   return index === -1 ? '' : normalized.slice(0, index);
 }
 
+function isSameOrChildPath(candidatePath, parentPath) {
+  const candidate = String(candidatePath || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+  const parent = String(parentPath || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+  if (!parent) return false;
+  return candidate === parent || candidate.startsWith(`${parent}/`);
+}
+
 async function parseErrorResponse(response, fallbackMessage) {
   try {
     const payload = await response.json();
@@ -399,7 +406,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
   }, [refreshFiles]);
 
   const handleContextMove = useCallback(() => {
-    if (!contextMenu?.node || contextMenu.node.type !== 'file') return;
+    if (!contextMenu?.node || !['file', 'folder'].includes(contextMenu.node.type)) return;
     setMoveNode(contextMenu.node);
     setMoveDest(extractParentPath(contextMenu.node.path));
     setMoveOpen(true);
@@ -488,19 +495,19 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
   }, [applySidebarFileOperation, refreshFiles, renameName, renameNode, toast]);
 
   const handleMoveSubmit = useCallback(async () => {
-    if (!moveNode || moveNode.type !== 'file') return;
+    if (!moveNode || !['file', 'folder'].includes(moveNode.type)) return;
     setMoveSubmitting(true);
     try {
       await applySidebarFileOperation({
-        change_type: 'move_file',
+        change_type: moveNode.type === 'folder' ? 'move_folder' : 'move_file',
         old_path: moveNode.path,
         dest: moveDest,
       });
-      toast('文件已移动', 'success');
+      toast(moveNode.type === 'folder' ? '目录已移动' : '文件已移动', 'success');
       setMoveOpen(false);
       setMoveNode(null);
     } catch (error) {
-      toast(error.message || '移动文件失败', 'error');
+      toast(error.message || (moveNode.type === 'folder' ? '移动目录失败' : '移动文件失败'), 'error');
     } finally {
       setMoveSubmitting(false);
     }
@@ -511,6 +518,11 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
     () => sortTreeForDisplay(filteredTree),
     [filteredTree]
   );
+  const moveFolderOptions = useMemo(() => {
+    if (!moveNode || moveNode.type !== 'folder') return folderOptions;
+    return folderOptions.filter((option) => !isSameOrChildPath(option.value, moveNode.path));
+  }, [folderOptions, moveNode]);
+  const activeMoveOptions = moveNode?.type === 'folder' ? moveFolderOptions : folderOptions;
   const flat = useMemo(
     () => flatTree(orderedTree, openFolders, Boolean(deferredSearchQuery.trim())),
     [orderedTree, openFolders, deferredSearchQuery]
@@ -907,19 +919,21 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
           setMoveOpen(false);
           setMoveNode(null);
         }}
-        title="移动文件"
+        title={moveNode?.type === 'folder' ? '移动目录' : '移动文件'}
         footer={
           <>
             <Button variant="ghost" onClick={() => setMoveOpen(false)} disabled={moveSubmitting}>取消</Button>
             <Button variant="primary" loading={moveSubmitting} onClick={handleMoveSubmit}>
-              移动文件
+              {moveNode?.type === 'folder' ? '移动目录' : '移动文件'}
             </Button>
           </>
         }
       >
         <div style={{ display: 'grid', gap: 14 }}>
           <div>
-            <div style={{ fontSize: 'var(--text-sm)', fontWeight: 500, marginBottom: 6 }}>文件</div>
+            <div style={{ fontSize: 'var(--text-sm)', fontWeight: 500, marginBottom: 6 }}>
+              {moveNode?.type === 'folder' ? '目录' : '文件'}
+            </div>
             <div style={{ padding: '10px 12px', borderRadius: 'var(--radius-md)', background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', whiteSpace: 'normal', overflowWrap: 'anywhere' }}>
               {moveNode?.path || ''}
             </div>
@@ -928,10 +942,11 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
             <div style={{ fontSize: 'var(--text-sm)', fontWeight: 500, marginBottom: 6 }}>移动到</div>
             <DropdownSelect
               value={moveDest}
-              options={folderOptions}
+              options={activeMoveOptions}
               onChange={(nextValue) => setMoveDest(nextValue)}
               searchable
               searchPlaceholder="搜索目录"
+              emptyText="没有可移动到的目录"
             />
           </div>
         </div>
@@ -1640,6 +1655,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
             ? [
               { label: '新建文件', icon: <Icons.filePlus size={13} />, action: handleContextCreateFile },
               { label: '新建目录', icon: <Icons.folderPlus size={13} />, action: handleContextCreateFolder },
+              { label: '移动目录', icon: <Icons.folderOpen size={13} />, action: handleContextMove },
               { label: '重命名目录', icon: <Icons.edit size={13} />, action: handleContextRename },
               { label: '删除目录', icon: <Icons.trash size={13} />, action: handleContextDelete, danger: true },
             ]
@@ -1689,7 +1705,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
             <>
               <Button variant="ghost" onClick={() => { setRenameOpen(false); setRenameNode(null); }}>取消</Button>
               <Button variant="primary" loading={renameSubmitting} disabled={!renameName.trim()} onClick={handleRenameSubmit}>
-                {renameNode?.type === 'folder' ? '生成预览' : '确认'}
+                确认
               </Button>
             </>
           }

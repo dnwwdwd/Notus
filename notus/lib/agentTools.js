@@ -47,6 +47,7 @@ const {
 } = require('./fileRevisions');
 
 const ANALYZE_FOLDER_MAX_FILES = 200;
+const ANALYZE_FOLDER_MAX_FOLDERS = 500;
 
 function tool(name, description, properties, required = []) {
   return {
@@ -68,7 +69,7 @@ function webSearchToolDefinition() {
 
 function buildToolDefinitions(session = {}) {
   const definitions = [
-    tool('search_knowledge', '在用户的笔记知识库中检索相关内容。需要了解笔记事实时调用。', {
+    tool('search_knowledge', '在用户的笔记知识库中检索 Markdown 正文、事实材料和写作参考。不要用它判断目录是否存在、目标目录位置或空目录；文件系统结构请用 analyze_folder。', {
       query: { type: 'string', description: '检索关键词或问题' },
       scope_paths: { type: 'array', items: { type: 'string' }, description: '可选，限定检索目录或文件路径' },
       top_k: { type: 'integer', default: 5, description: '返回结果数，最大 10' },
@@ -167,7 +168,7 @@ function buildToolDefinitions(session = {}) {
         },
       },
     }, ['questions']),
-    tool('analyze_folder', '分析目录下的 Markdown 文件结构，返回文件路径、标题和可选内容预览。', {
+    tool('analyze_folder', '查看实时文件系统目录结构，返回子目录、Markdown 文件路径、标题和可选内容预览。适合移动、重命名、新建目录或移动文件前确认路径。', {
       folder_path: { type: 'string', description: '目录路径，空字符串表示根目录' },
       include_content_preview: { type: 'boolean', default: false },
     }, ['folder_path']),
@@ -1104,10 +1105,31 @@ function listMarkdownFiles(absPath, notesDir) {
   return results;
 }
 
+function listFoldersUnder(absPath, notesDir) {
+  const root = path.resolve(notesDir);
+  const results = [];
+  if (!fs.existsSync(absPath)) return results;
+  const stat = fs.statSync(absPath);
+  if (!stat.isDirectory()) return results;
+  const entries = fs.readdirSync(absPath, { withFileTypes: true });
+  entries.forEach((entry) => {
+    if (entry.name.startsWith('.')) return;
+    const next = path.join(absPath, entry.name);
+    if (!entry.isDirectory()) return;
+    results.push(path.relative(root, next).replace(/\\/g, '/'));
+    if (results.length < ANALYZE_FOLDER_MAX_FOLDERS) {
+      results.push(...listFoldersUnder(next, notesDir));
+    }
+  });
+  return results.slice(0, ANALYZE_FOLDER_MAX_FOLDERS);
+}
+
 function executeAnalyzeFolder({ folder_path: folderPath = '', include_content_preview: includePreview = false } = {}, sessionId, notesDir = getEffectiveConfig().notesDir) {
   let target;
   try { target = resolveInsideNotes(notesDir, folderPath, { allowRoot: true }); } catch (error) { return { error: 'INVALID_PATH', message: error.message }; }
   if (!fs.existsSync(target.absolutePath)) return { error: 'FOLDER_NOT_FOUND', path: target.relativePath };
+  const folders = listFoldersUnder(target.absolutePath, notesDir);
+  const foldersTruncated = folders.length >= ANALYZE_FOLDER_MAX_FOLDERS;
   const all = listMarkdownFiles(target.absolutePath, notesDir);
   const truncated = all.length > ANALYZE_FOLDER_MAX_FILES;
   const selected = truncated ? all.slice(0, ANALYZE_FOLDER_MAX_FILES) : all;
@@ -1118,7 +1140,18 @@ function executeAnalyzeFolder({ folder_path: folderPath = '', include_content_pr
     if (includePreview) item.preview = content.slice(0, 160);
     return item;
   });
-  return { folder_path: target.relativePath, file_count: files.length, total_count: all.length, truncated, truncate_limit: ANALYZE_FOLDER_MAX_FILES, files };
+  return {
+    folder_path: target.relativePath,
+    folder_count: folders.length,
+    folders_truncated: foldersTruncated,
+    folder_truncate_limit: ANALYZE_FOLDER_MAX_FOLDERS,
+    folders,
+    file_count: files.length,
+    total_count: all.length,
+    truncated,
+    truncate_limit: ANALYZE_FOLDER_MAX_FILES,
+    files,
+  };
 }
 
 function normalizeLinkTarget(rawTarget = '', currentPath = '') {

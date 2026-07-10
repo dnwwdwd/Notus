@@ -14,11 +14,14 @@ process.env.SESSION_DIR = path.join(tempRoot, 'session');
 
 const { getDb, initDb } = require('../lib/db');
 const { createSession, updateSessionStatus, validateWrite } = require('../lib/agentSession');
-const { executePreviewFileOperations } = require('../lib/agentTools');
+const { executeAnalyzeFolder, executePreviewFileOperations } = require('../lib/agentTools');
 
 async function runTests() {
   fs.mkdirSync(process.env.NOTES_DIR, { recursive: true });
   fs.mkdirSync(process.env.ASSETS_DIR, { recursive: true });
+  fs.mkdirSync(path.join(process.env.NOTES_DIR, 'typora_files', '工作'), { recursive: true });
+  fs.mkdirSync(path.join(process.env.NOTES_DIR, 'typora_files', 'AI工作流'), { recursive: true });
+  fs.mkdirSync(path.join(process.env.NOTES_DIR, 'typora_files', '专利'), { recursive: true });
   initDb();
 
   const conversation = getDb().prepare(`
@@ -66,6 +69,13 @@ async function runTests() {
     ],
   }, session.sessionId);
   assert.strictEqual(deletePreview.error, 'DELETE_NOT_SUPPORTED');
+
+  const rootFolders = executeAnalyzeFolder({ folder_path: 'typora_files' }, session.sessionId);
+  assert.ifError(rootFolders.error);
+  assert.ok(rootFolders.folders.includes('typora_files/工作'), 'analyze_folder 应返回空目录');
+  assert.ok(rootFolders.folders.includes('typora_files/AI工作流'), 'analyze_folder 应返回相近名称目录，供模型精确区分');
+  assert.ok(rootFolders.folders.includes('typora_files/专利'), 'analyze_folder 应返回源目录');
+  assert.strictEqual(rootFolders.files.length, 0, '空目录场景不应依赖 Markdown 文件列表判断目录是否存在');
 
   console.log('agent write policy tests passed');
 }

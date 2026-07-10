@@ -236,7 +236,7 @@ SSE 过程会返回：
 2. 解析本轮上传附件和 `user_query/input_text/display_query` 中的网页链接；成功或部分成功的解析结果以 `system + parsed_attachment` 消息写入当前 conversation。服务端不得从完整 `goal`、当前文档内容、块快照、文章路径或历史任务中提取 URL。用户消息 meta 需要保留附件 `stored_name/extension/source_kind`，便于新上传附件内容弹窗读取临时文件；历史恢复时则按 `parsed_attachment.meta.source` 关联正文。
 3. 在执行前写入 `agent_snapshots`。
 4. 通过 Agent Loop 多轮调用 `search_knowledge / read_file / create_note / preview_patch_files / preview_canvas_blocks / preview_file_operations / ask_question_card / analyze_folder / check_links`。
-5. `create_note` 生成 `change_type='create'` 的文件级 patch，`preview_patch_files` 生成修改已有文件的文件级 patch，`preview_file_operations` 生成移动文件、新建/重命名/移动目录的文件系统 patch，并写入 `canvas_operation_sets.pathes_json`；`preview_canvas_blocks` 根据当前文章块快照和 `@bN` 引用生成块级 `operations_json`；`ask_question_card` 只在任务明确但缺少必要结构化槽位，或用户明确要求先提问时生成提问卡片并等待用户回答。本轮仅有附件/外部材料且没有写入当前文档意图时，不得用提问卡片追问写入位置，应先总结附件或用普通文本询问用途。Agent 不支持删除目录或删除文件。
+5. `create_note` 生成 `change_type='create'` 的文件级 patch，`preview_patch_files` 生成修改已有文件的文件级 patch，`preview_file_operations` 生成移动文件、新建/重命名/移动目录的文件系统 patch，并写入 `canvas_operation_sets.pathes_json`；`analyze_folder` 用于文件系统任务前查看实时子目录和 Markdown 文件列表，`search_knowledge` 只用于正文事实和写作参考，不用于判断目录是否存在；`preview_canvas_blocks` 根据当前文章块快照和 `@bN` 引用生成块级 `operations_json`；`ask_question_card` 只在任务明确但缺少必要结构化槽位，或用户明确要求先提问时生成提问卡片并等待用户回答。本轮仅有附件/外部材料且没有写入当前文档意图时，不得用提问卡片追问写入位置，应先总结附件或用普通文本询问用途。Agent 不支持删除目录或删除文件。
 6. 自动确认模式在服务端自动调用文件级应用逻辑，patch 状态标记为 `auto_applied`；手动确认模式保持 `pending`。
 7. Loop 结束后，最终助手消息底部展示摘要卡；应用、回滚或废弃只调用 `/api/agent/loop/apply`，不会再次请求 LLM。
 

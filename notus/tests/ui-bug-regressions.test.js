@@ -29,6 +29,10 @@ function runTests() {
   assert.ok(sidebar.includes('var(--accent-subtle)'));
   assert.ok(sidebar.includes("body: JSON.stringify({ action: 'apply', patch })"));
   assert.ok(!sidebar.includes("body: JSON.stringify({ action: 'preview', patches })"));
+  assert.ok(sidebar.includes("label: '移动目录'"));
+  assert.ok(sidebar.includes("change_type: moveNode.type === 'folder' ? 'move_folder' : 'move_file'"));
+  assert.ok(sidebar.includes('isSameOrChildPath(option.value, moveNode.path)'));
+  assert.ok(!sidebar.includes("renameNode?.type === 'folder' ? '生成预览' : '确认'"));
 
   const dropdownSelect = read('components/ui/DropdownSelect.js');
   assert.ok(dropdownSelect.includes('menuZIndex = 2100'));
@@ -59,6 +63,16 @@ function runTests() {
   assert.ok(agentWorkspace.includes('const activePath = activeOperation.new_path || activeOperation.file_path || activeOperation.old_path || activeOperation.path || \'全文\''));
   assert.ok(agentWorkspace.includes("removed.push(`原路径：${operation.old_path || operation.old || ''}`);"));
   assert.ok(!agentWorkspace.includes('function AgentDiffCard'));
+
+  const agentPrompt = read('lib/agentLoopPrompt.js');
+  assert.ok(agentPrompt.includes('文件系统任务要和内容任务分开处理'));
+  assert.ok(agentPrompt.includes('不要用 search_knowledge 判断目录是否存在'));
+  assert.ok(agentPrompt.includes('用户说“工作目录”时，不要把“AI工作流”等包含相近词的目录当作目标'));
+
+  const agentTools = read('lib/agentTools.js');
+  assert.ok(agentTools.includes('不要用它判断目录是否存在、目标目录位置或空目录'));
+  assert.ok(agentTools.includes('返回子目录、Markdown 文件路径、标题和可选内容预览'));
+  assert.ok(agentTools.includes('folders_truncated'));
 
   const llmConfigSection = read('components/Settings/LlmConfigCardsSection.js');
   assert.ok(llmConfigSection.includes("placeholder={draft.apiProtocol === 'anthropic' ? 'Anthropic' : 'OpenAI'}"));

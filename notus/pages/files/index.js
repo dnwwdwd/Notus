@@ -126,7 +126,7 @@ function writeFilesWorkspacePanels(panels) {
 export default function FilesPage() {
   const router = useRouter();
   const toast = useToast();
-  const { activeFile, allFiles, pendingCitation, clearPendingCitation, selectFile, refreshFiles, getCachedContent, setCachedContent, clearCachedContent } = useApp();
+  const { activeFile, allFiles, files, pendingCitation, clearPendingCitation, selectFile, refreshFiles, getCachedContent, setCachedContent, clearCachedContent } = useApp();
   const activeFileId = activeFile?.id;
   const contentRef = useRef('');
   const persistedContentRef = useRef('');
@@ -615,6 +615,7 @@ export default function FilesPage() {
   const agentPanel = (
     <FileAgentWorkspace
       allFiles={allFiles}
+      fileTree={files}
       refreshFiles={refreshFiles}
       onFilesChanged={handleAgentFilesChanged}
       beforeAgentRun={() => (saveState === 'dirty' ? handleSave() : true)}

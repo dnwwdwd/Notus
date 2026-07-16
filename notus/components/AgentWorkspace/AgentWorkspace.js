@@ -1254,7 +1254,8 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
   const activeMention = useMemo(() => {
     if (!mentionOptions.length || disabled) return null;
     const beforeCursor = value.slice(0, cursorIndex);
-    const match = beforeCursor.match(/(?:^|\s)@(?:\{([^}]*)|([^\s@]*))$/);
+    // 普通 @ 查询允许目录名中的空格；带花括号的完整 token 仍在右花括号处结束。
+    const match = beforeCursor.match(/(?:^|\s)@(?:\{([^}]*)|([^@\n]*))$/);
     if (!match) return null;
     const mentionStart = beforeCursor.lastIndexOf('@');
     const mentionKey = `${mentionStart}:${beforeCursor.slice(mentionStart, cursorIndex)}`;
@@ -1270,6 +1271,15 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
           option.searchText,
         ].filter(Boolean).join(' ').toLowerCase();
         return searchText.includes(query);
+      })
+      .sort((left, right) => {
+        const leftLabel = String(left?.label || '').trim().toLowerCase();
+        const rightLabel = String(right?.label || '').trim().toLowerCase();
+        const leftExact = query && leftLabel === query ? 0 : 1;
+        const rightExact = query && rightLabel === query ? 0 : 1;
+        if (leftExact !== rightExact) return leftExact - rightExact;
+        if (left?.kind !== right?.kind) return left?.kind === 'folder' ? -1 : 1;
+        return String(left?.preview || '').localeCompare(String(right?.preview || ''), 'zh-Hans-CN');
       })
       .slice(0, 8);
     return {
@@ -1576,16 +1586,16 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
                         marginBottom: index === activeMention.options.length - 1 ? 0 : 4,
                       })}
                     >
-                      <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                        <span style={{ fontSize: 13, fontWeight: 800, color: C.accent }}>{option.token}</span>
-                        <span style={{ minWidth: 0, fontSize: 12, color: C.secondary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{option.label}</span>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                        {option.kind === 'folder' ? <Icons.folder size={15} style={{ color: C.accent, flexShrink: 0 }} /> : <Icons.file size={15} style={{ color: C.accent, flexShrink: 0 }} />}
+                        <span style={{ minWidth: 0, fontSize: 13, fontWeight: 700, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{option.label}</span>
                       </span>
                       <span style={{ minWidth: 0, fontSize: 12, color: C.tertiary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{option.preview}</span>
                     </button>
                   ))}
                 </div>
               ) : (
-                <div style={{ padding: '8px 10px', fontSize: 12, color: C.tertiary }}>当前文档中没有匹配的块</div>
+                <div style={{ padding: '8px 10px', fontSize: 12, color: C.tertiary }}>没有匹配的文件或目录</div>
               )}
             </div>
           ) : null}

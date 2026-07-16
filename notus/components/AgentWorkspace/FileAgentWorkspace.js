@@ -57,11 +57,57 @@ function mapFileMention(file) {
     token: `@{${path}}`,
     label: name.replace(/\.md$/i, ''),
     preview: path,
+    kind: 'file',
     searchText: `${name} ${file?.name || ''} ${path}`,
   };
 }
 
-export function FileAgentWorkspace({ allFiles = [], refreshFiles, onFilesChanged, beforeAgentRun }) {
+function collectFolderMentions(nodes = []) {
+  return (Array.isArray(nodes) ? nodes : []).flatMap((node) => {
+    if (node?.type !== 'folder') return [];
+    const path = String(node.path || '').trim();
+    const name = String(node.name || node.title || path || '未命名目录').trim();
+    const current = path ? [{
+      value: `folder:${path}`,
+      token: `@{folder:${path}}`,
+      label: name,
+      preview: path,
+      kind: 'folder',
+      searchText: `${name} ${path}`,
+    }] : [];
+    return current.concat(collectFolderMentions(node.children));
+  });
+}
+
+function collectFolderMentionsFromFiles(files = []) {
+  const folderPaths = new Set();
+  (Array.isArray(files) ? files : []).forEach((file) => {
+    const parts = String(file?.path || '').replace(/\\/g, '/').split('/').filter(Boolean);
+    parts.slice(0, -1).forEach((_, index) => {
+      folderPaths.add(parts.slice(0, index + 1).join('/'));
+    });
+  });
+  return [...folderPaths].map((path) => ({
+    value: `folder:${path}`,
+    token: `@{folder:${path}}`,
+    label: path.split('/').pop() || path,
+    preview: path,
+    kind: 'folder',
+    searchText: path,
+  }));
+}
+
+function dedupeMentionOptions(options = []) {
+  const seen = new Set();
+  return (Array.isArray(options) ? options : []).filter((option) => {
+    const key = String(option?.token || option?.value || '');
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles, onFilesChanged, beforeAgentRun }) {
   const router = useRouter();
   const toast = useToast();
   const { status: appStatus, loading: appStatusLoading } = useAppStatus();
@@ -87,7 +133,11 @@ export function FileAgentWorkspace({ allFiles = [], refreshFiles, onFilesChanged
     llmConfigsLoading,
   });
   const aiUiState = useStableAiReadiness(aiState);
-  const mentionOptions = useMemo(() => allFiles.map(mapFileMention).filter((item) => item.preview), [allFiles]);
+  const mentionOptions = useMemo(() => dedupeMentionOptions([
+    ...allFiles.map(mapFileMention).filter((item) => item.preview),
+    ...collectFolderMentions(fileTree),
+    ...collectFolderMentionsFromFiles(allFiles),
+  ]), [allFiles, fileTree]);
   const operationSetById = useMemo(() => Object.fromEntries(
     pendingOperationSets.map((item) => [String(item.id || item.operation_set_id), item])
   ), [pendingOperationSets]);

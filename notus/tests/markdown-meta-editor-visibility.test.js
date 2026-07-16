@@ -24,6 +24,19 @@ function runTests() {
   assert.strictEqual(hidden.hiddenFrontmatter, '---\nid: "notus_123456"\n---\n');
   assert.deepStrictEqual(hidden.hiddenFrontmatterData, { id: 'notus_123456' });
 
+  const agentSource = [
+    '---',
+    'id: "notus_agent_123456"',
+    'created_by: notus_agent',
+    'title: "Agent 新建标题"',
+    '---',
+    '',
+    '正文内容',
+  ].join('\n');
+  const agentHidden = splitEditorVisibleMarkdown(agentSource);
+  assert.strictEqual(agentHidden.visibleContent, '正文内容');
+  assert.strictEqual(agentHidden.hiddenFrontmatterData.title, 'Agent 新建标题');
+
   const merged = mergeEditorVisibleMarkdown(hidden.visibleContent, hidden.hiddenFrontmatter);
   assert.strictEqual(merged, source);
   assert.strictEqual(extractVisiblePrimaryHeading(merged), '新文档');
@@ -40,6 +53,26 @@ function runTests() {
   const visible = splitEditorVisibleMarkdown(userFrontmatter);
   assert.strictEqual(visible.visibleContent, userFrontmatter);
   assert.strictEqual(visible.hiddenFrontmatter, '');
+
+  const userSystemIdAndTags = [
+    '---',
+    'id: "notus_123456"',
+    'tags: ["笔记"]',
+    '---',
+    '',
+    '# 正文',
+  ].join('\n');
+  assert.strictEqual(splitEditorVisibleMarkdown(userSystemIdAndTags).hiddenFrontmatter, '');
+
+  const userSystemIdAndTitle = [
+    '---',
+    'id: "notus_123456"',
+    'title: "用户标题"',
+    '---',
+    '',
+    '# 正文',
+  ].join('\n');
+  assert.strictEqual(splitEditorVisibleMarkdown(userSystemIdAndTitle).hiddenFrontmatter, '');
 
   const rewritten = rewriteVisibleMarkdownPrimaryHeading(userFrontmatter, '更新后的标题');
   assert.strictEqual(rewritten, [

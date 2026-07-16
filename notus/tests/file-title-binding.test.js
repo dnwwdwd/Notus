@@ -33,6 +33,7 @@ function runTests() {
     createFile,
     getFileById,
     renameFile,
+    saveFileByPath,
     syncFileHeadingToName,
     updateFile,
   } = require('../lib/files');
@@ -70,6 +71,20 @@ function runTests() {
   assert.ok(latestRenamed.content.startsWith('---\nid: '), '应保留系统 frontmatter');
   assert.ok(latestRenamed.content.includes('# 侧边栏重命名'));
   assert.ok(syncedRename.content.includes('# 侧边栏重命名'));
+
+  const imported = saveFileByPath('导入默认标题.md', [
+    '---',
+    'title: "导入源标题"',
+    '---',
+    '',
+    '# 导入源标题',
+    '',
+    '导入正文',
+  ].join('\n'), { titleFromFileName: true });
+  assert.strictEqual(imported.path, '导入默认标题.md');
+  assert.strictEqual(imported.title, '导入默认标题');
+  assert.ok(imported.content.includes('title: "导入默认标题"'));
+  assert.ok(imported.content.includes('# 导入默认标题'));
 
   console.log('file title binding tests passed');
 }

@@ -78,9 +78,12 @@ function injectFrontmatterId(content = '', stableId = generateStableId()) {
 
 function shouldHideSystemFrontmatter(frontmatter = {}) {
   const keys = Object.keys(frontmatter || {});
-  if (keys.length !== 1 || keys[0] !== 'id') return false;
   const value = String(frontmatter.id || '').trim();
-  return value.startsWith('notus_');
+  if (!value.startsWith('notus_')) return false;
+  const systemKeys = new Set(['id', 'created_by', 'title']);
+  if (!keys.every((key) => systemKeys.has(key))) return false;
+  if (keys.length === 1 && keys[0] === 'id') return true;
+  return String(frontmatter.created_by || '').trim() === 'notus_agent';
 }
 
 function splitEditorVisibleMarkdown(content = '') {

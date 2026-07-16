@@ -17,6 +17,7 @@ const HEADER_BREAKPOINTS = {
   compact: 960,
   iconOnly: 720,
 };
+const HEADER_ICON_SIZE = 32;
 
 function useHeaderWidthMode() {
   const [width, setWidth] = useState(null);
@@ -38,6 +39,7 @@ const HeaderIconButton = ({
   label,
   tooltip,
   active,
+  selectedIcon = false,
   disabled,
   loading,
   children,
@@ -46,7 +48,7 @@ const HeaderIconButton = ({
   onFocus,
   style,
 }) => {
-  const baseBackground = style?.background || (active ? 'var(--accent-subtle)' : 'transparent');
+  const baseBackground = selectedIcon ? 'transparent' : (style?.background || (active ? 'var(--accent-subtle)' : 'transparent'));
 
   return (
     <Tooltip content={tooltip || label} placement="bottom" gap={6}>
@@ -58,15 +60,17 @@ const HeaderIconButton = ({
         onClick={onClick}
         onFocus={onFocus}
         style={{
-          width: 32,
-          height: 32,
+          width: HEADER_ICON_SIZE,
+          height: HEADER_ICON_SIZE,
           boxSizing: 'border-box',
           borderRadius: 'var(--radius-sm)',
           display: 'inline-flex',
           alignItems: 'center',
           justifyContent: 'center',
           color: active ? 'var(--accent)' : disabled ? 'var(--text-tertiary)' : 'var(--text-secondary)',
-          background: active ? 'var(--accent-subtle)' : 'transparent',
+          background: selectedIcon ? 'transparent' : active ? 'var(--accent-subtle)' : 'transparent',
+          border: selectedIcon ? 'none' : undefined,
+          boxShadow: selectedIcon ? 'none' : undefined,
           cursor: disabled || loading ? 'not-allowed' : 'pointer',
           opacity: disabled ? 0.55 : 1,
           transition: 'background var(--transition-fast), color var(--transition-fast), transform var(--transition-fast), opacity var(--transition-fast)',
@@ -76,7 +80,7 @@ const HeaderIconButton = ({
         }}
         onMouseEnter={(event) => {
           if (!disabled && !loading) {
-            event.currentTarget.style.background = active || style?.background ? baseBackground : 'var(--bg-hover)';
+            event.currentTarget.style.background = selectedIcon || active || style?.background ? baseBackground : 'var(--bg-hover)';
           }
           onMouseEnter?.(event);
         }}
@@ -101,7 +105,6 @@ const HeaderIconButton = ({
 };
 
 export const TopBar = ({
-  active,
   fileName,
   saveState,
   onSave,
@@ -109,21 +112,21 @@ export const TopBar = ({
   showSaveButton = true,
   showIndex,
   showCmdK = true,
+  showSettingsButton = true,
   onCmdK,
   requestAction,
+  editorOpen,
+  agentOpen,
+  onToggleEditor,
+  onToggleAgent,
 }) => {
   const router = useRouter();
-  const { activePage, allFiles, selectFile } = useApp();
+  const { allFiles, selectFile } = useApp();
   const { shortcuts, matchShortcut, displayShortcut } = useShortcuts();
   const { compact, iconOnly } = useHeaderWidthMode();
   const searchInputRef = useRef(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState('');
-  const tabs = [
-    { id: 'files', label: '文件', shortLabel: '文件', href: '/files', icon: <Icons.file size={15} /> },
-    { id: 'knowledge', label: '知识库', shortLabel: '知识', href: '/knowledge', icon: <Icons.brain size={15} /> },
-    { id: 'canvas', label: '创作', shortLabel: '创作', href: '/canvas', icon: <Icons.sparkles size={15} /> },
-  ];
   const results = useMemo(() => {
     const keyword = query.trim().toLowerCase();
     if (!keyword) return [];
@@ -183,19 +186,12 @@ export const TopBar = ({
     action();
   }, [requestAction]);
 
-  const resolveTargetPage = useCallback(() => {
-    if (['files', 'knowledge', 'canvas'].includes(active)) return active;
-    if (['files', 'knowledge', 'canvas'].includes(activePage)) return activePage;
-    return 'files';
-  }, [active, activePage]);
-
   const handlePickFile = useCallback((file) => {
     closeSearch();
     const action = () => {
-      const targetPage = resolveTargetPage();
       selectFile(file);
-      const href = `/${targetPage}?fileId=${encodeURIComponent(file.id)}`;
-      if (router.pathname !== `/${targetPage}`) {
+      const href = `/files?fileId=${encodeURIComponent(file.id)}`;
+      if (router.pathname !== '/files') {
         navigateWithFallback(router, href);
         return;
       }
@@ -208,19 +204,39 @@ export const TopBar = ({
       return;
     }
     runAction(action);
-  }, [closeSearch, requestAction, resolveTargetPage, router, runAction, selectFile]);
+  }, [closeSearch, requestAction, router, runAction, selectFile]);
 
   useEffect(() => {
     const handleKeydown = (event) => {
       if (matchShortcut(event, shortcuts.globalSearch.combo)) {
         event.preventDefault();
         openSearch();
+        return;
+      }
+
+      if (typeof onToggleEditor === 'function' && matchShortcut(event, shortcuts.editorToggle.combo)) {
+        event.preventDefault();
+        onToggleEditor();
+        return;
+      }
+
+      if (typeof onToggleAgent === 'function' && matchShortcut(event, shortcuts.agentToggle.combo)) {
+        event.preventDefault();
+        onToggleAgent();
       }
     };
 
     document.addEventListener('keydown', handleKeydown);
     return () => document.removeEventListener('keydown', handleKeydown);
-  }, [matchShortcut, openSearch, shortcuts.globalSearch.combo]);
+  }, [
+    matchShortcut,
+    onToggleAgent,
+    onToggleEditor,
+    openSearch,
+    shortcuts.agentToggle.combo,
+    shortcuts.editorToggle.combo,
+    shortcuts.globalSearch.combo,
+  ]);
 
   useEffect(() => {
     return desktopClient.onOpenGlobalSearch(() => {
@@ -303,56 +319,7 @@ export const TopBar = ({
           {!iconOnly && <span style={{ fontSize: 'var(--text-base)', fontWeight: 600, letterSpacing: -0.2 }}>Notus</span>}
         </div>
 
-        {/* Nav Tabs */}
-        <div style={{ display: 'flex', gap: iconOnly ? 2 : 4, flex: '1 1 auto', minWidth: 0 }}>
-          {tabs.map((t) => {
-            const on = t.id === active;
-            const tabButton = (
-              <button
-                type="button"
-                key={t.id}
-                aria-label={t.label}
-                title={t.label}
-                onMouseEnter={() => prefetchRoute(t.href)}
-                onFocus={() => prefetchRoute(t.href)}
-                onClick={() => runAction(() => navigateWithFallback(router, t.href))}
-                style={{
-                  position: 'relative',
-                  padding: iconOnly ? '0 8px' : compact ? '0 10px' : '0 14px',
-                  height: 48,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: compact ? 6 : 0,
-                  fontSize: 'var(--text-sm)',
-                  fontWeight: on ? 500 : 400,
-                  color: on ? 'var(--accent)' : 'var(--text-secondary)',
-                  transition: 'color var(--transition-fast), background var(--transition-fast)',
-                  borderRadius: iconOnly ? 'var(--radius-sm)' : 0,
-                  minWidth: iconOnly ? 32 : 'auto',
-                  flexShrink: 0,
-                }}
-              >
-                {compact && <span style={{ display: 'inline-flex' }}>{t.icon}</span>}
-                {!iconOnly && <span>{compact ? t.shortLabel : t.label}</span>}
-                {on && (
-                  <div style={{
-                    position: 'absolute',
-                    left: iconOnly ? 8 : compact ? 10 : 14,
-                    right: iconOnly ? 8 : compact ? 10 : 14,
-                    bottom: 0,
-                    height: 2,
-                    background: 'var(--accent)',
-                    borderRadius: '2px 2px 0 0',
-                  }} />
-                )}
-              </button>
-            );
-            return iconOnly ? (
-              <Tooltip key={t.id} content={t.label} placement="bottom" gap={6}>{tabButton}</Tooltip>
-            ) : tabButton;
-          })}
-        </div>
+        <div style={{ flex: '1 1 auto', minWidth: 0 }} />
 
         {/* Save state + action */}
         {fileName && onSave && showSaveButton && (
@@ -400,46 +367,51 @@ export const TopBar = ({
 
         {/* ⌘K search */}
         {showCmdK && (
-          iconOnly ? (
-            <HeaderIconButton label="搜索或跳转" tooltip={`搜索或跳转（${displayShortcut(shortcuts.globalSearch.combo)}）`} onClick={openSearch}>
-              <Icons.search size={14} />
-            </HeaderIconButton>
-          ) : (
-            <Tooltip content={`搜索或跳转（${displayShortcut(shortcuts.globalSearch.combo)}）`} placement="bottom" gap={6}>
-              <button
-                type="button"
-                onClick={openSearch}
-                style={{
-                  height: 28,
-                  padding: '0 10px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  background: 'var(--bg-secondary)',
-                  border: '1px solid var(--border-subtle)',
-                  borderRadius: 'var(--radius-md)',
-                  color: 'var(--text-tertiary)',
-                  fontSize: 12,
-                  flexShrink: 0,
-                }}
-              >
-                <Icons.search size={13} />
-                <span>{compact ? displayShortcut(shortcuts.globalSearch.combo) : '搜索或跳转…'}</span>
-              </button>
-            </Tooltip>
-          )
+          <HeaderIconButton
+            label="搜索文件"
+            tooltip="搜索文件"
+            onClick={openSearch}
+          >
+            <Icons.search size={16} />
+          </HeaderIconButton>
+        )}
+
+        {typeof onToggleEditor === 'function' && (
+          <HeaderIconButton
+            label={editorOpen ? '收起富文本编辑器' : '展开富文本编辑器'}
+            tooltip={`${editorOpen ? '收起富文本编辑器' : '展开富文本编辑器'}（${displayShortcut(shortcuts.editorToggle.combo)}）`}
+            active={Boolean(editorOpen)}
+            selectedIcon
+            onClick={onToggleEditor}
+          >
+            <EditorPanelIcon active={Boolean(editorOpen)} />
+          </HeaderIconButton>
+        )}
+
+        {typeof onToggleAgent === 'function' && (
+          <HeaderIconButton
+            label={agentOpen ? '收起 AI 聊天面板' : '展开 AI 聊天面板'}
+            tooltip={`${agentOpen ? '收起 AI 聊天面板' : '展开 AI 聊天面板'}（${displayShortcut(shortcuts.agentToggle.combo)}）`}
+            active={Boolean(agentOpen)}
+            selectedIcon
+            onClick={onToggleAgent}
+          >
+            <AgentPanelIcon active={Boolean(agentOpen)} />
+          </HeaderIconButton>
         )}
 
         {/* Settings button */}
-        <HeaderIconButton
-          label="设置"
-          tooltip="设置"
-          onMouseEnter={() => prefetchRoute('/settings/model')}
-          onFocus={() => prefetchRoute('/settings/model')}
-          onClick={() => runAction(() => navigateWithFallback(router, '/settings/model'))}
-        >
-          <Icons.settings size={18} />
-        </HeaderIconButton>
+        {showSettingsButton ? (
+          <HeaderIconButton
+            label="设置"
+            tooltip="设置"
+            onMouseEnter={() => prefetchRoute('/settings/model')}
+            onFocus={() => prefetchRoute('/settings/model')}
+            onClick={() => runAction(() => navigateWithFallback(router, '/settings/model'))}
+          >
+            <Icons.settings size={18} />
+          </HeaderIconButton>
+        ) : null}
 
         {/* Indexing progress indicator */}
         {showIndex && (
@@ -457,3 +429,19 @@ export const TopBar = ({
     </>
   );
 };
+
+const EditorPanelIcon = ({ active }) => (
+  <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <rect x="3" y="4" width="18" height="16" rx="3" fill={active ? 'currentColor' : 'none'} fillOpacity={active ? 0.12 : 0} />
+    <path d="M12 4v16" />
+    <path d="M7 8h2M7 12h2M7 16h2M15 8h3M15 12h3M15 16h3" strokeWidth={active ? 2 : 1.5} />
+  </svg>
+);
+
+const AgentPanelIcon = ({ active }) => (
+  <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M5 5.5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-7l-4.8 3v-3H5a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2Z" fill={active ? 'currentColor' : 'none'} fillOpacity={active ? 0.12 : 0} />
+    <path d="M8 10h.01M12 10h.01M16 10h.01" strokeWidth={active ? 2.6 : 2.2} />
+    <path d="M8 14h8" strokeWidth={active ? 2 : 1.5} />
+  </svg>
+);

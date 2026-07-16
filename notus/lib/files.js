@@ -10,6 +10,7 @@ const {
   extractVisiblePrimaryHeading,
   mergeEditorVisibleMarkdown,
   normalizeFileNameBase,
+  parseFrontmatter,
   rewriteVisibleMarkdownPrimaryHeading,
   splitEditorVisibleMarkdown,
 } = require('./markdownMeta');
@@ -103,6 +104,21 @@ function applyVisibleTitleBinding(fileContent = '', nextTitle = '') {
   const { visibleContent, hiddenFrontmatter } = splitEditorVisibleMarkdown(fileContent);
   const updatedVisibleContent = rewriteVisibleMarkdownPrimaryHeading(visibleContent, nextTitle);
   return mergeEditorVisibleMarkdown(updatedVisibleContent, hiddenFrontmatter);
+}
+
+function applyImportedTitle(fileContent = '', nextTitle = '') {
+  const source = applyVisibleTitleBinding(fileContent, nextTitle);
+  const parsed = parseFrontmatter(source);
+  if (!parsed.raw) return source;
+
+  let titleWritten = false;
+  const nextLines = parsed.raw.split('\n').map((line) => {
+    if (!/^title:\s*/i.test(line)) return line;
+    titleWritten = true;
+    return `title: ${JSON.stringify(String(nextTitle || ''))}`;
+  });
+  if (!titleWritten) nextLines.push(`title: ${JSON.stringify(String(nextTitle || ''))}`);
+  return `---\n${nextLines.join('\n')}\n---${parsed.body || ''}`;
 }
 
 function extractTitle(filePath, content = '') {
@@ -527,15 +543,22 @@ function createFile(filePath, content = '') {
   };
 }
 
-function saveFileByPath(filePath, content = '') {
-  const finalPath = writeMarkdownFile(filePath, String(content || ''));
-  const row = upsertFileRecord(finalPath, String(content || ''), 0);
+function saveFileByPath(filePath, content = '', options = {}) {
+  const finalPath = ensureMarkdownPath(filePath);
+  const importedTitle = options.titleFromFileName
+    ? getBaseName(finalPath).replace(/\.md$/i, '')
+    : '';
+  const source = importedTitle
+    ? applyImportedTitle(String(content || ''), importedTitle)
+    : String(content || '');
+  const writtenPath = writeMarkdownFile(finalPath, source);
+  const row = upsertFileRecord(writtenPath, source, 0);
   return {
     id: row.id,
     path: row.path,
     title: row.title,
     name: getBaseName(row.path),
-    content: String(content || ''),
+    content: source,
     indexed: row.indexed,
     updated_at: row.updated_at,
   };

@@ -763,7 +763,7 @@ a {
 .notus-image-preview {
   position: fixed;
   inset: 0;
-  z-index: 2100;
+  z-index: 2200;
   display: flex;
   align-items: center;
   justify-content: center;

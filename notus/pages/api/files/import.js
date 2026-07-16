@@ -96,7 +96,9 @@ export default async function handler(req, res) {
         continue;
       }
 
-      const saved = saveFileByPath(targetPath, String(current.content || ''));
+      const saved = saveFileByPath(targetPath, String(current.content || ''), {
+        titleFromFileName: true,
+      });
       send(res, {
         type: 'progress',
         stage: 'indexing',

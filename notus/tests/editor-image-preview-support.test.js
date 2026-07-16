@@ -18,6 +18,7 @@ function runTests() {
     "event.key === 'Escape'",
     "event.target.closest('.ProseMirror img')",
     'document.body.style.overflow = \'hidden\'',
+    'createPortal(overlay, document.body)',
   ].forEach((snippet) => {
     assert.ok(
       editorSource.includes(snippet),

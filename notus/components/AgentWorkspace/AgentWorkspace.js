@@ -58,7 +58,7 @@ const AGENT_CONFIRM_MODE_OPTIONS = [
   },
 ];
 const CHAT_STICKY_BOTTOM_THRESHOLD = 56;
-const CHAT_JUMP_BUTTON_OFFSET = 152;
+const CHAT_JUMP_BUTTON_OFFSET = 240;
 const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
 
 function isNearScrollBottom(container) {
@@ -112,6 +112,7 @@ const PARSED_ATTACHMENT_EXTENSIONS = new Set(['.pdf', '.docx', '.md', '.markdown
 const LONG_PASTE_ATTACHMENT_THRESHOLD = 100;
 const MAX_PARSED_ATTACHMENTS = 5;
 const AGENT_INPUT_TEXTAREA_MIN_HEIGHT = 24;
+const AGENT_INPUT_TEXTAREA_DEFAULT_ROWS = 5;
 const AGENT_INPUT_TEXTAREA_MAX_ROWS = 5;
 
 const C = {
@@ -196,10 +197,12 @@ function syncAgentInputTextareaHeight(
   const paddingBottom = Number.parseFloat(computed.paddingBottom) || 0;
   const borderTop = Number.parseFloat(computed.borderTopWidth) || 0;
   const borderBottom = Number.parseFloat(computed.borderBottomWidth) || 0;
+  const defaultHeight = Math.round(lineHeight * AGENT_INPUT_TEXTAREA_DEFAULT_ROWS + paddingTop + paddingBottom + borderTop + borderBottom);
   const maxHeight = Math.round(lineHeight * maxRows + paddingTop + paddingBottom + borderTop + borderBottom);
+  const resolvedMinHeight = Math.max(minHeight, defaultHeight);
 
-  textarea.style.height = `${minHeight}px`;
-  const nextHeight = Math.min(Math.max(textarea.scrollHeight, minHeight), maxHeight);
+  textarea.style.height = `${resolvedMinHeight}px`;
+  const nextHeight = Math.min(Math.max(textarea.scrollHeight, resolvedMinHeight), maxHeight);
   textarea.style.height = `${nextHeight}px`;
   textarea.style.overflowY = textarea.scrollHeight > maxHeight ? 'auto' : 'hidden';
 }
@@ -1029,7 +1032,6 @@ function AssistantMessageRow({ message, disabled, removing = false, onRetryMessa
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, margin: '5px 0 2px' }}>
           <div style={{ fontSize: 14, fontWeight: 800, color: C.text }}>Notus Agent</div>
         </div>
-        <ToolChain steps={message.toolSteps || []} />
         {message.content ? <StreamingText className="notus-agent-markdown" text={message.content} streaming={false} style={{ fontSize: 15, lineHeight: 1.85, color: C.text }} /> : null}
         {Array.isArray(message.citations) && message.citations.length > 0 ? (
           <div style={{ display: 'grid', gap: 8, marginTop: 12, minWidth: 0, maxWidth: '100%', overflow: 'hidden' }}>
@@ -1068,11 +1070,7 @@ function MessageList({ messages, streamText, loading, activeSteps, removingMessa
   if (messages.length === 0 && !loading) {
     return (
       <div style={{ minHeight: '42vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', color: C.tertiary }}>
-        <div style={{ width: 58, height: 58, borderRadius: 20, background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.accent, boxShadow: '0 8px 24px rgba(45,45,45,0.06), inset 0 0 0 1px rgba(229,227,216,0.95)', marginBottom: 22 }}>
-          <Icons.sparkles size={28} stroke={1.4} />
-        </div>
-        <h1 style={{ margin: '0 0 8px', fontFamily: 'Georgia, Songti SC, STSong, serif', fontSize: 26, lineHeight: 1.1, color: C.text }}>有什么我可以帮您的？</h1>
-        <p style={{ margin: 0, fontSize: 15 }}>输入问题、创作指令，或附上文件让 Notus 帮你处理。</p>
+        <div style={{ fontSize: 20, lineHeight: 1.5, fontWeight: 500, color: C.text }}>你今天在想些什么？</div>
       </div>
     );
   }
@@ -1256,12 +1254,12 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
   const activeMention = useMemo(() => {
     if (!mentionOptions.length || disabled) return null;
     const beforeCursor = value.slice(0, cursorIndex);
-    const match = beforeCursor.match(/(?:^|\s)@([^\s@]*)$/);
+    const match = beforeCursor.match(/(?:^|\s)@(?:\{([^}]*)|([^\s@]*))$/);
     if (!match) return null;
     const mentionStart = beforeCursor.lastIndexOf('@');
     const mentionKey = `${mentionStart}:${beforeCursor.slice(mentionStart, cursorIndex)}`;
     if (dismissedMentionKey === mentionKey) return null;
-    const query = String(match[1] || '').trim().toLowerCase();
+    const query = String(match[1] ?? match[2] ?? '').trim().toLowerCase();
     const options = mentionOptions
       .filter((option) => {
         if (!query) return true;
@@ -1403,6 +1401,11 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
       onRequireSearchConfig?.({ reason: 'missing_api_key', selectProvider: selectedSearchProvider });
       return;
     }
+    setValue('');
+    setCursorIndex(0);
+    setDismissedMentionKey('');
+    setSearchOpen(false);
+    setModelOpen(false);
     setUploading(parsedAttachmentMode && files.some((item) => item.fileObject));
     try {
       const attachments = parsedAttachmentMode
@@ -1415,12 +1418,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
         searchProvider: selectedSearchProvider || null,
         searchProviders: searchProviderList,
       });
-      setValue('');
-      setCursorIndex(0);
-      setDismissedMentionKey('');
       setFiles([]);
-      setSearchOpen(false);
-      setModelOpen(false);
     } catch (error) {
       toast(error.message || '发送失败', 'error');
     } finally {
@@ -1520,14 +1518,14 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
 
   return (
     <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, padding: '40px 8px 24px', background: 'linear-gradient(0deg, ' + C.page + ' 0%, ' + C.page + ' 68%, rgba(253,252,251,0) 100%)', zIndex: 6 }}>
-      <div style={{ maxWidth: 768, margin: '0 auto', borderRadius: 22, background: '#fff', boxShadow: focused ? '0 4px 24px rgba(217,119,87,0.08), inset 0 0 0 1px rgba(217,119,87,0.30)' : '0 2px 12px rgba(0,0,0,0.03), inset 0 0 0 1px rgba(229,227,216,0.95)', transitionProperty: 'box-shadow', transitionDuration: '180ms', transitionTimingFunction: 'cubic-bezier(0.16,1,0.3,1)', overflow: 'visible' }}>
+      <div style={{ width: '95%', maxWidth: 'none', margin: '0 auto', borderRadius: 22, background: '#fff', boxShadow: focused ? '0 4px 24px rgba(217,119,87,0.08), inset 0 0 0 1px rgba(217,119,87,0.30)' : '0 2px 12px rgba(0,0,0,0.03), inset 0 0 0 1px rgba(229,227,216,0.95)', transitionProperty: 'box-shadow', transitionDuration: '180ms', transitionTimingFunction: 'cubic-bezier(0.16,1,0.3,1)', overflow: 'visible' }}>
         <input ref={fileInputRef} type="file" multiple accept={parsedAttachmentMode ? PARSED_ATTACHMENT_ACCEPT : undefined} style={{ display: 'none' }} onChange={(event) => { addFiles(event.target.files); event.target.value = ''; }} />
         {files.length > 0 ? <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', padding: '14px 16px 4px', maxHeight: 150, overflowY: 'auto' }}>{files.map((file) => <FileChip key={file.id} file={file} onRemove={(id) => setFiles((prev) => prev.filter((item) => item.id !== id))} />)}</div> : null}
         <div style={{ position: 'relative', padding: '10px 16px 8px' }}>
           <textarea
             ref={textareaRef}
             value={value}
-            rows={1}
+            rows={AGENT_INPUT_TEXTAREA_DEFAULT_ROWS}
             placeholder={placeholder || '在此输入以唤起 Agent Loop...'}
             disabled={busy || disabled}
             onFocus={() => setFocused(true)}
@@ -2076,7 +2074,7 @@ export function AgentWorkspace({ messages, streamText, loading, error, activeSte
 
   return (
     <div style={{ position: 'relative', height: '100%', minHeight: 0, minWidth: 0, maxWidth: '100%', background: C.page, color: C.text, overflow: 'hidden', WebkitFontSmoothing: 'antialiased', MozOsxFontSmoothing: 'grayscale' }}>
-      <main ref={scrollContainerRef} onScroll={handleChatScroll} style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden', padding: '32px 16px 190px' }}>
+      <main ref={scrollContainerRef} onScroll={handleChatScroll} style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden', padding: '32px 16px 320px' }}>
         <div style={{ width: '100%', maxWidth: 768, minWidth: 0, margin: '0 auto', overflow: 'hidden' }}>
           <MessageList
             messages={visibleMessages}

@@ -11,7 +11,7 @@ function runTests() {
     { cwd, runtimeTarget: 'web' }
   );
   assert.strictEqual(webPaths.notesDir, '/tmp/notus-data/notes');
-  assert.strictEqual(webPaths.assetsDir, '/tmp/notus-data/notes/.assets');
+  assert.strictEqual(webPaths.assetsDir, '/tmp/notus-data/assets');
   assert.strictEqual(webPaths.dbPath, '/tmp/notus-data/notus.db');
 
   const explicitPaths = resolvePlatformPaths(

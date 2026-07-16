@@ -1,10 +1,11 @@
 const { ensureRuntime } = require('../../../lib/runtime');
 const { getEffectiveConfig, applySettings, readEnvConfig } = require('../../../lib/config');
-const { getSettingsMap, resetVec, setSettings } = require('../../../lib/db');
+const { getSettingsMap, resetVec, setSettings, removeSettings } = require('../../../lib/db');
 const { createLogger, createRequestContext } = require('../../../lib/logger');
 const { clearIndex } = require('../../../lib/indexer');
 const { getActiveLlmConfig, listLlmConfigs } = require('../../../lib/llmConfigs');
 const { deriveLlmConfigBudgetFields } = require('../../../lib/llmBudget');
+const { normalizeObjectStorageConfig } = require('../../../lib/objectStorage');
 const {
   buildEmbeddingFingerprint,
   consumeConnectivityVerificationToken,
@@ -36,6 +37,23 @@ function readLayoutSettings(stored = {}) {
       normalizeLayoutPercent(stored[definition.key], definition),
     ])
   );
+}
+
+function publicImageSettings(config) {
+  const objectStorage = config.objectStorage || {};
+  return {
+    storage_mode: config.imageStorageMode === 'object_storage' ? 'object_storage' : 'local',
+    object_storage: {
+      provider: objectStorage.provider || '',
+      bucket: objectStorage.bucket || '',
+      region: objectStorage.region || '',
+      endpoint: objectStorage.endpoint || '',
+      prefix: objectStorage.prefix || '',
+      public_base_url: objectStorage.publicBaseUrl || '',
+      access_key_id_set: Boolean(objectStorage.accessKeyId),
+      secret_access_key_set: Boolean(objectStorage.secretAccessKey),
+    },
+  };
 }
 
 function publicSettings() {
@@ -88,7 +106,10 @@ function publicSettings() {
     },
     editor: {
       title_filename_binding_enabled: stored.editor_title_filename_binding_enabled === 'true',
+      default_editor_open: stored.editor_default_open !== 'false',
+      default_agent_open: stored.editor_default_agent_open !== 'false',
     },
+    images: publicImageSettings(config),
     layout: readLayoutSettings(stored),
   };
 }
@@ -111,6 +132,7 @@ export default function handler(req, res) {
     const previousConfig = getEffectiveConfig();
     const current = getSettingsMap();
     const nextValues = {};
+    const removeKeys = [];
 
     if (body.notes_dir) nextValues.notes_dir = body.notes_dir;
     if (body.assets_dir) nextValues.assets_dir = body.assets_dir;
@@ -151,6 +173,52 @@ export default function handler(req, res) {
     if (body.editor) {
       if (body.editor.title_filename_binding_enabled !== undefined) {
         nextValues.editor_title_filename_binding_enabled = body.editor.title_filename_binding_enabled ? 'true' : 'false';
+      }
+      if (body.editor.default_editor_open !== undefined) {
+        nextValues.editor_default_open = body.editor.default_editor_open ? 'true' : 'false';
+      }
+      if (body.editor.default_agent_open !== undefined) {
+        nextValues.editor_default_agent_open = body.editor.default_agent_open ? 'true' : 'false';
+      }
+    }
+
+    if (body.images) {
+      if (body.images.storage_mode !== undefined) {
+        const storageMode = String(body.images.storage_mode || '').trim().toLowerCase();
+        if (!['local', 'object_storage'].includes(storageMode)) {
+          return res.status(400).json({ error: '图片存储位置无效', code: 'INVALID_SETTINGS', request_id: context.request_id });
+        }
+        nextValues.image_storage_mode = storageMode;
+      }
+
+      if (body.images.object_storage) {
+        const objectStorage = body.images.object_storage;
+        const textFields = {
+          provider: 'object_storage_provider',
+          bucket: 'object_storage_bucket',
+          region: 'object_storage_region',
+          endpoint: 'object_storage_endpoint',
+          prefix: 'object_storage_prefix',
+          public_base_url: 'object_storage_public_base_url',
+        };
+        Object.entries(textFields).forEach(([field, settingKey]) => {
+          if (objectStorage[field] === undefined) return;
+          const value = String(objectStorage[field] || '').trim();
+          if (value) nextValues[settingKey] = value;
+          else removeKeys.push(settingKey);
+        });
+
+        if (objectStorage.clear_access_key_id) {
+          removeKeys.push('object_storage_access_key_id');
+        } else if (objectStorage.access_key_id !== undefined && String(objectStorage.access_key_id).trim()) {
+          nextValues.object_storage_access_key_id = String(objectStorage.access_key_id).trim();
+        }
+
+        if (objectStorage.clear_secret_access_key) {
+          removeKeys.push('object_storage_secret_access_key');
+        } else if (objectStorage.secret_access_key !== undefined && String(objectStorage.secret_access_key).trim()) {
+          nextValues.object_storage_secret_access_key = String(objectStorage.secret_access_key).trim();
+        }
       }
     }
 
@@ -216,12 +284,26 @@ export default function handler(req, res) {
       nextValues.llm_max_output_tokens = String(derivedBudget.max_output_tokens);
     }
 
-    const candidate = applySettings(readEnvConfig(), { ...current, ...nextValues });
+    const candidateSettings = { ...current, ...nextValues };
+    removeKeys.forEach((key) => delete candidateSettings[key]);
+    const candidate = applySettings(readEnvConfig(), candidateSettings);
     if (!candidate.embeddingModel || !candidate.llmModel) {
       return res.status(400).json({ error: '模型配置不完整', code: 'INVALID_SETTINGS', request_id: context.request_id });
     }
+    if (candidate.imageStorageMode === 'object_storage') {
+      try {
+        normalizeObjectStorageConfig(candidate.objectStorage);
+      } catch (error) {
+        return res.status(400).json({
+          error: error.message || '对象存储配置不完整',
+          code: error.code || 'INVALID_OBJECT_STORAGE_CONFIG',
+          request_id: context.request_id,
+        });
+      }
+    }
 
     setSettings(nextValues);
+    removeSettings(removeKeys);
     const embeddingChanged =
       candidate.embeddingProvider !== previousConfig.embeddingProvider ||
       candidate.embeddingModel !== previousConfig.embeddingModel ||
@@ -248,6 +330,10 @@ export default function handler(req, res) {
       canvas_style_extraction: nextValues.canvas_enable_style_extraction || null,
       canvas_article_analysis: nextValues.canvas_enable_article_analysis || null,
       editor_title_filename_binding_enabled: nextValues.editor_title_filename_binding_enabled || null,
+      editor_default_open: nextValues.editor_default_open || null,
+      editor_default_agent_open: nextValues.editor_default_agent_open || null,
+      image_storage_mode: nextValues.image_storage_mode || null,
+      object_storage_provider: nextValues.object_storage_provider || null,
       knowledge_layout_left_percent: nextValues[LAYOUT_SETTINGS.knowledge_left_percent.key] || null,
       canvas_layout_left_percent: nextValues[LAYOUT_SETTINGS.canvas_left_percent.key] || null,
     });

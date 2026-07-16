@@ -27,6 +27,15 @@ const DEFAULTS = {
   canvasGlobalEditSoftMaxBlocks: 12,
   canvasGlobalEditHardMaxBlocks: 20,
   styleExtractionModel: '',
+  imageStorageMode: 'local',
+  objectStorageProvider: '',
+  objectStorageBucket: '',
+  objectStorageRegion: '',
+  objectStorageEndpoint: '',
+  objectStoragePrefix: 'notus/images',
+  objectStoragePublicBaseUrl: '',
+  objectStorageAccessKeyId: '',
+  objectStorageSecretAccessKey: '',
 };
 
 const PROVIDER_BASE_URLS = {
@@ -160,6 +169,17 @@ function readEnvConfig() {
       DEFAULTS.canvasGlobalEditHardMaxBlocks
     ),
     styleExtractionModel: String(process.env.STYLE_EXTRACTION_MODEL || DEFAULTS.styleExtractionModel).trim(),
+    imageStorageMode: String(process.env.IMAGE_STORAGE_MODE || DEFAULTS.imageStorageMode).trim().toLowerCase(),
+    objectStorage: {
+      provider: String(process.env.OBJECT_STORAGE_PROVIDER || DEFAULTS.objectStorageProvider).trim().toLowerCase(),
+      bucket: String(process.env.OBJECT_STORAGE_BUCKET || DEFAULTS.objectStorageBucket).trim(),
+      region: String(process.env.OBJECT_STORAGE_REGION || DEFAULTS.objectStorageRegion).trim(),
+      endpoint: cleanBaseUrl(process.env.OBJECT_STORAGE_ENDPOINT || DEFAULTS.objectStorageEndpoint),
+      prefix: String(process.env.OBJECT_STORAGE_PREFIX || DEFAULTS.objectStoragePrefix).trim(),
+      publicBaseUrl: cleanBaseUrl(process.env.OBJECT_STORAGE_PUBLIC_BASE_URL || DEFAULTS.objectStoragePublicBaseUrl),
+      accessKeyId: String(process.env.OBJECT_STORAGE_ACCESS_KEY_ID || DEFAULTS.objectStorageAccessKeyId).trim(),
+      secretAccessKey: String(process.env.OBJECT_STORAGE_SECRET_ACCESS_KEY || DEFAULTS.objectStorageSecretAccessKey).trim(),
+    },
   };
 }
 
@@ -248,6 +268,21 @@ function applySettings(baseConfig, settings = {}) {
   if (map.style_extraction_model !== undefined) {
     next.styleExtractionModel = String(map.style_extraction_model || '').trim();
   }
+
+  if (map.image_storage_mode !== undefined) {
+    next.imageStorageMode = String(map.image_storage_mode || DEFAULTS.imageStorageMode).trim().toLowerCase();
+  }
+
+  const objectStorage = { ...(next.objectStorage || {}) };
+  if (map.object_storage_provider !== undefined) objectStorage.provider = String(map.object_storage_provider || '').trim().toLowerCase();
+  if (map.object_storage_bucket !== undefined) objectStorage.bucket = String(map.object_storage_bucket || '').trim();
+  if (map.object_storage_region !== undefined) objectStorage.region = String(map.object_storage_region || '').trim();
+  if (map.object_storage_endpoint !== undefined) objectStorage.endpoint = cleanBaseUrl(map.object_storage_endpoint);
+  if (map.object_storage_prefix !== undefined) objectStorage.prefix = String(map.object_storage_prefix || '').trim();
+  if (map.object_storage_public_base_url !== undefined) objectStorage.publicBaseUrl = cleanBaseUrl(map.object_storage_public_base_url);
+  if (map.object_storage_access_key_id !== undefined) objectStorage.accessKeyId = String(map.object_storage_access_key_id || '').trim();
+  if (map.object_storage_secret_access_key !== undefined) objectStorage.secretAccessKey = String(map.object_storage_secret_access_key || '').trim();
+  next.objectStorage = objectStorage;
 
   return next;
 }

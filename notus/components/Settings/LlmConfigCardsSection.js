@@ -140,7 +140,7 @@ function EmptyState() {
 
 export function LlmConfigCardsSection({
   title = 'LLM 配置',
-  subtitle = '用于知识库问答与创作 Agent 的大语言模型',
+  subtitle = '用于文件工作区检索和 Agent 协作的大语言模型',
   onStateChange,
 }) {
   const toast = useToast();
@@ -337,7 +337,7 @@ export function LlmConfigCardsSection({
                 />
               </LlmField>
 
-              <div className="notus-llm-modal-note">提供商会根据 Base URL 和模型名自动识别，但这里只作为保存时的兜底推断；输入框本身不再自动回填默认值。保存后即可在知识库问答与创作页选用，无需先测试连通性。</div>
+              <div className="notus-llm-modal-note">提供商会根据 Base URL 和模型名自动识别，但这里只作为保存时的兜底推断；输入框本身不再自动回填默认值。保存后即可在文件工作区的 AI Agent 中选用，无需先测试连通性。</div>
             </div>
             <div className="notus-llm-modal-footer">
               <button type="button" className="notus-llm-secondary-button" onClick={closeDialog} disabled={submitting}>取消</button>

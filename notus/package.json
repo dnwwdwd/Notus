@@ -1,6 +1,6 @@
 {
   "name": "notus",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": true,
   "engines": {
     "node": "20.19.x"
@@ -14,9 +14,11 @@
     "test:agent-session": "node tests/agent-session-paths.test.js",
     "test:knowledge-routing": "node tests/knowledge-routing.test.js",
     "test:knowledge-retrieval": "node tests/knowledge-retrieval.test.js",
-    "test:file-revisions": "node tests/file-revisions.test.js"
+    "test:file-revisions": "node tests/file-revisions.test.js",
+    "test:object-storage": "node tests/object-storage.test.js"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1085.0",
     "@codemirror/commands": "^6.7.1",
     "@codemirror/lang-markdown": "^6.3.2",
     "@codemirror/language": "^6.12.3",
@@ -49,11 +51,13 @@
     "@tiptap/pm": "^3.22.4",
     "@tiptap/react": "^3.22.4",
     "@tiptap/starter-kit": "^3.22.4",
+    "ali-oss": "^6.23.0",
     "archiver": "^7.0.1",
     "better-sqlite3": "^11.6.0",
     "cheerio": "^1.2.0",
     "chokidar": "^5.0.0",
     "cmdk": "^1.0.4",
+    "cos-nodejs-sdk-v5": "^3.0.0",
     "exa-js": "^2.15.0",
     "firecrawl": "1.20.0",
     "formidable": "^3.5.4",

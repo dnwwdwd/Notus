@@ -2,6 +2,7 @@
 // Loaded with ssr:false from files/index.js
 // Accepts `onEditorReady(editor)` to lift the editor instance to the parent
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useEditor, EditorContent } from '@tiptap/react';
 import { DOMParser, Slice } from '@tiptap/pm/model';
 import StarterKit from '@tiptap/starter-kit';
@@ -23,6 +24,7 @@ import { Button } from '../ui/Button';
 import { Dialog } from '../ui/Dialog';
 import { Icons } from '../ui/Icons';
 import { TextArea } from '../ui/Input';
+import { useToast } from '../ui/Toast';
 import { useShortcuts } from '../../contexts/ShortcutsContext';
 import { CitationHighlight } from './CitationHighlightExtension';
 import { TextAlignCenter, CenterParagraph, CenterHeading } from './TextAlignCenterExtension';
@@ -194,11 +196,10 @@ function ImagePreviewOverlay({ preview, onClose, onMove }) {
 
   if (!currentImage) return null;
 
-  return (
+  const overlay = (
     <div
       className="notus-image-preview"
       role="dialog"
-      aria-modal="true"
       aria-label="图片预览"
       onClick={onClose}
     >
@@ -263,10 +264,13 @@ function ImagePreviewOverlay({ preview, onClose, onMove }) {
       </button>
     </div>
   );
+
+  return typeof document === 'undefined' ? null : createPortal(overlay, document.body);
 }
 
 export const WysiwygEditor = ({ value, onChange, onSave, onEditorReady, fileId = null }) => {
   const { shortcuts, matchShortcut } = useShortcuts();
+  const toast = useToast();
   const editorRef = useRef(null);
   const editorRootRef = useRef(null);
   const isSyncingContentRef = useRef(false);
@@ -367,6 +371,7 @@ export const WysiwygEditor = ({ value, onChange, onSave, onEditorReady, fileId =
             })
             .catch((error) => {
               console.warn('Clipboard image paste failed.', error);
+              toast(error?.message || '图片上传失败，未插入编辑器', 'error');
             });
           return true;
         }
@@ -413,7 +418,7 @@ export const WysiwygEditor = ({ value, onChange, onSave, onEditorReady, fileId =
         convertMarkdownTableAroundSelection(currentEditor);
       });
     },
-  }, [fileId]);
+  }, [fileId, toast]);
 
   // Lift editor instance to parent once ready
   useEffect(() => {

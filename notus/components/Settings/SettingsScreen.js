@@ -26,6 +26,7 @@ export const SETTINGS_SECTIONS = [
   { id: 'model', label: '模型配置', icon: <Icons.robot size={14} />, href: '/settings/model' },
   { id: 'search', label: '搜索配置', icon: <Icons.settings size={14} />, href: '/settings/search' },
   { id: 'personalization', label: '个性化', icon: <Icons.palette size={14} />, href: '/settings/personalization' },
+  { id: 'image-storage', label: '图床', icon: <Icons.image size={14} />, href: '/settings/image-storage' },
   { id: 'storage', label: '存储', icon: <Icons.database size={14} />, href: '/settings/storage' },
   { id: 'logs', label: '日志', icon: <Icons.list size={14} />, href: '/settings/logs' },
   { id: 'shortcuts', label: '快捷键', icon: <Icons.dots size={14} />, href: '/settings/shortcuts' },
@@ -330,7 +331,7 @@ const ModelConfig = () => {
         <div style={{ fontFamily: 'Georgia, Songti SC, STSong, serif', fontSize: 20, lineHeight: 1.25, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8, letterSpacing: '-0.012em' }}>
           <Icons.cpu size={20} style={{ color: '#D97757' }} />模型配置
         </div>
-        <div style={{ fontSize: 12, color: '#8A8881', marginTop: 6, lineHeight: 1.55 }}>配置知识库索引检索所需的向量模型，以及问答与创作所用的大语言模型。</div>
+        <div style={{ fontSize: 12, color: '#8A8881', marginTop: 6, lineHeight: 1.55 }}>配置工作区索引检索所需的向量模型，以及 AI Agent 所用的大语言模型。</div>
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 32 }}>
@@ -851,6 +852,9 @@ const Personalization = () => {
   const toast = useToast();
   const [titleFilenameBindingEnabled, setTitleFilenameBindingEnabled] = useState(false);
   const [savingTitleFilenameBinding, setSavingTitleFilenameBinding] = useState(false);
+  const [defaultEditorOpen, setDefaultEditorOpen] = useState(true);
+  const [defaultAgentOpen, setDefaultAgentOpen] = useState(true);
+  const [savingWorkspaceDefaults, setSavingWorkspaceDefaults] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -859,6 +863,8 @@ const Personalization = () => {
       .then((settings) => {
         if (cancelled) return;
         setTitleFilenameBindingEnabled(Boolean(settings.editor?.title_filename_binding_enabled));
+        setDefaultEditorOpen(settings.editor?.default_editor_open !== false);
+        setDefaultAgentOpen(settings.editor?.default_agent_open !== false);
       })
       .catch(() => toast('读取配置失败', 'error'));
     return () => {
@@ -893,6 +899,31 @@ const Personalization = () => {
     }
   };
 
+  const handleWorkspaceDefaultToggle = async (field, nextValue) => {
+    if (savingWorkspaceDefaults) return;
+    const setter = field === 'default_editor_open' ? setDefaultEditorOpen : setDefaultAgentOpen;
+    const previousValue = field === 'default_editor_open' ? defaultEditorOpen : defaultAgentOpen;
+    setter(nextValue);
+    setSavingWorkspaceDefaults(true);
+    try {
+      const response = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ editor: { [field]: nextValue } }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || '保存失败');
+      setDefaultEditorOpen(payload.editor?.default_editor_open !== false);
+      setDefaultAgentOpen(payload.editor?.default_agent_open !== false);
+      toast('打开文件时的默认工作区已保存', 'success');
+    } catch (error) {
+      setter(previousValue);
+      toast(error.message || '保存失败', 'error');
+    } finally {
+      setSavingWorkspaceDefaults(false);
+    }
+  };
+
   return (
     <div>
       <div style={{ fontSize: 'var(--text-xl)', fontWeight: 600, marginBottom: 28 }}>个性化</div>
@@ -916,6 +947,245 @@ const Personalization = () => {
               onChange={(value) => handleTitleFilenameBindingToggle(value)}
             />
           </div>
+        </div>
+        <div
+          style={{
+            border: '1px solid var(--border-subtle)',
+            borderRadius: 'var(--radius-lg)',
+            background: 'var(--bg-elevated)',
+            padding: 16,
+            display: 'grid',
+            gap: 14,
+          }}
+        >
+          <div>
+            <div style={{ fontSize: 'var(--text-sm)', fontWeight: 600 }}>打开文件时的工作区</div>
+            <div style={{ marginTop: 4, fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', lineHeight: 1.6 }}>从未打开文件的状态进入某篇文件时使用。切换已打开的文件会保留当前面板状态。</div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+            <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>默认展开富文本编辑器</div>
+            <Toggle on={defaultEditorOpen} onChange={(value) => handleWorkspaceDefaultToggle('default_editor_open', value)} />
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+            <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>默认展开 AI 聊天面板</div>
+            <Toggle on={defaultAgentOpen} onChange={(value) => handleWorkspaceDefaultToggle('default_agent_open', value)} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const IMAGE_STORAGE_OPTIONS = [
+  { value: 'local', label: '本地资源目录' },
+  { value: 'cos', label: '腾讯云 COS' },
+  { value: 'oss', label: '阿里云 OSS' },
+  { value: 'r2', label: 'Cloudflare R2' },
+];
+
+const ImageStorageConfig = () => {
+  const toast = useToast();
+  const [target, setTarget] = useState('local');
+  const [objectStorage, setObjectStorage] = useState({
+    bucket: '',
+    region: '',
+    endpoint: '',
+    prefix: 'notus/images',
+    publicBaseUrl: '',
+    accessKeyId: '',
+    secretAccessKey: '',
+  });
+  const [savedKeys, setSavedKeys] = useState({ accessKeyId: false, secretAccessKey: false });
+  const [clearKeys, setClearKeys] = useState({ accessKeyId: false, secretAccessKey: false });
+  const [saving, setSaving] = useState(false);
+  const savedConfigRef = useRef(null);
+
+  const applySettings = (settings) => {
+    const saved = settings.images?.object_storage || {};
+    const provider = ['cos', 'oss', 'r2'].includes(saved.provider) ? saved.provider : 'cos';
+    const nextTarget = settings.images?.storage_mode === 'object_storage' ? provider : 'local';
+    const nextObjectStorage = {
+      bucket: saved.bucket || '',
+      region: saved.region || '',
+      endpoint: saved.endpoint || '',
+      prefix: saved.prefix || 'notus/images',
+      publicBaseUrl: saved.public_base_url || '',
+      accessKeyId: '',
+      secretAccessKey: '',
+    };
+    const nextSavedKeys = {
+      accessKeyId: Boolean(saved.access_key_id_set),
+      secretAccessKey: Boolean(saved.secret_access_key_set),
+    };
+    savedConfigRef.current = { target: nextTarget, objectStorage: nextObjectStorage, savedKeys: nextSavedKeys };
+    setTarget(nextTarget);
+    setObjectStorage(nextObjectStorage);
+    setSavedKeys(nextSavedKeys);
+    setClearKeys({ accessKeyId: false, secretAccessKey: false });
+  };
+
+  const restoreSavedConfig = () => {
+    const saved = savedConfigRef.current;
+    if (!saved) return;
+    setTarget(saved.target);
+    setObjectStorage(saved.objectStorage);
+    setSavedKeys(saved.savedKeys);
+    setClearKeys({ accessKeyId: false, secretAccessKey: false });
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/settings')
+      .then((response) => response.json())
+      .then((settings) => {
+        if (!cancelled) applySettings(settings);
+      })
+      .catch(() => toast('读取图床配置失败', 'error'));
+    return () => {
+      cancelled = true;
+    };
+  }, [toast]);
+
+  const updateObjectStorage = (field, value) => {
+    setObjectStorage((current) => ({ ...current, [field]: value }));
+    if (field === 'accessKeyId' || field === 'secretAccessKey') {
+      setClearKeys((current) => ({ ...current, [field]: false }));
+    }
+  };
+
+  const handleSave = async () => {
+    if (saving) return;
+    const cloudEnabled = target !== 'local';
+    setSaving(true);
+    try {
+      const response = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          images: {
+            storage_mode: cloudEnabled ? 'object_storage' : 'local',
+            object_storage: {
+              provider: cloudEnabled ? target : undefined,
+              bucket: objectStorage.bucket,
+              region: objectStorage.region,
+              ...(target !== 'cos' ? { endpoint: objectStorage.endpoint } : {}),
+              prefix: objectStorage.prefix,
+              public_base_url: objectStorage.publicBaseUrl,
+              ...(objectStorage.accessKeyId ? { access_key_id: objectStorage.accessKeyId } : {}),
+              ...(objectStorage.secretAccessKey ? { secret_access_key: objectStorage.secretAccessKey } : {}),
+              ...(clearKeys.accessKeyId ? { clear_access_key_id: true } : {}),
+              ...(clearKeys.secretAccessKey ? { clear_secret_access_key: true } : {}),
+            },
+          },
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || '图床配置保存失败');
+      applySettings(result);
+      toast(cloudEnabled ? `${IMAGE_STORAGE_OPTIONS.find((item) => item.value === target)?.label} 已启用` : '图片将保存到本地资源目录', 'success');
+    } catch (error) {
+      toast(error.message || '图床配置保存失败', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const providerHints = {
+    cos: 'Bucket 必须包含 AppId，例如 example-1250000000；地域使用 ap-guangzhou 等 COS Region。',
+    oss: '地域使用 oss-cn-hangzhou 等 OSS Region；Endpoint 留空时由 SDK 按地域生成。',
+    r2: 'Endpoint 使用 https://<ACCOUNT_ID>.r2.cloudflarestorage.com，Region 固定为 auto。',
+  };
+  const cloudEnabled = target !== 'local';
+
+  return (
+    <div style={{ color: '#2D2D2D' }}>
+      <div style={{ borderBottom: '1px solid #E5E3D8', paddingBottom: 16, marginBottom: 24 }}>
+        <div style={{ fontFamily: 'Georgia, Songti SC, STSong, serif', fontSize: 22, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Icons.image size={20} style={{ color: '#D97757' }} />图床配置
+        </div>
+      </div>
+      <div style={{ background: '#fff', border: '1px solid #E5E3D8', borderRadius: 14, padding: 24, display: 'grid', gap: 24, boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }}>
+        <div style={{ display: 'grid', gap: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#4B4944' }}>上传位置</div>
+          <div style={{ display: 'flex', gap: 8, padding: 4, background: '#F9F9F8', border: '1px solid #E5E3D8', borderRadius: 10, overflowX: 'auto' }}>
+            {IMAGE_STORAGE_OPTIONS.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => setTarget(option.value)}
+                style={{
+                  flex: 1,
+                  minWidth: 112,
+                  height: 32,
+                  border: target === option.value ? '1px solid rgba(229,227,216,0.8)' : '1px solid transparent',
+                  borderRadius: 8,
+                  background: target === option.value ? '#fff' : 'transparent',
+                  color: target === option.value ? '#D97757' : '#6B6963',
+                  boxShadow: target === option.value ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        {!cloudEnabled && (
+          <div style={{ padding: '12px 14px', borderRadius: 10, border: '1px solid rgba(74, 140, 217, 0.24)', background: 'rgba(74, 140, 217, 0.08)', color: '#3B6EA8', fontSize: 13, lineHeight: 1.6 }}>
+            图片会保存到本地资源目录，并以相对路径写入 Markdown。
+          </div>
+        )}
+        {cloudEnabled && (
+          <div style={{ display: 'grid', gap: 14, border: '1px solid #F2F0EA', background: '#FDFCFB', borderRadius: 14, padding: 16 }}>
+            <div style={{ padding: '12px 14px', borderRadius: 10, border: '1px solid rgba(234, 179, 8, 0.26)', background: 'rgba(234, 179, 8, 0.1)', color: '#9A6B08', fontSize: 13, lineHeight: 1.6 }}>
+              {providerHints[target]}
+            </div>
+            <Field label="Bucket 名称">
+              <TextInput value={objectStorage.bucket} onChange={(event) => updateObjectStorage('bucket', event.target.value)} placeholder={target === 'cos' ? 'example-1250000000' : 'notus-images'} />
+            </Field>
+            {target === 'cos' ? (
+              <Field label="地域 Region">
+                <TextInput value={objectStorage.region} onChange={(event) => updateObjectStorage('region', event.target.value)} placeholder="ap-guangzhou" />
+              </Field>
+            ) : target === 'oss' ? (
+              <>
+                <Field label="地域 Region">
+                  <TextInput value={objectStorage.region} onChange={(event) => updateObjectStorage('region', event.target.value)} placeholder="oss-cn-hangzhou" />
+                </Field>
+                <Field label="自定义 Endpoint" hint="可选。使用默认 OSS Endpoint 时留空。">
+                  <TextInput value={objectStorage.endpoint} onChange={(event) => updateObjectStorage('endpoint', event.target.value)} placeholder="https://oss-cn-hangzhou.aliyuncs.com" />
+                </Field>
+              </>
+            ) : (
+              <Field label="S3 Endpoint">
+                <TextInput value={objectStorage.endpoint} onChange={(event) => updateObjectStorage('endpoint', event.target.value)} placeholder="https://<ACCOUNT_ID>.r2.cloudflarestorage.com" />
+              </Field>
+            )}
+            <Field label="对象前缀" hint="默认 notus/images。新图片按 年/月/内容哈希 写入，不能包含 ..。">
+              <TextInput value={objectStorage.prefix} onChange={(event) => updateObjectStorage('prefix', event.target.value)} placeholder="notus/images" />
+            </Field>
+            <Field label="公开访问基础 URL" hint="填写 Bucket 的公开域名或 CDN 域名。该地址会直接写入 Markdown，请勿填写临时签名链接。">
+              <TextInput value={objectStorage.publicBaseUrl} onChange={(event) => updateObjectStorage('publicBaseUrl', event.target.value)} placeholder="https://images.example.com" />
+            </Field>
+            <Field label={`Access Key ID${savedKeys.accessKeyId ? '（已保存）' : ''}`} hint="密钥只保存在服务端设置库，读取设置时不会回显。留空会保留已保存的值。">
+              <TextInput masked value={objectStorage.accessKeyId} onChange={(event) => updateObjectStorage('accessKeyId', event.target.value)} placeholder={savedKeys.accessKeyId ? '留空以保留当前密钥' : '填写 Access Key ID'} />
+            </Field>
+            <Field label={`Secret Access Key${savedKeys.secretAccessKey ? '（已保存）' : ''}`}>
+              <TextInput masked value={objectStorage.secretAccessKey} onChange={(event) => updateObjectStorage('secretAccessKey', event.target.value)} placeholder={savedKeys.secretAccessKey ? '留空以保留当前密钥' : '填写 Secret Access Key'} />
+            </Field>
+            {(savedKeys.accessKeyId || savedKeys.secretAccessKey) && (
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: -6 }}>
+                {savedKeys.accessKeyId && <Button size="sm" variant="ghost" onClick={() => setClearKeys((current) => ({ ...current, accessKeyId: !current.accessKeyId }))}>{clearKeys.accessKeyId ? '将清除 Access Key ID' : '清除 Access Key ID'}</Button>}
+                {savedKeys.secretAccessKey && <Button size="sm" variant="ghost" onClick={() => setClearKeys((current) => ({ ...current, secretAccessKey: !current.secretAccessKey }))}>{clearKeys.secretAccessKey ? '将清除 Secret Access Key' : '清除 Secret Access Key'}</Button>}
+              </div>
+            )}
+          </div>
+        )}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, borderTop: '1px solid #F2F0EA', paddingTop: 16 }}>
+          <Button variant="ghost" onClick={restoreSavedConfig}>取消</Button>
+          <Button variant="primary" loading={saving} onClick={handleSave}>保存</Button>
         </div>
       </div>
     </div>
@@ -1247,12 +1517,12 @@ const About = () => {
           <div style={{ fontSize: 'var(--text-lg)', fontWeight: 600 }}>Notus</div>
           <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>版本 {APP_VERSION}</div>
           <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', marginTop: 4 }}>
-            私有化个人知识库与 AI 写作协作工具
+            本地 Markdown 文件工作区与 AI Agent
           </div>
         </div>
       </div>
       <div>
-        当前版本专注本地知识库问答、块级创作协作和桌面工作区体验。
+        当前版本专注本地 Markdown 文件、可审查的 Agent 协作和桌面工作区体验。
       </div>
     </div>
   );
@@ -1262,6 +1532,7 @@ const CONTENT_MAP = {
   model: ModelConfig,
   search: SearchConfig,
   personalization: Personalization,
+  'image-storage': ImageStorageConfig,
   storage: Storage,
   logs: Logs,
   shortcuts: ShortcutsSettings,
@@ -1273,7 +1544,7 @@ export function SettingsScreen({ section }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', minWidth: 1360, minHeight: 800 }}>
-      <TopBar active="" />
+      <TopBar active="" showSettingsButton={false} />
       <div
         style={{
           flex: 1,

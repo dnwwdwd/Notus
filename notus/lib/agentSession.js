@@ -427,7 +427,6 @@ function summarizeToolResult(toolName, result) {
       status: result?.status || '',
       no_change: Boolean(result?.no_change),
     };
-    case 'preview_canvas_blocks': return { operation_set_id: result?.operation_set_id, operation_count: result?.operation_count || 0 };
     case 'preview_file_operations': return { operation_set_id: result?.operation_set_id, patch_count: result?.patch_count || 0 };
     case 'ask_question_card': return { interaction_id: result?.interaction_id, question_count: result?.question_count || 0 };
     case 'analyze_folder': return { file_count: result?.file_count || 0, total_count: result?.total_count || 0, truncated: Boolean(result?.truncated) };

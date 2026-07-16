@@ -247,6 +247,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
     sidebarActiveTab,
     sidebarScrollByTab,
     selectFile,
+    clearFileSelection,
     setSidebarActiveTab,
     setSidebarScroll,
     toggleSidebarCollapsed,
@@ -568,13 +569,34 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
     return selectedImportFiles.filter((file) => failedNames.has(getImportDisplayName(file)));
   }, [importFailedResults, selectedImportFiles]);
 
-  const currentPage = ['files', 'knowledge', 'canvas'].includes(active) ? active : (activePage || 'files');
+  const currentPage = active === 'files' ? 'files' : 'files';
 
   useEffect(() => {
     return restoreSidebarScroll();
   }, [activePage, activeTab, flat.length, hasLoadedFilesOnce, loadingFiles, restoreSidebarScroll, tocItems?.length]);
 
   const handleSelectFile = (file) => {
+    if (Number(file?.id) === Number(activeFileId)) {
+      const clearSelection = () => {
+        if (navigateOnFileSelect && router.pathname === `/${currentPage}` && router.asPath !== `/${currentPage}`) {
+          navigateWithFallback(router, `/${currentPage}`, { mode: 'router' })
+            .catch(() => {})
+            .finally(() => clearFileSelection());
+          return;
+        }
+        clearFileSelection();
+      };
+      if (requestAction) {
+        if (requestAction.length >= 2) {
+          requestAction(file, clearSelection);
+          return;
+        }
+        requestAction(clearSelection);
+        return;
+      }
+      clearSelection();
+      return;
+    }
     const action = () => {
       selectFile(file);
       if (!navigateOnFileSelect) return;

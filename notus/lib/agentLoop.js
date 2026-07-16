@@ -135,9 +135,6 @@ function buildPreviewCompletionText(toolName, {
   requiresConfirmation = false,
   result = {},
 } = {}) {
-  if (toolName === 'preview_canvas_blocks') {
-    return '块级修改预览已生成，请在下方预览卡片中确认或取消。';
-  }
   if (toolName === 'preview_file_revision') {
     if (requiresConfirmation) {
       return result.message || '全文修订预览已生成；系统检测到高风险删除、截断或遗漏，已保留给你在下方 diff 卡片中手动确认，正式文件尚未修改。';
@@ -399,7 +396,7 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMo
         };
       }
 
-      if (['create_note', 'preview_patch_files', 'preview_file_revision', 'preview_canvas_blocks', 'preview_file_operations'].includes(toolUse.name) && !failed && result.operation_set_id) {
+      if (['create_note', 'preview_patch_files', 'preview_file_revision', 'preview_file_operations'].includes(toolUse.name) && !failed && result.operation_set_id) {
         let previewResult = result;
         const canAutoApply = ['create_note', 'preview_patch_files', 'preview_file_revision', 'preview_file_operations'].includes(toolUse.name) && normalizedApprovalMode === 'auto_confirm';
         if (canAutoApply && !result.applied) {

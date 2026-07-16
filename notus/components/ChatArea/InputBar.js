@@ -535,13 +535,13 @@ export const InputBar = ({
   const activeMention = useMemo(() => {
     if (!mentionOptions.length) return null;
     const beforeCursor = value.slice(0, cursorIndex);
-    const match = beforeCursor.match(/(?:^|\s)@([^\s@]*)$/);
+    const match = beforeCursor.match(/(?:^|\s)@(?:\{([^}]*)|([^\s@]*))$/);
     if (!match) return null;
 
     const mentionStart = beforeCursor.lastIndexOf('@');
     const mentionKey = `${mentionStart}:${beforeCursor.slice(mentionStart, cursorIndex)}`;
     if (dismissedMentionKey === mentionKey) return null;
-    const query = String(match[1] || '').trim().toLowerCase();
+    const query = String(match[1] ?? match[2] ?? '').trim().toLowerCase();
     const options = mentionOptions
       .filter((option) => {
         if (!query) return true;

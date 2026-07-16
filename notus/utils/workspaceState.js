@@ -1,4 +1,4 @@
-const VALID_ACTIVE_PAGES = ['files', 'knowledge', 'canvas'];
+const VALID_ACTIVE_PAGES = ['files'];
 const VALID_SIDEBAR_TABS = ['tree', 'toc'];
 
 function normalizePositiveInt(value) {

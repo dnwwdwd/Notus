@@ -322,16 +322,25 @@ export function ClarifyDrawer({
 
   const handlePrimaryAction = () => {
     if (phase === 'expanded-question') {
-      if (!canAdvanceCurrent) return;
-      if (activeIndex < questions.length - 1) {
-        setActiveIndex((prev) => Math.min(prev + 1, questions.length - 1));
-        return;
-      }
-      setPhase('expanded-review');
+      goToNextQuestion();
       return;
     }
     if (!allAnswered || !isPending || submitting) return;
     onSubmit?.(interaction, buildSubmitPayload());
+  };
+
+  const goToPreviousQuestion = () => {
+    if (!isPending || phase !== 'expanded-question' || activeIndex <= 0) return;
+    setActiveIndex((prev) => Math.max(prev - 1, 0));
+  };
+
+  const goToNextQuestion = () => {
+    if (!isPending || phase !== 'expanded-question' || !canAdvanceCurrent) return;
+    if (activeIndex < questions.length - 1) {
+      setActiveIndex((prev) => Math.min(prev + 1, questions.length - 1));
+      return;
+    }
+    setPhase('expanded-review');
   };
 
   const handleKeyDown = (event) => {
@@ -350,6 +359,21 @@ export function ClarifyDrawer({
         }
       }
       return;
+    }
+    if (phase === 'expanded-question' && isPending) {
+      const tag = String(event.target?.tagName || '').toLowerCase();
+      if (tag !== 'input' && tag !== 'textarea') {
+        if (event.key === 'ArrowLeft' && activeIndex > 0) {
+          event.preventDefault();
+          goToPreviousQuestion();
+          return;
+        }
+        if (event.key === 'ArrowRight' && canAdvanceCurrent) {
+          event.preventDefault();
+          goToNextQuestion();
+          return;
+        }
+      }
     }
     if (event.key === 'Enter' && !event.shiftKey && phase === 'expanded-question' && canAdvanceCurrent) {
       const tag = String(event.target?.tagName || '').toLowerCase();
@@ -599,11 +623,12 @@ export function ClarifyDrawer({
         {(phase === 'expanded-question' && activeIndex > 0 && isPending) ? (
           <button
             type="button"
-            onClick={() => setActiveIndex((prev) => Math.max(prev - 1, 0))}
-            style={{ height: 26, padding: '0 8px', fontSize: 12, color: 'var(--text-secondary)', display: 'inline-flex', alignItems: 'center', gap: 2, borderRadius: 'var(--radius-sm)' }}
+            aria-label="上一题"
+            title="上一题（←）"
+            onClick={goToPreviousQuestion}
+            style={{ width: 28, height: 28, padding: 0, color: 'var(--text-secondary)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 'var(--radius-sm)' }}
           >
             <Icons.chevronRight size={11} style={{ transform: 'rotate(180deg)' }} />
-            上一题
           </button>
         ) : null}
         {(phase === 'expanded-review' || phase === 'failed') && onCancel ? (
@@ -616,7 +641,19 @@ export function ClarifyDrawer({
             {retryLabel}
           </Button>
         ) : null}
-        {isPending ? (
+        {isPending && phase === 'expanded-question' && activeIndex < questions.length - 1 ? (
+          <button
+            type="button"
+            aria-label="下一题"
+            title="下一题（→）"
+            disabled={!canAdvanceCurrent}
+            onClick={goToNextQuestion}
+            style={{ width: 28, height: 28, padding: 0, color: canAdvanceCurrent ? 'var(--accent)' : 'var(--text-tertiary)', opacity: canAdvanceCurrent ? 1 : 0.5, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 'var(--radius-sm)', cursor: canAdvanceCurrent ? 'pointer' : 'not-allowed' }}
+          >
+            <Icons.chevronRight size={13} />
+          </button>
+        ) : null}
+        {isPending && !(phase === 'expanded-question' && activeIndex < questions.length - 1) ? (
           <Button
             type="button"
             variant="primary"
@@ -626,7 +663,7 @@ export function ClarifyDrawer({
             onClick={handlePrimaryAction}
           >
             {phase === 'expanded-question'
-              ? (activeIndex === questions.length - 1 ? '回顾答案' : '下一题')
+              ? '回顾答案'
               : submitLabel}
           </Button>
         ) : null}

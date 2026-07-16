@@ -17,11 +17,25 @@ export const DEFAULT_SHORTCUTS = {
     description: '收起或展开左侧文件树',
     combo: 'Mod+\\',
   },
+  editorToggle: {
+    id: 'editorToggle',
+    label: '切换富文本编辑器',
+    scope: '全局',
+    description: '展开或收起富文本编辑器面板',
+    combo: 'Mod+B',
+  },
+  agentToggle: {
+    id: 'agentToggle',
+    label: '切换 AI 聊天面板',
+    scope: '全局',
+    description: '展开或收起 AI 聊天面板',
+    combo: 'Mod+U',
+  },
   chatSend: {
     id: 'chatSend',
     label: '发送消息',
     scope: '输入框',
-    description: '发送知识库提问或创作指令',
+    description: '发送 AI Agent 指令',
     combo: 'Mod+Enter',
   },
   docSave: {

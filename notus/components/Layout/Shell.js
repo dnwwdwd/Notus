@@ -17,12 +17,16 @@ export const Shell = ({
   onCmdK,
   requestAction,
   navigateOnFileSelect = true,
+  editorOpen,
+  agentOpen,
+  onToggleEditor,
+  onToggleAgent,
   children,
 }) => {
   const { setActiveWorkspacePage } = useApp();
 
   useEffect(() => {
-    if (['files', 'knowledge', 'canvas'].includes(active)) {
+    if (active === 'files') {
       setActiveWorkspacePage(active);
     }
   }, [active, setActiveWorkspacePage]);
@@ -39,6 +43,10 @@ export const Shell = ({
         showIndex={showIndex}
         onCmdK={onCmdK}
         requestAction={requestAction}
+        editorOpen={editorOpen}
+        agentOpen={agentOpen}
+        onToggleEditor={onToggleEditor}
+        onToggleAgent={onToggleAgent}
       />
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0, position: 'relative', isolation: 'isolate', zIndex: 0 }}>
         <Sidebar

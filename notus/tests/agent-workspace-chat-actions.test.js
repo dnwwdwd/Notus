@@ -65,6 +65,10 @@ async function runTests() {
     !workspaceSource.includes('boxShadow: `inset 0 0 0 1px'),
     'message copy/rewrite/retry icon buttons should not render an outer border'
   );
+  assert.ok(
+    !workspaceSource.includes('<ToolChain steps={message.toolSteps || []} />'),
+    'completed assistant messages should not expose tool-chain details'
+  );
 
   assert.ok(
     conversationsSource.includes('const parsedAttachmentMap = rows.reduce'),

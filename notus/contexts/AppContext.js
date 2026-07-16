@@ -301,8 +301,17 @@ export function AppProvider({ children }) {
     });
   }, [persistWorkspaceState]);
 
+  const clearFileSelection = useCallback(() => {
+    activeFileIdRef.current = null;
+    pendingCitationRef.current = null;
+    setActiveFileId(null);
+    setActiveFile(null);
+    setPendingCitation(null);
+    persistWorkspaceState({ activeFileId: null, pendingCitation: null });
+  }, [persistWorkspaceState]);
+
   const setActiveWorkspacePage = useCallback((page) => {
-    const nextPage = ['files', 'knowledge', 'canvas'].includes(page) ? page : 'files';
+    const nextPage = 'files';
     setActivePage(nextPage);
     persistWorkspaceState({ activePage: nextPage });
   }, [persistWorkspaceState]);
@@ -478,6 +487,7 @@ export function AppProvider({ children }) {
         },
         refreshFiles,
         selectFile,
+        clearFileSelection,
         clearPendingCitation,
         setActiveWorkspacePage,
         setSidebarCollapsed: setSidebarCollapsedState,

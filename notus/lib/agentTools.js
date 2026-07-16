@@ -101,22 +101,6 @@ function buildToolDefinitions(session = {}) {
       draft_content: { type: 'string', description: '修改后的完整 Markdown 文件内容，必须保留未修改部分。' },
       parent_operation_set_id: { type: 'integer', description: '可选，上一条相关修订记录 ID。' },
     }, ['file_path', 'draft_content']),
-    tool('preview_canvas_blocks', '为创作页当前文章生成块级修改预览。用户明确使用 @b1、@b2、@b3 等块引用时优先调用；它直接按块生成 replace/delete 操作，比文件级 patch 更准确、更快。必须作为该轮唯一工具调用，用户确认后才写入。', {
-      file_path: { type: 'string', description: '可选，当前 Markdown 文件路径；不传则使用当前创作会话绑定的文件。' },
-      edits: {
-        type: 'array',
-        items: {
-          type: 'object',
-          properties: {
-            block_ref: { type: 'string', description: '块引用，例如 @b1、b2，或真实 block_id。' },
-            op: { type: 'string', enum: ['replace', 'delete'], default: 'replace' },
-            old: { type: 'string', description: '可选，当前块原文，用于校验。' },
-            new: { type: 'string', description: '替换后的块内容；delete 时可为空。' },
-          },
-          required: ['block_ref'],
-        },
-      },
-    }, ['edits']),
     tool('preview_file_operations', '为文件系统操作生成预览。支持移动文件、新建目录、重命名目录、移动目录；不支持删除目录或删除文件。必须作为该轮唯一工具调用，自动确认模式会自动应用，手动确认模式等待用户在 diff 卡片中应用。', {
       operations: {
         type: 'array',
@@ -851,20 +835,9 @@ function extractUserTaskTextFromGoal(goal = '') {
   const markerIndex = text.indexOf(marker);
   if (markerIndex >= 0) {
     const rest = text.slice(markerIndex + marker.length);
-    const boundaries = [
-      '\n\n当前打开文档：',
-      '\n\n当前文章路径：',
-      '\n\n当前创作页文本块快照',
-      '\n\n写入授权范围：',
-      '\n\n写入能力：',
-    ]
-      .map((boundary) => rest.indexOf(boundary))
-      .filter((index) => index >= 0);
-    const end = boundaries.length > 0 ? Math.min(...boundaries) : rest.length;
-    return rest.slice(0, end).trim();
+    return rest.trim();
   }
-  const snapshotIndex = text.indexOf('\n\n当前创作页文本块快照');
-  return (snapshotIndex >= 0 ? text.slice(0, snapshotIndex) : text).trim();
+  return text.trim();
 }
 
 function resolveExplicitCanvasBlockScope(blocks = [], text = '') {
@@ -1214,7 +1187,7 @@ function executeCheckLinks({ scope_path: scopePath = '' } = {}, sessionId, notes
 
 function validateToolUseBlock(toolUseBlocks = []) {
   const blocks = Array.isArray(toolUseBlocks) ? toolUseBlocks : [];
-  const preview = blocks.find((block) => ['create_note', 'preview_patch_files', 'preview_file_revision', 'preview_canvas_blocks', 'preview_file_operations', 'ask_question_card'].includes(block.name));
+  const preview = blocks.find((block) => ['create_note', 'preview_patch_files', 'preview_file_revision', 'preview_file_operations', 'ask_question_card'].includes(block.name));
   if (preview && blocks.length > 1) {
     return { error: true, errorToolUseId: preview.id, message: `${preview.name} 必须是该轮的唯一工具调用，请在下一轮单独调用它。` };
   }
@@ -1226,7 +1199,6 @@ function extractTargetPaths(toolUse = {}) {
   if (toolUse.name === 'create_note') return [input.path].filter(Boolean);
   if (toolUse.name === 'preview_patch_files') return (Array.isArray(input.patches) ? input.patches : []).map((patch) => patch.file_path || patch.path).filter(Boolean);
   if (toolUse.name === 'preview_file_revision') return [input.file_path || input.path].filter(Boolean);
-  if (toolUse.name === 'preview_canvas_blocks') return [input.file_path].filter(Boolean);
   if (toolUse.name === 'preview_file_operations') {
     return (Array.isArray(input.operations) ? input.operations : []).flatMap((operation) => [
       operation.old_path || operation.path,
@@ -1245,7 +1217,6 @@ function summarizeInput(toolUse = {}) {
   if (toolUse.name === 'create_note') return input.path || '';
   if (toolUse.name === 'preview_patch_files') return `${Array.isArray(input.patches) ? input.patches.length : 0} 个文件修改`; 
   if (toolUse.name === 'preview_file_revision') return input.file_path || '单文件完整修订';
-  if (toolUse.name === 'preview_canvas_blocks') return `${Array.isArray(input.edits) ? input.edits.length : 0} 个块级修改`;
   if (toolUse.name === 'preview_file_operations') return `${Array.isArray(input.operations) ? input.operations.length : 0} 个文件系统操作`;
   if (toolUse.name === 'ask_question_card') return `${Array.isArray(input.questions) ? input.questions.length : 0} 个问题`;
   if (toolUse.name === 'analyze_folder') return input.folder_path || '根目录';
@@ -1255,12 +1226,6 @@ function summarizeInput(toolUse = {}) {
 
 async function executeToolSafely(toolUse = {}, session, notesDir = getEffectiveConfig().notesDir) {
   try {
-    if (['preview_patch_files', 'preview_file_revision'].includes(toolUse.name) && hasExplicitCanvasBlockMention(extractUserTaskTextFromGoal(session?.goal))) {
-      return {
-        error: 'CANVAS_BLOCK_TOOL_REQUIRED',
-        message: '用户已经明确使用 @b 块引用，本次只能调用 preview_canvas_blocks 生成块级预览，不能退化为文件级 patch。',
-      };
-    }
     if (
       toolUse.name === 'ask_question_card'
       && hasCurrentTurnParsedInput(session)
@@ -1272,7 +1237,7 @@ async function executeToolSafely(toolUse = {}, session, notesDir = getEffectiveC
         message: '本轮只有附件或外部材料输入，且用户没有明确要求写入当前文档；请先总结/说明附件内容，或用普通文本询问用途，不要直接生成写入位置提问卡片。',
       };
     }
-    if (['create_note', 'preview_patch_files', 'preview_file_revision', 'preview_canvas_blocks'].includes(toolUse.name)) {
+    if (['create_note', 'preview_patch_files', 'preview_file_revision'].includes(toolUse.name)) {
       const paths = extractTargetPaths(toolUse);
       for (const targetPath of paths) {
         const operation = toolUse.name === 'create_note' ? 'create' : 'modify';
@@ -1295,7 +1260,6 @@ const TOOL_EXECUTORS = {
   create_note: executeCreateNote,
   preview_patch_files: executePreviewPatchFiles,
   preview_file_revision: previewFileRevision,
-  preview_canvas_blocks: executePreviewCanvasBlocks,
   preview_file_operations: executePreviewFileOperations,
   ask_question_card: executeAskQuestionCard,
   analyze_folder: executeAnalyzeFolder,
@@ -1315,7 +1279,6 @@ module.exports = {
   executeCreateNote,
   executePreviewPatchFiles,
   previewFileRevision,
-  executePreviewCanvasBlocks,
   executePreviewFileOperations,
   executeAskQuestionCard,
   executeAnalyzeFolder,

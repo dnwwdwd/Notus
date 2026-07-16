@@ -11,7 +11,7 @@ import { AppStatusProvider } from '../contexts/AppStatusContext';
 import { PlatformProvider } from '../contexts/PlatformContext';
 import { ShortcutsProvider } from '../contexts/ShortcutsContext';
 
-const CORE_ROUTES = ['/files', '/knowledge', '/canvas', '/settings/model', '/settings/personalization'];
+const CORE_ROUTES = ['/files', '/settings/model', '/settings/personalization'];
 
 function CoreRoutePrefetcher() {
   const router = useRouter();
@@ -56,7 +56,7 @@ export default function App({ Component, pageProps }) {
       <Head>
         <title>Notus</title>
         <meta name="application-name" content="Notus" />
-        <meta name="description" content="私有化个人知识库与 AI 写作协作工具" />
+        <meta name="description" content="本地 Markdown 文件工作区与 AI Agent" />
         <meta name="theme-color" content="#C15F3C" />
         <link rel="icon" href="/logo.png" type="image/png" />
         <link rel="apple-touch-icon" href="/logo.png" />

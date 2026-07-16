@@ -675,7 +675,7 @@ export default function SetupPage() {
   const stepMeta = [
     {
       title: '配置 AI 模型',
-      subtitle: '配好 Embedding 和 LLM 后，就能使用知识库问答和 AI 创作；也可以先跳过，稍后再配。',
+      subtitle: '配好 Embedding 和 LLM 后，就能在文件工作区中检索资料并使用 AI Agent；也可以先跳过，稍后再配。',
       canSkip: true,
     },
     {

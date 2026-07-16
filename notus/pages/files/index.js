@@ -4,11 +4,13 @@ import dynamic from 'next/dynamic';
 import { useRouter } from 'next/router';
 import { Shell } from '../../components/Layout/Shell';
 import { EditorToolbar } from '../../components/Editor/EditorToolbar';
+import { FileAgentWorkspace } from '../../components/AgentWorkspace/FileAgentWorkspace';
 import { EmptyState } from '../../components/ui/EmptyState';
 import { SkeletonText } from '../../components/ui/Skeleton';
 import { InlineError } from '../../components/ui/InlineError';
 import { DocumentFindBar } from '../../components/ui/DocumentFindBar';
 import { Icons } from '../../components/ui/Icons';
+import { ResizableLayout } from '../../components/ui/ResizableLayout';
 import { useToast } from '../../components/ui/Toast';
 import { useApp } from '../../contexts/AppContext';
 import { useDocumentFind } from '../../hooks/useDocumentFind';
@@ -37,13 +39,99 @@ const WysiwygEditor = dynamic(
   { ssr: false, loading: () => <SkeletonText lines={7} /> }
 );
 
+const FILES_LAYOUT_STORAGE_KEY = 'notus-files-workspace-layout';
+const FILES_PANELS_STORAGE_KEY = 'notus-files-workspace-panels';
+const FILES_LAYOUT_DEFAULT = 60;
+const FILES_LAYOUT_MIN = 38;
+const FILES_LAYOUT_MAX = 70;
+const FILES_EDITOR_MIN_WIDTH = 560;
+const FILES_AGENT_MIN_WIDTH = 456;
+
+function splitEditorTitleAndBody(visibleContent = '', fallbackTitle = '') {
+  const source = String(visibleContent || '').replace(/\r\n/g, '\n').replace(/^\n+/, '');
+  const heading = source.match(/^#\s+([^\n]+)(?:\n|$)/);
+  if (!heading) {
+    return {
+      title: String(fallbackTitle || '').trim(),
+      body: source,
+    };
+  }
+  return {
+    title: String(heading[1] || '').trim(),
+    body: source.slice(heading[0].length).replace(/^\n+/, ''),
+  };
+}
+
+function mergeEditorTitleAndBody(title = '', body = '') {
+  const normalizedTitle = String(title || '').replace(/^#+\s*/, '').trim();
+  const normalizedBody = String(body || '').replace(/\r\n/g, '\n').replace(/^\n+/, '');
+  if (!normalizedTitle) return normalizedBody;
+  return normalizedBody ? `# ${normalizedTitle}\n\n${normalizedBody}` : `# ${normalizedTitle}\n`;
+}
+
+function clampFilesLayout(value) {
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed)) return FILES_LAYOUT_DEFAULT;
+  return Math.min(Math.max(parsed, FILES_LAYOUT_MIN), FILES_LAYOUT_MAX);
+}
+
+function readFilesWorkspaceLayout() {
+  if (typeof window === 'undefined') return { editorWidthPercent: FILES_LAYOUT_DEFAULT, agentWidthPercent: 100 - FILES_LAYOUT_DEFAULT };
+  try {
+    const raw = window.localStorage.getItem(FILES_LAYOUT_STORAGE_KEY);
+    const parsed = JSON.parse(raw || 'null');
+    const legacyValue = Number.parseFloat(raw);
+    const editorWidthPercent = clampFilesLayout(
+      parsed && typeof parsed === 'object'
+        ? (parsed.editorWidthPercent ?? parsed.editorPercent ?? parsed.leftPercent)
+        : legacyValue
+    );
+    return { editorWidthPercent, agentWidthPercent: 100 - editorWidthPercent };
+  } catch {
+    return { editorWidthPercent: FILES_LAYOUT_DEFAULT, agentWidthPercent: 100 - FILES_LAYOUT_DEFAULT };
+  }
+}
+
+function writeFilesWorkspaceLayout(value) {
+  if (typeof window === 'undefined') return;
+  const editorWidthPercent = clampFilesLayout(
+    typeof value === 'object' ? value.editorWidthPercent : value
+  );
+  try {
+    window.localStorage.setItem(FILES_LAYOUT_STORAGE_KEY, JSON.stringify({
+      editorWidthPercent,
+      agentWidthPercent: 100 - editorWidthPercent,
+    }));
+  } catch {}
+}
+
+function readFilesWorkspacePanels() {
+  if (typeof window === 'undefined') return { editorOpen: true, agentOpen: true };
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(FILES_PANELS_STORAGE_KEY) || '{}');
+    return {
+      editorOpen: parsed?.editorOpen !== false,
+      agentOpen: parsed?.agentOpen !== false,
+    };
+  } catch {
+    return { editorOpen: true, agentOpen: true };
+  }
+}
+
+function writeFilesWorkspacePanels(panels) {
+  if (typeof window === 'undefined') return;
+  try { window.localStorage.setItem(FILES_PANELS_STORAGE_KEY, JSON.stringify(panels)); } catch {}
+}
+
 export default function FilesPage() {
   const router = useRouter();
   const toast = useToast();
-  const { activeFile, allFiles, pendingCitation, clearPendingCitation, selectFile, refreshFiles, getCachedContent, setCachedContent } = useApp();
+  const { activeFile, allFiles, pendingCitation, clearPendingCitation, selectFile, refreshFiles, getCachedContent, setCachedContent, clearCachedContent } = useApp();
   const activeFileId = activeFile?.id;
   const contentRef = useRef('');
   const persistedContentRef = useRef('');
+  const documentTitleRef = useRef('');
+  const persistedTitleRef = useRef('');
   const hiddenFrontmatterRef = useRef('');
   const pendingNavRef = useRef(null);
   const restorePositionRef = useRef(false);
@@ -51,10 +139,16 @@ export default function FilesPage() {
 
   const [editor, setEditor] = useState(null);      // Tiptap editor instance
   const [content, setContent] = useState('');       // markdown string
+  const [documentTitle, setDocumentTitle] = useState('');
   const [saveState, setSaveState] = useState('saved');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [showIndexToast, setShowIndexToast] = useState(false);
+  const [workspacePanels, setWorkspacePanels] = useState(() => readFilesWorkspacePanels());
+  const [workspaceLayout, setWorkspaceLayout] = useState(() => readFilesWorkspaceLayout());
+  const [workspaceDefaults, setWorkspaceDefaults] = useState(null);
+  const [agentFileChangeVersion, setAgentFileChangeVersion] = useState(0);
+  const hasOpenedFileRef = useRef(false);
 
   const loadFile = useCallback(async (fileId) => {
     // Check in-memory cache first for instant navigation
@@ -79,6 +173,58 @@ export default function FilesPage() {
   }, [getCachedContent, setCachedContent]);
 
   useEffect(() => {
+    let cancelled = false;
+    fetch('/api/settings', { cache: 'no-store' })
+      .then((response) => response.json())
+      .then((settings) => {
+        if (cancelled) return;
+        setWorkspaceDefaults({
+          editorOpen: settings?.editor?.default_editor_open !== false,
+          agentOpen: settings?.editor?.default_agent_open !== false,
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setWorkspaceDefaults({ editorOpen: true, agentOpen: true });
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  const updateWorkspacePanels = useCallback((patch) => {
+    setWorkspacePanels((previous) => {
+      const next = { ...previous, ...patch };
+      writeFilesWorkspacePanels(next);
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!activeFile?.id) {
+      hasOpenedFileRef.current = false;
+      return;
+    }
+    if (hasOpenedFileRef.current || !workspaceDefaults) return;
+    hasOpenedFileRef.current = true;
+    updateWorkspacePanels(workspaceDefaults);
+  }, [activeFile?.id, updateWorkspacePanels, workspaceDefaults]);
+
+  const handleFilesLayoutChange = useCallback((nextPercent) => {
+    const editorWidthPercent = clampFilesLayout(nextPercent);
+    setWorkspaceLayout({ editorWidthPercent, agentWidthPercent: 100 - editorWidthPercent });
+  }, []);
+
+  const handleFilesLayoutCommit = useCallback((nextPercent) => {
+    const editorWidthPercent = clampFilesLayout(nextPercent);
+    const nextLayout = { editorWidthPercent, agentWidthPercent: 100 - editorWidthPercent };
+    setWorkspaceLayout(nextLayout);
+    writeFilesWorkspaceLayout(nextLayout);
+  }, []);
+
+  const handleAgentFilesChanged = useCallback(async () => {
+    if (activeFileId) clearCachedContent(activeFileId);
+    setAgentFileChangeVersion((previous) => previous + 1);
+  }, [activeFileId, clearCachedContent]);
+
+  useEffect(() => {
     if (!router.isReady) return;
     const requestedFileId = Number(getQueryValue(router.query.fileId));
     if (!Number.isFinite(requestedFileId)) return;
@@ -93,6 +239,9 @@ export default function FilesPage() {
       setContent('');
       contentRef.current = '';
       persistedContentRef.current = '';
+      setDocumentTitle('');
+      documentTitleRef.current = '';
+      persistedTitleRef.current = '';
       hiddenFrontmatterRef.current = '';
       return undefined;
     }
@@ -105,11 +254,17 @@ export default function FilesPage() {
     loadFile(activeFileId)
       .then((file) => {
         if (cancelled) return;
-        const { visibleContent, hiddenFrontmatter } = splitEditorVisibleMarkdown(file.content || '');
-        const nextContent = visibleContent || '';
-        setContent(nextContent);
-        contentRef.current = nextContent;
-        persistedContentRef.current = nextContent;
+        const { visibleContent, hiddenFrontmatter, hiddenFrontmatterData } = splitEditorVisibleMarkdown(file.content || '');
+        const editorDocument = splitEditorTitleAndBody(
+          visibleContent || '',
+          hiddenFrontmatterData?.title || file.title || file.name?.replace(/\.md$/i, '')
+        );
+        setContent(editorDocument.body);
+        contentRef.current = editorDocument.body;
+        persistedContentRef.current = editorDocument.body;
+        setDocumentTitle(editorDocument.title);
+        documentTitleRef.current = editorDocument.title;
+        persistedTitleRef.current = editorDocument.title;
         hiddenFrontmatterRef.current = hiddenFrontmatter || '';
         restorePositionRef.current = true;
         setLoading(false);
@@ -123,7 +278,7 @@ export default function FilesPage() {
     return () => {
       cancelled = true;
     };
-  }, [activeFileId, loadFile]);
+  }, [activeFileId, agentFileChangeVersion, loadFile]);
 
   // Parse #L24-L28 hash on mount and store as pending navigation
   useEffect(() => {
@@ -286,13 +441,15 @@ export default function FilesPage() {
 
   const handleSave = useCallback(async (nextContent = contentRef.current) => {
     if (!activeFileId) return false;
-    if (nextContent === persistedContentRef.current) {
+    const nextTitle = documentTitleRef.current;
+    if (nextContent === persistedContentRef.current && nextTitle === persistedTitleRef.current) {
       setSaveState('saved');
       return true;
     }
     setSaveState('saving');
     try {
-      const contentToSave = mergeEditorVisibleMarkdown(nextContent, hiddenFrontmatterRef.current);
+      const visibleContentToSave = mergeEditorTitleAndBody(nextTitle, nextContent);
+      const contentToSave = mergeEditorVisibleMarkdown(visibleContentToSave, hiddenFrontmatterRef.current);
       const response = await fetch(`/api/files/${activeFileId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -304,12 +461,15 @@ export default function FilesPage() {
         throw new Error(payload.error || '保存失败');
       }
 
-      const { visibleContent, hiddenFrontmatter } = splitEditorVisibleMarkdown(payload.content || contentToSave);
-      const savedContent = visibleContent || nextContent;
-      persistedContentRef.current = savedContent;
-      contentRef.current = savedContent;
+      const { visibleContent, hiddenFrontmatter, hiddenFrontmatterData } = splitEditorVisibleMarkdown(payload.content || contentToSave);
+      const savedDocument = splitEditorTitleAndBody(visibleContent || '', hiddenFrontmatterData?.title || nextTitle);
+      persistedContentRef.current = savedDocument.body;
+      contentRef.current = savedDocument.body;
+      persistedTitleRef.current = savedDocument.title;
+      documentTitleRef.current = savedDocument.title;
       hiddenFrontmatterRef.current = hiddenFrontmatter || hiddenFrontmatterRef.current || '';
-      setContent(savedContent);
+      setContent(savedDocument.body);
+      setDocumentTitle(savedDocument.title);
       setCachedContent(activeFileId, payload.content || contentToSave);
       await refreshFiles({ background: true });
       if (payload.title_binding_warning) {
@@ -332,12 +492,23 @@ export default function FilesPage() {
     contentRef.current = newContent;
     setContent(newContent);
 
-    if (newContent === persistedContentRef.current) {
+    if (newContent === persistedContentRef.current && documentTitleRef.current === persistedTitleRef.current) {
       setSaveState('saved');
       return;
     }
 
     setSaveState('dirty');
+  }, []);
+
+  const handleTitleChange = useCallback((nextTitle) => {
+    const normalizedTitle = String(nextTitle || '').replace(/^#+\s*/, '');
+    documentTitleRef.current = normalizedTitle;
+    setDocumentTitle(normalizedTitle);
+    setSaveState(
+      normalizedTitle === persistedTitleRef.current && contentRef.current === persistedContentRef.current
+        ? 'saved'
+        : 'dirty'
+    );
   }, []);
 
   const unsavedGuard = useUnsavedChangesGuard({
@@ -357,46 +528,18 @@ export default function FilesPage() {
     contentVersion: `${activeFileId || 'none'}:${content}`,
   });
 
-  return (
-    <Shell
-      active="files"
-      fileName={getVisibleDocumentLabel(activeFile, '未命名文档')}
-      saveState={activeFile ? saveState : undefined}
-      onSave={activeFile ? handleSave : undefined}
-      saveDisabled={!activeFile || saveState !== 'dirty'}
-      tocDisabled={!activeFile}
-      tocItems={tocItems}
-      requestAction={navigationGuard}
-    >
-      {activeFile && (
-        <EditorToolbar
-          editor={editor}
-          fileId={activeFile?.id}
-          isDirty={saveState === 'dirty'}
-          requestAction={navigationGuard}
-        />
-      )}
-
-      {/* Empty state */}
-      {!activeFile && (
-        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-primary)' }}>
-          <EmptyState
-            icon={<Icons.edit size={48} />}
-            title="选择一篇文章开始编辑"
-            subtitle="从左侧文件树中选择文件，或从顶部搜索框快速查找"
-          />
+  const editorPanel = (
+    <div style={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative', background: 'var(--bg-primary)' }}>
+      {activeFile ? <EditorToolbar editor={editor} fileId={activeFile.id} isDirty={saveState === 'dirty'} /> : null}
+      {!activeFile ? (
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <EmptyState icon={<Icons.edit size={48} />} title="选择一篇文章开始编辑" subtitle="也可以不打开文件，直接在右侧与 AI 协作" />
         </div>
-      )}
-
-      {/* Loading skeleton */}
-      {activeFile && loading && (
-        <div style={{ flex: 1, padding: '48px 60px', maxWidth: 780, margin: '0 auto', width: '100%' }}>
-          <SkeletonText lines={8} />
-        </div>
-      )}
-
-      {/* Error state */}
-      {activeFile && error && (
+      ) : null}
+      {activeFile && loading ? (
+        <div style={{ flex: 1, padding: '48px 60px', maxWidth: 780, margin: '0 auto', width: '100%' }}><SkeletonText lines={8} /></div>
+      ) : null}
+      {activeFile && error ? (
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 40 }}>
           <InlineError
             message={error || '文件加载失败'}
@@ -405,10 +548,17 @@ export default function FilesPage() {
               loadFile(activeFile.id)
                 .then((file) => {
                   setError(null);
-                  const { visibleContent, hiddenFrontmatter } = splitEditorVisibleMarkdown(file.content || '');
-                  setContent(visibleContent || '');
-                  contentRef.current = visibleContent || '';
-                  persistedContentRef.current = visibleContent || '';
+                  const { visibleContent, hiddenFrontmatter, hiddenFrontmatterData } = splitEditorVisibleMarkdown(file.content || '');
+                  const editorDocument = splitEditorTitleAndBody(
+                    visibleContent || '',
+                    hiddenFrontmatterData?.title || file.title || file.name?.replace(/\.md$/i, '')
+                  );
+                  setContent(editorDocument.body);
+                  contentRef.current = editorDocument.body;
+                  persistedContentRef.current = editorDocument.body;
+                  setDocumentTitle(editorDocument.title);
+                  documentTitleRef.current = editorDocument.title;
+                  persistedTitleRef.current = editorDocument.title;
                   hiddenFrontmatterRef.current = hiddenFrontmatter || '';
                   setLoading(false);
                 })
@@ -419,10 +569,8 @@ export default function FilesPage() {
             }}
           />
         </div>
-      )}
-
-      {/* Editor area */}
-      {activeFile && !loading && !error && (
+      ) : null}
+      {activeFile && !loading && !error ? (
         <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
           <DocumentFindBar
             open={documentFind.open}
@@ -434,43 +582,77 @@ export default function FilesPage() {
             onNext={documentFind.next}
             onClose={documentFind.close}
           />
-          <WysiwygEditor
-            key={activeFile.id}
-            value={content}
-            onChange={handleChange}
-            onSave={handleSave}
-            onEditorReady={setEditor}
-            fileId={activeFile.id}
-          />
-
-          {/* Save + index toast */}
-          {showIndexToast && (
-            <div style={{
-              position: 'absolute', right: 20, bottom: 20,
-              display: 'flex', alignItems: 'center', gap: 10,
-              background: 'var(--bg-elevated)',
-              border: '1px solid var(--border-primary)',
-              boxShadow: 'var(--shadow-lg)',
-              borderRadius: 'var(--radius-md)',
-              padding: '10px 14px',
-              fontSize: 'var(--text-sm)',
-              color: 'var(--text-primary)',
-              animation: 'slideUp var(--transition-normal)',
-              zIndex: 50,
-            }}>
-              <span style={{
-                width: 18, height: 18, borderRadius: '50%',
-                background: 'var(--success)', color: '#fff',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-              }}>
-                <Icons.check size={11} />
-              </span>
-              <span>已保存并索引到知识库</span>
-              <span style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-xs)', marginLeft: 4 }}>刚刚</span>
+          <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+            <div style={{ padding: '22px 60px 10px', borderBottom: '1px solid var(--border-subtle)' }}>
+              <input
+                aria-label="文章标题"
+                value={documentTitle}
+                onChange={(event) => handleTitleChange(event.target.value)}
+                placeholder="输入文章标题"
+                style={{ width: '100%', border: 0, outline: 'none', background: 'transparent', color: 'var(--text-primary)', fontSize: 28, lineHeight: 1.35, fontWeight: 700, letterSpacing: '-0.02em', fontFamily: 'inherit', padding: 0 }}
+              />
             </div>
-          )}
+            <WysiwygEditor
+              key={activeFile.id}
+              value={content}
+              onChange={handleChange}
+              onSave={handleSave}
+              onEditorReady={setEditor}
+              fileId={activeFile.id}
+            />
+          </div>
+          {showIndexToast ? (
+            <div style={{ position: 'absolute', right: 20, bottom: 20, display: 'flex', alignItems: 'center', gap: 10, background: 'var(--bg-elevated)', border: '1px solid var(--border-primary)', boxShadow: 'var(--shadow-lg)', borderRadius: 'var(--radius-md)', padding: '10px 14px', fontSize: 'var(--text-sm)', color: 'var(--text-primary)', animation: 'slideUp var(--transition-normal)', zIndex: 50 }}>
+              <span style={{ width: 18, height: 18, borderRadius: '50%', background: 'var(--success)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Icons.check size={11} /></span>
+              <span>已保存并索引到知识库</span>
+            </div>
+          ) : null}
         </div>
-      )}
+      ) : null}
+    </div>
+  );
+
+  const agentPanel = (
+    <FileAgentWorkspace
+      allFiles={allFiles}
+      refreshFiles={refreshFiles}
+      onFilesChanged={handleAgentFilesChanged}
+      beforeAgentRun={() => (saveState === 'dirty' ? handleSave() : true)}
+    />
+  );
+
+  const workspaceContent = workspacePanels.editorOpen && workspacePanels.agentOpen ? (
+    <ResizableLayout
+      left={editorPanel}
+      right={agentPanel}
+      leftPercent={workspaceLayout.editorWidthPercent}
+      onLeftPercentChange={handleFilesLayoutChange}
+      onLeftPercentCommit={handleFilesLayoutCommit}
+      minLeftPercent={FILES_LAYOUT_MIN}
+      maxLeftPercent={FILES_LAYOUT_MAX}
+      minLeftPx={FILES_EDITOR_MIN_WIDTH}
+      minRightPx={FILES_AGENT_MIN_WIDTH}
+    />
+  ) : workspacePanels.editorOpen ? editorPanel : workspacePanels.agentOpen ? agentPanel : (
+    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)', fontSize: 'var(--text-sm)' }}>使用顶部按钮展开富文本编辑器或 AI 聊天面板。</div>
+  );
+
+  return (
+    <Shell
+      active="files"
+      fileName={getVisibleDocumentLabel(activeFile, '未命名文档')}
+      saveState={activeFile ? saveState : undefined}
+      onSave={activeFile ? handleSave : undefined}
+      saveDisabled={!activeFile || saveState !== 'dirty'}
+      tocDisabled={!activeFile || !workspacePanels.editorOpen}
+      tocItems={tocItems}
+      requestAction={navigationGuard}
+      editorOpen={workspacePanels.editorOpen}
+      agentOpen={workspacePanels.agentOpen}
+      onToggleEditor={() => updateWorkspacePanels({ editorOpen: !workspacePanels.editorOpen })}
+      onToggleAgent={() => updateWorkspacePanels({ agentOpen: !workspacePanels.agentOpen })}
+    >
+      {workspaceContent}
       {unsavedGuard.dialog}
     </Shell>
   );

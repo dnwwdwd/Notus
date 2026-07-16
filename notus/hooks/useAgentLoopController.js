@@ -488,7 +488,6 @@ export function useAgentLoopController({
               operation_set_id: event.operation_set_id || operationSet?.id || null,
             },
             operationSet,
-            toolSteps: completeSteps(stepsRef.current),
           });
           setStreamText('');
           setLoading(false);
@@ -541,7 +540,6 @@ export function useAgentLoopController({
               operation_set_id: event.operation_set_id || operationSet?.id || null,
             },
             operationSet,
-            toolSteps: completeSteps(stepsRef.current),
           });
           setStreamText('');
           setLoading(false);
@@ -565,6 +563,10 @@ export function useAgentLoopController({
       } else {
         const message = nextError.message || 'Agent Loop 请求失败';
         setError(message);
+        setActiveAgentSession((prev) => (prev ? {
+          status: 'failed',
+          reason: 'error',
+        } : prev));
         appendStep(buildEventStep({ type: 'error', error: message }));
         onError?.(nextError);
       }

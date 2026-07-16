@@ -1,7 +1,6 @@
 // EditorToolbar — formatting buttons for the Tiptap WYSIWYG editor
 // editor: Tiptap editor instance (lifted from WysiwygEditor via onEditorReady)
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
-import { useRouter } from 'next/router';
 import { Dialog } from '../ui/Dialog';
 import { DropdownSelect } from '../ui/DropdownSelect';
 import { Icons } from '../ui/Icons';
@@ -10,7 +9,6 @@ import { Button } from '../ui/Button';
 import { Spinner } from '../ui/Spinner';
 import { Tooltip } from '../ui/Tooltip';
 import { useToast } from '../ui/Toast';
-import { navigateWithFallback } from '../../utils/navigation';
 import { copyEditorContentToClipboard } from '../../utils/editorClipboard';
 
 const Divider = () => (
@@ -76,6 +74,76 @@ const UrlDialog = ({ title, placeholder, defaultValue = 'https://', confirmLabel
   );
 };
 
+const TableDialog = ({ onConfirm, onClose }) => {
+  const [rows, setRows] = useState('3');
+  const [columns, setColumns] = useState('3');
+
+  const parsedRows = Number(rows);
+  const parsedColumns = Number(columns);
+  const normalizedRows = Math.min(Math.max(parsedRows || 0, 1), 20);
+  const normalizedColumns = Math.min(Math.max(parsedColumns || 0, 1), 20);
+  const canConfirm = Number.isInteger(parsedRows)
+    && Number.isInteger(parsedColumns)
+    && normalizedRows >= 1
+    && normalizedColumns >= 1;
+
+  const confirm = () => {
+    if (!canConfirm) return;
+    onConfirm({ rows: normalizedRows, columns: normalizedColumns });
+  };
+
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title="插入表格"
+      maxWidth={420}
+      footer={(
+        <>
+          <Button variant="ghost" onClick={onClose}>取消</Button>
+          <Button variant="primary" disabled={!canConfirm} onClick={confirm}>插入表格</Button>
+        </>
+      )}
+    >
+      <div style={{ display: 'grid', gap: 16 }}>
+        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', lineHeight: 1.7 }}>
+          设置表格的行数和列数，首行为表头，插入后可以直接编辑单元格内容。
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <label style={{ display: 'grid', gap: 6, fontSize: 'var(--text-sm)', fontWeight: 600 }}>
+            行数
+            <TextInput
+              type="number"
+              min="1"
+              max="20"
+              value={rows}
+              onChange={(event) => setRows(event.target.value)}
+              onKeyDown={(event) => { if (event.key === 'Enter') confirm(); }}
+              autoFocus
+              aria-label="表格行数"
+            />
+          </label>
+          <label style={{ display: 'grid', gap: 6, fontSize: 'var(--text-sm)', fontWeight: 600 }}>
+            列数
+            <TextInput
+              type="number"
+              min="1"
+              max="20"
+              value={columns}
+              onChange={(event) => setColumns(event.target.value)}
+              onKeyDown={(event) => { if (event.key === 'Enter') confirm(); }}
+              aria-label="表格列数"
+            />
+          </label>
+        </div>
+        <div style={{ padding: '10px 12px', borderRadius: 'var(--radius-md)', background: 'var(--bg-secondary)', color: 'var(--text-tertiary)', fontSize: 'var(--text-xs)' }}>
+          将插入一个 {canConfirm ? `${normalizedRows} × ${normalizedColumns}` : '—'} 的 Markdown 表格
+        </div>
+      </div>
+    </Dialog>
+  );
+};
+
 async function uploadEditorImage(fileId, file) {
   if (!fileId || !file) return null;
   const formData = new FormData();
@@ -89,7 +157,7 @@ async function uploadEditorImage(fileId, file) {
   return payload;
 }
 
-const ImageDialog = ({ fileId, onConfirm, onClose }) => {
+const ImageDialog = ({ fileId, onConfirm, onClose, onError }) => {
   const fileInputRef = useRef(null);
   const [mode, setMode] = useState('local');
   const [selectedFile, setSelectedFile] = useState(null);
@@ -110,6 +178,7 @@ const ImageDialog = ({ fileId, onConfirm, onClose }) => {
       onConfirm(payload.src);
     } catch (error) {
       console.warn('Editor image upload failed.', error);
+      onError?.(error?.message || '图片上传失败，未插入编辑器');
     } finally {
       setSubmitting(false);
     }
@@ -177,7 +246,7 @@ const ImageDialog = ({ fileId, onConfirm, onClose }) => {
               选择本地图片
             </Button>
             <div style={{ fontSize: 'var(--text-sm)', color: selectedFile ? 'var(--text-primary)' : 'var(--text-tertiary)' }}>
-              {selectedFile ? `已选择：${selectedFile.name}` : '选择本地图片后会保存到资源目录，并以相对路径写入 Markdown。'}
+              {selectedFile ? `已选择：${selectedFile.name}` : '图片会按个性化设置保存到本地资源目录或上传到对象存储。'}
             </div>
           </div>
         ) : (
@@ -192,8 +261,7 @@ const ImageDialog = ({ fileId, onConfirm, onClose }) => {
   );
 };
 
-export const EditorToolbar = ({ editor, fileId, showAICreate = true, isDirty = false, requestAction }) => {
-  const router = useRouter();
+export const EditorToolbar = ({ editor, fileId, isDirty = false }) => {
   const toast = useToast();
   const [dialogMode, setDialogMode] = useState(null);
   const [copyingAll, setCopyingAll] = useState(false);
@@ -231,14 +299,11 @@ export const EditorToolbar = ({ editor, fileId, showAICreate = true, isDirty = f
     setDialogMode(null);
   };
 
-  const handleAICreate = () => {
-    const params = fileId ? `?fileId=${fileId}` : '';
-    const action = () => navigateWithFallback(router, `/canvas${params}`);
-    if (requestAction) {
-      requestAction(action);
-      return;
+  const confirmTable = ({ rows, columns }) => {
+    if (e && rows && columns) {
+      e.chain().focus().insertTable({ rows, cols: columns, withHeaderRow: true }).run();
     }
-    action();
+    setDialogMode(null);
   };
 
   const handleCopyAll = useCallback(async () => {
@@ -246,32 +311,21 @@ export const EditorToolbar = ({ editor, fileId, showAICreate = true, isDirty = f
 
     setCopyingAll(true);
     try {
-      const result = await copyEditorContentToClipboard(e, { fileId });
+      const result = await copyEditorContentToClipboard(e);
 
       if (result.mode === 'empty') {
         toast('当前笔记没有可复制内容', 'info');
         return;
       }
 
-      if (result.mode === 'rich') {
-        toast('已复制全文，包含文字和图片', 'success');
-        setCopiedAll(true);
-        return;
-      }
-
-      toast(
-        result.reason === 'rich_unsupported'
-          ? '当前环境仅复制 Markdown 文本，图片未写入剪贴板'
-          : '富文本复制失败，已回退为 Markdown 文本',
-        'warning'
-      );
+      toast('已复制 Markdown 源文本', 'success');
       setCopiedAll(true);
     } catch (error) {
       toast(error?.message || '复制失败', 'danger');
     } finally {
       setCopyingAll(false);
     }
-  }, [copyingAll, e, fileId, toast]);
+  }, [copyingAll, e, toast]);
 
   useEffect(() => {
     if (!copiedAll) return undefined;
@@ -350,7 +404,8 @@ export const EditorToolbar = ({ editor, fileId, showAICreate = true, isDirty = f
           onClose={() => setDialogMode(null)}
         />
       )}
-      {dialogMode === 'image' && <ImageDialog fileId={fileId} onConfirm={confirmImage} onClose={() => setDialogMode(null)} />}
+      {dialogMode === 'image' && <ImageDialog fileId={fileId} onConfirm={confirmImage} onError={(message) => toast(message, 'error')} onClose={() => setDialogMode(null)} />}
+      {dialogMode === 'table' && <TableDialog onConfirm={confirmTable} onClose={() => setDialogMode(null)} />}
       <div style={{
         height: 40,
         background: 'var(--bg-elevated)',
@@ -435,6 +490,9 @@ export const EditorToolbar = ({ editor, fileId, showAICreate = true, isDirty = f
         <ToolbarButton title="插入图片" disabled={disabled} onClick={() => setDialogMode('image')}>
           <Icons.image size={15} />
         </ToolbarButton>
+        <ToolbarButton title="插入表格" active={isActive('table')} disabled={disabled} onClick={() => setDialogMode('table')}>
+          <TableIcon />
+        </ToolbarButton>
         <Divider />
 
         {/* Block */}
@@ -506,28 +564,6 @@ export const EditorToolbar = ({ editor, fileId, showAICreate = true, isDirty = f
           {copyingAll ? <Spinner size={14} /> : copiedAll ? <Icons.check size={15} /> : <Icons.copy size={15} />}
         </ToolbarButton>
 
-        {/* AI 创作 */}
-        {showAICreate && (
-          <button
-            onClick={handleAICreate}
-            style={{
-              height: 28, padding: '0 12px', marginLeft: 6,
-              display: 'flex', alignItems: 'center', gap: 6,
-              borderRadius: 'var(--radius-md)',
-              fontSize: 'var(--text-xs)',
-              fontWeight: 500,
-              background: 'var(--accent)',
-              color: '#fff',
-              cursor: 'pointer',
-              transition: 'opacity var(--transition-fast)',
-              whiteSpace: 'nowrap',
-            }}
-            onMouseEnter={(event) => { event.currentTarget.style.opacity = '0.85'; }}
-            onMouseLeave={(event) => { event.currentTarget.style.opacity = '1'; }}
-          >
-            <Icons.sparkles size={13} /> AI 创作
-          </button>
-        )}
       </div>
       {isDirty && (
         <div style={{
@@ -573,5 +609,12 @@ const AlignCenterIcon = () => (
 const ClearFormatIcon = () => (
   <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
     <path d="M6 4h12M9 4v6a3 3 0 0 0 6 0V4M4 20h10M14 14l6 6M20 14l-6 6" />
+  </svg>
+);
+
+const TableIcon = () => (
+  <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
+    <rect x="3" y="4" width="18" height="16" rx="1.5" />
+    <path d="M3 10h18M3 15h18M9 4v16M15 4v16" />
   </svg>
 );

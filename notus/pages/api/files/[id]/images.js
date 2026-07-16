@@ -6,6 +6,7 @@ const { ensureRuntime } = require('../../../../lib/runtime');
 const { getEffectiveConfig } = require('../../../../lib/config');
 const { getFileById } = require('../../../../lib/files');
 const { MAX_IMAGE_BYTES, storeLocalImageBuffer } = require('../../../../lib/images');
+const { uploadObjectImage } = require('../../../../lib/objectStorage');
 const { createLogger, createRequestContext } = require('../../../../lib/logger');
 
 export const config = {
@@ -63,18 +64,37 @@ export default async function handler(req, res) {
   const uploadDir = path.resolve(getEffectiveConfig().sessionDir, 'editor-images');
   fs.mkdirSync(uploadDir, { recursive: true });
 
+  let uploaded = null;
   try {
     const { files } = await parseForm(req, uploadDir);
-    const uploaded = firstUploadedFile(files);
+    uploaded = firstUploadedFile(files);
     if (!uploaded) {
       return res.status(400).json({ error: 'image is required', code: 'IMAGE_REQUIRED', request_id: context.request_id });
     }
     if (!String(uploaded.mimetype || '').startsWith('image/')) {
-      removeQuietly(uploaded.filepath);
       return res.status(400).json({ error: '只支持图片文件', code: 'UNSUPPORTED_IMAGE_TYPE', request_id: context.request_id });
     }
 
     const buffer = fs.readFileSync(uploaded.filepath);
+    const config = getEffectiveConfig();
+    if (config.imageStorageMode === 'object_storage') {
+      const stored = await uploadObjectImage(config.objectStorage, {
+        buffer,
+        mimeType: uploaded.mimetype || '',
+        originalName: uploaded.originalFilename || uploaded.newFilename || '',
+      });
+      return res.status(200).json({
+        src: stored.publicUrl,
+        asset_path: null,
+        object_key: stored.objectKey,
+        storage: 'object_storage',
+        provider: stored.provider,
+        mime_type: stored.mimeType,
+        size: stored.contentLength,
+        request_id: context.request_id,
+      });
+    }
+
     const stored = storeLocalImageBuffer(buffer, {
       mimeType: uploaded.mimetype || '',
       originalName: uploaded.originalFilename || uploaded.newFilename || '',
@@ -85,16 +105,20 @@ export default async function handler(req, res) {
     return res.status(200).json({
       src: stored.markdownSrc,
       asset_path: stored.relativePath,
+      storage: 'local',
       mime_type: stored.mimeType,
       size: stored.contentLength,
       request_id: context.request_id,
     });
   } catch (error) {
     logger.error('files.editor_image.upload.failed', { file_id: Number(req.query.id), error });
-    return res.status(400).json({
+    const status = error.code === 'OBJECT_STORAGE_UPLOAD_FAILED' ? 502 : 400;
+    return res.status(status).json({
       error: error.message || '图片上传失败',
       code: error.code || 'IMAGE_UPLOAD_FAILED',
       request_id: context.request_id,
     });
+  } finally {
+    removeQuietly(uploaded?.filepath);
   }
 }

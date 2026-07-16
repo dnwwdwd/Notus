@@ -130,7 +130,7 @@ async function copyPlainText(text = '') {
   fallbackCopyPlainText(text);
 }
 
-export async function copyEditorContentToClipboard(editor, { fileId = null } = {}) {
+export async function copyEditorContentToClipboard(editor) {
   const sourceRoot = getEditorHtmlRoot(editor);
   const markdown = String(editor?.storage?.markdown?.getMarkdown?.() || '');
   const plainText = markdown || String(sourceRoot?.textContent || '');
@@ -143,31 +143,8 @@ export async function copyEditorContentToClipboard(editor, { fileId = null } = {
     return { mode: 'empty' };
   }
 
-  const supportsRichClipboard = typeof window !== 'undefined'
-    && typeof window.ClipboardItem !== 'undefined'
-    && Boolean(navigator.clipboard?.write);
-
-  if (!supportsRichClipboard) {
-    await copyPlainText(plainText);
-    return { mode: 'plain', reason: 'rich_unsupported' };
-  }
-
-  try {
-    const htmlBody = await buildClipboardHtml(editor, { fileId });
-    const html = `<!doctype html><html><body>${htmlBody}</body></html>`;
-
-    await navigator.clipboard.write([
-      new window.ClipboardItem({
-        'text/plain': new Blob([plainText], { type: 'text/plain' }),
-        'text/html': new Blob([html], { type: 'text/html' }),
-      }),
-    ]);
-
-    return { mode: 'rich' };
-  } catch (error) {
-    await copyPlainText(plainText);
-    return { mode: 'plain', reason: 'rich_failed', error };
-  }
+  await copyPlainText(plainText);
+  return { mode: 'markdown' };
 }
 
 export {

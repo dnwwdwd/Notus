@@ -29,7 +29,7 @@ function buildInitialAnswers(interaction) {
   return (Array.isArray(interaction?.payload?.questions) ? interaction.payload.questions : []).reduce((acc, question) => {
     const current = responseAnswers[question.id] || prefilledAnswers[question.id] || null;
     acc[question.id] = {
-      optionId: current?.value || '',
+      optionId: current?.selected_option_id || current?.option_id || current?.value || '',
       optionIds: Array.isArray(current?.option_ids) ? current.option_ids : [],
       text: current?.text || '',
       customText: current?.text || current?.custom_text || '',
@@ -43,6 +43,17 @@ function isQuestionAnswered(question, current = {}) {
   if (!question) return false;
   if (question.type === 'text_input') return Boolean(String(current.text || current.customText || '').trim());
   return Boolean(String(current.customText || '').trim() || current.optionId);
+}
+
+function isQuestionVisible(question, answers = {}) {
+  const dependency = question?.depends_on || question?.dependsOn;
+  if (!dependency?.question_id || !Array.isArray(dependency.values) || dependency.values.length === 0) return true;
+  const current = answers[dependency.question_id] || {};
+  return dependency.values.includes(String(current.optionId || '').trim());
+}
+
+function visibleQuestions(questions = [], answers = {}) {
+  return questions.filter((question) => isQuestionVisible(question, answers));
 }
 
 function findFirstUnansweredIndex(questions = [], answers = {}) {
@@ -256,13 +267,18 @@ export function ClarifyDrawer({
   const optionRefs = useRef([]);
   const customInputRef = useRef(null);
   const reviewRowRefs = useRef([]);
+  const activeQuestions = useMemo(() => visibleQuestions(questions, answers), [answers, questions]);
 
   useEffect(() => {
     const nextAnswers = buildInitialAnswers(interaction);
     setAnswers(nextAnswers);
-    setActiveIndex(findFirstUnansweredIndex(questions, nextAnswers));
+    setActiveIndex(findFirstUnansweredIndex(visibleQuestions(questions, nextAnswers), nextAnswers));
     setPhase(isRetryable ? 'failed' : isStale ? 'stale' : 'expanded-question');
   }, [interaction, isRetryable, isStale, questions]);
+
+  useEffect(() => {
+    setActiveIndex((current) => Math.min(current, Math.max(activeQuestions.length - 1, 0)));
+  }, [activeQuestions.length]);
 
   useEffect(() => {
     onPhaseChange?.(phase);
@@ -285,20 +301,20 @@ export function ClarifyDrawer({
   }, [activeIndex, phase]);
 
   const answeredCount = useMemo(
-    () => questions.filter((question) => isQuestionAnswered(question, answers[question.id] || {})).length,
-    [answers, questions]
+    () => activeQuestions.filter((question) => isQuestionAnswered(question, answers[question.id] || {})).length,
+    [activeQuestions, answers]
   );
-  const currentQuestion = questions[activeIndex] || null;
-  const allAnswered = questions.length > 0 && answeredCount === questions.length;
+  const currentQuestion = activeQuestions[activeIndex] || null;
+  const allAnswered = activeQuestions.length > 0 && answeredCount === activeQuestions.length;
   const expandedPhase = isRetryable ? 'failed' : isStale ? 'stale' : allAnswered ? 'expanded-review' : 'expanded-question';
   const currentAnswer = currentQuestion ? (answers[currentQuestion.id] || {}) : {};
   const canAdvanceCurrent = currentQuestion ? isQuestionAnswered(currentQuestion, currentAnswer) : false;
-  const dots = getQuestionStates(questions, activeIndex, answers);
+  const dots = getQuestionStates(activeQuestions, activeIndex, answers);
   const collapsedSummary = interaction?.payload?.collapsed_summary
-    || (answeredCount > 0 ? `已回答 ${answeredCount} / ${questions.length}` : '先确认几个问题');
+    || (answeredCount > 0 ? `已回答 ${answeredCount} / ${activeQuestions.length}` : '先确认几个问题');
 
   const footerHint = interaction?.payload?.footer_hint
-    || (allAnswered ? '检查无误后再开始' : `${questions.length} 个问题，约 30 秒`);
+    || (allAnswered ? '检查无误后再开始' : `${activeQuestions.length} 个问题，约 30 秒`);
 
   const handleAnswerPatch = (questionId, patch = {}) => {
     setAnswers((prev) => ({
@@ -308,6 +324,29 @@ export function ClarifyDrawer({
         ...patch,
       },
     }));
+  };
+
+  const selectOptionAndAdvance = (question, option) => {
+    if (!question || !option || !isPending) return;
+    const nextAnswers = {
+      ...answers,
+      [question.id]: {
+        ...(answers[question.id] || {}),
+        optionId: option.id,
+        optionIds: [option.id],
+        text: '',
+        customText: '',
+        label: option.label,
+      },
+    };
+    setAnswers(nextAnswers);
+    const nextQuestions = visibleQuestions(questions, nextAnswers);
+    const currentIndex = nextQuestions.findIndex((item) => item.id === question.id);
+    if (currentIndex >= 0 && currentIndex < nextQuestions.length - 1) {
+      setActiveIndex(currentIndex + 1);
+      return;
+    }
+    setPhase('expanded-review');
   };
 
   const buildSubmitPayload = () => Object.fromEntries(questions.map((question) => {
@@ -336,8 +375,8 @@ export function ClarifyDrawer({
 
   const goToNextQuestion = () => {
     if (!isPending || phase !== 'expanded-question' || !canAdvanceCurrent) return;
-    if (activeIndex < questions.length - 1) {
-      setActiveIndex((prev) => Math.min(prev + 1, questions.length - 1));
+    if (activeIndex < activeQuestions.length - 1) {
+      setActiveIndex((prev) => Math.min(prev + 1, activeQuestions.length - 1));
       return;
     }
     setPhase('expanded-review');
@@ -402,7 +441,7 @@ export function ClarifyDrawer({
     setSwipeStartY(null);
   };
 
-  if (!interaction || questions.length === 0) return null;
+  if (!interaction || activeQuestions.length === 0) return null;
 
   if (phase === 'collapsed') {
     return (
@@ -471,7 +510,7 @@ export function ClarifyDrawer({
         </span>
         <div style={{ flex: 1 }} />
         <span style={{ fontSize: 11, color: 'var(--text-tertiary)', background: 'var(--bg-secondary)', padding: '2px 8px', borderRadius: 'var(--radius-full)' }}>
-          {phase === 'expanded-review' || phase === 'failed' ? `${questions.length} / ${questions.length}` : `${activeIndex + 1} / ${questions.length}`}
+          {phase === 'expanded-review' || phase === 'failed' ? `${activeQuestions.length} / ${activeQuestions.length}` : `${activeIndex + 1} / ${activeQuestions.length}`}
         </span>
         <button
           type="button"
@@ -524,13 +563,7 @@ export function ClarifyDrawer({
                   label={option.label}
                   hint={option.description}
                   disabled={!isPending}
-                  onClick={() => handleAnswerPatch(currentQuestion.id, {
-                    optionId: option.id,
-                    optionIds: [option.id],
-                    text: '',
-                    customText: '',
-                    label: option.label,
-                  })}
+                  onClick={() => selectOptionAndAdvance(currentQuestion, option)}
                 />
               );
             })}
@@ -588,7 +621,7 @@ export function ClarifyDrawer({
         </div>
       ) : (
         <div>
-          {(isRetryable ? questions.filter((question) => isQuestionAnswered(question, answers[question.id] || {})) : questions).map((question, index) => (
+          {(isRetryable ? activeQuestions.filter((question) => isQuestionAnswered(question, answers[question.id] || {})) : activeQuestions).map((question, index) => (
             <ReviewRow
               key={question.id}
               rowRef={(node) => {
@@ -641,7 +674,7 @@ export function ClarifyDrawer({
             {retryLabel}
           </Button>
         ) : null}
-        {isPending && phase === 'expanded-question' && activeIndex < questions.length - 1 ? (
+        {isPending && phase === 'expanded-question' && activeIndex < activeQuestions.length - 1 ? (
           <button
             type="button"
             aria-label="下一题"
@@ -653,7 +686,7 @@ export function ClarifyDrawer({
             <Icons.chevronRight size={13} />
           </button>
         ) : null}
-        {isPending && !(phase === 'expanded-question' && activeIndex < questions.length - 1) ? (
+        {isPending && !(phase === 'expanded-question' && activeIndex < activeQuestions.length - 1) ? (
           <Button
             type="button"
             variant="primary"

@@ -241,6 +241,21 @@ function toTextBlock(content) {
   }).filter(Boolean);
 }
 
+function isImageBlock(block) {
+  return block?.type === 'image' && block?.source?.type === 'base64'
+    && block?.source?.media_type && block?.source?.data;
+}
+
+function toOpenAiImageBlock(block) {
+  if (!isImageBlock(block)) return null;
+  return {
+    type: 'image_url',
+    image_url: {
+      url: `data:${block.source.media_type};base64,${block.source.data}`,
+    },
+  };
+}
+
 function toOpenAiTools(tools = []) {
   return (Array.isArray(tools) ? tools : []).map((item) => ({
     type: 'function',
@@ -267,6 +282,16 @@ function toAnthropicMessages(messages = []) {
       if (block.type === 'tool_use') {
         return { type: 'tool_use', id: block.id, name: block.name, input: block.input || {} };
       }
+      if (isImageBlock(block)) {
+        return {
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: block.source.media_type,
+            data: block.source.data,
+          },
+        };
+      }
       return { type: 'text', text: String(block.text || block.content || '') };
     }).filter((block) => block.type !== 'text' || block.text);
     return { role, content: blocks.length > 0 ? blocks : [{ type: 'text', text: '' }] };
@@ -288,8 +313,11 @@ function toOpenAiMessages(system, messages = []) {
       output.push({ role: 'assistant', content: text || null, ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}) });
       return;
     }
-    const textBlocks = blocks.filter((block) => block.type === 'text').map((block) => block.text || '').filter(Boolean);
-    if (textBlocks.length > 0) output.push({ role: 'user', content: textBlocks.join('\n') });
+    const userContent = blocks.flatMap((block) => {
+      if (block.type === 'text' && block.text) return [{ type: 'text', text: block.text }];
+      const image = toOpenAiImageBlock(block);
+      return image ? [image] : [];
+    });
     blocks.filter((block) => block.type === 'tool_result').forEach((block) => {
       output.push({
         role: 'tool',
@@ -297,6 +325,14 @@ function toOpenAiMessages(system, messages = []) {
         content: String(block.content || ''),
       });
     });
+    if (userContent.length > 0) {
+      output.push({
+        role: 'user',
+        content: userContent.some((block) => block.type === 'image_url')
+          ? userContent
+          : userContent.map((block) => block.text).join('\n'),
+      });
+    }
   });
   return output.length > 0 ? output : [{ role: 'user', content: '' }];
 }
@@ -661,4 +697,6 @@ module.exports = {
   completeChat,
   streamChat,
   completeToolChat,
+  toAnthropicMessages,
+  toOpenAiMessages,
 };

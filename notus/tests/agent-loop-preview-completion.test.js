@@ -38,13 +38,34 @@ async function runTests() {
   const originalLlm = require.cache[llmPath];
   let llmCallCount = 0;
   let modelDraftContent = '';
+  let continuationMode = false;
+  let continuationCallCount = 0;
+  let continuationDraftContent = '';
   require.cache[llmPath] = {
     id: llmPath,
     filename: llmPath,
     loaded: true,
     exports: {
-      completeToolChat: async () => {
+      completeToolChat: async (request = {}) => {
         llmCallCount += 1;
+        if (continuationMode) {
+          assert.ok(String(request.system || '').includes('new-version.md'), '承接改写应收到上一轮真实创建文件的路径');
+          assert.ok(
+            !(request.tools || []).some((tool) => tool.name === 'create_note'),
+            '承接改写不能继续暴露 create_note，避免误建第二个文件'
+          );
+          continuationCallCount += 1;
+          if (continuationCallCount === 1) {
+            return {
+              content: [{ type: 'tool_use', id: 'toolu_read_created', name: 'read_file', input: { path: 'new-version.md' } }],
+              stopReason: 'tool_use',
+            };
+          }
+          return {
+            content: [{ type: 'tool_use', id: 'toolu_rewrite_created', name: 'preview_file_revision', input: { file_path: 'new-version.md', draft_content: continuationDraftContent } }],
+            stopReason: 'tool_use',
+          };
+        }
         return {
           content: [
             { type: 'text', text: '准备生成全文修订预览。<thinking>这里是内部推理，不应展示。</thinking>' },
@@ -69,7 +90,7 @@ async function runTests() {
     const { createFile, getFileByPath } = require('../lib/files');
     const { ensureConversation } = require('../lib/conversations');
     const { createSession, getSession, updateSessionStatus } = require('../lib/agentSession');
-    const { getOperationSetById } = require('../lib/canvasOperationSets');
+    const { createOperationSet, getOperationSetById } = require('../lib/canvasOperationSets');
     const { runAgentLoop } = require('../lib/agentLoop');
 
     const file = createFile('case.md', '# Title\n\nalpha\n');
@@ -109,6 +130,38 @@ async function runTests() {
       && String(event.text || '').includes('diff 卡片')
     )), JSON.stringify(events));
     assert.ok(events.every((event) => !String(event.text || '').includes('内部推理')), JSON.stringify(events));
+
+    const createdFile = createFile('new-version.md', '# Notus 新版本前瞻\n\n初稿\n');
+    createOperationSet({
+      conversationId: conversation.id,
+      agentSessionId: session.sessionId,
+      articleHash: 'created-file-context',
+      mode: 'create_file',
+      status: 'applied',
+      patches: [{
+        file_path: 'new-version.md',
+        old: '',
+        new: createdFile.content,
+        change_type: 'create',
+        status: 'applied',
+      }],
+    });
+    continuationMode = true;
+    continuationDraftContent = createdFile.content.replace('初稿', '重写后的正文');
+    const continuationSession = createSession({
+      goal: '用户任务：根据这些内容进行重写，不要写小功能',
+      authorizedPaths: [''],
+      authorizedOps: ['modify', 'create'],
+      conversationId: conversation.id,
+    });
+    const continuationResult = await runAgentLoop({
+      sessionId: continuationSession.sessionId,
+      approvalMode: 'manual_confirm',
+      llmConfig: { llmContextWindowTokens: 60000 },
+    });
+    assert.strictEqual(continuationResult.status, 'completed');
+    assert.strictEqual(continuationCallCount, 2, '承接改写应先读取目标文件，再生成全文修订预览');
+    assert.strictEqual(getOperationSetById(continuationResult.operation_set_id).revision_file_path, 'new-version.md');
   } finally {
     delete require.cache[require.resolve('../lib/agentLoop')];
     if (originalLlm) require.cache[llmPath] = originalLlm;

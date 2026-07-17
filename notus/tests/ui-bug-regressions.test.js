@@ -54,7 +54,10 @@ function runTests() {
   assert.ok(agentWorkspace.includes("attachmentMode === 'parsed'"));
   assert.ok(agentWorkspace.includes('pasted-text-'));
   assert.ok(agentWorkspace.includes('const LONG_PASTE_ATTACHMENT_THRESHOLD = 100;'));
-  assert.ok(agentWorkspace.includes('const MAX_PARSED_ATTACHMENTS = 5;'));
+  assert.ok(agentWorkspace.includes('const MAX_PARSED_ATTACHMENTS = 10;'));
+  assert.ok(agentWorkspace.includes('const MAX_IMAGES_PER_MESSAGE = 30;'));
+  assert.ok(agentWorkspace.includes("aria-label=\"添加图片\""));
+  assert.ok(agentWorkspace.includes('没有匹配的文件或目录'));
   assert.ok(agentWorkspace.includes('mentionOptions = []'));
   assert.ok(agentWorkspace.includes('const activeMention = useMemo'));
   assert.ok(agentWorkspace.includes('function AgentWorkspace({'));
@@ -64,10 +67,17 @@ function runTests() {
   assert.ok(agentWorkspace.includes("removed.push(`原路径：${operation.old_path || operation.old || ''}`);"));
   assert.ok(!agentWorkspace.includes('function AgentDiffCard'));
 
+  const clarifyDrawer = read('components/ChatArea/ClarifyDrawer.js');
+  assert.ok(clarifyDrawer.includes('const selectOptionAndAdvance'));
+  assert.ok(clarifyDrawer.includes("setPhase('expanded-review')"));
+  assert.ok(clarifyDrawer.includes('<ReviewRow'));
+
   const agentPrompt = read('lib/agentLoopPrompt.js');
   assert.ok(agentPrompt.includes('文件系统任务要和内容任务分开处理'));
   assert.ok(agentPrompt.includes('不要用 search_knowledge 判断目录是否存在'));
   assert.ok(agentPrompt.includes('用户说“工作目录”时，不要把“AI工作流”等包含相近词的目录当作目标'));
+  assert.ok(agentPrompt.includes('@{folder:相对目录}'));
+  assert.ok(agentPrompt.includes('scope_paths: [该目录路径]'));
 
   const agentTools = read('lib/agentTools.js');
   assert.ok(agentTools.includes('不要用它判断目录是否存在、目标目录位置或空目录'));
@@ -81,15 +91,11 @@ function runTests() {
   assert.ok(!llmConfigSection.includes("value={selectedProvider}"));
 
   const canvasPage = read('pages/canvas.js');
-  assert.ok(canvasPage.includes('attachmentMode="parsed"'));
-  assert.ok(canvasPage.includes("token: '@全文'"));
-  assert.ok(canvasPage.includes('mentionOptions={[{ value: \'__all__\''));
-  assert.ok(canvasPage.includes('clearCachedContent'));
-  assert.ok(canvasPage.includes('function buildCanvasConversationListUrl()'));
-  assert.ok(!canvasPage.includes("params.set('file_id'"));
-  assert.ok(!canvasPage.includes("params.set('draft_key'"));
+  assert.ok(canvasPage.includes("destination: '/files'"));
+  assert.ok(!canvasPage.includes('attachmentMode="parsed"'));
 
   const knowledgePage = read('pages/knowledge.js');
+  assert.ok(knowledgePage.includes("destination: '/files'"));
   assert.ok(!knowledgePage.includes('attachmentMode="parsed"'));
 
   console.log('ui bug regressions tests passed');

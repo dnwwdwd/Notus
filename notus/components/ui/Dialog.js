@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom';
 import { Button } from './Button';
 import { Icons } from './Icons';
 
-export const Dialog = ({ open, onClose, title, children, footer, maxWidth = 480 }) => {
+export const Dialog = ({ open, onClose, title, children, footer, maxWidth = 480, className = '' }) => {
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
@@ -32,6 +32,7 @@ export const Dialog = ({ open, onClose, title, children, footer, maxWidth = 480 
       }}
     >
       <div
+        className={className}
         onClick={(e) => e.stopPropagation()}
         style={{
           background: 'var(--bg-elevated)',

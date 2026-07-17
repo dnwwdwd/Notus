@@ -32,6 +32,31 @@ function formatStyleContext(styleContext = null) {
   ].filter(Boolean).join('\n') || '无额外风格上下文。';
 }
 
+function formatContinuationFileContext(context = null) {
+  if (!context?.requiresTargetReuse || !Array.isArray(context.targets) || context.targets.length === 0) return '';
+  const targets = context.targets.map((target, index) => (
+    `${index + 1}. ${target.filePath}（operation set #${target.operationSetId}，状态：${target.status}）`
+  ));
+  return [
+    '## 本轮承接的结构化文件目标',
+    '用户本轮是在重写、改写、润色或更新此前创建的内容。以下路径来自同一对话的真实文件操作记录，不是模型猜测：',
+    ...targets,
+    '必须先对首个目标调用 read_file，再用 preview_file_revision 修改该文件。除非用户明确要求“另建/新建/单独创建”文件，否则不得调用 create_note。若目标仍是 pending 预览、尚未应用，应说明需要先应用该预览，不能另建同主题文件。',
+  ].join('\n');
+}
+
+function extractFolderMentions(value = '') {
+  const folders = new Set();
+  const matcher = /@\{folder:([^}]+)\}/g;
+  let match = matcher.exec(String(value || ''));
+  while (match) {
+    const folder = String(match[1] || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').trim();
+    if (folder) folders.add(folder);
+    match = matcher.exec(String(value || ''));
+  }
+  return [...folders];
+}
+
 function buildLoopSystemPrompt(session, options = {}) {
   return [
     '你是 Notus 工作区的 AI 协作 Agent，帮助用户完成本地笔记工作区内的知识整理和创作任务。',
@@ -39,6 +64,8 @@ function buildLoopSystemPrompt(session, options = {}) {
     '## 工作原则',
     '只用工具获取信息。需要了解笔记内容时，通过 search_knowledge 或 read_file 工具获取，不能凭记忆假设用户笔记里有什么内容。',
     '用户输入中的 @{相对路径} 是明确 Mention 的工作区文件。需要使用该文件正文时，先对该路径调用 read_file；Mention 只负责定位文件，不会自动把正文带入上下文。',
+    '用户输入中的 @{folder:相对目录} 是明确 Mention 的工作区目录。每个被 Mention 的目录都必须先调用 analyze_folder，并把 folder_path 精确设为该目录路径；不要把目录 Mention 改为 analyze_folder({ folder_path: "" })，也不要因为它直接对全库调用 search_knowledge。',
+    'analyze_folder 返回目录文件列表后，按用户任务挑选少量文件调用 read_file，或用 search_knowledge 并传 scope_paths: [该目录路径]。目录结果显示截断时，继续指定已返回的子目录分批分析，不要一次性读取目录下全部文件。',
     '用户没有 Mention 文件时，不要把界面中可能打开的文件当作隐式目标。只有任务确实需要定位已有文件、目录或材料时，再根据意图自行调用 analyze_folder、search_knowledge 或 read_file；普通对话不必为了找文件而调用工具。',
     '先了解再行动。在生成正文写入预览前，充分检索和阅读相关笔记，确保输出基于用户真实内容。',
     '文件系统任务要和内容任务分开处理：移动、重命名、新建目录或移动文件时，优先用 analyze_folder 查看实时目录结构；不要用 search_knowledge 判断目录是否存在、目标目录在哪或空目录是否存在。',
@@ -48,10 +75,16 @@ function buildLoopSystemPrompt(session, options = {}) {
     '用户本轮输入优先于历史任务。历史上下文只能辅助理解，不能替代本轮明确指令。',
     '你需要根据最近对话判断本轮输入是否在承接、确认、修正或执行上一轮已讨论的方案。能从上下文确定用户指代时，直接继续执行；只有上下文不足以定位目标、范围或操作时才追问。',
     '如果本轮只有附件或外部材料，且用户没有明确要求写入、更新、修改、合并当前文档，应默认读取并总结附件，或用普通文本询问用途；不得因为历史任务中存在写作目标，就自动把本轮附件关联到历史写作任务。',
+    '当前轮图片会在输入中附带 `notus-conversation-image://...` 受控引用。需要把图片写进笔记时，Markdown 图片地址必须使用这个引用，例如 `![图片说明](notus-conversation-image://12/img-xxx)`；系统会在应用预览时复制到用户设置的图床。不要写入临时接口 URL、Base64 或臆造的本地路径。',
+    '用户要求使用此前对话图片时，先调用 list_conversation_images 查看清单，再调用 read_conversation_images 选择完成任务需要的图片；不要自动把整个历史对话的图片全部重新送入模型。',
     '告知你的进展。每轮开始时用一两句话说明接下来要做什么。',
     '',
     '## 写入规则',
     '- 修改已有单个 Markdown 文件正文时，优先调用 preview_file_revision：你提交修改后的完整文件 draft_content，系统用代码生成 diff、校验和应用；不要自己生成 old/new patch 数组。',
+    '- 用户要求把对话图片整理、插入或写入笔记时，只有目标路径由 @ 文件、明确路径、当前输入或最近对话唯一确定，才能直接写入预览。已打开但未 Mention 的编辑器文件不是隐式目标。',
+    '- 图片目标不唯一时，先检索候选笔记，再调用 ask_question_card。卡片的 target_note 最多列出 3 个候选，另含 existing_path 和 new_note；target_note_path 使用 depends_on: { question_id: "target_note", values: ["existing_path", "new_note"] }，要求用户填写目标 Markdown 相对路径。候选 option 以 answer_value 保存实际相对路径。',
+    '- 图片目标已确定、但用户没有给出插入位置时，先读目标文件，将整理内容和图片放进语义最匹配的小节；没有匹配小节时在文末新建“调研图片与整理”小节。',
+    '- 删除图片时只移除 Markdown 图片引用，不删除本地资源或对象存储文件。',
     '- 只有需要兼容旧的小范围碎片 patch 或多文件 patch 时，才调用 preview_patch_files；用户确认后才会写入。',
     '- preview_patch_files 必须单独作为该轮唯一工具调用，不能和其他工具同时出现。',
     '- preview_file_revision 必须单独作为该轮唯一工具调用，不能和其他工具同时出现。',
@@ -66,6 +99,8 @@ function buildLoopSystemPrompt(session, options = {}) {
     '',
     '## 新建文件后的读取方式',
     '如果刚刚用 create_note 生成了新建文件预览，当前任务应停止并等待预览应用；不要假设手动确认模式下文件已经存在。',
+    '',
+    formatContinuationFileContext(options.continuationFileContext),
     '',
     '## 知识库搜索策略',
     '知识库搜索只用于了解笔记正文、事实材料、写作参考和语义内容。第一次用宽泛关键词获取概览；后续换不同角度检索，避免重复相同查询。信息不足时如实说明，不要编造。',
@@ -94,16 +129,25 @@ function buildLoopSystemPrompt(session, options = {}) {
 function buildInitialUserMessage(goal, session, options = {}) {
   const limitText = session.search_knowledge_limit === null ? '不限制' : `${session.search_knowledge_limit} 次`;
   const recentConversationContext = String(options.recentConversationContext || '').trim();
+  const continuationFileContext = formatContinuationFileContext(options.continuationFileContext);
+  const folderMentions = extractFolderMentions(goal);
   return [
     recentConversationContext ? [
       '最近对话上下文（用于判断本轮输入是否承接、确认、修正或执行上一轮方案；不替代本轮明确指令）：',
       recentConversationContext,
       '',
     ].join('\n') : '',
+    continuationFileContext,
+    continuationFileContext ? '' : '',
     '请帮我完成以下任务：',
     '',
     String(goal || '').trim(),
     '',
+    folderMentions.length > 0 ? [
+      `已 Mention 目录：${folderMentions.map((item) => `@{folder:${item}}`).join('、')}`,
+      '开始处理时，必须先逐个调用 analyze_folder，folder_path 使用上面的目录路径；随后仅按任务选择少量文件读取或在该目录范围内检索。',
+      '',
+    ].join('\n') : '',
     '写入能力：',
     formatTaskWriteCapability(session),
     '',
@@ -116,4 +160,5 @@ function buildInitialUserMessage(goal, session, options = {}) {
 module.exports = {
   buildLoopSystemPrompt,
   buildInitialUserMessage,
+  extractFolderMentions,
 };

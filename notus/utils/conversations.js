@@ -1,3 +1,5 @@
+import { normalizeMentionSegments, normalizeMessageMentions, parseLegacyMentions, segmentsToContent, segmentsToMentions } from './messageMentions';
+
 export function createDraftConversationKey(prefix = 'draft') {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return `${prefix}_${crypto.randomUUID()}`;
@@ -45,25 +47,49 @@ export function mapConversationMessages(messages = [], kind = 'knowledge') {
     .map((message) => {
       const citations = Array.isArray(message.citations) ? message.citations : [];
       const meta = message?.meta && typeof message.meta === 'object' ? message.meta : null;
-      const attachments = Array.isArray(meta?.attachments) ? meta.attachments.map((attachment) => {
+      const parsedAttachments = Array.isArray(meta?.attachments) ? meta.attachments.map((attachment, index) => {
         const key = String(attachment?.name || attachment?.source || '').trim();
         const parsed = key ? parsedAttachmentMap[key] : null;
-        return parsed ? { ...attachment, parsed } : attachment;
+        return {
+          ...attachment,
+          media_kind: 'attachment',
+          upload_order: Number.isFinite(Number(attachment?.upload_order)) ? Number(attachment.upload_order) : index,
+          ...(parsed ? { parsed } : {}),
+        };
       }) : [];
+      const images = Array.isArray(meta?.images) ? meta.images.map((image, index) => ({
+        ...image,
+        source_kind: 'image',
+        media_kind: 'image',
+        conversation_id: Number(message.conversation_id || 0) || null,
+        upload_order: Number.isFinite(Number(image?.upload_order))
+          ? Number(image.upload_order)
+          : parsedAttachments.length + index,
+      })) : [];
+      const attachments = [...parsedAttachments, ...images].sort((left, right) => (
+        Number(left.upload_order || 0) - Number(right.upload_order || 0)
+      ));
       const answerMode = kind === 'knowledge'
         ? (meta?.answer_mode || (message.role === 'assistant'
           ? (citations.length > 0 ? 'grounded' : 'no_evidence')
           : null))
         : null;
+      const structuredMentions = normalizeMessageMentions(meta?.mentions);
+      const legacyMentions = structuredMentions.length > 0
+        ? { mentions: structuredMentions, content: String(message.content || '') }
+        : parseLegacyMentions(message.content);
+      const mentionSegments = normalizeMentionSegments(meta?.mention_segments, legacyMentions.mentions, legacyMentions.content);
       return {
         id: message.id || `${message.role}-${Math.random().toString(16).slice(2)}`,
         role: message.role,
-        content: String(message.content || ''),
+        content: segmentsToContent(mentionSegments),
         conversationId: Number(message.conversation_id || 0) || null,
         attachments,
         citations,
         sourceCount: Number(meta?.source_count || citations.length || 0),
         meta,
+        mentions: segmentsToMentions(mentionSegments),
+        mentionSegments,
         answerMode,
       };
     });

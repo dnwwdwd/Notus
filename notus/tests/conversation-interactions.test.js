@@ -218,6 +218,49 @@ function runTests() {
   assert.ok(genericSummary.includes('大纲风格=实用清单'));
   assert.ok(genericSummary.includes('补充要求=不要太长'));
 
+  const imageTargetInteraction = {
+    id: 13,
+    conversation_id: 3,
+    status: 'pending',
+    payload: {
+      questions: [
+        {
+          id: 'target_note',
+          type: 'single_select',
+          required: true,
+          label: '选择目标笔记',
+          options: [
+            { id: 'candidate_1', label: '调研笔记', answer_value: 'research/topic.md' },
+            { id: 'existing_path', label: '手填已有路径' },
+            { id: 'new_note', label: '新建笔记' },
+          ],
+        },
+        {
+          id: 'target_note_path',
+          type: 'text_input',
+          required: true,
+          label: '目标路径',
+          depends_on: { question_id: 'target_note', values: ['existing_path', 'new_note'] },
+        },
+      ],
+    },
+    response: null,
+  };
+  const candidateTarget = normalizeInteractionResponse(imageTargetInteraction, {
+    answers: { target_note: { option_id: 'candidate_1' } },
+  });
+  assert.strictEqual(candidateTarget.resolution_status, 'resolved');
+  assert.strictEqual(candidateTarget.answers.target_note.value, 'research/topic.md');
+  assert.strictEqual(candidateTarget.answers.target_note.selected_option_id, 'candidate_1');
+  const customTarget = normalizeInteractionResponse(imageTargetInteraction, {
+    answers: {
+      target_note: { option_id: 'new_note' },
+      target_note_path: { text: 'research/new-note.md' },
+    },
+  });
+  assert.strictEqual(customTarget.resolution_status, 'resolved');
+  assert.strictEqual(customTarget.answers.target_note_path.value, 'research/new-note.md');
+
   console.log('conversation interactions tests passed');
 }
 

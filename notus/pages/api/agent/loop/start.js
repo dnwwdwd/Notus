@@ -6,6 +6,13 @@ const { createSession, getSession, updateSessionStatus, validateSessionAccess } 
 const { appendConversationMessage, ensureConversation, touchConversation } = require('../../../../lib/conversations');
 const { parseAgentInputSources } = require('../../../../lib/agentInputSources');
 const { updateInteraction } = require('../../../../lib/conversationInteractions');
+const {
+  assertAttachmentLimits,
+  assertImageContextSize,
+  assertImageLimits,
+  getImageInputBlocks,
+  MAX_ANTHROPIC_IMAGE_CONTEXT_BYTES,
+} = require('../../../../lib/conversationImages');
 
 function send(res, payload) {
   if (!res.writableEnded) res.write(`data: ${JSON.stringify(payload)}\n\n`);
@@ -24,6 +31,9 @@ export default async function handler(req, res) {
 
   const controller = new AbortController();
   req.on('close', () => controller.abort());
+  let initialImages = [];
+  let llmConfig = null;
+  let activeSessionId = null;
 
   try {
     const body = req.body || {};
@@ -44,6 +54,7 @@ export default async function handler(req, res) {
         send(res, { type: 'error', error: 'SESSION_NOT_RESUMABLE', code: 'SESSION_NOT_RESUMABLE' });
         return res.end();
       }
+      activeSessionId = sessionId;
       conversationId = session.conversation_id;
       send(res, { type: 'session_resumed', session_id: sessionId, conversation_id: conversationId });
     } else {
@@ -55,6 +66,8 @@ export default async function handler(req, res) {
       const appendUserMessage = !Boolean(body.skip_user_message_append || body.skipUserMessageAppend);
       const userInputText = String(body.user_query ?? body.userQuery ?? body.input_text ?? body.inputText ?? body.display_query ?? body.displayQuery ?? '').trim();
       const displayQuery = String(body.display_query ?? body.displayQuery ?? userInputText).trim();
+      const mentions = Array.isArray(body.mentions) ? body.mentions : [];
+      const mentionSegments = Array.isArray(body.mention_segments ?? body.mentionSegments) ? (body.mention_segments ?? body.mentionSegments) : [];
       const conversation = ensureConversation({
         conversationId,
         kind: body.kind || 'agent',
@@ -63,16 +76,22 @@ export default async function handler(req, res) {
       });
       conversationId = conversation.id;
       const goal = rawGoal;
+      const attachments = assertAttachmentLimits(conversationId, body.attachments || []);
+      const images = assertImageLimits(conversationId, body.images || []);
+      llmConfig = resolveLlmRuntimeConfig({ llmConfigId: body.llm_config_id || undefined });
+      if (String(llmConfig.llmApiProtocol || '').trim().toLowerCase() === 'anthropic') {
+        assertImageContextSize(images, MAX_ANTHROPIC_IMAGE_CONTEXT_BYTES);
+      }
       // Only parse sources explicitly provided by the user this turn. Do not scan
       // the full Agent goal, because it contains workspace context and block snapshots.
       const parsedAttachments = await parseAgentInputSources({
         conversationId,
-        attachments: body.attachments || [],
+        attachments,
         userInputText,
         onEvent: (event) => send(res, { ...event, conversation_id: conversationId }),
       });
       if (appendUserMessage) {
-        appendConversationMessage({
+        const messageId = appendConversationMessage({
           conversationId,
           role: 'user',
           content: displayQuery || userInputText || rawGoal,
@@ -80,14 +99,10 @@ export default async function handler(req, res) {
             agent_loop: true,
             agent_goal: goal,
             user_query: userInputText,
-            attachments: Array.isArray(body.attachments) ? body.attachments.map((item) => ({
-              name: item?.name || '',
-              size: item?.size || 0,
-              type: item?.type || '',
-              extension: item?.extension || '',
-              stored_name: item?.stored_name || item?.storedName || '',
-              source_kind: item?.source_kind || 'file',
-            })) : [],
+            attachments,
+            images,
+            mentions,
+            mention_segments: mentionSegments,
             parsed_attachments: parsedAttachments,
             authorized_paths: body.authorized_paths || [],
             search_knowledge_limit: body.search_knowledge_limit === undefined ? 5 : body.search_knowledge_limit,
@@ -96,6 +111,9 @@ export default async function handler(req, res) {
             tool_profile: toolProfile,
           },
         });
+        initialImages = getImageInputBlocks(images, { messageId });
+      } else {
+        initialImages = getImageInputBlocks(images);
       }
       const created = createSession({
         goal,
@@ -110,17 +128,19 @@ export default async function handler(req, res) {
         toolProfile,
       });
       sessionId = created.sessionId;
+      activeSessionId = sessionId;
       send(res, { type: 'session_created', session_id: sessionId, session_token: created.token, conversation_id: conversationId });
     }
 
     let assistantText = '';
-    const llmConfig = resolveLlmRuntimeConfig({ llmConfigId: body.llm_config_id || undefined });
+    llmConfig = llmConfig || resolveLlmRuntimeConfig({ llmConfigId: body.llm_config_id || undefined });
     const loopResult = await runAgentLoop({
       sessionId,
       llmConfig,
       signal: controller.signal,
       approvalMode: body.approval_mode || body.approvalMode || 'auto_confirm',
       resumeInteractionId: Number(body.interaction_id || body.interactionId || 0) || null,
+      initialImages,
       onStream: (event) => {
         if (event.type === 'thinking' && event.text) assistantText += event.text;
         send(res, { ...event, session_id: sessionId, conversation_id: conversationId });
@@ -164,7 +184,7 @@ export default async function handler(req, res) {
     }
   } catch (error) {
     logger.error('agent.loop.start.failed', { error });
-    try { if (req.body?.session_id) updateSessionStatus(req.body.session_id, 'failed'); } catch {}
+    try { if (activeSessionId) updateSessionStatus(activeSessionId, 'failed'); } catch {}
     send(res, { type: 'error', error: error.message, code: error.code || 'AGENT_LOOP_FAILED' });
   }
   return res.end();

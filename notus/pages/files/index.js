@@ -126,7 +126,21 @@ function writeFilesWorkspacePanels(panels) {
 export default function FilesPage() {
   const router = useRouter();
   const toast = useToast();
-  const { activeFile, allFiles, files, pendingCitation, clearPendingCitation, selectFile, refreshFiles, getCachedContent, setCachedContent, clearCachedContent } = useApp();
+  const {
+    activeFile,
+    activeFileId: workspaceActiveFileId,
+    allFiles,
+    files,
+    pendingCitation,
+    clearPendingCitation,
+    selectFile,
+    refreshFiles,
+    getCachedContent,
+    setCachedContent,
+    clearCachedContent,
+    workspaceHydrated,
+    restoredActiveFileId,
+  } = useApp();
   const activeFileId = activeFile?.id;
   const contentRef = useRef('');
   const persistedContentRef = useRef('');
@@ -149,6 +163,7 @@ export default function FilesPage() {
   const [workspaceDefaults, setWorkspaceDefaults] = useState(null);
   const [agentFileChangeVersion, setAgentFileChangeVersion] = useState(0);
   const hasOpenedFileRef = useRef(false);
+  const hasRestoredStartupFileRef = useRef(false);
 
   const loadFile = useCallback(async (fileId) => {
     // Check in-memory cache first for instant navigation
@@ -198,14 +213,32 @@ export default function FilesPage() {
   }, []);
 
   useEffect(() => {
+    if (hasRestoredStartupFileRef.current || !workspaceHydrated) return;
+
+    const restoredFileId = Number(restoredActiveFileId);
+    if (!Number.isFinite(restoredFileId) || restoredFileId <= 0) return;
+    if (Number(workspaceActiveFileId) !== restoredFileId) return;
+
+    // 应用启动时已有选中文档，面板状态应完全沿用上次关闭窗口时的记录。
+    hasRestoredStartupFileRef.current = true;
+    hasOpenedFileRef.current = true;
+  }, [restoredActiveFileId, workspaceActiveFileId, workspaceHydrated]);
+
+  useEffect(() => {
     if (!activeFile?.id) {
+      const restoredFileId = Number(restoredActiveFileId);
+      const isWaitingForRestoredFile = workspaceHydrated
+        && Number.isFinite(restoredFileId)
+        && restoredFileId > 0
+        && Number(workspaceActiveFileId) === restoredFileId;
+      if (isWaitingForRestoredFile) return;
       hasOpenedFileRef.current = false;
       return;
     }
     if (hasOpenedFileRef.current || !workspaceDefaults) return;
     hasOpenedFileRef.current = true;
     updateWorkspacePanels(workspaceDefaults);
-  }, [activeFile?.id, updateWorkspacePanels, workspaceDefaults]);
+  }, [activeFile?.id, restoredActiveFileId, updateWorkspacePanels, workspaceActiveFileId, workspaceDefaults, workspaceHydrated]);
 
   const handleFilesLayoutChange = useCallback((nextPercent) => {
     const editorWidthPercent = clampFilesLayout(nextPercent);

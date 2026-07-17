@@ -106,6 +106,8 @@ export function AppProvider({ children }) {
   const [files, setFiles] = useState([]);
   const [loadingFiles, setLoadingFiles] = useState(true);
   const [hasLoadedFilesOnce, setHasLoadedFilesOnce] = useState(false);
+  const [workspaceHydrated, setWorkspaceHydrated] = useState(false);
+  const [restoredActiveFileId, setRestoredActiveFileId] = useState(null);
 
   // In-memory file content cache (fileId → markdown string)
   const contentCache = useRef(new Map());
@@ -167,6 +169,7 @@ export function AppProvider({ children }) {
     pendingCitationRef.current = nextWorkspaceState.pendingCitation;
     workspaceHydratedRef.current = true;
 
+    setRestoredActiveFileId(nextWorkspaceState.activeFileId);
     setActiveFileId(nextWorkspaceState.activeFileId);
     setActivePage(nextWorkspaceState.activePage);
     setOpenFolders(new Set(nextWorkspaceState.openFolders));
@@ -177,6 +180,7 @@ export function AppProvider({ children }) {
       toc: Number(nextWorkspaceState.sidebarScrollByTab?.toc) || 0,
     });
     setPendingCitation(nextWorkspaceState.pendingCitation);
+    setWorkspaceHydrated(true);
   }, []);
 
   useEffect(() => {
@@ -467,6 +471,8 @@ export function AppProvider({ children }) {
         folderOptions,
         loadingFiles,
         hasLoadedFilesOnce,
+        workspaceHydrated,
+        restoredActiveFileId,
         openFolders,
         activePage,
         toggleFolder,

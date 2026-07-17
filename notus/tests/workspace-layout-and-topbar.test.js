@@ -28,6 +28,13 @@ assert.ok(filesPage.includes('editorWidthPercent'), 'files page should persist t
 assert.ok(filesPage.includes('agentWidthPercent'), 'files page should persist the agent panel width');
 assert.ok(filesPage.includes('JSON.stringify({'), 'files page should serialize the workspace panel widths');
 assert.ok(filesPage.includes('workspaceLayout.editorWidthPercent'), 'files page should apply the stored editor width on initialization');
+assert.ok(filesPage.includes('hasRestoredStartupFileRef'), 'files page should distinguish a restored startup file from a newly opened file');
+assert.ok(filesPage.includes('面板状态应完全沿用上次关闭窗口时的记录'), 'a restored startup file should preserve the saved panel combination');
+assert.ok(filesPage.includes('isWaitingForRestoredFile'), 'files page should keep the restored panel state while the startup file is resolving');
+
+const appContext = read('contexts/AppContext.js');
+assert.ok(appContext.includes('workspaceHydrated'), 'app context should expose when persisted workspace state has hydrated');
+assert.ok(appContext.includes('restoredActiveFileId'), 'app context should retain the file selected when the workspace was restored');
 
 assert.ok(agentWorkspace.includes('AGENT_INPUT_TEXTAREA_DEFAULT_ROWS = 5'), 'agent input should default to five rows');
 assert.ok(agentWorkspace.includes("width: '95%', maxWidth: 'none'"), 'agent input should preserve the agreed 95% panel width');

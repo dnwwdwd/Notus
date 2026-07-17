@@ -266,7 +266,8 @@ function buildAnswer(optionId, question, extra = {}) {
     question_id: question?.id || '',
     slot: question?.slot || question?.id || '',
     type: question?.type || 'single_select',
-    value: optionId || '',
+    value: String(option?.answer_value || option?.answerValue || optionId || '').trim(),
+    selected_option_id: optionId || '',
     label: option?.label || extra.label || optionId || '',
     text: extra.text || '',
     option_ids: Array.isArray(extra.option_ids) ? extra.option_ids : undefined,
@@ -277,6 +278,13 @@ function buildAnswer(optionId, question, extra = {}) {
     relation_hint: extra.relation_hint || '',
     write_action: extra.write_action || '',
   };
+}
+
+function isQuestionActive(question = {}, answers = {}) {
+  const dependency = question?.depends_on || question?.dependsOn;
+  if (!dependency?.question_id || !Array.isArray(dependency.values) || dependency.values.length === 0) return true;
+  const answer = answers[dependency.question_id] || {};
+  return dependency.values.includes(String(answer.value || '').trim());
 }
 
 function normalizePrimaryIntentValue(value = '') {
@@ -654,6 +662,7 @@ function normalizeInteractionResponse(interaction, input = {}) {
   const shouldBypassEditSlots = resolvedPrimaryIntent === 'text' || resolvedPrimaryIntent === 'analyze';
   const missingSlots = questions
     .filter((question) => question.required)
+    .filter((question) => isQuestionActive(question, nextAnswers))
     .filter((question) => {
       if (shouldBypassEditSlots && ['source_content_ref', 'target_location', 'write_mode'].includes(question.id)) {
         return false;

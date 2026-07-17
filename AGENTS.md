@@ -54,6 +54,12 @@
 6. 如果本次交付涉及新增功能、功能修改、方案重新调整、架构改造、业务流程变化、Agent 行为变化、检索/索引/数据流变化，必须同步检查并按实际影响更新业务文档和相关项目文档，包括但不限于 `docs/Notus_Business_Logic_Upgrade.md`、`docs/Knowledge_Chat_Business_Flow.md`、`docs/Canvas_Chat_Business_Flow.md`、`docs/Notus_PDD.md`、`docs/Notus_PRD.md`、`docs/PROGRESS.md`、`docs/Notus_UI_Guide.md`。
 7. 如果该需求改变了当前产品口径、范围或里程碑，再按需更新 `docs/PROGRESS.md` 或 `docs/Notus_UI_Guide.md`。
 
+### 实施前文档检查（强制）
+
+- 开始修改代码、配置或界面前，必须先阅读与本次需求相关的 `Requirements/` 记录、`docs/BUG_TRACKER.md`、`docs/PROGRESS.md`、PDD、PRD、UI Guide 以及对应业务流程文档。
+- 需要先从文档确认当前产品口径、流程边界、限制条件和已知问题，再设计或实现代码；不能只根据现有代码推断需求。
+- 文档检查结果必须在同一次交付中落实：凡是产品行为、技术边界、业务流程、Agent 行为或界面规则发生变化，相关文档必须与代码一起更新；如果检查后确认某份文档不受影响，也应在交付说明中明确写出原因。
+
 ### 需求分类标准
 
 - bug：

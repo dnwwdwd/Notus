@@ -3,6 +3,7 @@ const { getEffectiveConfig } = require('./config');
 const { getStyleContext } = require('./style');
 const { buildInitialUserMessage, buildLoopSystemPrompt } = require('./agentLoopPrompt');
 const { getConversationHistory } = require('./conversations');
+const { listOperationSetsByConversation } = require('./canvasOperationSets');
 const { loadAttachments, formatAttachmentsForPrompt } = require('./parsedAttachmentStore');
 const { formatWebSearchContextsForPrompt } = require('./webSearchContextStore');
 const {
@@ -21,6 +22,10 @@ const {
 } = require('./agentSession');
 const { applyPreviewWithConflictCheck, buildToolDefinitions, executeToolSafely, summarizeInput, validateToolUseBlock } = require('./agentTools');
 const { estimateChatRequestTokens } = require('./llmBudget');
+const {
+  assertImageContextSize,
+  MAX_ANTHROPIC_IMAGE_CONTEXT_BYTES,
+} = require('./conversationImages');
 const {
   buildInteractionAnswerSummary,
   getInteractionById,
@@ -73,6 +78,45 @@ function buildRecentConversationContext(session) {
     const label = message.role === 'assistant' ? 'AI' : '用户';
     return `${label}：${trimForContext(sanitizeAssistantVisibleText(message.content))}`;
   }).join('\n');
+}
+
+function isExplicitNewFileTask(goal = '') {
+  return /(另(?:外|一)|新建|创建(?:一篇|一个|新的)?|再写一篇|写一篇新的|写(?:一个|一份)新的|单独(?:写|创建))/.test(String(goal || ''));
+}
+
+function isContinuationRewriteTask(goal = '') {
+  const text = String(goal || '').replace(/\s+/g, ' ').trim();
+  if (!text || isExplicitNewFileTask(text)) return false;
+  return /(重写|改写|润色|修订|修改|更新|续写|改一改|按(?:这些|上述|上面|刚才|前面)内容)/.test(text);
+}
+
+function buildContinuationFileContext(session) {
+  if (!session?.conversation_id || !isContinuationRewriteTask(session.goal)) return null;
+  const operationSets = listOperationSetsByConversation(session.conversation_id, {
+    statuses: ['pending', 'partial', 'applied'],
+  });
+  const seen = new Set();
+  const targets = [];
+
+  for (const operationSet of operationSets.slice().reverse()) {
+    const patches = Array.isArray(operationSet.patches) ? operationSet.patches.slice().reverse() : [];
+    for (const patch of patches) {
+      const filePath = String(patch?.file_path || '').trim();
+      const isCreatedFile = patch?.change_type === 'create'
+        || (operationSet.mode === 'create_file' && String(patch?.old || '') === '' && Boolean(String(patch?.new || '')));
+      if (!isCreatedFile || !filePath || seen.has(filePath)) continue;
+      seen.add(filePath);
+      targets.push({
+        filePath,
+        operationSetId: operationSet.id,
+        status: String(operationSet.status || 'pending'),
+      });
+    }
+  }
+
+  return targets.length > 0
+    ? { requiresTargetReuse: true, targets: targets.slice(0, 3) }
+    : null;
 }
 
 function compactMessages(messages = [], tokenBudget = 60000) {
@@ -203,7 +247,20 @@ function buildQuestionCardToolResult(interactionId, sessionId) {
   };
 }
 
-async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMode = 'auto_confirm', resumeInteractionId = null } = {}) {
+function buildInitialUserContent(session, options = {}) {
+  const text = buildInitialUserMessage(session.goal, session, options);
+  const images = Array.isArray(options.images) ? options.images : [];
+  if (images.length === 0) return [{ type: 'text', text }];
+  return [
+    { type: 'text', text },
+    ...images.flatMap((image, index) => ([
+      { type: 'text', text: `图片 ${index + 1}${image?.name ? `（${image.name}）` : ''}${image?.image_ref ? `，会话图片引用：${image.image_ref}` : ''}：` },
+      image,
+    ])),
+  ];
+}
+
+async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMode = 'auto_confirm', resumeInteractionId = null, initialImages = [] } = {}) {
   let session = getSession(sessionId);
   const config = getEffectiveConfig();
   const emit = typeof onStream === 'function' ? onStream : () => {};
@@ -215,7 +272,10 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMo
   session = getSession(session.id);
 
   const styleContext = await loadStyleContext(session);
-  const tools = buildToolDefinitions(session);
+  const continuationFileContext = buildContinuationFileContext(session);
+  const tools = buildToolDefinitions(session).filter((tool) => (
+    !(continuationFileContext?.requiresTargetReuse && tool?.name === 'create_note')
+  ));
   const attachmentContext = session.conversation_id
     ? formatAttachmentsForPrompt(loadAttachments(session.conversation_id))
     : '';
@@ -223,7 +283,7 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMo
     ? formatWebSearchContextsForPrompt(session.conversation_id)
     : '';
   const systemPrompt = [
-    buildLoopSystemPrompt(session, { styleContext }),
+    buildLoopSystemPrompt(session, { styleContext, continuationFileContext }),
     attachmentContext,
     webSearchContext,
   ].filter(Boolean).join('\n\n');
@@ -255,8 +315,10 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMo
   } else {
     messages = [{
       role: 'user',
-      content: buildInitialUserMessage(session.goal, session, {
+      content: buildInitialUserContent(session, {
         recentConversationContext: buildRecentConversationContext(session),
+        continuationFileContext,
+        images: initialImages,
       }),
     }];
   }
@@ -331,10 +393,26 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMo
     }
 
     const toolResults = [];
+    const imageContextBlocks = [];
     for (const toolUse of toolUseBlocks) {
       emit({ type: 'tool_start', tool_name: toolUse.name, tool_input_summary: summarizeInput(toolUse), loop_index: loopIndex });
       const startedAt = Date.now();
-      const result = await executeToolSafely(toolUse, session, config.notesDir);
+      let result = await executeToolSafely(toolUse, session, config.notesDir);
+      if (!result?.error && toolUse.name === 'read_conversation_images' && result.image_context) {
+        try {
+          if (String(llmConfig?.llmApiProtocol || '').trim().toLowerCase() === 'anthropic') {
+            assertImageContextSize(result.image_context.images, MAX_ANTHROPIC_IMAGE_CONTEXT_BYTES);
+          }
+          result.image_context.blocks.forEach((image, index) => {
+            imageContextBlocks.push({
+              type: 'text',
+              text: `已读取会话图片 ${index + 1}${image?.name ? `（${image.name}）` : ''}${image?.image_ref ? `，引用：${image.image_ref}` : ''}：`,
+            }, image);
+          });
+        } catch (error) {
+          result = { error: error.code || 'IMAGE_CONTEXT_INVALID', message: error.message };
+        }
+      }
       const durationMs = Date.now() - startedAt;
       const failed = Boolean(result?.error);
 
@@ -465,7 +543,7 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMo
     }
 
     messages.push({ role: 'assistant', content });
-    messages.push({ role: 'user', content: toolResults });
+    messages.push({ role: 'user', content: [...toolResults, ...imageContextBlocks] });
   }
 }
 

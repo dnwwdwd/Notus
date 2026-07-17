@@ -2,7 +2,6 @@
 // Loaded with ssr:false from files/index.js
 // Accepts `onEditorReady(editor)` to lift the editor instance to the parent
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { useEditor, EditorContent } from '@tiptap/react';
 import { DOMParser, Slice } from '@tiptap/pm/model';
 import StarterKit from '@tiptap/starter-kit';
@@ -23,6 +22,7 @@ import { all, createLowlight } from 'lowlight';
 import { Button } from '../ui/Button';
 import { Dialog } from '../ui/Dialog';
 import { Icons } from '../ui/Icons';
+import { ImagePreviewOverlay } from '../ui/ImagePreviewOverlay';
 import { TextArea } from '../ui/Input';
 import { useToast } from '../ui/Toast';
 import { useShortcuts } from '../../contexts/ShortcutsContext';
@@ -186,86 +186,6 @@ function MathDialog({ value = '', mode = 'inline', onChange, onClose, onConfirm 
       </div>
     </Dialog>
   );
-}
-
-function ImagePreviewOverlay({ preview, onClose, onMove }) {
-  const currentImage = preview?.images?.[preview.currentIndex];
-  const total = preview?.images?.length || 0;
-  const hasPrevious = preview?.currentIndex > 0;
-  const hasNext = preview?.currentIndex < total - 1;
-
-  if (!currentImage) return null;
-
-  const overlay = (
-    <div
-      className="notus-image-preview"
-      role="dialog"
-      aria-label="图片预览"
-      onClick={onClose}
-    >
-      <button
-        type="button"
-        className="notus-image-preview-close"
-        onClick={onClose}
-        aria-label="关闭图片预览"
-      >
-        <Icons.x size={18} />
-      </button>
-
-      <div className="notus-image-preview-chrome">
-        <div className="notus-image-preview-counter">
-          {preview.currentIndex + 1} / {total}
-        </div>
-        <div className="notus-image-preview-hint">左右方向键切换，Esc 关闭</div>
-      </div>
-
-      <button
-        type="button"
-        className="notus-image-preview-nav is-left"
-        onClick={(event) => {
-          event.stopPropagation();
-          onMove(-1);
-        }}
-        disabled={!hasPrevious}
-        aria-label="查看上一张图片"
-      >
-        <Icons.chevronLeft size={20} />
-      </button>
-
-      <div
-        className="notus-image-preview-figure"
-        onClick={(event) => event.stopPropagation()}
-      >
-        {/* 这里保留原生 img，方便直接预览编辑器里的 data URL 与任意外链图片。 */}
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src={currentImage.src}
-          alt={currentImage.alt || `文档图片 ${preview.currentIndex + 1}`}
-          className="notus-image-preview-image"
-        />
-        <div className="notus-image-preview-meta">
-          <div className="notus-image-preview-title">
-            {currentImage.alt || `文档图片 ${preview.currentIndex + 1}`}
-          </div>
-        </div>
-      </div>
-
-      <button
-        type="button"
-        className="notus-image-preview-nav is-right"
-        onClick={(event) => {
-          event.stopPropagation();
-          onMove(1);
-        }}
-        disabled={!hasNext}
-        aria-label="查看下一张图片"
-      >
-        <Icons.chevronRight size={20} />
-      </button>
-    </div>
-  );
-
-  return typeof document === 'undefined' ? null : createPortal(overlay, document.body);
 }
 
 export const WysiwygEditor = ({ value, onChange, onSave, onEditorReady, fileId = null }) => {
@@ -516,42 +436,6 @@ export const WysiwygEditor = ({ value, onChange, onSave, onEditorReady, fileId =
       return { ...prev, currentIndex: nextIndex };
     });
   }, []);
-
-  useEffect(() => {
-    if (!imagePreview) return undefined;
-
-    const onKeyDown = (event) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        closeImagePreview();
-        return;
-      }
-
-      if (event.key === 'ArrowLeft') {
-        event.preventDefault();
-        moveImagePreview(-1);
-        return;
-      }
-
-      if (event.key === 'ArrowRight') {
-        event.preventDefault();
-        moveImagePreview(1);
-      }
-    };
-
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [closeImagePreview, imagePreview, moveImagePreview]);
-
-  useEffect(() => {
-    if (!imagePreview) return undefined;
-
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => {
-      document.body.style.overflow = previousOverflow;
-    };
-  }, [imagePreview]);
 
   useEffect(() => {
     if (!imagePreview) return;

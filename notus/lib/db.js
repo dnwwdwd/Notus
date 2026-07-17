@@ -162,6 +162,7 @@ function ensureAgentLoopSchema(database) {
       ['revision_applied_at', 'TEXT'],
       ['revision_discarded_at', 'TEXT'],
       ['revision_rolled_back_at', 'TEXT'],
+      ['media_changes_json', "TEXT NOT NULL DEFAULT '[]'"],
     ].forEach(([column, definition]) => {
       if (!hasColumn(database, 'canvas_operation_sets', column)) {
         database.exec(`ALTER TABLE canvas_operation_sets ADD COLUMN ${column} ${definition};`);
@@ -757,6 +758,7 @@ function initDb() {
         revision_applied_at TEXT,
         revision_discarded_at TEXT,
         revision_rolled_back_at TEXT,
+        media_changes_json TEXT NOT NULL DEFAULT '[]',
         expires_at      TEXT,
         created_at      TEXT DEFAULT (datetime('now')),
         updated_at      TEXT DEFAULT (datetime('now'))

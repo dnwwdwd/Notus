@@ -22,6 +22,7 @@ import {
 } from '../../utils/conversationExport';
 import { readApiResponse } from '../../utils/http';
 import { navigateWithFallback } from '../../utils/navigation';
+import { segmentsToAgentInput } from '../../utils/messageMentions';
 
 const CONFIRM_MODE_STORAGE_KEY = 'notus-files-agent-confirm-mode';
 const AUTO_CONFIRM = 'auto_confirm';
@@ -51,11 +52,15 @@ function upsertById(list = [], item = null) {
 
 function mapFileMention(file) {
   const path = String(file?.path || '').trim();
-  const name = String(file?.title || file?.name || path || '未命名文件').trim();
+  const name = String(file?.name || path.split('/').pop() || file?.title || '未命名文件').trim();
   return {
     value: String(file?.id || path),
+    id: String(file?.id || path),
+    name,
+    path,
+    type: 'file',
     token: `@{${path}}`,
-    label: name.replace(/\.md$/i, ''),
+    label: name,
     preview: path,
     kind: 'file',
     searchText: `${name} ${file?.name || ''} ${path}`,
@@ -69,6 +74,10 @@ function collectFolderMentions(nodes = []) {
     const name = String(node.name || node.title || path || '未命名目录').trim();
     const current = path ? [{
       value: `folder:${path}`,
+      id: `folder:${path}`,
+      name,
+      path,
+      type: 'folder',
       token: `@{folder:${path}}`,
       label: name,
       preview: path,
@@ -89,6 +98,10 @@ function collectFolderMentionsFromFiles(files = []) {
   });
   return [...folderPaths].map((path) => ({
     value: `folder:${path}`,
+    id: `folder:${path}`,
+    name: path.split('/').pop() || path,
+    path,
+    type: 'folder',
     token: `@{folder:${path}}`,
     label: path.split('/').pop() || path,
     preview: path,
@@ -257,8 +270,12 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     });
   }, [activeConfigId, llmConfigs, setActiveConfig, toast]);
 
-  const buildAgentTask = useCallback((query, options = {}) => ({
-    goal: `用户任务：${query}`,
+  const buildAgentTask = useCallback((query, options = {}) => {
+    const mentions = Array.isArray(options.mentions) ? options.mentions : [];
+    const mentionSegments = Array.isArray(options.mentionSegments) ? options.mentionSegments : [];
+    const agentInput = segmentsToAgentInput(mentionSegments) || query;
+    return {
+    goal: `用户任务：${agentInput}`,
     user_query: query,
     display_query: query,
     kind: 'canvas',
@@ -268,11 +285,17 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     authorized_ops: ['modify', 'create'],
     search_knowledge_limit: 5,
     attachments: options.attachments || [],
+    images: options.images || [],
+    media_items: options.mediaItems || [],
+    mentions,
+    mention_segments: mentionSegments,
     web_search_enabled: Boolean(options.webSearchEnabled),
     search_provider: options.searchProvider || undefined,
     route_reason: 'files_agent_input',
     skip_user_message_append: Boolean(options.skipUserMessageAppend),
-  }), [activeConversationId, selectedLlmConfigId]);
+    onTaskAccepted: options.onTaskAccepted,
+    };
+  }, [activeConversationId, selectedLlmConfigId]);
 
   const handleSend = useCallback(async (query, options = {}) => {
     const llmConfigId = options.llmConfigId || selectedLlmConfigId;

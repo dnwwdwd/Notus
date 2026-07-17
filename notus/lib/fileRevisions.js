@@ -15,6 +15,10 @@ const {
   updateOperationSet,
 } = require('./canvasOperationSets');
 const {
+  buildMediaChanges,
+  materializeConversationImages,
+} = require('./conversationImageAssets');
+const {
   getSession,
   normalizeAgentPath,
   resolveInsideNotes,
@@ -360,6 +364,13 @@ async function previewFileRevision({
     revisionDraftHash: draftHash,
     revisionBaseContent: baseContent,
     revisionDraftContent: draft,
+    mediaChanges: buildMediaChanges({
+      baseContent,
+      draftContent: draft,
+      filePath: file.path,
+      fileId: file.id,
+      conversationId: session.conversation_id,
+    }),
     revisionError: safety.message,
     revisionParentId: parentOperationSetId || snakeParentOperationSetId,
     revisionSequenceNo: nextSequenceNo(session.conversation_id, file.id, file.path),
@@ -374,6 +385,7 @@ async function previewFileRevision({
     draft_hash: draftHash,
     diff_hunks: createDiffHunks(baseContent, draft),
     changed_files: [],
+    media_changes: latest.media_changes || [],
     applied: false,
     safety,
     requires_confirmation: safety.requires_confirmation,
@@ -428,14 +440,25 @@ async function applyFileRevision(operationSetId, sessionId, { auto = false } = {
   }
 
   try {
-    atomicWriteRevisionFile(filePath, set.revision_draft_content || '', set.id);
+    const existingMediaChanges = getOperationSetById(set.id)?.media_changes || [];
+    const materialized = await materializeConversationImages({
+      conversationId: set.conversation_id,
+      content: set.revision_draft_content || '',
+      filePath,
+      fileId: file.id,
+      mediaChanges: existingMediaChanges,
+    });
+    atomicWriteRevisionFile(filePath, materialized.content, set.id);
     const nextFile = getFileByPath(filePath);
     const appliedHash = hashRevisionContent(nextFile?.content || '');
     const operationSet = updateOperationSet(set.id, {
       status: 'applied',
+      revisionDraftContent: materialized.content,
+      revisionDraftHash: hashRevisionContent(materialized.content),
       revisionAppliedHash: appliedHash,
       revisionAppliedAt: nowSql(),
       revisionError: '',
+      mediaChanges: materialized.media_changes,
     });
     scheduleIncrementalIndex(filePath);
     return {

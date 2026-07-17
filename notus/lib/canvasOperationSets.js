@@ -120,6 +120,7 @@ function formatRow(row) {
     revision_type: revisionType || '',
     revision_file_path: revision?.file_path || '',
     revision,
+    media_changes: parseOperations(row.media_changes_json),
     operations: parseOperations(row.operations_json),
     patches: normalizePatchStates(parsePatches(row.pathes_json)),
     status: normalizeStatus(row.status),
@@ -166,6 +167,8 @@ function createOperationSet({
   mode = 'single',
   operations = [],
   patches = [],
+  mediaChanges = [],
+  media_changes: snakeMediaChanges = [],
   status = 'pending',
   revisionType = '',
   revision_type: snakeRevisionType = '',
@@ -201,6 +204,7 @@ function createOperationSet({
   if (!normalizedConversationId) throw new Error('conversation_id is required');
   const serializedOperations = JSON.stringify(Array.isArray(operations) ? operations : []);
   const serializedPatches = JSON.stringify(normalizePatchStates(Array.isArray(patches) ? patches : []));
+  const serializedMediaChanges = JSON.stringify(Array.isArray(mediaChanges) ? mediaChanges : (Array.isArray(snakeMediaChanges) ? snakeMediaChanges : []));
   const columns = [];
   const placeholders = [];
   const params = [];
@@ -220,6 +224,7 @@ function createOperationSet({
   pushColumn('mode', normalizeMode(mode));
   pushColumn('operations_json', serializedOperations);
   if (hasColumn(database, 'canvas_operation_sets', 'pathes_json')) pushColumn('pathes_json', serializedPatches);
+  if (hasColumn(database, 'canvas_operation_sets', 'media_changes_json')) pushColumn('media_changes_json', serializedMediaChanges);
   pushColumn('status', normalizeStatus(status));
   if (hasColumn(database, 'canvas_operation_sets', 'revision_type')) {
     pushColumn('revision_type', String(revisionType || snakeRevisionType || ''));
@@ -295,6 +300,10 @@ function updateOperationSet(id, updates = {}) {
   if (Object.prototype.hasOwnProperty.call(updates, 'patches') && hasColumn(database, 'canvas_operation_sets', 'pathes_json')) {
     sets.push('pathes_json = ?');
     params.push(JSON.stringify(normalizePatchStates(Array.isArray(updates.patches) ? updates.patches : [])));
+  }
+  if (Object.prototype.hasOwnProperty.call(updates, 'mediaChanges') && hasColumn(database, 'canvas_operation_sets', 'media_changes_json')) {
+    sets.push('media_changes_json = ?');
+    params.push(JSON.stringify(Array.isArray(updates.mediaChanges) ? updates.mediaChanges : []));
   }
   [
     ['revisionType', 'revision_type', (value) => String(value || '')],

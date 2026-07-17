@@ -375,6 +375,9 @@ export function useAgentLoopController({
         llm_config_id: input?.llm_config_id || input?.llmConfigId || undefined,
         search_knowledge_limit: input?.search_knowledge_limit === undefined ? 5 : input.search_knowledge_limit,
         attachments: Array.isArray(input?.attachments) ? input.attachments : [],
+        images: Array.isArray(input?.images) ? input.images : [],
+        mentions: Array.isArray(input?.mentions) ? input.mentions : [],
+        mention_segments: Array.isArray(input?.mention_segments) ? input.mention_segments : (Array.isArray(input?.mentionSegments) ? input.mentionSegments : []),
         web_search_enabled: Boolean(input?.web_search_enabled ?? input?.webSearchEnabled),
         search_provider: input?.search_provider || input?.searchProvider || undefined,
         tool_profile: input?.tool_profile || input?.toolProfile || undefined,
@@ -391,21 +394,38 @@ export function useAgentLoopController({
     setStreamText('');
     setSteps([]);
     if (!isResume) setPendingAgentTask(null);
+    let taskAccepted = false;
 
-    if (options.appendUserMessage && input?.goal && !body.skip_user_message_append) {
+    const notifyTaskAccepted = (event = {}) => {
+      if (taskAccepted || isResume || typeof input?.onTaskAccepted !== 'function') return;
+      taskAccepted = true;
+      input.onTaskAccepted({
+        sessionId: event.session_id || null,
+        conversationId: event.conversation_id || null,
+      });
+    };
+
+    const appendUserMessage = () => {
+      if (!options.appendUserMessage || !input?.goal || body.skip_user_message_append) return;
       onAppendUserMessage?.({
         id: makeMessageId('agent-loop-user'),
         role: 'user',
         content: input.display_query || input.user_query || input.goal,
-        attachments: input.attachments || [],
+        attachments: input.media_items || input.mediaItems || input.attachments || [],
+        mentions: input.mentions || [],
+        mentionSegments: input.mention_segments || input.mentionSegments || [],
         meta: {
           agent_loop: true,
           route_reason: input.route_reason || '',
+          attachments: input.attachments || [],
+          images: input.images || [],
+          mentions: input.mentions || [],
+          mention_segments: input.mention_segments || input.mentionSegments || [],
           web_search_enabled: Boolean(input?.web_search_enabled ?? input?.webSearchEnabled),
           search_provider: input?.search_provider || input?.searchProvider || null,
         },
       });
-    }
+    };
 
     try {
       const response = await fetch('/api/agent/loop/start', {
@@ -432,6 +452,8 @@ export function useAgentLoopController({
         }
 
         if (event.type === 'session_created') {
+          appendUserMessage();
+          notifyTaskAccepted(event);
           setActiveAgentSession({
             id: event.session_id,
             token: event.session_token,
@@ -563,10 +585,7 @@ export function useAgentLoopController({
       } else {
         const message = nextError.message || 'Agent Loop 请求失败';
         setError(message);
-        setActiveAgentSession((prev) => (prev ? {
-          status: 'failed',
-          reason: 'error',
-        } : prev));
+        setActiveAgentSession({ status: 'failed', reason: 'error' });
         appendStep(buildEventStep({ type: 'error', error: message }));
         onError?.(nextError);
       }
@@ -600,9 +619,7 @@ export function useAgentLoopController({
   const confirmAgentTask = useCallback(async (task) => {
     const target = task || pendingAgentTask;
     if (!target?.goal) return;
-    try {
-      await startAgentLoop(target, { appendUserMessage: !Boolean(target.skip_user_message_append || target.skipUserMessageAppend) });
-    } catch {}
+    await startAgentLoop(target, { appendUserMessage: !Boolean(target.skip_user_message_append || target.skipUserMessageAppend) });
   }, [pendingAgentTask, startAgentLoop]);
 
   const runOperationSetAction = useCallback(async (operationSet, action, options = {}) => {

@@ -2,6 +2,8 @@ export const TOOL_DISPLAY = {
   search_knowledge: '检索知识库',
   web_search: '联网搜索',
   read_file: '读取文件',
+  list_conversation_images: '列出对话图片',
+  read_conversation_images: '读取对话图片',
   create_note: '新建笔记',
   preview_patch_files: '生成修改预览',
   preview_file_revision: '生成全文修订预览',
@@ -36,6 +38,7 @@ export function getAgentToolResultSummary(result = null) {
   if (result.result_count !== undefined) return `命中 ${result.result_count} 条结果`;
   if (result.provider && result.query) return `${result.provider}：${result.query}`;
   if (result.file_path) return `${result.file_path}${result.char_count ? `，${result.char_count} 字` : ''}`;
+  if (result.image_count !== undefined) return `读取 ${result.image_count} 张对话图片`;
   if (result.path) return `${result.created ? '已创建' : '文件'}：${result.path}`;
   if (result.operation_set_id) {
     if (result.file_path && result.status !== undefined) return `全文修订预览 #${result.operation_set_id}：${result.file_path}`;

@@ -6,6 +6,7 @@ const { ensureRuntime } = require('../../../../lib/runtime');
 const { getEffectiveConfig } = require('../../../../lib/config');
 const { createLogger, createRequestContext } = require('../../../../lib/logger');
 const { SUPPORTED_EXTENSIONS } = require('../../../../lib/attachmentParsing');
+const { MAX_ATTACHMENTS_PER_MESSAGE } = require('../../../../lib/conversationImages');
 
 export const config = {
   api: {
@@ -25,6 +26,7 @@ function parseForm(req, uploadDir) {
     uploadDir,
     keepExtensions: true,
     maxFileSize: MAX_FILE_SIZE,
+    maxFiles: MAX_ATTACHMENTS_PER_MESSAGE,
     filename: (_name, ext, part) => {
       const originalExt = path.extname(part?.originalFilename || '').toLowerCase();
       const safeExt = SUPPORTED_EXTENSIONS.has(originalExt) ? originalExt : String(ext || '').toLowerCase();
@@ -69,6 +71,10 @@ export default async function handler(req, res) {
     const uploadedFiles = flattenFiles(files);
     if (uploadedFiles.length === 0) {
       return res.status(400).json({ error: 'files is required', code: 'FILES_REQUIRED', request_id: context.request_id });
+    }
+    if (uploadedFiles.length > MAX_ATTACHMENTS_PER_MESSAGE) {
+      uploadedFiles.forEach((file) => removeQuietly(file.filepath));
+      return res.status(400).json({ error: `单条消息最多上传 ${MAX_ATTACHMENTS_PER_MESSAGE} 个附件`, code: 'ATTACHMENT_MESSAGE_LIMIT_EXCEEDED', request_id: context.request_id });
     }
 
     const attachments = [];

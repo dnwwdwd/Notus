@@ -45,6 +45,16 @@ const {
   previewFileRevision,
   rollbackFileRevision,
 } = require('./fileRevisions');
+const {
+  getImageInputBlocks,
+  listConversationImages,
+  resolveConversationImages,
+} = require('./conversationImages');
+const {
+  attachMediaFileId,
+  buildMediaChanges,
+  materializeConversationImages,
+} = require('./conversationImageAssets');
 
 const ANALYZE_FOLDER_MAX_FILES = 200;
 const ANALYZE_FOLDER_MAX_FOLDERS = 500;
@@ -77,6 +87,11 @@ function buildToolDefinitions(session = {}) {
     tool('read_file', '读取任意 Markdown 笔记全文。', {
       path: { type: 'string', description: '相对 notes 根目录的 Markdown 文件路径' },
     }, ['path']),
+    tool('list_conversation_images', '列出当前对话中已上传图片的受控引用、文件名和上传顺序。用户要求整理、插入或引用此前图片时先调用；这个工具不会把图片本身送入视觉上下文。', {
+    }),
+    tool('read_conversation_images', '将当前对话内指定图片重新送入视觉上下文。必须先用 list_conversation_images 获取 image_refs；一次最多 30 张，仅选择完成当前任务需要的图片。', {
+      image_refs: { type: 'array', items: { type: 'string' }, description: 'list_conversation_images 返回的 notus-conversation-image 受控引用。' },
+    }, ['image_refs']),
     tool('create_note', '准备新建 Markdown 笔记，并生成文件级预览。自动确认模式会自动创建，手动确认模式等待用户在 diff 卡片中应用。必须作为该轮唯一工具调用。', {
       path: { type: 'string', description: '新笔记路径，例如 drafts/article.md' },
       title: { type: 'string', description: '可选标题' },
@@ -141,12 +156,21 @@ function buildToolDefinitions(session = {}) {
                   id: { type: 'string' },
                   label: { type: 'string' },
                   description: { type: 'string' },
+                  answer_value: { type: 'string', description: '选中后写入回答的实际值，例如笔记相对路径。' },
                 },
                 required: ['id', 'label'],
               },
             },
             allow_custom: { type: 'boolean', default: true },
             custom_placeholder: { type: 'string' },
+            depends_on: {
+              type: 'object',
+              description: '可选条件题。仅当前题的答案匹配时显示并参与必填校验。',
+              properties: {
+                question_id: { type: 'string' },
+                values: { type: 'array', items: { type: 'string' } },
+              },
+            },
           },
           required: ['id', 'label'],
         },
@@ -161,7 +185,7 @@ function buildToolDefinitions(session = {}) {
     }, ['scope_path']),
   ];
   const profile = String(session?.tool_profile || '').trim();
-  const readOnlyNames = new Set(['search_knowledge', 'read_file', 'analyze_folder', 'check_links', 'ask_question_card']);
+  const readOnlyNames = new Set(['search_knowledge', 'read_file', 'list_conversation_images', 'read_conversation_images', 'analyze_folder', 'check_links', 'ask_question_card']);
   const scopedDefinitions = profile === 'read_only'
     ? definitions.filter((item) => readOnlyNames.has(item.name))
     : definitions;
@@ -306,8 +330,14 @@ function normalizeQuestionCardQuestions(questions = []) {
         id: normalizeQuestionId(option?.id || option?.value, optionIndex),
         label: String(option?.label || option?.text || option?.id || '').trim(),
         description: String(option?.description || option?.hint || '').trim(),
+        answer_value: String(option?.answer_value || option?.answerValue || '').trim(),
       }))
       .filter((option) => option.id && option.label);
+    const dependsOn = question?.depends_on || question?.dependsOn || question?.condition || null;
+    const dependentQuestionId = String(dependsOn?.question_id || dependsOn?.questionId || '').trim();
+    const dependentValues = Array.isArray(dependsOn?.values)
+      ? dependsOn.values.map((value) => String(value || '').trim()).filter(Boolean).slice(0, 5)
+      : [];
     return {
       id,
       slot: id,
@@ -320,13 +350,24 @@ function normalizeQuestionCardQuestions(questions = []) {
       recommended_option_ids: Array.isArray(question?.recommended_option_ids)
         ? question.recommended_option_ids.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 3)
         : [],
+      ...(dependentQuestionId && dependentValues.length > 0 ? {
+        depends_on: { question_id: dependentQuestionId, values: dependentValues },
+      } : {}),
     };
   }).filter((question) => question.label);
+}
+
+function isQuestionActive(question = {}, answers = {}) {
+  const dependency = question?.depends_on;
+  if (!dependency?.question_id || !Array.isArray(dependency.values) || dependency.values.length === 0) return true;
+  const answer = answers[dependency.question_id] || {};
+  return dependency.values.includes(String(answer.value || '').trim());
 }
 
 function buildPendingQuestionCardResponse(payload = {}) {
   const missingSlots = (Array.isArray(payload.questions) ? payload.questions : [])
     .filter((question) => question?.required !== false)
+    .filter((question) => isQuestionActive(question, {}))
     .map((question) => question.id)
     .filter(Boolean);
   return {
@@ -393,6 +434,55 @@ function executeReadFile({ path: filePath } = {}) {
   };
 }
 
+function executeListConversationImages(_input = {}, sessionId) {
+  const session = getSession(sessionId);
+  if (!session.conversation_id) {
+    return { error: 'CONVERSATION_REQUIRED', message: '读取会话图片需要当前任务绑定 conversation_id' };
+  }
+  const images = listConversationImages(session.conversation_id);
+  return {
+    image_count: images.length,
+    images: images.map((image) => ({
+      image_ref: image.image_ref,
+      name: image.name,
+      type: image.type,
+      size: image.size,
+      upload_order: image.upload_order,
+      message_id: image.message_id,
+      message_content: image.message_content,
+    })),
+  };
+}
+
+function executeReadConversationImages({ image_refs: imageRefs = [] } = {}, sessionId) {
+  const session = getSession(sessionId);
+  if (!session.conversation_id) {
+    return { error: 'CONVERSATION_REQUIRED', message: '读取会话图片需要当前任务绑定 conversation_id' };
+  }
+  try {
+    const images = resolveConversationImages(session.conversation_id, imageRefs);
+    const blocks = getImageInputBlocks(images);
+    const result = {
+      image_count: images.length,
+      images: images.map((image) => ({
+        image_ref: image.image_ref,
+        name: image.name,
+        type: image.type,
+        size: image.size,
+        upload_order: image.upload_order,
+        message_id: image.message_id,
+      })),
+    };
+    Object.defineProperty(result, 'image_context', {
+      value: { images, blocks },
+      enumerable: false,
+    });
+    return result;
+  } catch (error) {
+    return { error: error.code || 'CONVERSATION_IMAGE_READ_FAILED', message: error.message };
+  }
+}
+
 function buildAgentFrontmatterContent(title = '', content = '') {
   const cleanTitle = String(title || '').trim();
   const body = String(content || '').replace(/\r\n/g, '\n').replace(/^\n+/, '');
@@ -423,6 +513,12 @@ async function executeCreateNote({ path: filePath, content = '', title = '' } = 
       change_type: 'create',
       status: 'pending',
     }],
+    mediaChanges: buildMediaChanges({
+      baseContent: '',
+      draftContent: finalContent,
+      filePath: normalized,
+      conversationId: session.conversation_id,
+    }),
     status: 'pending',
   });
   return {
@@ -500,6 +596,31 @@ function savePatchStates(set, patches) {
   return updateOperationSet(set.id, { patches, status });
 }
 
+function mediaChangesForFile(operationSet = {}, filePath = '') {
+  return (Array.isArray(operationSet.media_changes) ? operationSet.media_changes : [])
+    .filter((change) => String(change?.file_path || '') === String(filePath || ''));
+}
+
+async function materializePatchContent(operationSet, patch) {
+  const scopedChanges = mediaChangesForFile(operationSet, patch.file_path);
+  const file = getFileByPath(patch.file_path);
+  const materialized = await materializeConversationImages({
+    conversationId: operationSet.conversation_id,
+    content: patch.new || '',
+    filePath: patch.file_path,
+    fileId: file?.id || null,
+    mediaChanges: scopedChanges,
+  });
+  const nextMediaChanges = (Array.isArray(operationSet.media_changes) ? operationSet.media_changes : []).map((change) => {
+    if (String(change?.file_path || '') !== String(patch.file_path || '')) return change;
+    return materialized.media_changes.find((item) => item.id === change.id) || change;
+  });
+  return {
+    patch: { ...patch, new: materialized.content },
+    mediaChanges: nextMediaChanges,
+  };
+}
+
 function fileExistsInNotes(relativePath) {
   const target = resolveInsideNotes(getEffectiveConfig().notesDir, relativePath);
   return fs.existsSync(target.absolutePath);
@@ -530,7 +651,7 @@ async function applyPreviewPatchFile(operationSetId, sessionId, {
   const patches = normalizeStoredPatches(set.patches);
   const index = resolvePatchIndex(patches, { patchIndex, filePath });
   if (index < 0) return { success: false, error: 'PATCH_NOT_FOUND' };
-  const patch = patches[index];
+  let patch = patches[index];
   const status = normalizePatchStatus(patch.status);
   if (['applied', 'auto_applied'].includes(status)) {
     return { success: true, applied: true, changed_files: [], operation_set: set, patch_index: index };
@@ -539,6 +660,13 @@ async function applyPreviewPatchFile(operationSetId, sessionId, {
 
   if (isCreatePatch(patch)) {
     if (getFileByPath(patch.file_path)) return patchConflict('FILE_ALREADY_EXISTS', patch);
+    let materialized;
+    try {
+      materialized = await materializePatchContent(set, patch);
+    } catch (error) {
+      return { success: false, error: error.code || 'IMAGE_MATERIALIZE_FAILED', message: error.message };
+    }
+    patch = materialized.patch;
     const file = createFile(patch.file_path, patch.new);
     const finalHash = sha256(file.content || '');
     trackCreatedFile(sessionId, file.path, finalHash);
@@ -549,7 +677,11 @@ async function applyPreviewPatchFile(operationSetId, sessionId, {
       error: '',
       file_hash: finalHash,
     };
-    const operationSet = savePatchStates(set, patches);
+    const operationSet = updateOperationSet(set.id, {
+      patches,
+      status: deriveOperationSetStatus(patches),
+      mediaChanges: attachMediaFileId(materialized.mediaChanges, file.id),
+    });
     scheduleIncrementalIndex(file.path);
     return { success: true, applied: true, changed_files: [file.path], operation_set: operationSet, patch_index: index };
   }
@@ -580,14 +712,27 @@ async function applyPreviewPatchFile(operationSetId, sessionId, {
   if (!replacement.ok && !force) return patchConflict(replacement.reason === 'TEXT_NOT_FOUND' ? 'OLD_NOT_FOUND' : replacement.reason, patch);
   if (!replacement.ok) return patchConflict(replacement.reason, patch);
 
-  writeMarkdownFile(patch.file_path, replacement.next);
+  let materialized;
+  try {
+    materialized = await materializePatchContent(set, patch);
+  } catch (error) {
+    return { success: false, error: error.code || 'IMAGE_MATERIALIZE_FAILED', message: error.message };
+  }
+  patch = materialized.patch;
+  const finalReplacement = replaceUnique(file.content || '', patch.old, patch.new, 'OLD_REQUIRED');
+  if (!finalReplacement.ok) return patchConflict(finalReplacement.reason === 'TEXT_NOT_FOUND' ? 'OLD_NOT_FOUND' : finalReplacement.reason, patch);
+  writeMarkdownFile(patch.file_path, finalReplacement.next);
   patches[index] = {
     ...patch,
     status: auto ? 'auto_applied' : 'applied',
     handled_at: nowIso(),
     error: '',
   };
-  const operationSet = savePatchStates(set, patches);
+  const operationSet = updateOperationSet(set.id, {
+    patches,
+    status: deriveOperationSetStatus(patches),
+    mediaChanges: materialized.mediaChanges,
+  });
   scheduleIncrementalIndex(patch.file_path);
   return { success: true, applied: true, changed_files: [patch.file_path], operation_set: operationSet, patch_index: index };
 }
@@ -780,6 +925,16 @@ async function executePreviewPatchFiles({ patches = [] } = {}, sessionId) {
     mode: normalized.length > 1 ? 'multiple_files' : 'single_file',
     operations: [],
     patches: normalized,
+    mediaChanges: normalized.flatMap((patch) => {
+      const file = getFileByPath(patch.file_path);
+      return buildMediaChanges({
+        baseContent: patch.old,
+        draftContent: patch.new,
+        filePath: patch.file_path,
+        fileId: file?.id || null,
+        conversationId: session.conversation_id,
+      });
+    }),
     status: 'pending',
   });
   return { operation_set_id: operationSet.id, patch_count: normalized.length, patches: normalized.map((patch) => ({ file_path: patch.file_path })) };
@@ -1214,6 +1369,8 @@ function summarizeInput(toolUse = {}) {
   if (toolUse.name === 'search_knowledge') return input.query || '';
   if (toolUse.name === 'web_search') return input.query || '';
   if (toolUse.name === 'read_file') return input.path || '';
+  if (toolUse.name === 'list_conversation_images') return '列出会话图片';
+  if (toolUse.name === 'read_conversation_images') return `${Array.isArray(input.image_refs) ? input.image_refs.length : 0} 张会话图片`;
   if (toolUse.name === 'create_note') return input.path || '';
   if (toolUse.name === 'preview_patch_files') return `${Array.isArray(input.patches) ? input.patches.length : 0} 个文件修改`; 
   if (toolUse.name === 'preview_file_revision') return input.file_path || '单文件完整修订';
@@ -1257,6 +1414,8 @@ const TOOL_EXECUTORS = {
   search_knowledge: executeSearchKnowledge,
   web_search: executeWebSearch,
   read_file: executeReadFile,
+  list_conversation_images: executeListConversationImages,
+  read_conversation_images: executeReadConversationImages,
   create_note: executeCreateNote,
   preview_patch_files: executePreviewPatchFiles,
   preview_file_revision: previewFileRevision,
@@ -1276,6 +1435,8 @@ module.exports = {
   executeSearchKnowledge,
   executeWebSearch,
   executeReadFile,
+  executeListConversationImages,
+  executeReadConversationImages,
   executeCreateNote,
   executePreviewPatchFiles,
   previewFileRevision,

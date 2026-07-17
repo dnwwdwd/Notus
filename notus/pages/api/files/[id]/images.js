@@ -3,10 +3,9 @@ const path = require('path');
 const crypto = require('crypto');
 const formidable = require('formidable');
 const { ensureRuntime } = require('../../../../lib/runtime');
-const { getEffectiveConfig } = require('../../../../lib/config');
 const { getFileById } = require('../../../../lib/files');
-const { MAX_IMAGE_BYTES, storeLocalImageBuffer } = require('../../../../lib/images');
-const { uploadObjectImage } = require('../../../../lib/objectStorage');
+const { MAX_IMAGE_BYTES } = require('../../../../lib/images');
+const { persistImageBuffer } = require('../../../../lib/imageStorage');
 const { createLogger, createRequestContext } = require('../../../../lib/logger');
 
 export const config = {
@@ -76,26 +75,8 @@ export default async function handler(req, res) {
     }
 
     const buffer = fs.readFileSync(uploaded.filepath);
-    const config = getEffectiveConfig();
-    if (config.imageStorageMode === 'object_storage') {
-      const stored = await uploadObjectImage(config.objectStorage, {
-        buffer,
-        mimeType: uploaded.mimetype || '',
-        originalName: uploaded.originalFilename || uploaded.newFilename || '',
-      });
-      return res.status(200).json({
-        src: stored.publicUrl,
-        asset_path: null,
-        object_key: stored.objectKey,
-        storage: 'object_storage',
-        provider: stored.provider,
-        mime_type: stored.mimeType,
-        size: stored.contentLength,
-        request_id: context.request_id,
-      });
-    }
-
-    const stored = storeLocalImageBuffer(buffer, {
+    const stored = await persistImageBuffer({
+      buffer,
       mimeType: uploaded.mimetype || '',
       originalName: uploaded.originalFilename || uploaded.newFilename || '',
       filePath: file.path,
@@ -103,11 +84,7 @@ export default async function handler(req, res) {
     removeQuietly(uploaded.filepath);
 
     return res.status(200).json({
-      src: stored.markdownSrc,
-      asset_path: stored.relativePath,
-      storage: 'local',
-      mime_type: stored.mimeType,
-      size: stored.contentLength,
+      ...stored,
       request_id: context.request_id,
     });
   } catch (error) {

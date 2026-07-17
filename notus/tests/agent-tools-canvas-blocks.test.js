@@ -32,9 +32,9 @@ async function runTests() {
   const { getInteractionById } = require('../lib/conversationInteractions');
   const {
     applyPreviewWithConflictCheck,
+    buildToolDefinitions,
     executeAskQuestionCard,
     executeCreateNote,
-    executePreviewCanvasBlocks,
     executeToolSafely,
     rollbackPreviewPatchFile,
   } = require('../lib/agentTools');
@@ -46,40 +46,21 @@ async function runTests() {
     fileId: file.id,
   });
   const session = createSession({
-    goal: [
-      '用户任务：@b1 改得更清楚',
-      '',
-      '当前打开文档：draft.md',
-      '',
-      '当前创作页文本块快照（用户可用 @b1、@b2 指定块；如需按块改写，优先调用 preview_canvas_blocks）：',
-      '',
-      '@b1 (paragraph, block_id=b_1)',
-      '第一段',
-      '',
-      '@b2 (list, block_id=b_2)',
-      '- 第二段',
-    ].join('\n'),
+    goal: '用户任务：把第一段改得更清楚',
     authorizedPaths: [file.path],
     authorizedOps: ['modify'],
     conversationId: conversation.id,
   });
   updateSessionStatus(session.sessionId, 'running');
 
-  const result = await executePreviewCanvasBlocks({
-    edits: [
-      { block_ref: '@b1', new: '第一段（已改写）' },
-    ],
-  }, session.sessionId);
+  assert.ok(!buildToolDefinitions(getSession(session.sessionId)).some((tool) => tool.name === 'preview_canvas_blocks'));
+  const removedCanvasTool = await executeToolSafely({
+    name: 'preview_canvas_blocks',
+    input: { edits: [{ block_ref: '@b1', new: '第一段（已改写）' }] },
+  }, getSession(session.sessionId));
+  assert.strictEqual(removedCanvasTool.error, 'UNKNOWN_TOOL');
 
-  assert.ok(result.operation_set_id);
-  assert.strictEqual(result.operation_count, 1);
-  const set = getOperationSetById(result.operation_set_id);
-  assert.strictEqual(set.patches.length, 0);
-  assert.strictEqual(set.operations.length, 1);
-  assert.ok(set.operations[0].old.includes('第一段'));
-  assert.strictEqual(set.operations[0].new, '第一段（已改写）');
-
-  const patchFallback = await executeToolSafely({
+  const filePreview = await executeToolSafely({
     name: 'preview_patch_files',
     input: {
       patches: [
@@ -87,44 +68,9 @@ async function runTests() {
       ],
     },
   }, getSession(session.sessionId));
-  assert.strictEqual(patchFallback.error, 'CANVAS_BLOCK_TOOL_REQUIRED');
-
-  const outOfScope = await executePreviewCanvasBlocks({
-    edits: [
-      { block_ref: '@b2', new: '第二段（不应被允许）' },
-    ],
-  }, session.sessionId);
-  assert.strictEqual(outOfScope.error, 'BLOCK_SCOPE_VIOLATION');
-  assert.deepStrictEqual(outOfScope.allowed_block_refs, ['@b1']);
-
-  const noExplicitBlockSession = createSession({
-    goal: [
-      '用户任务：请润色这篇文章',
-      '',
-      '当前打开文档：draft.md',
-      '',
-      '当前创作页文本块快照（用户可用 @b1、@b2 指定块；如需按块改写，优先调用 preview_canvas_blocks）：',
-      '',
-      '@b1 (paragraph, block_id=b_1)',
-      '第一段',
-      '',
-      '@b2 (list, block_id=b_2)',
-      '- 第二段',
-    ].join('\n'),
-    authorizedPaths: [file.path],
-    authorizedOps: ['modify'],
-    conversationId: conversation.id,
-  });
-  updateSessionStatus(noExplicitBlockSession.sessionId, 'running');
-  const unrestrictedPatch = await executeToolSafely({
-    name: 'preview_patch_files',
-    input: {
-      patches: [
-        { file_path: file.path, old: '第一段', new: '第一段（文件级改写）' },
-      ],
-    },
-  }, getSession(noExplicitBlockSession.sessionId));
-  assert.notStrictEqual(unrestrictedPatch.error, 'CANVAS_BLOCK_TOOL_REQUIRED');
+  assert.ok(filePreview.operation_set_id);
+  const filePreviewSet = getOperationSetById(filePreview.operation_set_id);
+  assert.strictEqual(filePreviewSet.patches.length, 1);
 
   const createPreviewSession = createSession({
     goal: '用户任务：新建一篇介绍 Notus 的文档',

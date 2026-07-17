@@ -129,7 +129,14 @@ function estimateMessagesTokens(messages = []) {
     const toolCalls = message?.tool_calls ? JSON.stringify(message.tool_calls) : '';
     const content = typeof message?.content === 'string'
       ? message.content
-      : JSON.stringify(message?.content || '');
+      : (Array.isArray(message?.content)
+        ? message.content.map((block) => {
+          if (block?.type === 'image' && block?.source?.type === 'base64') {
+            return `[图片输入：${block.source.media_type || 'unknown'}，按视觉上下文估算]`;
+          }
+          return JSON.stringify(block || '');
+        }).join('\n')
+        : JSON.stringify(message?.content || ''));
 
     return total
       + 10

@@ -5,6 +5,9 @@ import { TextInput } from '../ui/Input';
 import { Toggle } from '../ui/Toggle';
 import { Dialog } from '../ui/Dialog';
 import { Icons } from '../ui/Icons';
+import { ImagePreviewOverlay } from '../ui/ImagePreviewOverlay';
+import { MentionItem } from './MentionItem';
+import { MentionPreviewDialog } from './MentionPreviewDialog';
 import { Tooltip } from '../ui/Tooltip';
 import { SourceCard } from '../ui/SourceCard';
 import { useToast } from '../ui/Toast';
@@ -14,6 +17,12 @@ import { findEmbeddingModelMeta, inferEmbeddingProvider } from '../../lib/embedd
 import { resolveLlmProviderLabel } from '../../lib/llmForm';
 import { navigateWithFallback } from '../../utils/navigation';
 import { readAgentInputPreference, writeAgentInputPreference } from '../../utils/agentInputPreferences';
+import {
+  clearAgentComposerDraft,
+  readAgentComposerDraft,
+  restoreAgentComposerFiles,
+  saveAgentComposerDraft,
+} from '../../utils/agentComposerDraft';
 
 const SEARCH_PROVIDER_FALLBACKS = [
   { id: 'firecrawl', name: 'Firecrawl', quota_url: 'https://www.firecrawl.dev/', max_limit: 20, requires_api_key: false },
@@ -109,11 +118,11 @@ async function copyMessageText(text = '') {
 
 const PARSED_ATTACHMENT_ACCEPT = '.pdf,.docx,.md,.markdown,.txt,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const PARSED_ATTACHMENT_EXTENSIONS = new Set(['.pdf', '.docx', '.md', '.markdown', '.txt']);
+const IMAGE_ACCEPT = 'image/png,image/jpeg,image/webp,image/gif';
+const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
 const LONG_PASTE_ATTACHMENT_THRESHOLD = 100;
-const MAX_PARSED_ATTACHMENTS = 5;
-const AGENT_INPUT_TEXTAREA_MIN_HEIGHT = 24;
-const AGENT_INPUT_TEXTAREA_DEFAULT_ROWS = 5;
-const AGENT_INPUT_TEXTAREA_MAX_ROWS = 5;
+const MAX_PARSED_ATTACHMENTS = 10;
+const MAX_IMAGES_PER_MESSAGE = 30;
 
 const C = {
   page: '#FDFCFB',
@@ -185,28 +194,6 @@ function fileSize(size) {
   return (value / 1024 / 1024).toFixed(1) + ' MB';
 }
 
-function syncAgentInputTextareaHeight(
-  textarea,
-  minHeight = AGENT_INPUT_TEXTAREA_MIN_HEIGHT,
-  maxRows = AGENT_INPUT_TEXTAREA_MAX_ROWS
-) {
-  if (!textarea || typeof window === 'undefined') return;
-  const computed = window.getComputedStyle(textarea);
-  const lineHeight = Number.parseFloat(computed.lineHeight) || 24;
-  const paddingTop = Number.parseFloat(computed.paddingTop) || 0;
-  const paddingBottom = Number.parseFloat(computed.paddingBottom) || 0;
-  const borderTop = Number.parseFloat(computed.borderTopWidth) || 0;
-  const borderBottom = Number.parseFloat(computed.borderBottomWidth) || 0;
-  const defaultHeight = Math.round(lineHeight * AGENT_INPUT_TEXTAREA_DEFAULT_ROWS + paddingTop + paddingBottom + borderTop + borderBottom);
-  const maxHeight = Math.round(lineHeight * maxRows + paddingTop + paddingBottom + borderTop + borderBottom);
-  const resolvedMinHeight = Math.max(minHeight, defaultHeight);
-
-  textarea.style.height = `${resolvedMinHeight}px`;
-  const nextHeight = Math.min(Math.max(textarea.scrollHeight, resolvedMinHeight), maxHeight);
-  textarea.style.height = `${nextHeight}px`;
-  textarea.style.overflowY = textarea.scrollHeight > maxHeight ? 'auto' : 'hidden';
-}
-
 function fileExtension(name = '') {
   const match = String(name || '').toLowerCase().match(/(\.[^.]+)$/);
   return match ? match[1] : '';
@@ -216,8 +203,25 @@ function isSupportedParsedFile(file) {
   return PARSED_ATTACHMENT_EXTENSIONS.has(fileExtension(file?.name));
 }
 
+function isSupportedImageFile(file) {
+  return IMAGE_EXTENSIONS.has(fileExtension(file?.name));
+}
+
+function isImageMedia(file = {}) {
+  return file?.media_kind === 'image' || file?.source_kind === 'image';
+}
+
+function imagePreviewUrl(file = {}) {
+  if (file.previewUrl) return file.previewUrl;
+  const conversationId = Number(file.conversation_id || file.conversationId || 0);
+  if (file.stored_name && Number.isInteger(conversationId) && conversationId > 0) {
+    return `/api/agent/images/${encodeURIComponent(file.stored_name)}?conversation_id=${encodeURIComponent(conversationId)}`;
+  }
+  return '';
+}
+
 function toDisplayAttachment(file) {
-  const { fileObject: _fileObject, ...rest } = file || {};
+  const { fileObject: _fileObject, previewUrl: _previewUrl, ...rest } = file || {};
   return rest;
 }
 
@@ -228,23 +232,33 @@ function isPdfAttachment(file = {}) {
   return type.includes('pdf') || extension === '.pdf' || name.endsWith('.pdf');
 }
 
-function FileChip({ file, onRemove, readOnly, onOpen }) {
+function FileChip({ file, onRemove, readOnly, onOpen, onPreview }) {
+  const image = isImageMedia(file);
   const type = fileType(file);
-  const canOpen = readOnly && typeof onOpen === 'function';
+  const previewUrl = image ? imagePreviewUrl(file) : '';
+  const canPreview = image && Boolean(previewUrl) && typeof onPreview === 'function';
+  const canOpen = readOnly && !image && typeof onOpen === 'function';
+  const interactive = canPreview || canOpen;
   const content = (
     <>
-      <span style={{
-        minWidth: 30,
-        height: 30,
-        borderRadius: 10,
-        display: 'inline-flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: type === 'PDF' ? '#E2574C' : type === 'MD' ? '#333' : '#1B5EBE',
-        color: '#fff',
-        fontSize: 9,
-        fontWeight: 800,
-      }}>{type}</span>
+      {image && previewUrl ? (
+        // 本地对象 URL 与会话临时图片不经过 Next 图片优化。
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={previewUrl} alt={file.name || '已上传图片'} style={{ width: 38, height: 38, objectFit: 'cover', borderRadius: 10, flexShrink: 0, background: C.soft }} />
+      ) : (
+        <span style={{
+          minWidth: 30,
+          height: 30,
+          borderRadius: 10,
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: type === 'PDF' ? '#E2574C' : type === 'MD' ? '#333' : '#1B5EBE',
+          color: '#fff',
+          fontSize: 9,
+          fontWeight: 800,
+        }}>{type}</span>
+      )}
       <span style={{ minWidth: 0, display: 'grid', gap: 2 }}>
         <span style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name || '未命名附件'}</span>
         <span style={{ fontSize: 11, color: C.tertiary }}>{file.sizeLabel || fileSize(file.size)}</span>
@@ -265,15 +279,18 @@ function FileChip({ file, onRemove, readOnly, onOpen }) {
     color: C.text,
     border: 'none',
     textAlign: 'left',
-    cursor: canOpen ? 'pointer' : 'default',
+    cursor: interactive ? 'pointer' : 'default',
   };
   return (
     <div style={{ position: 'relative', display: 'inline-flex', maxWidth: 240 }}>
-      {canOpen ? (
+      {interactive ? (
         <button
           type="button"
-          aria-label={`查看附件内容：${file.name || '未命名附件'}`}
-          onClick={() => onOpen?.(file)}
+          aria-label={canPreview ? `预览图片：${file.name || '未命名图片'}` : `查看附件内容：${file.name || '未命名附件'}`}
+          onClick={() => {
+            if (canPreview) onPreview?.(file);
+            else onOpen?.(file);
+          }}
           className="notus-agent-pressable"
           style={transitionButton(commonStyle)}
         >
@@ -286,7 +303,10 @@ function FileChip({ file, onRemove, readOnly, onOpen }) {
         <button
           type="button"
           aria-label="移除附件"
-          onClick={() => onRemove?.(file.id)}
+          onClick={(event) => {
+            event.stopPropagation();
+            onRemove?.(file.id);
+          }}
           style={transitionButton({
             position: 'absolute',
             top: -6,
@@ -658,6 +678,7 @@ function operationItems(operationSet) {
       handled_at: revision.applied_at || revision.discarded_at || revision.rolled_back_at || null,
       error: revision.error_message || '',
       diff_hunks: Array.isArray(revision.diff_hunks) ? revision.diff_hunks : [],
+      media_changes: Array.isArray(operationSet.media_changes) ? operationSet.media_changes : [],
     }];
   }
   if (Array.isArray(operationSet.patches) && operationSet.patches.length > 0) {
@@ -674,6 +695,8 @@ function operationItems(operationSet) {
       status: patch.status || 'pending',
       handled_at: patch.handled_at || null,
       error: patch.error || '',
+      media_changes: (Array.isArray(operationSet.media_changes) ? operationSet.media_changes : [])
+        .filter((change) => String(change?.file_path || '') === String(patch.file_path || '')),
     }));
   }
   return Array.isArray(operationSet.operations) ? operationSet.operations : [];
@@ -771,6 +794,7 @@ function operationSetSummary(operationSet) {
   const supersededCount = operations.filter((item) => String(item.status || '') === 'superseded').length;
   const revisionMode = operations.some((item) => item.change_type === 'file_revision');
   const fileSystemMode = operations.some((item) => isFileSystemOperation(item));
+  const mediaCount = operations.reduce((total, item) => total + (Array.isArray(item.media_changes) ? item.media_changes.length : 0), 0);
   let detail = revisionMode ? '本次任务的全文修订预览已生成' : fileSystemMode ? '本次任务的文件/目录操作预览已生成' : '本次任务的文件修改预览已生成';
   if (pendingCount > 0) detail = `${pendingCount} 个文件待确认`;
   else if (autoAppliedCount === operations.length && operations.length > 0) detail = '已自动应用，可查看详情或逐文件回滚';
@@ -780,7 +804,8 @@ function operationSetSummary(operationSet) {
   if (applyFailedCount > 0) detail = `${applyFailedCount} 个文件应用失败`;
   if (rollbackConflictCount > 0) detail = `${rollbackConflictCount} 个文件无法安全回滚`;
   if (supersededCount > 0) detail = `${supersededCount} 个预览已被新修订替代`;
-  return { operations, fileCount, pendingCount, detail, fileSystemMode, revisionMode };
+  if (mediaCount > 0) detail = `${detail}，包含 ${mediaCount} 项图片变更`;
+  return { operations, fileCount, pendingCount, detail, fileSystemMode, revisionMode, mediaCount };
 }
 
 function OperationSetCard({ operationSet, onOpenDetail }) {
@@ -825,6 +850,7 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
   const activeOperation = operations[Math.min(selectedIndex, Math.max(operations.length - 1, 0))] || {};
   const activePath = activeOperation.new_path || activeOperation.file_path || activeOperation.old_path || activeOperation.path || '全文';
   const diffLines = buildDiffLines(activeOperation);
+  const mediaChanges = Array.isArray(activeOperation.media_changes) ? activeOperation.media_changes : [];
   const activeStatus = patchStatusMeta(activeOperation.status);
   const pendingCount = operations.filter(isPatchPending).length;
   const isRevision = activeOperation.change_type === 'file_revision';
@@ -897,6 +923,40 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
                   {activeOperation.error}
                 </div>
               ) : null}
+              {mediaChanges.length > 0 ? (
+                <div style={{ margin: '0 12px 14px', padding: 12, borderRadius: 12, background: '#fff', boxShadow: 'inset 0 0 0 1px rgba(229,227,216,0.95)' }}>
+                  <div style={{ marginBottom: 10, fontSize: 12, fontWeight: 800, color: C.secondary }}>图片变更 · {mediaChanges.length}</div>
+                  <div style={{ display: 'grid', gap: 10 }}>
+                    {mediaChanges.map((change, index) => {
+                      const kind = String(change?.kind || 'add');
+                      const label = kind === 'remove' ? '移除图片' : kind === 'replace' ? '替换图片' : '新增图片';
+                      const tone = kind === 'remove' ? '#991B1B' : kind === 'replace' ? '#9A6700' : '#166534';
+                      const renderImage = (image, title) => {
+                        const src = String(image?.preview_src || image?.src || '');
+                        if (!src) return null;
+                        return (
+                          <div style={{ minWidth: 0, display: 'grid', gap: 5 }}>
+                            <span style={{ fontSize: 10.5, color: C.tertiary }}>{title}</span>
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img src={src} alt={image?.alt || title} style={{ width: 'min(220px, 100%)', maxHeight: 150, objectFit: 'contain', objectPosition: 'left top', borderRadius: 8, background: C.soft, boxShadow: 'inset 0 0 0 1px rgba(229,227,216,0.8)' }} />
+                            {image?.alt ? <span style={{ fontSize: 10.5, color: C.tertiary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{image.alt}</span> : null}
+                          </div>
+                        );
+                      };
+                      return (
+                        <div key={change.id || index} style={{ padding: 10, borderRadius: 10, background: C.soft, display: 'grid', gap: 8 }}>
+                          <span style={{ fontSize: 11, fontWeight: 800, color: tone }}>{label}</span>
+                          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
+                            {kind !== 'add' ? renderImage(change.before, kind === 'replace' ? '原图' : '已移除') : null}
+                            {kind === 'replace' ? <span style={{ marginTop: 55, color: C.tertiary }}>→</span> : null}
+                            {kind !== 'remove' ? renderImage(change.after, kind === 'replace' ? '新图' : '新增') : null}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
               <div style={{ minWidth: 'max-content', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12.5, lineHeight: 1.65 }}>
                 {diffLines.length === 0 ? <div style={{ padding: '0 14px', color: C.tertiary }}>没有可展示的 diff 内容。</div> : diffLines.map((line, index) => {
                   const hunk = line.type === 'hunk';
@@ -929,7 +989,7 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
   );
 }
 
-function UserMessageRow({ message, disabled, removing = false, onResendMessage, onOpenAttachment }) {
+function UserMessageRow({ message, disabled, removing = false, onResendMessage, onOpenAttachment, onPreviewMention }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(String(message.content || ''));
   const [sending, setSending] = useState(false);
@@ -993,8 +1053,14 @@ function UserMessageRow({ message, disabled, removing = false, onResendMessage, 
             <button type="button" disabled={disabled || sending || !String(draft || '').trim()} onClick={() => { void submitEdit(); }} style={transitionButton({ height: 30, padding: '0 12px', borderRadius: 9, background: C.accent, color: '#fff', fontSize: 12, fontWeight: 800, opacity: (disabled || sending || !String(draft || '').trim()) ? 0.55 : 1, cursor: (disabled || sending || !String(draft || '').trim()) ? 'not-allowed' : 'pointer' })}>{sending ? '发送中...' : '发送'}</button>
           </div>
         </div>
-      ) : String(message.content || '').trim() ? (
-        <div style={{ maxWidth: '80%', minWidth: 0, padding: '13px 18px', borderRadius: '20px 20px 6px 20px', background: C.muted, color: C.text, fontSize: 15, lineHeight: 1.7, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', wordBreak: 'break-word' }}>{message.content}</div>
+      ) : (String(message.content || '').trim() || (Array.isArray(message.mentions) && message.mentions.length > 0)) ? (
+        <div style={{ maxWidth: '80%', minWidth: 0, padding: '13px 18px', borderRadius: '20px 20px 6px 20px', background: C.muted, color: C.text, fontSize: 15, lineHeight: 1.7, overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
+          <div className="notus-message-mention-flow">
+            {(message.mentionSegments || []).map((segment, index) => segment.type === 'mention' ? (
+              <MentionItem key={`${segment.mention?.id || index}-${index}`} {...segment.mention} inline readonly onPreview={onPreviewMention} />
+            ) : <span key={`text-${index}`} style={{ whiteSpace: 'pre-wrap' }}>{segment.text}</span>)}
+          </div>
+        </div>
       ) : null}
       {!editing && String(message.content || '').trim() ? (
         <div aria-label="用户消息操作" style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 4, minHeight: 28 }}>
@@ -1066,7 +1132,7 @@ function AssistantMessageRow({ message, disabled, removing = false, onRetryMessa
   );
 }
 
-function MessageList({ messages, streamText, loading, activeSteps, removingMessageIds, onOpenOperationSet, onCitationClick, citationSelection, actionDisabled = false, onResendMessage, onRetryMessage, onOpenAttachment }) {
+function MessageList({ messages, streamText, loading, activeSteps, removingMessageIds, onOpenOperationSet, onCitationClick, citationSelection, actionDisabled = false, onResendMessage, onRetryMessage, onOpenAttachment, onPreviewMention }) {
   if (messages.length === 0 && !loading) {
     return (
       <div style={{ minHeight: '42vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', color: C.tertiary }}>
@@ -1088,6 +1154,7 @@ function MessageList({ messages, streamText, loading, activeSteps, removingMessa
               removing={removing}
               onResendMessage={onResendMessage}
               onOpenAttachment={onOpenAttachment}
+              onPreviewMention={onPreviewMention}
             />
           );
         }
@@ -1180,23 +1247,31 @@ function AgentConfirmModeSelect({ value, onChange, disabled }) {
   );
 }
 
-function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigChange, onSend, onStop, searchConfig, searchPreference, onSearchPreferenceChange, onRequireSearchConfig, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [] }) {
-  const [value, setValue] = useState('');
+function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigChange, onSend, onStop, searchConfig, searchPreference, onSearchPreferenceChange, onRequireSearchConfig, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [], onPreviewMention }) {
+  const [composerState, setComposerState] = useState({ content: '', mentions: [], segments: [] });
   const [files, setFiles] = useState([]);
+  const [imagePreview, setImagePreview] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [focused, setFocused] = useState(false);
   const [selectedSearchProvider, setSelectedSearchProvider] = useState(String(searchPreference?.searchProvider || '').trim());
   const [webSearchPreferenceEnabled, setWebSearchPreferenceEnabled] = useState(Boolean(searchPreference?.webSearchEnabled));
   const [searchOpen, setSearchOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
-  const [cursorIndex, setCursorIndex] = useState(0);
+  const [mentionQuery, setMentionQuery] = useState(null);
   const [activeMentionIndex, setActiveMentionIndex] = useState(0);
   const [dismissedMentionKey, setDismissedMentionKey] = useState('');
   const [isComposing, setIsComposing] = useState(false);
   const fileInputRef = useRef(null);
-  const textareaRef = useRef(null);
+  const imageInputRef = useRef(null);
+  const composerRef = useRef(null);
   const mentionListRef = useRef(null);
   const mentionOptionRefs = useRef([]);
+  const uploadOrderRef = useRef(0);
+  const selectedMediaCountRef = useRef({ image: 0, attachment: 0 });
+  const previewUrlsRef = useRef(new Set());
+  const composerDraftHydratedRef = useRef(false);
+  const composerDraftSaveTimerRef = useRef(null);
+  const composerInteractionRef = useRef(false);
   const selectedConfig = useMemo(() => llmConfigs.find((item) => String(item.id) === String(selectedConfigId)) || llmConfigs[0] || null, [llmConfigs, selectedConfigId]);
   const toast = useToast();
   const parsedAttachmentMode = attachmentMode === 'parsed';
@@ -1225,6 +1300,197 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
     });
     return groups;
   }, [llmConfigs]);
+  const value = composerState.content;
+  const mentions = composerState.mentions;
+
+  const serializeComposer = useCallback(() => {
+    const root = composerRef.current;
+    const segments = [];
+    if (!root) return { content: '', mentions: [], segments };
+    const appendNode = (node) => {
+      if (node.nodeType === 3) {
+        const text = String(node.textContent || '');
+        if (text) segments.push({ type: 'text', text });
+        return;
+      }
+      const encodedMention = node.nodeType === 1 ? node.getAttribute('data-notus-mention') : '';
+      if (encodedMention) {
+        try {
+          const mention = JSON.parse(decodeURIComponent(encodedMention));
+          if (mention?.id && mention?.path) segments.push({ type: 'mention', mention });
+        } catch {
+          // 已损坏的 DOM 节点不参与发送，避免编辑器状态影响整页。
+        }
+        return;
+      }
+      if (node.nodeType === 1 && node.nodeName === 'BR') {
+        segments.push({ type: 'text', text: '\n' });
+        return;
+      }
+      Array.from(node.childNodes || []).forEach(appendNode);
+    };
+    Array.from(root.childNodes).forEach(appendNode);
+    const mentions = segments.filter((segment) => segment.type === 'mention').map((segment) => segment.mention);
+    return {
+      content: segments.filter((segment) => segment.type === 'text').map((segment) => segment.text).join(''),
+      mentions,
+      segments,
+    };
+  }, []);
+
+  const syncComposerState = useCallback(() => {
+    setComposerState(serializeComposer());
+  }, [serializeComposer]);
+
+  const restoreComposerCaret = useCallback((preferredNode = null, preferredOffset = 0) => {
+    const root = composerRef.current;
+    if (!root || typeof document === 'undefined') return;
+    let textNode = preferredNode?.nodeType === 3 && root.contains(preferredNode) ? preferredNode : null;
+    if (!textNode) {
+      textNode = document.createTextNode('');
+      root.appendChild(textNode);
+    }
+    const offset = Math.min(Math.max(Number(preferredOffset) || 0, 0), textNode.textContent.length);
+    root.focus();
+    const selection = window.getSelection?.();
+    if (!selection) return;
+    const range = document.createRange();
+    range.setStart(textNode, offset);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }, []);
+
+  const createMentionChip = useCallback((mention = {}) => {
+    if (typeof document === 'undefined') return null;
+    const chip = document.createElement('span');
+    chip.className = 'notus-mention-item notus-mention-item--inline';
+    chip.contentEditable = 'false';
+    chip.tabIndex = 0;
+    chip.setAttribute('role', 'button');
+    chip.setAttribute('data-notus-mention', encodeURIComponent(JSON.stringify(mention)));
+    chip.setAttribute('title', `${mention.name}\n${mention.path}`);
+    chip.setAttribute('aria-label', `预览${mention.type === 'folder' ? '目录' : '笔记'}：${mention.name}`);
+    const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    icon.setAttribute('viewBox', '0 0 24 24');
+    icon.setAttribute('fill', 'none');
+    icon.setAttribute('stroke', 'currentColor');
+    icon.setAttribute('stroke-width', '1.7');
+    icon.setAttribute('stroke-linecap', 'round');
+    icon.setAttribute('stroke-linejoin', 'round');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', mention.type === 'folder'
+      ? 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2M3 7v11a2 2 0 0 0 2 2h13.5a2 2 0 0 0 1.9-1.4l2-6A1 1 0 0 0 21.5 11H5a2 2 0 0 0-2 2V7z'
+      : 'M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9zM14 3v6h6');
+    icon.appendChild(path);
+    const label = document.createElement('span');
+    label.className = 'notus-mention-item__label';
+    label.textContent = mention.name;
+    chip.append(icon, label);
+    const openPreview = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      onPreviewMention?.(mention);
+    };
+    chip.addEventListener('mousedown', (event) => event.preventDefault());
+    chip.addEventListener('click', openPreview);
+    chip.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') openPreview(event);
+    });
+    return chip;
+  }, [onPreviewMention]);
+
+  const restoreComposerDom = useCallback((segments = []) => {
+    const root = composerRef.current;
+    if (!root || typeof document === 'undefined') return;
+    root.replaceChildren();
+    (Array.isArray(segments) ? segments : []).forEach((segment) => {
+      if (segment?.type === 'text' && segment.text) {
+        root.appendChild(document.createTextNode(String(segment.text)));
+        return;
+      }
+      if (segment?.type !== 'mention' || !segment.mention?.path) return;
+      const chip = createMentionChip(segment.mention);
+      if (chip) {
+        root.appendChild(chip);
+        root.appendChild(document.createTextNode(''));
+      }
+    });
+  }, [createMentionChip]);
+
+  useEffect(() => {
+    let cancelled = false;
+    readAgentComposerDraft().then((draft) => {
+      if (cancelled || !draft) {
+        composerDraftHydratedRef.current = true;
+        return;
+      }
+      if (composerInteractionRef.current) {
+        composerDraftHydratedRef.current = true;
+        return;
+      }
+      const segments = Array.isArray(draft.segments) ? draft.segments : [];
+      restoreComposerDom(segments);
+      const restoredFiles = restoreAgentComposerFiles(draft.files);
+      restoredFiles.forEach((file) => {
+        if (file.previewUrl) previewUrlsRef.current.add(file.previewUrl);
+      });
+      setFiles(restoredFiles);
+      setComposerState({
+        content: String(draft.content || ''),
+        mentions: Array.isArray(draft.mentions) ? draft.mentions : segments.filter((segment) => segment?.type === 'mention').map((segment) => segment.mention),
+        segments,
+      });
+      uploadOrderRef.current = restoredFiles.reduce((max, file) => Math.max(max, Number(file.upload_order || 0) + 1), 0);
+      selectedMediaCountRef.current = restoredFiles.reduce((counts, file) => {
+        const key = isImageMedia(file) ? 'image' : 'attachment';
+        counts[key] += 1;
+        return counts;
+      }, { image: 0, attachment: 0 });
+      composerDraftHydratedRef.current = true;
+    }).catch(() => {
+      composerDraftHydratedRef.current = true;
+    });
+    return () => { cancelled = true; };
+  }, [restoreComposerDom]);
+
+  useEffect(() => {
+    if (!composerDraftHydratedRef.current) return undefined;
+    if (composerDraftSaveTimerRef.current) window.clearTimeout(composerDraftSaveTimerRef.current);
+    composerDraftSaveTimerRef.current = window.setTimeout(() => {
+      saveAgentComposerDraft({ ...composerState, files }).catch(() => {});
+    }, 280);
+    return () => {
+      if (composerDraftSaveTimerRef.current) window.clearTimeout(composerDraftSaveTimerRef.current);
+    };
+  }, [composerState, files]);
+
+  const readMentionQuery = useCallback(() => {
+    const root = composerRef.current;
+    if (typeof window === 'undefined' || !root) return null;
+    const selection = window.getSelection?.();
+    const node = selection?.anchorNode;
+    if (!selection?.rangeCount || !node || !root.contains(node)) return null;
+    // 不依赖全局 Node 构造器；Electron 的隔离上下文中它不一定暴露在当前世界。
+    if (node.nodeType !== 3) return null;
+    const textNode = node;
+    const offset = Math.min(Number(selection.anchorOffset) || 0, textNode.textContent.length);
+    const prefix = textNode.textContent.slice(0, offset);
+    const match = prefix.match(/(?:^|\s)@(?:\{([^}]*)|([^@\n]*))$/);
+    if (!match) return null;
+    const start = prefix.lastIndexOf('@');
+    const key = `${Array.prototype.indexOf.call(root.childNodes, textNode)}:${start}:${prefix.slice(start)}`;
+    return { textNode, start, end: offset, key, query: String(match[1] ?? match[2] ?? '').trim().toLowerCase() };
+  }, []);
+
+  const updateMentionQuery = useCallback(() => {
+    try {
+      setMentionQuery(readMentionQuery());
+    } catch {
+      // 选区会在 IME、鼠标拖选与 React 重绘之间短暂失效；此时关闭候选而不是让输入框崩溃。
+      setMentionQuery(null);
+    }
+  }, [readMentionQuery]);
 
   const commitSearchPreference = useCallback((nextPreference = {}) => {
     const normalizedProvider = String(nextPreference.searchProvider || '').trim();
@@ -1252,15 +1518,9 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
   }, [commitSearchPreference, preferredSearchProvider, providers, selectedSearchProvider, webSearchPreferenceEnabled]);
 
   const activeMention = useMemo(() => {
-    if (!mentionOptions.length || disabled) return null;
-    const beforeCursor = value.slice(0, cursorIndex);
-    // 普通 @ 查询允许目录名中的空格；带花括号的完整 token 仍在右花括号处结束。
-    const match = beforeCursor.match(/(?:^|\s)@(?:\{([^}]*)|([^@\n]*))$/);
-    if (!match) return null;
-    const mentionStart = beforeCursor.lastIndexOf('@');
-    const mentionKey = `${mentionStart}:${beforeCursor.slice(mentionStart, cursorIndex)}`;
-    if (dismissedMentionKey === mentionKey) return null;
-    const query = String(match[1] ?? match[2] ?? '').trim().toLowerCase();
+    if (!mentionOptions.length || disabled || !mentionQuery) return null;
+    if (dismissedMentionKey === mentionQuery.key) return null;
+    const query = mentionQuery.query;
     const options = mentionOptions
       .filter((option) => {
         if (!query) return true;
@@ -1283,12 +1543,10 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
       })
       .slice(0, 8);
     return {
-      start: mentionStart,
-      end: cursorIndex,
-      key: mentionKey,
+      ...mentionQuery,
       options,
     };
-  }, [cursorIndex, disabled, dismissedMentionKey, mentionOptions, value]);
+  }, [disabled, dismissedMentionKey, mentionOptions, mentionQuery]);
 
   useEffect(() => {
     if (!activeMention?.options?.length) {
@@ -1314,67 +1572,147 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
     }
   }, [activeMention?.options?.length, activeMentionIndex]);
 
-  useEffect(() => {
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-    syncAgentInputTextareaHeight(textarea);
-  }, [value]);
+  useEffect(() => () => {
+    previewUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+    previewUrlsRef.current.clear();
+  }, []);
+
+  const revokePreview = (item) => {
+    if (!item?.previewUrl) return;
+    URL.revokeObjectURL(item.previewUrl);
+    previewUrlsRef.current.delete(item.previewUrl);
+  };
+
+  const clearPendingFiles = () => {
+    setImagePreview(null);
+    setFiles((previous) => {
+      previous.forEach(revokePreview);
+      return [];
+    });
+    uploadOrderRef.current = 0;
+    selectedMediaCountRef.current = { image: 0, attachment: 0 };
+  };
+
+  const openImagePreview = useCallback((selectedFile) => {
+    const images = files.reduce((result, file) => {
+      if (!isImageMedia(file)) return result;
+      const src = imagePreviewUrl(file);
+      if (!src) return result;
+      result.push({
+        id: file.id,
+        src,
+        alt: file.name || '已上传图片',
+      });
+      return result;
+    }, []);
+    const currentIndex = images.findIndex((image) => image.id === selectedFile?.id);
+    if (currentIndex < 0) return;
+    setImagePreview({ images, currentIndex });
+  }, [files]);
+
+  const moveImagePreview = useCallback((direction) => {
+    setImagePreview((previous) => {
+      if (!previous) return previous;
+      const currentIndex = Math.min(
+        Math.max(previous.currentIndex + direction, 0),
+        previous.images.length - 1
+      );
+      return currentIndex === previous.currentIndex ? previous : { ...previous, currentIndex };
+    });
+  }, []);
 
   const applyMention = (option) => {
     if (!activeMention) return;
-    const token = option?.token || option?.value;
-    if (!token) return;
-    const nextValue = `${value.slice(0, activeMention.start)}${token} ${value.slice(activeMention.end)}`;
-    const nextCursor = activeMention.start + token.length + 1;
-    setValue(nextValue);
-    setCursorIndex(nextCursor);
+    composerInteractionRef.current = true;
+    const mention = {
+      id: String(option?.id || option?.value || option?.path || ''),
+      type: option?.type === 'folder' || option?.kind === 'folder' ? 'folder' : 'file',
+      name: String(option?.name || option?.label || option?.path || '未命名文件'),
+      path: String(option?.path || option?.preview || ''),
+    };
+    if (!mention.id || !mention.path) return;
+    const root = composerRef.current;
+    const textNode = activeMention.textNode;
+    if (!root || !textNode || !root.contains(textNode) || typeof document === 'undefined') return;
+    const chip = createMentionChip(mention);
+    if (!chip) return;
+    const range = document.createRange();
+    range.setStart(textNode, activeMention.start);
+    range.setEnd(textNode, activeMention.end);
+    range.deleteContents();
+    range.insertNode(chip);
+    const tail = document.createTextNode('');
+    chip.after(tail);
+    const selection = window.getSelection?.();
+    if (selection) {
+      const caret = document.createRange();
+      caret.setStart(tail, 0);
+      caret.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(caret);
+    }
+    syncComposerState();
+    setMentionQuery(null);
     setDismissedMentionKey('');
     setActiveMentionIndex(0);
-    window.requestAnimationFrame(() => {
-      const textarea = textareaRef.current;
-      if (!textarea) return;
-      syncAgentInputTextareaHeight(textarea);
-      textarea.focus();
-      textarea.setSelectionRange(nextCursor, nextCursor);
-    });
+    root.focus();
   };
 
   const addFiles = (fileList, options = {}) => {
     const rejected = [];
     const incoming = Array.from(fileList || []);
+    const mediaKind = options.mediaKind === 'image' ? 'image' : 'attachment';
     const supported = incoming.filter((file) => {
-      if (parsedAttachmentMode && !isSupportedParsedFile(file)) {
+      if (mediaKind === 'image' && !isSupportedImageFile(file)) {
+        rejected.push(file.name || '未命名图片');
+        return false;
+      }
+      if (mediaKind === 'attachment' && parsedAttachmentMode && !isSupportedParsedFile(file)) {
         rejected.push(file.name || '未命名附件');
         return false;
       }
       return true;
     });
-    const remaining = parsedAttachmentMode ? Math.max(0, MAX_PARSED_ATTACHMENTS - files.length) : supported.length;
+    const selectedCount = selectedMediaCountRef.current[mediaKind] || 0;
+    const limit = mediaKind === 'image' ? MAX_IMAGES_PER_MESSAGE : MAX_PARSED_ATTACHMENTS;
+    const remaining = parsedAttachmentMode ? Math.max(0, limit - selectedCount) : supported.length;
     const acceptedCandidates = supported.slice(0, remaining);
     const skippedCount = Math.max(0, supported.length - acceptedCandidates.length);
-    const next = acceptedCandidates.map((file) => {
+    const next = acceptedCandidates.map((file, index) => {
+      const previewUrl = mediaKind === 'image' ? URL.createObjectURL(file) : '';
+      if (previewUrl) previewUrlsRef.current.add(previewUrl);
       return {
         id: 'file-' + Date.now() + '-' + Math.random().toString(16).slice(2),
         name: file.name,
         size: file.size,
         sizeLabel: fileSize(file.size),
         type: file.type,
-        source_kind: options.sourceKind || 'file',
+        source_kind: mediaKind === 'image' ? 'image' : (options.sourceKind || 'file'),
+        media_kind: mediaKind,
+        upload_order: uploadOrderRef.current + index,
+        previewUrl,
         fileObject: file,
       };
     });
+    if (next.length > 0) composerInteractionRef.current = true;
+    uploadOrderRef.current += next.length;
+    selectedMediaCountRef.current[mediaKind] = selectedCount + next.length;
     if (rejected.length > 0) {
-      toast(`暂不支持 ${rejected.slice(0, 3).join('、')}，请上传 PDF、DOCX、MD 或 TXT。`, 'warning');
+      toast(mediaKind === 'image'
+        ? `暂不支持 ${rejected.slice(0, 3).join('、')}，请上传 PNG、JPG、WEBP 或 GIF。`
+        : `暂不支持 ${rejected.slice(0, 3).join('、')}，请上传 PDF、DOCX、MD 或 TXT。`, 'warning');
     }
     if (skippedCount > 0) {
-      toast(`单次最多上传 ${MAX_PARSED_ATTACHMENTS} 个附件，已忽略多出的 ${skippedCount} 个。`, 'warning');
+      toast(mediaKind === 'image'
+        ? `单次最多上传 ${MAX_IMAGES_PER_MESSAGE} 张图片，已忽略多出的 ${skippedCount} 张。`
+        : `单次最多上传 ${MAX_PARSED_ATTACHMENTS} 个附件，已忽略多出的 ${skippedCount} 个。`, 'warning');
     }
     if (next.length > 0) setFiles((prev) => [...prev, ...next]);
   };
 
   const uploadParsedAttachments = async (items = []) => {
-    const uploadItems = items.filter((item) => item.fileObject);
-    if (!parsedAttachmentMode || uploadItems.length === 0) return items.map(toDisplayAttachment);
+    const uploadItems = items.filter((item) => item.fileObject && !isImageMedia(item));
+    if (!parsedAttachmentMode || uploadItems.length === 0) return items.filter((item) => !isImageMedia(item)).map(toDisplayAttachment);
     const form = new FormData();
     uploadItems.forEach((item) => {
       form.append('files', item.fileObject, item.name);
@@ -1399,10 +1737,33 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
     }));
   };
 
+  const uploadImages = async (items = []) => {
+    const uploadItems = items.filter((item) => item.fileObject && isImageMedia(item));
+    if (uploadItems.length === 0) return [];
+    const form = new FormData();
+    uploadItems.forEach((item) => form.append('images', item.fileObject, item.name));
+    const response = await fetch('/api/agent/images/upload', { method: 'POST', body: form });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || '图片上传失败');
+    if (Array.isArray(payload.errors) && payload.errors.length > 0) {
+      toast(payload.errors[0]?.error || '部分图片未上传', 'warning');
+    }
+    const uploaded = Array.isArray(payload.images) ? payload.images : [];
+    return uploadItems.map((item, index) => ({
+      ...toDisplayAttachment(item),
+      ...(uploaded[index] || {}),
+      id: item.id,
+      source_kind: 'image',
+      media_kind: 'image',
+      upload_order: item.upload_order,
+    }));
+  };
+
   const submit = async (forcedText) => {
-    const fallbackText = parsedAttachmentMode && files.length > 0 ? '请读取并分析已上传的文件。' : '';
-    const text = String(forcedText || value || fallbackText || '').trim();
-    if ((!text && files.length === 0) || busy || disabled || !selectedConfig) return;
+    const fallbackText = parsedAttachmentMode && files.length > 0 ? '请读取并分析已上传的文件或图片。' : '';
+    const currentComposer = serializeComposer();
+    const text = String(forcedText || currentComposer.content || fallbackText || '').trim();
+    if ((!text && files.length === 0 && currentComposer.mentions.length === 0) || busy || disabled || !selectedConfig) return;
     if (webSearchSelected && !searchConfig.enabled) {
       onRequireSearchConfig?.({ reason: 'disabled', selectProvider: selectedSearchProvider || preferredSearchProvider });
       return;
@@ -1411,25 +1772,45 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
       onRequireSearchConfig?.({ reason: 'missing_api_key', selectProvider: selectedSearchProvider });
       return;
     }
-    setValue('');
-    setCursorIndex(0);
+    const mentionSegments = currentComposer.segments;
+    composerRef.current?.replaceChildren();
+    setComposerState({ content: '', mentions: [], segments: [] });
+    setMentionQuery(null);
     setDismissedMentionKey('');
     setSearchOpen(false);
     setModelOpen(false);
-    setUploading(parsedAttachmentMode && files.some((item) => item.fileObject));
+    setUploading(files.some((item) => item.fileObject));
+    let taskAccepted = false;
+    const clearAcceptedComposer = () => {
+      if (taskAccepted) return;
+      taskAccepted = true;
+      clearPendingFiles();
+      clearAgentComposerDraft().catch(() => {});
+    };
     try {
-      const attachments = parsedAttachmentMode
-        ? await uploadParsedAttachments(files)
-        : files.map(toDisplayAttachment);
+      const [uploadedAttachments, images] = await Promise.all([
+        parsedAttachmentMode ? uploadParsedAttachments(files) : Promise.resolve(files.filter((item) => !isImageMedia(item)).map(toDisplayAttachment)),
+        uploadImages(files),
+      ]);
+      const mediaById = new Map([...uploadedAttachments, ...images].map((item) => [item.id, item]));
+      const mediaItems = files.map((item) => mediaById.get(item.id) || toDisplayAttachment(item));
+      const attachments = mediaItems.filter((item) => !isImageMedia(item));
       await onSend?.(text, {
         llmConfigId: selectedConfig.id,
         attachments,
+        images,
+        mediaItems,
+        mentions: currentComposer.mentions,
+        mentionSegments,
         webSearchEnabled: webSearchSelected,
         searchProvider: selectedSearchProvider || null,
         searchProviders: searchProviderList,
+        onTaskAccepted: clearAcceptedComposer,
       });
-      setFiles([]);
     } catch (error) {
+      if (taskAccepted) return;
+      restoreComposerDom(currentComposer.segments);
+      setComposerState(currentComposer);
       toast(error.message || '发送失败', 'error');
     } finally {
       setUploading(false);
@@ -1461,13 +1842,40 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
         return;
       }
     }
+    if (event.key === 'Backspace' || event.key === 'Delete') {
+      const selection = window.getSelection?.();
+      const node = selection?.anchorNode;
+      const root = composerRef.current;
+      const isTextNode = node?.nodeType === 3;
+      const atStart = isTextNode && selection?.anchorOffset === 0;
+      const atEnd = isTextNode && selection?.anchorOffset === (node?.textContent?.length || 0);
+      const isRootSelection = node === root;
+      const rootOffset = Number(selection?.anchorOffset || 0);
+      const neighbor = event.key === 'Backspace' && atStart ? node.previousSibling
+        : event.key === 'Delete' && atEnd ? node.nextSibling
+          : event.key === 'Backspace' && isRootSelection && rootOffset > 0 ? root.childNodes[rootOffset - 1]
+            : event.key === 'Delete' && isRootSelection ? root.childNodes[rootOffset]
+              : null;
+      if (neighbor?.nodeType === 1 && neighbor.hasAttribute('data-notus-mention')) {
+        event.preventDefault();
+        composerInteractionRef.current = true;
+        const caretNode = isTextNode ? node : null;
+        const caretOffset = isTextNode ? Number(selection?.anchorOffset || 0) : 0;
+        neighbor.remove();
+        restoreComposerCaret(caretNode, caretOffset);
+        syncComposerState();
+        setMentionQuery(null);
+        setDismissedMentionKey('');
+        return;
+      }
+    }
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       submit();
     }
   };
 
-  const canSend = !busy && !disabled && Boolean(selectedConfig) && (Boolean(value.trim()) || files.length > 0);
+  const canSend = !busy && !disabled && Boolean(selectedConfig) && (Boolean(value.trim()) || files.length > 0 || mentions.length > 0);
   const toggleWebSearch = () => {
     if (busy || disabled) return;
     if (!searchConfig.enabled) {
@@ -1513,7 +1921,12 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
     const pastedFiles = Array.from(clipboard?.files || []);
     if (pastedFiles.length > 0) {
       event.preventDefault();
-      addFiles(pastedFiles, { sourceKind: 'clipboard_file' });
+      pastedFiles.forEach((file) => {
+        addFiles([file], {
+          sourceKind: 'clipboard_file',
+          mediaKind: isSupportedImageFile(file) ? 'image' : 'attachment',
+        });
+      });
       return;
     }
     const text = clipboard?.getData('text/plain') || '';
@@ -1521,43 +1934,57 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
       event.preventDefault();
       const suffix = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
       const file = new File([text], `pasted-text-${suffix}.txt`, { type: 'text/plain' });
-      addFiles([file], { sourceKind: 'pasted_text' });
+      addFiles([file], { sourceKind: 'pasted_text', mediaKind: 'attachment' });
       toast('粘贴文本较长，已转为 TXT 附件。', 'info');
     }
   };
 
   return (
     <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, padding: '40px 8px 24px', background: 'linear-gradient(0deg, ' + C.page + ' 0%, ' + C.page + ' 68%, rgba(253,252,251,0) 100%)', zIndex: 6 }}>
+      {imagePreview ? <ImagePreviewOverlay preview={imagePreview} onClose={() => setImagePreview(null)} onMove={moveImagePreview} /> : null}
       <div style={{ width: '95%', maxWidth: 'none', margin: '0 auto', borderRadius: 22, background: '#fff', boxShadow: focused ? '0 4px 24px rgba(217,119,87,0.08), inset 0 0 0 1px rgba(217,119,87,0.30)' : '0 2px 12px rgba(0,0,0,0.03), inset 0 0 0 1px rgba(229,227,216,0.95)', transitionProperty: 'box-shadow', transitionDuration: '180ms', transitionTimingFunction: 'cubic-bezier(0.16,1,0.3,1)', overflow: 'visible' }}>
-        <input ref={fileInputRef} type="file" multiple accept={parsedAttachmentMode ? PARSED_ATTACHMENT_ACCEPT : undefined} style={{ display: 'none' }} onChange={(event) => { addFiles(event.target.files); event.target.value = ''; }} />
-        {files.length > 0 ? <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', padding: '14px 16px 4px', maxHeight: 150, overflowY: 'auto' }}>{files.map((file) => <FileChip key={file.id} file={file} onRemove={(id) => setFiles((prev) => prev.filter((item) => item.id !== id))} />)}</div> : null}
+        <input ref={fileInputRef} type="file" multiple accept={parsedAttachmentMode ? PARSED_ATTACHMENT_ACCEPT : undefined} style={{ display: 'none' }} onChange={(event) => { addFiles(event.target.files, { mediaKind: 'attachment' }); event.target.value = ''; }} />
+        <input ref={imageInputRef} type="file" multiple accept={IMAGE_ACCEPT} style={{ display: 'none' }} onChange={(event) => { addFiles(event.target.files, { mediaKind: 'image' }); event.target.value = ''; }} />
+        {files.length > 0 ? <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', padding: '14px 16px 4px', maxHeight: 150, overflowY: 'auto' }}>{files.map((file) => <FileChip key={file.id} file={file} onPreview={openImagePreview} onRemove={(id) => {
+          composerInteractionRef.current = true;
+          setImagePreview((previous) => previous?.images?.some((image) => image.id === id) ? null : previous);
+          setFiles((prev) => {
+            const target = prev.find((item) => item.id === id);
+            revokePreview(target);
+            const mediaKind = isImageMedia(target) ? 'image' : 'attachment';
+            selectedMediaCountRef.current[mediaKind] = Math.max(0, (selectedMediaCountRef.current[mediaKind] || 0) - 1);
+            return prev.filter((item) => item.id !== id);
+          });
+        }} />)}</div> : null}
         <div style={{ position: 'relative', padding: '10px 16px 8px' }}>
-          <textarea
-            ref={textareaRef}
-            value={value}
-            rows={AGENT_INPUT_TEXTAREA_DEFAULT_ROWS}
-            placeholder={placeholder || '在此输入以唤起 Agent Loop...'}
-            disabled={busy || disabled}
+          <div
+            ref={composerRef}
+            className="notus-agent-composer"
+            contentEditable={!(busy || disabled)}
+            role="textbox"
+            aria-multiline="true"
+            aria-label={placeholder || '在此输入以唤起 Agent Loop...'}
+            data-placeholder={placeholder || '在此输入以唤起 Agent Loop...'}
+            suppressContentEditableWarning
             onFocus={() => setFocused(true)}
-            onBlur={() => setFocused(false)}
+            onBlur={() => { setFocused(false); }}
             onPaste={handlePaste}
-            onChange={(event) => {
-              setValue(event.target.value);
-              setCursorIndex(event.target.selectionStart || 0);
+            onInput={() => {
+              composerInteractionRef.current = true;
+              syncComposerState();
+              updateMentionQuery();
               setDismissedMentionKey('');
-              syncAgentInputTextareaHeight(event.currentTarget);
             }}
-            onClick={(event) => setCursorIndex(event.currentTarget.selectionStart || 0)}
-            onKeyUp={(event) => setCursorIndex(event.currentTarget.selectionStart || 0)}
-            onSelect={(event) => setCursorIndex(event.currentTarget.selectionStart || 0)}
+            onClick={updateMentionQuery}
+            onKeyUp={updateMentionQuery}
+            onSelect={updateMentionQuery}
             onCompositionStart={() => setIsComposing(true)}
-            onCompositionEnd={(event) => {
+            onCompositionEnd={() => {
               setIsComposing(false);
-              setCursorIndex(event.currentTarget.selectionStart || 0);
-              syncAgentInputTextareaHeight(event.currentTarget);
+              updateMentionQuery();
             }}
             onKeyDown={handleKeyDown}
-            style={{ width: '100%', minHeight: AGENT_INPUT_TEXTAREA_MIN_HEIGHT, resize: 'none', border: 'none', outline: 'none', background: 'transparent', color: disabled ? C.tertiary : C.text, fontSize: 15, lineHeight: 1.65, padding: 0, fontFamily: 'inherit', boxSizing: 'border-box', overflowY: 'hidden', whiteSpace: 'pre-wrap', overflowWrap: 'break-word', wordBreak: 'normal' }}
+            style={{ width: '100%', minHeight: 112, maxHeight: 196, overflowY: 'auto', outline: 'none', background: 'transparent', color: disabled ? C.tertiary : C.text, fontSize: 15, lineHeight: 1.65, padding: 0, fontFamily: 'inherit', boxSizing: 'border-box', whiteSpace: 'pre-wrap', overflowWrap: 'break-word', wordBreak: 'normal' }}
           />
           {activeMention ? (
             <div style={{ position: 'absolute', left: 14, right: 14, bottom: 'calc(100% + 8px)', padding: 8, borderRadius: 16, background: '#fff', boxShadow: '0 -10px 40px -10px rgba(0,0,0,0.14), inset 0 0 0 1px rgba(229,227,216,0.95)', zIndex: 24 }}>
@@ -1587,7 +2014,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
                       })}
                     >
                       <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-                        {option.kind === 'folder' ? <Icons.folder size={15} style={{ color: C.accent, flexShrink: 0 }} /> : <Icons.file size={15} style={{ color: C.accent, flexShrink: 0 }} />}
+                        {option.kind === 'folder' ? <Icons.folderOpen size={15} style={{ color: C.accent, flexShrink: 0 }} /> : <Icons.file size={15} style={{ color: C.accent, flexShrink: 0 }} />}
                         <span style={{ minWidth: 0, fontSize: 13, fontWeight: 700, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{option.label}</span>
                       </span>
                       <span style={{ minWidth: 0, fontSize: 12, color: C.tertiary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{option.preview}</span>
@@ -1603,6 +2030,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 12px 12px', gap: 10 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <button type="button" aria-label="添加附件" onClick={() => fileInputRef.current?.click()} disabled={busy || disabled} style={transitionButton({ width: 30, height: 30, borderRadius: 10, background: 'transparent', color: C.tertiary, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, opacity: busy || disabled ? 0.5 : 1 })}><Icons.paperclip size={18} /></button>
+            <button type="button" aria-label="添加图片" onClick={() => imageInputRef.current?.click()} disabled={busy || disabled} style={transitionButton({ width: 30, height: 30, borderRadius: 10, background: 'transparent', color: C.tertiary, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, opacity: busy || disabled ? 0.5 : 1 })}><Icons.image size={18} /></button>
             {showAgentConfirmMode ? <AgentConfirmModeSelect value={agentConfirmMode} onChange={onAgentConfirmModeChange} disabled={busy || disabled} /> : null}
             <div style={{ position: 'relative' }}>
               <button type="button" onClick={toggleWebSearch} disabled={busy || disabled} style={transitionButton({ height: 28, padding: '0 10px', borderRadius: 8, background: webSearchSelected ? 'rgba(251,228,210,0.40)' : 'transparent', color: webSearchSelected ? C.accent : C.tertiary, display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: webSearchSelected ? 800 : 600, opacity: busy || disabled ? 0.5 : 1 })}><Icons.globe size={15} />联网</button>
@@ -1863,6 +2291,7 @@ export function AgentWorkspace({ messages, streamText, loading, error, activeSte
   const [searchPromptReason, setSearchPromptReason] = useState('disabled');
   const [detailOperationSet, setDetailOperationSet] = useState(null);
   const [attachmentDetail, setAttachmentDetail] = useState(null);
+  const [previewMention, setPreviewMention] = useState(null);
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
   const [rewrittenMessages, setRewrittenMessages] = useState({});
   const [removingMessageIds, setRemovingMessageIds] = useState(() => new Set());
@@ -2060,6 +2489,8 @@ export function AgentWorkspace({ messages, streamText, loading, error, activeSte
       await onSend?.(nextContent, {
         llmConfigId: selectedModelId,
         attachments: Array.isArray(sourceMessage?.attachments) ? sourceMessage.attachments : [],
+        mentions: Array.isArray(sourceMessage?.mentions) ? sourceMessage.mentions : [],
+        mentionSegments: Array.isArray(sourceMessage?.mentionSegments) ? sourceMessage.mentionSegments : [],
         webSearchEnabled: activeWebSearchEnabled,
         searchProvider: activeWebSearchEnabled ? activeSearchProvider : null,
         searchProviders: activeWebSearchEnabled ? [activeSearchProvider] : [],
@@ -2099,6 +2530,7 @@ export function AgentWorkspace({ messages, streamText, loading, error, activeSte
             onResendMessage={handleResendMessage}
             onRetryMessage={handleResendMessage}
             onOpenAttachment={handleOpenAttachment}
+            onPreviewMention={setPreviewMention}
           />
           {error ? <div style={{ marginTop: 16, padding: '12px 14px', borderRadius: 14, background: 'rgba(217,119,87,0.08)', color: C.accentDark, fontSize: 13, lineHeight: 1.7 }}>{error}</div> : null}
           <div style={{ height: 12 }} />
@@ -2137,7 +2569,8 @@ export function AgentWorkspace({ messages, streamText, loading, error, activeSte
           <Icons.chevronDown size={14} />
         </button>
       ) : null}
-      <AgentInput loading={Boolean(loading)} disabled={Boolean(disabled)} llmConfigs={llmConfigs || []} selectedConfigId={selectedConfigId} onConfigChange={onConfigChange} onSend={onSend} onStop={onStop} searchConfig={searchConfig} searchPreference={searchPreference} onSearchPreferenceChange={handleSearchPreferenceChange} onRequireSearchConfig={requireSearchConfig} placeholder={placeholder} agentConfirmMode={agentConfirmMode} onAgentConfirmModeChange={onAgentConfirmModeChange} attachmentMode={attachmentMode} mentionOptions={mentionOptions} />
+      <AgentInput loading={Boolean(loading)} disabled={Boolean(disabled)} llmConfigs={llmConfigs || []} selectedConfigId={selectedConfigId} onConfigChange={onConfigChange} onSend={onSend} onStop={onStop} searchConfig={searchConfig} searchPreference={searchPreference} onSearchPreferenceChange={handleSearchPreferenceChange} onRequireSearchConfig={requireSearchConfig} placeholder={placeholder} agentConfirmMode={agentConfirmMode} onAgentConfirmModeChange={onAgentConfirmModeChange} attachmentMode={attachmentMode} mentionOptions={mentionOptions} onPreviewMention={setPreviewMention} />
+      <MentionPreviewDialog mention={previewMention} onClose={() => setPreviewMention(null)} />
       <Dialog open={searchPromptOpen} onClose={() => setSearchPromptOpen(false)} title={promptTitle} maxWidth={420} footer={<><Button variant="ghost" onClick={() => setSearchPromptOpen(false)}>取消</Button><Button variant="primary" onClick={() => { setSearchPromptOpen(false); navigateWithFallback(router, searchSettingsHref); }}>前往设置</Button></>}>
         <div style={{ fontSize: 14, color: C.secondary, lineHeight: 1.8 }}>{promptMessage}</div>
       </Dialog>

@@ -1,6 +1,6 @@
 # Notus 产品需求文档（PRD）
 
-> v3.0 · 更新时间：2026-07-14
+> v3.1 · 更新时间：2026-07-17
 
 ## 1. 技术约束
 
@@ -45,9 +45,10 @@ Shell
 
 - `notus-files-workspace-panels`：保存 `editorOpen` 与 `agentOpen`。
 - `notus-files-workspace-layout`：保存 `editorWidthPercent` 与 `agentWidthPercent` 两个双栏宽度百分比；读取时兼容旧版单一左栏百分比。
-- `GET /api/settings` 的 `editor.default_editor_open`、`editor.default_agent_open` 为从无文件状态打开文件时的默认值。
+- `GET /api/settings` 的 `editor.default_editor_open`、`editor.default_agent_open` 为已运行工作区从无文件状态打开文件时的默认值；启动时从浏览器恢复的当前文件必须保留已保存的面板组合。
 - `PUT /api/settings` 支持保存这两个字段，数据库设置键分别为 `editor_default_open` 和 `editor_default_agent_open`。
 - 用户手动开关或切换已打开文件不会回读默认值。侧边栏再次点击当前文件会清空 `activeFileId` 和当前文件，并移除 `/files?fileId=...` 路由状态；编辑器显示未选择文件空态，AI 面板保持当前状态。
+- `AppContext` 完成 `notus-workspace-state` 恢复后公开 `workspaceHydrated` 和启动时的 `restoredActiveFileId`。`FilesPage` 识别到该文件后跳过默认面板初始化，避免在窗口重开时把 `notus-files-workspace-panels` 覆盖为设置默认值。
 - `ResizableLayout` 初始化使用本地存储的编辑器宽度，拖动提交时同步保存编辑器与 AI 面板宽度。
 - `TopBar` 的编辑器和 AI 面板开关复用 32px 图标按钮；默认快捷键分别为 `Mod+B` 和 `Mod+U`，命中时调用对应开关并阻止浏览器默认行为。
 
@@ -71,7 +72,7 @@ Shell
 - `lib/objectStorage.js` 统一生成对象键、公开 URL 和错误码；COS 用 `cos-nodejs-sdk-v5`，OSS 用 `ali-oss`，R2 用 `@aws-sdk/client-s3`。
 - 云对象键为 `<prefix>/<YYYY>/<MM>/<sha256>.<ext>`，上传携带图片 MIME 类型与 `Cache-Control: public, max-age=31536000, immutable`。
 - `/api/files/:id/images` 在 `formidable` 校验后选择本地写入或云端上传。云端上传失败返回错误，临时文件在成功和失败路径均删除，不回退本地。
-- `ImagePreviewOverlay` 通过 React portal 挂载到 `document.body`，使用高于顶栏的覆盖层级，避免工作区局部堆叠上下文遮挡预览控件。
+- `components/ui/ImagePreviewOverlay` 通过 React portal 挂载到 `document.body`，使用高于顶栏的覆盖层级，避免工作区局部堆叠上下文遮挡预览控件；编辑器文档图片和 Agent 待发送图片共用该组件。
 
 ## 4. AI Agent 工作台
 
@@ -88,7 +89,13 @@ Shell
 
 AI 面板顶栏只保留历史和新建对话操作，不显示左侧品牌 icon 或“Notus Agent”标题。无消息空态只显示“你今天在想些什么？”。
 
-`AgentInput` 在通过发送前置校验后立即清空文本；流式任务异常时，`useAgentLoopController` 将现有 session 标记为 `failed` 并结束 loading，`FileAgentWorkspace` 不再因过期的 `running` 状态持续禁用输入。`ClarifyDrawer` 的上一题、下一题使用带 `aria-label` 的箭头 icon；答题阶段且焦点不在文本输入控件时，ArrowLeft/ArrowRight 分别切换前后题，前进仍要求当前题已回答。
+`AgentInput` 在通过发送前置校验后立即清空文本；流式任务异常时，`useAgentLoopController` 将现有 session 标记为 `failed` 并结束 loading，`FileAgentWorkspace` 不再因过期的 `running` 状态持续禁用输入。用户消息只在服务端发出 `session_created` SSE 事件后追加到前端，配额校验失败不会留下本地幻影消息。`ClarifyDrawer` 的上一题、下一题使用带 `aria-label` 的箭头 icon；答题阶段且焦点不在文本输入控件时，ArrowLeft/ArrowRight 分别切换前后题，前进仍要求当前题已回答。单选题选中后自动切到下一道可见题；全部可见题已回答时切换到同一 `ClarifyDrawer` 的复核列表，点击任一行可回到该题修改，提交答案不再打开独立页面或组件。
+
+`AgentInput` 的发送条件接受普通文本、待发送图片、解析附件或 Mention 中的任一有效输入。Mention 仅用于提供显式文件和目录上下文，不能成为普通任务发送的前置条件。`contentEditable` 序列化递归读取文本节点、换行节点和 mention 节点；删除 mention 时恢复有效的文本节点、焦点和选区，确保用户可继续输入。
+
+`AgentInput` 维护统一 `upload_order`。解析附件和图片分别上传，再按这个序号合并到用户消息和历史消息。图片 chip 显示缩略图，附件 chip 保留文件类型图标；图片不进入附件解析链路。待发送图片 chip 可打开 `ImagePreviewOverlay`，预览只包含当前上传队列的图片并按 `upload_order` 切换；移除当前预览图片或清空队列时关闭预览。
+
+`AgentInput` 使用 `utils/agentComposerDraft.js` 将未发送草稿保存到 IndexedDB。记录包括可见文本、结构化 `segments`、Mention 元数据，以及待发送图片和解析附件的文件元数据、Blob、`media_kind` 和 `upload_order`。初始化时恢复 DOM mention 卡片和浏览器 `File` 对象，图片重新生成本地对象 URL；保存不设置过期时间。服务端发出 `session_created` SSE、确认用户消息已入库后立即清空文本、媒体队列和草稿；在此之前上传或建会失败时恢复发送前输入，后续流式任务失败不恢复已接收的媒体。
 
 ### 4.2 新任务请求
 
@@ -101,21 +108,46 @@ AI 面板顶栏只保留历史和新建对话操作，不显示左侧品牌 icon
   "display_query": "<用户原文>",
   "kind": "canvas",
   "authorized_paths": [""],
-  "authorized_ops": ["modify", "create"]
+  "authorized_ops": ["modify", "create"],
+  "attachments": [{ "name": "brief.pdf", "stored_name": "...", "upload_order": 1 }],
+  "images": [{ "name": "screen.png", "stored_name": "...", "upload_order": 0 }]
 }
 ```
 
 请求不传 `active_file_id`，`goal` 不包含当前文件名、当前路径或画布块快照。`authorized_paths: ['']` 表示 Agent 的非删除写入可覆盖工作区根目录。
+
+新 session 会额外从同一 `conversation_id` 的最近文件 operation set 推导承接目标：当本轮文本表达重写、改写、润色、修订、更新或续写，且没有明确另建文件时，向模型传入最多 3 个最近创建文件的 `file_path / operation_set_id / status`。首个目标必须先经 `read_file` 读取，并只允许使用 `preview_file_revision` 修订；本轮工具表移除 `create_note`。文件仍为未应用预览时，Agent 只能提示用户先应用，不能新建替代文件。
+
+`lib/conversationImages.js` 统一校验和规范化媒体元数据：单条消息最多 30 张图片、10 个解析附件；同一对话分别最多 50 张图片、20 个解析附件。图片可为 PNG、JPG、JPEG、WEBP、GIF，单张临时文件最多 5MB，文件存放于 `<sessionDir>/images`。`/api/agent/images/upload` 负责接收图片，`/api/agent/images/:name` 仅向会话 UI 提供缩略图。
+
+Agent 会话图片采用保留策略：成功上传的文件与会话消息元数据长期关联，当前没有按会话结束、交互过期、应用完成或删除会话自动清理的任务。删除 Markdown 引用、回滚笔记或写入永久图床都不会删除会话临时源文件；上传失败时产生的中间文件会立即清理。
+
+图片只进入本轮 `runAgentLoop()` 的首条 user content。内部 block 使用 `{ type: 'image', source: { type: 'base64', media_type, data } }`：
+
+- OpenAI Chat Completions 适配为 `{ type: 'image_url', image_url: { url: 'data:<mime>;base64,<data>' } }`。
+- Anthropic Messages 保持 `{ type: 'image', source: { type: 'base64', media_type, data } }`。
+
+Anthropic 直接 Messages API 的请求体限制为 32MB。服务端将该协议的原始图片总大小收紧到 20MB，给 base64 和消息 JSON 预留空间；OpenAI 路径继续受官方单请求图片输入上限约束。`llmBudget.estimateMessagesTokens()` 不对 base64 字符串做文本 token 估算，避免把图片字节误判成海量文本。
+
+会话图片引用格式为 `notus-conversation-image://<message-id>/<image-id>`。`lib/conversationImages.js` 从所属会话的用户消息元数据解析引用，拒绝客户端传入临时路径、未知图片 ID 和跨会话图片。`/api/agent/images/:name?conversation_id=:id` 同样按会话元数据验证后才提供临时预览文件。
+
+历史图片不自动重发。`list_conversation_images` 返回消息、上传顺序和受控引用；`read_conversation_images({ image_refs })` 最多读取 30 张，并把选中的视觉 block 接在工具结果后。OpenAI 转换为 `tool` 结果消息后再发送新的 `user` 图片消息；Anthropic 在同一个 `user` content 中保留 `tool_result` 和图片 block。Anthropic 路径再次校验选中图片的原始文件总量不超过 20MB。
 
 ### 4.3 Agent Prompt 和工具
 
 系统 Prompt 约束：
 
 - `@{relative/path.md}` 为明确 Mention 文件；使用文件正文前调用 `read_file`。
+- `@{folder:relative/path}` 为明确 Mention 目录。每个目录先调用 `analyze_folder({ folder_path: 'relative/path' })`；不得将其扩大为根目录扫描或全库检索。
+- 目录分析后只选择任务相关的少量文件 `read_file`，或为 `search_knowledge` 传入 `scope_paths: ['relative/path']`。遇到 200 文件截断时按子目录继续分析。
 - 未 Mention 文件时，不假定当前 UI 打开的文件是任务目标。
+- 承接性改写的目标不依赖 UI 当前文件：服务端以同一对话真实 operation set 中的创建路径作为结构化上下文。此时先读首个目标文件，工具表不提供 `create_note`；用户明确要求另建文件除外。
 - 任务明确需要定位文件、目录或材料时，模型可自行使用 `analyze_folder`、`search_knowledge`、`read_file`；普通聊天无需调用这些工具。
 - 文件系统任务先使用 `analyze_folder` 获取实时目录结构。
 - 当前可注册工具不包含 `preview_canvas_blocks`。
+- 用户要求把图片整理进笔记时，只在 `@` 文件、明确路径、当前输入或最近对话唯一确定目标笔记时直接创建预览；当前编辑器文件不是隐式目标。
+- 目标不唯一时，Agent 检索后调用 `ask_question_card`。`target_note` 最多有 3 个候选，候选 `answer_value` 保存实际路径；“手填已有路径”和“新建笔记”触发带 `depends_on` 的 `target_note_path` 输入题。
+- 目标已确定但未说明插入位置时，Agent 先读文件并写入语义匹配的小节；未匹配时在文末新建“调研图片与整理”。Markdown 中只可使用会话受控引用，不可编造临时 URL、本地路径或 Base64 图片。
 
 `agentTools.buildToolDefinitions()` 只向模型提供文件、检索、预览、目录、提问卡片和联网工具。旧画布块预览执行代码不再注册为工具，也不会通过前端入口调用。
 
@@ -123,35 +155,68 @@ AI 面板顶栏只保留历史和新建对话操作，不显示左侧品牌 icon
 
 ### 5.1 候选数据
 
-前端从 `AppContext.allFiles` 生成：
+前端从 `AppContext.allFiles` 和树形 `AppContext.files` 生成：
 
 ```js
 {
   value: file.id,
+  id: file.id,
+  name: 'note.md',
+  path: 'folder/note.md',
+  type: 'file',
   token: '@{folder/note.md}',
   label: '文件标题或文件名',
   preview: 'folder/note.md',
+  kind: 'file',
   searchText: '标题 文件名 路径'
 }
 ```
 
-### 5.2 输入规则
+目录候选使用：
+
+```js
+{
+  value: 'folder:folder',
+  id: 'folder:folder',
+  name: 'folder',
+  path: 'folder',
+  type: 'folder',
+  token: '@{folder:folder}',
+  label: 'folder',
+  preview: 'folder',
+  kind: 'folder',
+  searchText: 'folder folder'
+}
+```
+
+### 5.2 输入和消息规则
 
 - 输入 `@` 后显示候选。
 - 支持未闭合 `@{...` 和普通 `@keyword` 两种检索状态。
 - 匹配对 `token / label / preview / searchText` 做不区分大小写的包含匹配。
 - 支持 ArrowUp、ArrowDown、Enter、Esc 和中文输入法组合态。
-- 选中后插入完整 `@{相对路径}`，路径中可以包含空格。
+- 候选主行只显示文件名或目录名，次行只显示相对路径；名称和路径不重复渲染。
+- 选择结果后在 contenteditable 输入流中插入独立 `MentionItem`，不把 token 写入可见文本。mention 不能拆分编辑；光标紧邻节点时按 Backspace 或 Delete 一次移除该项。
+- `MentionItem` 同时用于输入框与用户消息；输入框候选列表也使用同一图标映射。文件图标复用 Sidebar 的 `Icons.file`，目录图标固定复用 Sidebar 展开状态的 `Icons.folderOpen`；颜色、背景、边框和 focus 状态使用现有主题变量。
+- 请求体和消息 `meta` 的 `mentions` 保存 `{ id, type, name, path }`，`mention_segments` 保存文本与 mention 的顺序。`FileAgentWorkspace` 按片段顺序在 Agent `goal` 中拼入 `@{相对路径}` 或 `@{folder:相对路径}`，消息正文不含内部语法。
+- 读取历史消息时，前端兼容解析旧 token 并生成 mention 卡片，不更新数据库旧记录。
+- `MentionPreviewDialog` 通过 `/api/files` 列出目录文件，通过 `/api/files/:id` 懒加载 Markdown 正文。文件不存在返回“该笔记已不存在”；空目录返回“该目录下暂无笔记”。
 
 ## 6. API 与数据边界
 
 - API Route 先调用 `ensureRuntime()`。
 - 数据库统一经 `getDb()` 访问。
 - `/api/files/:id` 读取和保存 Markdown；保存后增量索引。
-- `/api/files/:id/images` 处理本地资源或对象存储图片上传；云端 URL 保持为 Markdown 原值，现有远程图片缓存与索引按需读取。
+- `lib/imageStorage.js:persistImageBuffer()` 是编辑器与 Agent 图片写入的共享存储层。本地模式写入资源目录并返回相对 Markdown 路径；COS、OSS、R2 模式上传并返回公开 URL。任一对象存储失败时不写入笔记正文，也不回退本地。
+- `/api/files/:id/images` 通过共享存储层处理编辑器图片上传；云端 URL 保持为 Markdown 原值，现有远程图片缓存与索引按需读取。
+- `/api/agent/images/upload` 接收 Agent 输入图片；`/api/agent/images/:name?conversation_id=:id` 只向所属会话 UI 提供临时图片预览。
 - `/api/conversations` 与 `/api/conversations/:id` 负责 Agent 历史、操作预览和附件恢复。
 - `/api/agent/loop/start`、`/api/agent/loop/apply`、`/api/interactions/:id/respond` 负责 Agent Loop、预览和提问卡片续跑。
 - SSE 格式维持 `data: JSON\n\n`。
+
+`canvas_operation_sets.media_changes_json` 在运行时迁移。读取旧记录时默认 `[]`，对外字段为 `media_changes`。每项包括文件路径、`add/remove/replace`、图片 alt、变更前后图片、会话图片受控引用和应用后的最终地址。`create_note`、`preview_patch_files`、`preview_file_revision` 统一从 Markdown 解析图片变更；应用前先做文件冲突检查，再持久化图片、替换受控引用、更新 operation set 草稿并写入笔记。应用失败、临时图片缺失或文件 stale 时，笔记正文不写入，操作集记录失败状态。回滚只恢复 Markdown，不物理删除图片对象。
+
+浏览器草稿只服务未发送的当前输入，不改变服务端会话消息、会话图片或解析附件的保存链路。IndexedDB 不可用时忽略草稿读写，不阻断输入和发送。
 
 ## 7. 兼容与不再使用的链路
 
@@ -165,5 +230,11 @@ AI 面板顶栏只保留历史和新建对话操作，不显示左侧品牌 icon
 2. `npm run build:web` 通过。
 3. 无文件状态下可以打开 AI 面板、发送 Agent 任务、创建或检索工作区文件。
 4. 有文件状态下编辑器和 AI 面板可拖拽分栏，用户切换文件后面板状态保持。
-5. Mention 面板能匹配文件名和路径；Agent 对 Mention 文件按需读取内容。
-6. `preview_canvas_blocks` 不出现在 Agent 工具定义或工具步骤中。
+5. 关闭窗口后重新打开时，恢复同一当前文件以及编辑器、AI 面板的关闭/展开组合；从无文件状态新开文件仍使用个性化默认值。
+6. 图片、附件单条和对话累计配额在前端和服务端均被校验；历史消息按上传顺序混排展示两类媒体。
+7. OpenAI 与 Anthropic 模型分别收到其兼容的图片 content block。
+8. Mention 面板能匹配文件名、目录名和路径；Agent 对 Mention 文件按需读取内容，对 Mention 目录先定向分析。
+9. `preview_canvas_blocks` 不出现在 Agent 工具定义或工具步骤中。
+10. Agent 可以列出并按需读取本会话历史图片；跨会话引用、缺失临时文件、超过 30 张和 Anthropic 20MB 的请求都会被拒绝。
+11. 图片笔记预览、手动应用、自动应用、stale、存储失败和回滚都遵守同一写入边界；DiffDialog 可直接渲染图片变更。
+12. 刷新或重新进入 Agent 工作区后，未发送的文本、Mention、图片和解析附件恢复；发送成功后草稿记录删除，浏览器端不设置自动过期。

@@ -160,7 +160,7 @@ const Step1 = ({
   };
 
   return (
-    <div style={{ maxWidth: 672, margin: '0 auto', color: '#2D2D2D' }}>
+    <div className="notus-setup-model" style={{ maxWidth: 672, margin: '0 auto', color: '#2D2D2D' }}>
       {loading && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14, fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>
           <Spinner size={14} />
@@ -426,7 +426,7 @@ const Step3 = ({ running, progress, indexStatus, summary, errors }) => {
           <span>{statusText}</span>
         </div>
         <div style={{ height: 1, background: 'var(--border-subtle)', margin: '18px 0' }} />
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16 }}>
+        <div className="notus-setup-index-stats" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16 }}>
           {[
             { n: indexed, l: '已索引文件' },
             { n: pending, l: '待处理文件' },
@@ -972,16 +972,16 @@ export default function SetupPage() {
   }
 
   return (
-    <div style={{
+    <div className="notus-setup-page" style={{
       display: 'flex',
       alignItems: 'flex-start',
       justifyContent: 'center',
       paddingTop: 56,
-      minHeight: '100vh',
+      minHeight: '100dvh',
       background: 'var(--bg-primary)',
       overflow: 'auto',
     }}>
-      <div style={{ maxWidth: step === 0 ? 1180 : 760, width: '100%', padding: 24 }}>
+      <div className="notus-setup-page__content" style={{ maxWidth: step === 0 ? 1180 : 760, width: '100%', padding: 24 }}>
         <div style={{ textAlign: 'center', marginBottom: 28 }}>
           <div style={{ display: 'inline-flex', marginBottom: 14 }}><NotusLogo size={40} /></div>
           <div style={{ fontSize: 'var(--text-xl)', fontWeight: 600, marginBottom: 6 }}>{meta.title}</div>

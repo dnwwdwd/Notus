@@ -135,8 +135,10 @@ html, body {
   margin: 0;
   padding: 0;
   height: 100%;
-  min-width: 1360px;
-  min-height: 800px;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
   background: var(--bg-primary);
   color: var(--text-primary);
   font-family: var(--font-ui);
@@ -148,8 +150,8 @@ html, body {
 
 #__next {
   height: 100%;
-  min-width: 1360px;
-  min-height: 800px;
+  min-width: 0;
+  min-height: 0;
 }
 
 button {
@@ -1064,4 +1066,272 @@ a {
   box-shadow: inset 0 0 0 1px var(--warning);
   background: color-mix(in srgb, var(--warning) 20%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warning) 55%, transparent);
+}
+
+/* ===== Responsive workspace ===== */
+.notus-shell,
+.notus-shell__body,
+.notus-shell__content,
+.notus-resizable-layout,
+.notus-resizable-layout__panel,
+.notus-editor-panel,
+.notus-file-agent-workspace,
+.notus-settings-layout,
+.notus-settings-content {
+  min-width: 0;
+}
+
+.notus-shell {
+  width: 100%;
+  min-height: 0;
+}
+
+.notus-resizable-layout__panel > * {
+  min-width: 0;
+}
+
+.notus-dialog__body {
+  min-width: 0;
+}
+
+@media (max-width: 1200px) {
+  .notus-sidebar:not(.is-collapsed) {
+    width: 196px !important;
+  }
+
+  .notus-resizable-layout__panel--left,
+  .notus-resizable-layout__panel--right {
+    min-width: 300px !important;
+  }
+}
+
+@media (max-width: 900px) {
+  .notus-sidebar:not(.is-collapsed) {
+    width: 168px !important;
+  }
+
+  .notus-resizable-layout {
+    flex-direction: column;
+  }
+
+  .notus-resizable-layout__panel--left,
+  .notus-resizable-layout__panel--right {
+    width: 100% !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+    height: 50%;
+    flex: 1 1 0 !important;
+  }
+
+  .notus-resizable-layout__handle {
+    width: 100% !important;
+    height: 4px;
+    min-height: 4px;
+    cursor: default !important;
+    pointer-events: none;
+  }
+
+  .notus-editor-panel__title,
+  .notus-editor-panel__loading {
+    padding-left: 32px !important;
+    padding-right: 32px !important;
+  }
+
+  .wysiwyg-content .ProseMirror {
+    padding: 36px 40px 100px;
+  }
+}
+
+@media (max-width: 700px) {
+  .notus-shell__content {
+    margin-left: 40px;
+  }
+
+  .notus-sidebar.is-mobile {
+    position: absolute !important;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 110;
+    box-shadow: 2px 0 12px rgba(26, 19, 17, 0.08);
+  }
+
+  .notus-sidebar.is-mobile.is-mobile-open {
+    width: min(280px, calc(100vw - 40px)) !important;
+    box-shadow: 8px 0 24px rgba(26, 19, 17, 0.16);
+  }
+
+  .notus-settings-dialog {
+    width: calc(100vw - 24px) !important;
+    height: calc(100dvh - 24px) !important;
+    max-width: none !important;
+  }
+
+  .notus-settings-layout {
+    flex-direction: column;
+  }
+
+  .notus-settings-nav {
+    width: 100% !important;
+    min-height: 58px;
+    padding: 10px 12px !important;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-right: 0 !important;
+    border-bottom: 1px solid var(--border-subtle);
+    scrollbar-width: thin;
+  }
+
+  .notus-settings-nav > div {
+    flex: 0 0 auto;
+    height: 34px !important;
+    margin-bottom: 0 !important;
+    padding: 0 10px !important;
+    white-space: nowrap;
+    font-size: var(--text-sm) !important;
+  }
+
+  .notus-settings-content {
+    padding: 20px 16px !important;
+  }
+
+  .notus-settings-content__inner {
+    min-width: 0;
+  }
+
+  .notus-dialog-backdrop {
+    align-items: flex-start !important;
+    padding: 12px;
+    overflow: auto;
+  }
+
+  .notus-dialog {
+    width: 100% !important;
+    max-width: none !important;
+    max-height: calc(100dvh - 24px);
+    margin: 0 !important;
+  }
+
+  .notus-dialog__header {
+    padding: 14px 16px !important;
+  }
+
+  .notus-dialog__body {
+    padding: 16px !important;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+
+  .notus-dialog__footer {
+    padding: 12px 16px !important;
+    flex-wrap: wrap;
+  }
+
+  .notus-document-find-bar {
+    top: 10px !important;
+    right: 10px !important;
+    min-width: 0 !important;
+    width: calc(100% - 20px);
+  }
+
+  .notus-document-find-bar > div {
+    flex-wrap: wrap;
+  }
+
+  .notus-toast-stack {
+    top: 10px !important;
+    right: 10px !important;
+    left: 10px;
+  }
+
+  .notus-toast {
+    width: 100%;
+    min-width: 0 !important;
+    overflow-wrap: anywhere;
+  }
+
+  .notus-editor-panel__title,
+  .notus-editor-panel__loading {
+    padding-left: 20px !important;
+    padding-right: 20px !important;
+  }
+
+  .notus-editor-panel__title {
+    padding-top: 16px !important;
+    padding-bottom: 8px !important;
+  }
+
+  .notus-editor-panel__title-input {
+    font-size: 23px !important;
+  }
+
+  .wysiwyg-content .ProseMirror {
+    padding: 28px 24px 84px;
+    font-size: var(--text-base);
+  }
+
+  .notus-setup-page {
+    padding-top: 28px !important;
+  }
+
+  .notus-setup-page__content {
+    padding: 16px !important;
+  }
+
+  .notus-setup-model section {
+    padding: 18px !important;
+  }
+
+  .notus-setup-index-stats {
+    gap: 10px !important;
+  }
+
+  .notus-image-preview {
+    padding: 72px 18px 28px;
+  }
+
+  .notus-image-preview-close {
+    top: 14px;
+    right: 14px;
+  }
+
+  .notus-image-preview-nav {
+    width: 38px;
+    height: 38px;
+  }
+
+  .notus-image-preview-nav.is-left {
+    left: 10px;
+  }
+
+  .notus-image-preview-nav.is-right {
+    right: 10px;
+  }
+
+  .notus-image-preview-image {
+    max-height: calc(100dvh - 160px);
+  }
+}
+
+@media (max-width: 430px) {
+  .notus-editor-panel__title,
+  .notus-editor-panel__loading {
+    padding-left: 16px !important;
+    padding-right: 16px !important;
+  }
+
+  .wysiwyg-content .ProseMirror {
+    padding: 22px 16px 72px;
+  }
+
+  .notus-setup-index-stats {
+    grid-template-columns: 1fr !important;
+  }
+
+  .notus-settings-content {
+    padding: 16px 12px !important;
+  }
 }

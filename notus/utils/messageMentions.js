@@ -11,8 +11,8 @@ function labelFromPath(path = '', type = 'file') {
 export function normalizeMessageMentions(items = []) {
   const seen = new Set();
   return (Array.isArray(items) ? items : []).reduce((result, item) => {
-    const type = item?.type === 'folder' ? 'folder' : 'file';
-    const path = cleanPath(item?.path || item?.preview || '');
+    const type = item?.type === 'folder' ? 'folder' : item?.type === 'skill' ? 'skill' : 'file';
+    const path = type === 'skill' ? String(item?.path || item?.id || '').trim() : cleanPath(item?.path || item?.preview || '');
     const id = String(item?.id || item?.value || (path ? `${type}:${path}` : '')).trim();
     const name = String(item?.name || item?.label || labelFromPath(path, type)).trim();
     const key = `${type}:${id || path}`;
@@ -103,7 +103,9 @@ export function segmentsToAgentInput(segments = []) {
 }
 
 export function mentionToAgentToken(mention = {}) {
-  const path = cleanPath(mention.path);
+  const path = mention?.type === 'skill' ? String(mention.path || mention.id || '').trim() : cleanPath(mention.path);
   if (!path) return '';
-  return mention.type === 'folder' ? `@{folder:${path}}` : `@{${path}}`;
+  if (mention.type === 'folder') return `@{folder:${path}}`;
+  if (mention.type === 'skill') return `@{skill:${path}}`;
+  return `@{${path}}`;
 }

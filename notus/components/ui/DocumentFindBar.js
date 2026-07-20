@@ -27,6 +27,7 @@ export function DocumentFindBar({
 
   return (
     <div
+      className="notus-document-find-bar"
       style={{
         position: 'absolute',
         top: 16,

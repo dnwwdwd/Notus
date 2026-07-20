@@ -102,9 +102,9 @@ export const ResizableLayout = ({
   }, [onLeftPercentCommit, updateLeftPercent]);
 
   return (
-    <div ref={containerRef} style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0, ...style }}>
+    <div ref={containerRef} className="notus-resizable-layout" style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0, ...style }}>
       {/* Left panel */}
-      <div style={{ width: `${resolvedLeftPercent}%`, display: 'flex', flexDirection: 'column', overflow: 'hidden', flexShrink: 0, minWidth: minLeftPx || 0, minHeight: 0 }}>
+      <div className="notus-resizable-layout__panel notus-resizable-layout__panel--left" style={{ width: `${resolvedLeftPercent}%`, display: 'flex', flexDirection: 'column', overflow: 'hidden', flexShrink: 0, minWidth: minLeftPx || 0, minHeight: 0 }}>
         {left}
       </div>
 
@@ -114,6 +114,7 @@ export const ResizableLayout = ({
         onMouseDown={onMouseDown}
         onMouseEnter={() => { if (!dragging.current && handleRef.current) handleRef.current.style.background = 'var(--accent-muted)'; }}
         onMouseLeave={() => { if (!dragging.current && handleRef.current) handleRef.current.style.background = 'var(--border-subtle)'; }}
+        className="notus-resizable-layout__handle"
         style={{
           width: 4,
           flexShrink: 0,
@@ -126,7 +127,7 @@ export const ResizableLayout = ({
       />
 
       {/* Right panel */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: minRightPx || 0, minHeight: 0 }}>
+      <div className="notus-resizable-layout__panel notus-resizable-layout__panel--right" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: minRightPx || 0, minHeight: 0 }}>
         {right}
       </div>
     </div>

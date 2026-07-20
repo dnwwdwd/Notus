@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 const GAP = 8;
 
 export const Tooltip = ({ content, children, placement = 'top', gap = GAP, disabled = false }) => {
   const triggerRef = useRef(null);
+  const tooltipRef = useRef(null);
   const [open, setOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
   const [position, setPosition] = useState(null);
@@ -30,7 +31,7 @@ export const Tooltip = ({ content, children, placement = 'top', gap = GAP, disab
         window.innerWidth - 12
       );
 
-      setPosition({ top, left, placement });
+      setPosition({ top, left, placement, horizontal: 'center' });
     };
 
     updatePosition();
@@ -42,6 +43,29 @@ export const Tooltip = ({ content, children, placement = 'top', gap = GAP, disab
       window.removeEventListener('resize', updatePosition);
     };
   }, [disabled, gap, open, placement]);
+
+  useLayoutEffect(() => {
+    if (!open || !position || !tooltipRef.current) return;
+    const tooltipRect = tooltipRef.current.getBoundingClientRect();
+    const triggerRect = triggerRef.current?.getBoundingClientRect();
+    if (!triggerRect) return;
+
+    if (tooltipRect.left < 12 && position.horizontal !== 'left') {
+      setPosition((current) => current ? { ...current, left: 12, horizontal: 'left' } : current);
+      return;
+    }
+    if (tooltipRect.right > window.innerWidth - 12 && position.horizontal !== 'right') {
+      setPosition((current) => current ? { ...current, left: window.innerWidth - 12, horizontal: 'right' } : current);
+      return;
+    }
+    if (tooltipRect.top < 8 && position.placement === 'top') {
+      setPosition((current) => current ? { ...current, top: triggerRect.bottom + gap, placement: 'bottom' } : current);
+      return;
+    }
+    if (tooltipRect.bottom > window.innerHeight - 8 && position.placement === 'bottom') {
+      setPosition((current) => current ? { ...current, top: triggerRect.top - gap, placement: 'top' } : current);
+    }
+  }, [gap, open, position]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -80,12 +104,13 @@ export const Tooltip = ({ content, children, placement = 'top', gap = GAP, disab
       </span>
       {mounted && open && position && content && !disabled ? createPortal(
         <div
+          ref={tooltipRef}
           role="tooltip"
           style={{
             position: 'fixed',
             top: position.top,
             left: position.left,
-            transform: position.placement === 'bottom' ? 'translate(-50%, 0)' : 'translate(-50%, -100%)',
+            transform: `${position.horizontal === 'left' ? 'translateX(0)' : position.horizontal === 'right' ? 'translateX(-100%)' : 'translateX(-50%)'} ${position.placement === 'bottom' ? 'translateY(0)' : 'translateY(-100%)'}`,
             zIndex: 1400,
             background: 'var(--text-primary)',
             color: 'var(--bg-elevated)',
@@ -94,10 +119,12 @@ export const Tooltip = ({ content, children, placement = 'top', gap = GAP, disab
             fontSize: 'var(--text-xs)',
             lineHeight: 1.4,
             boxShadow: 'var(--shadow-md)',
-            maxWidth: 'min(280px, calc(100vw - 24px))',
+            maxWidth: 'calc(100vw - 24px)',
+            boxSizing: 'border-box',
             pointerEvents: 'none',
-            whiteSpace: 'normal',
-            overflowWrap: 'anywhere',
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
             textAlign: 'left',
           }}
         >

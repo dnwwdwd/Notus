@@ -7,6 +7,16 @@ const { getActiveLlmConfig, listLlmConfigs } = require('../../../lib/llmConfigs'
 const { deriveLlmConfigBudgetFields } = require('../../../lib/llmBudget');
 const { normalizeObjectStorageConfig } = require('../../../lib/objectStorage');
 const {
+  IMAGE_STORAGE_PROVIDERS,
+  PROFILE_FIELDS,
+  isImageStorageProvider,
+  imageStorageProfileKey,
+  hasStoredImageStorageProfile,
+  readImageStorageProfile,
+  isImageStorageProfileConfigured,
+  profileToObjectStorage,
+} = require('../../../lib/imageStorageProfiles');
+const {
   buildEmbeddingFingerprint,
   consumeConnectivityVerificationToken,
 } = require('../../../lib/connectivityVerification');
@@ -39,8 +49,24 @@ function readLayoutSettings(stored = {}) {
   );
 }
 
-function publicImageSettings(config) {
+function publicImageSettings(config, stored) {
   const objectStorage = config.objectStorage || {};
+  const providerConfigs = Object.fromEntries(
+    IMAGE_STORAGE_PROVIDERS.map((provider) => {
+      const profile = readImageStorageProfile(stored, provider, objectStorage);
+      return [provider, {
+        provider,
+        bucket: profile.bucket,
+        region: profile.region,
+        endpoint: profile.endpoint,
+        prefix: profile.prefix,
+        public_base_url: profile.public_base_url,
+        access_key_id_set: profile.access_key_id_set,
+        secret_access_key_set: profile.secret_access_key_set,
+        configured: isImageStorageProfileConfigured(profile),
+      }];
+    })
+  );
   return {
     storage_mode: config.imageStorageMode === 'object_storage' ? 'object_storage' : 'local',
     object_storage: {
@@ -53,7 +79,20 @@ function publicImageSettings(config) {
       access_key_id_set: Boolean(objectStorage.accessKeyId),
       secret_access_key_set: Boolean(objectStorage.secretAccessKey),
     },
+    provider_configs: providerConfigs,
   };
+}
+
+function materializeLegacyImageStorageProfile(current, nextValues, config) {
+  const objectStorage = config.objectStorage || {};
+  const provider = String(objectStorage.provider || '').trim().toLowerCase();
+  if (!isImageStorageProvider(provider) || hasStoredImageStorageProfile({ ...current, ...nextValues }, provider)) return;
+
+  const profile = readImageStorageProfile(current, provider, objectStorage);
+  Object.keys(PROFILE_FIELDS).forEach((field) => {
+    const value = String(profile[field] || '').trim();
+    if (value) nextValues[imageStorageProfileKey(provider, field)] = value;
+  });
 }
 
 function publicSettings() {
@@ -109,7 +148,7 @@ function publicSettings() {
       default_editor_open: stored.editor_default_open !== 'false',
       default_agent_open: stored.editor_default_agent_open !== 'false',
     },
-    images: publicImageSettings(config),
+    images: publicImageSettings(config, stored),
     layout: readLayoutSettings(stored),
   };
 }
@@ -183,6 +222,10 @@ export default function handler(req, res) {
     }
 
     if (body.images) {
+      if (body.images.provider_config || body.images.active_provider !== undefined) {
+        materializeLegacyImageStorageProfile(current, nextValues, previousConfig);
+      }
+
       if (body.images.storage_mode !== undefined) {
         const storageMode = String(body.images.storage_mode || '').trim().toLowerCase();
         if (!['local', 'object_storage'].includes(storageMode)) {
@@ -218,6 +261,79 @@ export default function handler(req, res) {
           removeKeys.push('object_storage_secret_access_key');
         } else if (objectStorage.secret_access_key !== undefined && String(objectStorage.secret_access_key).trim()) {
           nextValues.object_storage_secret_access_key = String(objectStorage.secret_access_key).trim();
+        }
+      }
+
+      if (body.images.provider_config) {
+        const providerConfig = body.images.provider_config;
+        const provider = String(providerConfig.provider || '').trim().toLowerCase();
+        if (!isImageStorageProvider(provider)) {
+          return res.status(400).json({ error: '请选择腾讯云 COS、阿里云 OSS 或 Cloudflare R2', code: 'INVALID_SETTINGS', request_id: context.request_id });
+        }
+        Object.keys(PROFILE_FIELDS).forEach((field) => {
+          const settingKey = imageStorageProfileKey(provider, field);
+          const sourceField = field;
+          if (field === 'access_key_id' || field === 'secret_access_key') return;
+          if (providerConfig[sourceField] === undefined) return;
+          const value = String(providerConfig[sourceField] || '').trim();
+          if (value) nextValues[settingKey] = value;
+          else removeKeys.push(settingKey);
+        });
+
+        const accessKeySetting = imageStorageProfileKey(provider, 'access_key_id');
+        if (providerConfig.clear_access_key_id) {
+          removeKeys.push(accessKeySetting);
+        } else if (providerConfig.access_key_id !== undefined && String(providerConfig.access_key_id).trim()) {
+          nextValues[accessKeySetting] = String(providerConfig.access_key_id).trim();
+        }
+
+        const secretKeySetting = imageStorageProfileKey(provider, 'secret_access_key');
+        if (providerConfig.clear_secret_access_key) {
+          removeKeys.push(secretKeySetting);
+        } else if (providerConfig.secret_access_key !== undefined && String(providerConfig.secret_access_key).trim()) {
+          nextValues[secretKeySetting] = String(providerConfig.secret_access_key).trim();
+        }
+      }
+
+      if (body.images.active_provider !== undefined) {
+        const provider = String(body.images.active_provider || '').trim().toLowerCase();
+        if (!isImageStorageProvider(provider)) {
+          return res.status(400).json({ error: '图片上传位置无效', code: 'INVALID_SETTINGS', request_id: context.request_id });
+        }
+        const candidateProfileSettings = { ...current, ...nextValues };
+        removeKeys.forEach((key) => delete candidateProfileSettings[key]);
+        const profile = readImageStorageProfile(candidateProfileSettings, provider, previousConfig.objectStorage);
+        if (!isImageStorageProfileConfigured(profile)) {
+          return res.status(400).json({ error: '请先完成该图床的配置', code: 'INVALID_OBJECT_STORAGE_CONFIG', request_id: context.request_id });
+        }
+        const activeStorage = profileToObjectStorage(profile);
+        nextValues.image_storage_mode = 'object_storage';
+        nextValues.object_storage_provider = activeStorage.provider;
+        nextValues.object_storage_bucket = activeStorage.bucket;
+        nextValues.object_storage_region = activeStorage.region;
+        nextValues.object_storage_endpoint = activeStorage.endpoint;
+        nextValues.object_storage_prefix = activeStorage.prefix;
+        nextValues.object_storage_public_base_url = activeStorage.publicBaseUrl;
+        nextValues.object_storage_access_key_id = activeStorage.accessKeyId;
+        nextValues.object_storage_secret_access_key = activeStorage.secretAccessKey;
+      } else if (body.images.provider_config) {
+        const provider = String(body.images.provider_config.provider || '').trim().toLowerCase();
+        const activeProvider = String(previousConfig.objectStorage?.provider || '').trim().toLowerCase();
+        if (previousConfig.imageStorageMode === 'object_storage' && provider === activeProvider) {
+          const candidateProfileSettings = { ...current, ...nextValues };
+          removeKeys.forEach((key) => delete candidateProfileSettings[key]);
+          const profile = readImageStorageProfile(candidateProfileSettings, provider, previousConfig.objectStorage);
+          const activeStorage = profileToObjectStorage(profile);
+          nextValues.object_storage_provider = activeStorage.provider;
+          nextValues.object_storage_bucket = activeStorage.bucket;
+          nextValues.object_storage_region = activeStorage.region;
+          nextValues.object_storage_endpoint = activeStorage.endpoint;
+          nextValues.object_storage_prefix = activeStorage.prefix;
+          nextValues.object_storage_public_base_url = activeStorage.publicBaseUrl;
+          if (activeStorage.accessKeyId) nextValues.object_storage_access_key_id = activeStorage.accessKeyId;
+          else removeKeys.push('object_storage_access_key_id');
+          if (activeStorage.secretAccessKey) nextValues.object_storage_secret_access_key = activeStorage.secretAccessKey;
+          else removeKeys.push('object_storage_secret_access_key');
         }
       }
     }

@@ -10,6 +10,7 @@ import { AppProvider } from '../contexts/AppContext';
 import { AppStatusProvider } from '../contexts/AppStatusContext';
 import { PlatformProvider } from '../contexts/PlatformContext';
 import { ShortcutsProvider } from '../contexts/ShortcutsContext';
+import { SettingsDialogProvider, SettingsDialogRoot } from '../contexts/SettingsDialogContext';
 
 const CORE_ROUTES = ['/files', '/settings/model', '/settings/personalization'];
 
@@ -66,9 +67,12 @@ export default function App({ Component, pageProps }) {
           <AppStatusProvider>
             <AppProvider>
               <ToastProvider>
-                <CoreRoutePrefetcher />
-                <PageTransitionOverlay />
-                <Component {...pageProps} />
+                <SettingsDialogProvider>
+                  <CoreRoutePrefetcher />
+                  <PageTransitionOverlay />
+                  <Component {...pageProps} />
+                  <SettingsDialogRoot />
+                </SettingsDialogProvider>
               </ToastProvider>
             </AppProvider>
           </AppStatusProvider>

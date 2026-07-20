@@ -562,7 +562,7 @@ export default function FilesPage() {
   });
 
   const editorPanel = (
-    <div style={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative', background: 'var(--bg-primary)' }}>
+    <div className="notus-editor-panel" style={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative', background: 'var(--bg-primary)' }}>
       {activeFile ? <EditorToolbar editor={editor} fileId={activeFile.id} isDirty={saveState === 'dirty'} /> : null}
       {!activeFile ? (
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -570,7 +570,7 @@ export default function FilesPage() {
         </div>
       ) : null}
       {activeFile && loading ? (
-        <div style={{ flex: 1, padding: '48px 60px', maxWidth: 780, margin: '0 auto', width: '100%' }}><SkeletonText lines={8} /></div>
+        <div className="notus-editor-panel__loading" style={{ flex: 1, padding: '48px 60px', maxWidth: 780, margin: '0 auto', width: '100%' }}><SkeletonText lines={8} /></div>
       ) : null}
       {activeFile && error ? (
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 40 }}>
@@ -616,12 +616,13 @@ export default function FilesPage() {
             onClose={documentFind.close}
           />
           <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-            <div style={{ padding: '22px 60px 10px', borderBottom: '1px solid var(--border-subtle)' }}>
+            <div className="notus-editor-panel__title" style={{ padding: '22px 60px 10px', borderBottom: '1px solid var(--border-subtle)' }}>
               <input
                 aria-label="文章标题"
                 value={documentTitle}
                 onChange={(event) => handleTitleChange(event.target.value)}
                 placeholder="输入文章标题"
+                className="notus-editor-panel__title-input"
                 style={{ width: '100%', border: 0, outline: 'none', background: 'transparent', color: 'var(--text-primary)', fontSize: 28, lineHeight: 1.35, fontWeight: 700, letterSpacing: '-0.02em', fontFamily: 'inherit', padding: 0 }}
               />
             </div>

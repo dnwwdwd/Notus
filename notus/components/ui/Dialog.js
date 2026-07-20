@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom';
 import { Button } from './Button';
 import { Icons } from './Icons';
 
-export const Dialog = ({ open, onClose, title, children, footer, maxWidth = 480, className = '' }) => {
+export const Dialog = ({ open, onClose, title, children, footer, maxWidth = 480, className = '', closeOnBackdrop = true, bodyStyle, dialogStyle, showHeader = Boolean(title) }) => {
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
@@ -21,7 +21,8 @@ export const Dialog = ({ open, onClose, title, children, footer, maxWidth = 480,
 
   return createPortal(
     <div
-      onClick={onClose}
+      className="notus-dialog-backdrop"
+      onClick={closeOnBackdrop ? onClose : undefined}
       style={{
         position: 'fixed', inset: 0,
         background: 'rgba(0,0,0,0.4)',
@@ -32,7 +33,7 @@ export const Dialog = ({ open, onClose, title, children, footer, maxWidth = 480,
       }}
     >
       <div
-        className={className}
+        className={['notus-dialog', className].filter(Boolean).join(' ')}
         onClick={(e) => e.stopPropagation()}
         style={{
           background: 'var(--bg-elevated)',
@@ -44,23 +45,24 @@ export const Dialog = ({ open, onClose, title, children, footer, maxWidth = 480,
           margin: '0 16px',
           border: '1px solid var(--border-subtle)',
           animation: 'slideUp var(--transition-normal)',
+          ...dialogStyle,
         }}
       >
-        {title && (
-          <div style={{
+        {showHeader && (
+          <div className="notus-dialog__header" style={{
             padding: '16px 20px',
             borderBottom: '1px solid var(--border-subtle)',
             display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           }}>
-            <div style={{ fontSize: 'var(--text-base)', fontWeight: 600 }}>{title}</div>
+            <div style={{ fontSize: 'var(--text-base)', fontWeight: 600 }}>{title || null}</div>
             <button onClick={onClose} style={{ color: 'var(--text-tertiary)', display: 'flex' }}>
               <Icons.x size={16} />
             </button>
           </div>
         )}
-        <div style={{ padding: 20 }}>{children}</div>
+        <div className="notus-dialog__body" style={{ padding: 20, ...bodyStyle }}>{children}</div>
         {footer && (
-          <div style={{
+          <div className="notus-dialog__footer" style={{
             padding: '12px 20px',
             borderTop: '1px solid var(--border-subtle)',
             display: 'flex', gap: 8, justifyContent: 'flex-end',

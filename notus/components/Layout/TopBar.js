@@ -12,6 +12,7 @@ import { Tooltip } from '../ui/Tooltip';
 import { navigateWithFallback } from '../../utils/navigation';
 import { desktop as desktopClient } from '../../utils/platformClient';
 import { getVisibleDocumentLabel } from '../../lib/documentLabels';
+import { useSettingsDialog } from '../../contexts/SettingsDialogContext';
 
 const HEADER_BREAKPOINTS = {
   compact: 960,
@@ -121,6 +122,7 @@ export const TopBar = ({
   onToggleAgent,
 }) => {
   const router = useRouter();
+  const { openSettings } = useSettingsDialog();
   const { allFiles, selectFile } = useApp();
   const { shortcuts, matchShortcut, displayShortcut } = useShortcuts();
   const { compact, iconOnly } = useHeaderWidthMode();
@@ -405,9 +407,7 @@ export const TopBar = ({
           <HeaderIconButton
             label="设置"
             tooltip="设置"
-            onMouseEnter={() => prefetchRoute('/settings/model')}
-            onFocus={() => prefetchRoute('/settings/model')}
-            onClick={() => runAction(() => navigateWithFallback(router, '/settings/model'))}
+            onClick={() => runAction(() => openSettings('model'))}
           >
             <Icons.settings size={18} />
           </HeaderIconButton>

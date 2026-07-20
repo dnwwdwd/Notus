@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { useRouter } from 'next/router';
 import { Button } from '../ui/Button';
 import { TextInput } from '../ui/Input';
 import { Toggle } from '../ui/Toggle';
@@ -15,7 +14,8 @@ import { StreamingText } from '../ui/StreamingText';
 import { LlmConfigCardsSection } from '../Settings/LlmConfigCardsSection';
 import { findEmbeddingModelMeta, inferEmbeddingProvider } from '../../lib/embeddingForm';
 import { resolveLlmProviderLabel } from '../../lib/llmForm';
-import { navigateWithFallback } from '../../utils/navigation';
+import { useSettingsDialog } from '../../contexts/SettingsDialogContext';
+import { SegmentedTabs } from '../ui/SegmentedTabs';
 import { readAgentInputPreference, writeAgentInputPreference } from '../../utils/agentInputPreferences';
 import {
   clearAgentComposerDraft,
@@ -68,7 +68,18 @@ const AGENT_CONFIRM_MODE_OPTIONS = [
 ];
 const CHAT_STICKY_BOTTOM_THRESHOLD = 56;
 const CHAT_JUMP_BUTTON_OFFSET = 240;
+const MCP_SELECTION_STORAGE_KEY = 'notus-agent-mcp-selection';
 const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
+
+function readMcpSelectionPreference() {
+  if (typeof window === 'undefined') return { mode: 'off' };
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(MCP_SELECTION_STORAGE_KEY) || '{}');
+    if (parsed?.mode === 'auto') return { mode: 'auto' };
+    if (parsed?.mode === 'server' && parsed.serverId) return { mode: 'server', serverId: String(parsed.serverId) };
+  } catch {}
+  return { mode: 'off' };
+}
 
 function isNearScrollBottom(container) {
   if (!container) return true;
@@ -1193,61 +1204,18 @@ function AgentConfirmModeSelect({ value, onChange, disabled }) {
   const current = getAgentConfirmModeOption(value);
 
   return (
-    <div
-      role="radiogroup"
-      aria-label="Agent 确认方式"
-      style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 2,
-        padding: 2,
-        borderRadius: 10,
-        background: C.soft,
-        boxShadow: 'inset 0 0 0 1px rgba(229,227,216,0.86)',
-        opacity: disabled ? 0.55 : 1,
-      }}
-    >
-      {AGENT_CONFIRM_MODE_OPTIONS.map((option) => {
-        const active = option.value === current.value;
-        const OptionIcon = option.icon === 'hand' ? Icons.hand : Icons.zap;
-        return (
-          <Tooltip key={option.value} content={option.description} placement="top" disabled={disabled}>
-            <button
-              type="button"
-              role="radio"
-              aria-checked={active}
-              aria-label={`Agent 确认方式：${option.label}`}
-              disabled={disabled}
-              onClick={() => onChange?.(option.value)}
-              className="notus-agent-pressable"
-              style={transitionButton({
-                minWidth: 62,
-                height: 26,
-                padding: '0 8px',
-                borderRadius: 8,
-                background: active ? '#fff' : 'transparent',
-                color: active ? C.accent : C.tertiary,
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 5,
-                fontSize: 12,
-                fontWeight: 800,
-                boxShadow: active ? '0 1px 3px rgba(45,45,45,0.08), inset 0 0 0 1px rgba(217,119,87,0.14)' : 'none',
-                cursor: disabled ? 'not-allowed' : 'pointer',
-              })}
-            >
-              <OptionIcon size={13} stroke={option.icon === 'zap' ? 1.8 : 1.55} />
-              <span>{option.label}</span>
-            </button>
-          </Tooltip>
-        );
-      })}
-    </div>
+    <SegmentedTabs
+      value={current.value}
+      onChange={onChange}
+      disabled={disabled}
+      ariaLabel="Agent 确认方式"
+      style={{ background: C.soft, boxShadow: 'inset 0 0 0 1px rgba(229,227,216,0.86)' }}
+      options={AGENT_CONFIRM_MODE_OPTIONS.map((option) => ({ ...option, ariaLabel: `Agent 确认方式：${option.label}`, icon: option.icon === 'hand' ? Icons.hand : Icons.zap }))}
+    />
   );
 }
 
-function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigChange, onSend, onStop, searchConfig, searchPreference, onSearchPreferenceChange, onRequireSearchConfig, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [], onPreviewMention }) {
+function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigChange, onSend, onStop, searchConfig, searchPreference, onSearchPreferenceChange, onRequireSearchConfig, mcpServers = [], mcpSelection = { mode: 'off' }, onMcpSelectionChange, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [], onPreviewMention }) {
   const [composerState, setComposerState] = useState({ content: '', mentions: [], segments: [] });
   const [files, setFiles] = useState([]);
   const [imagePreview, setImagePreview] = useState(null);
@@ -1256,6 +1224,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
   const [selectedSearchProvider, setSelectedSearchProvider] = useState(String(searchPreference?.searchProvider || '').trim());
   const [webSearchPreferenceEnabled, setWebSearchPreferenceEnabled] = useState(Boolean(searchPreference?.webSearchEnabled));
   const [searchOpen, setSearchOpen] = useState(false);
+  const [mcpOpen, setMcpOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
   const [mentionQuery, setMentionQuery] = useState(null);
   const [activeMentionIndex, setActiveMentionIndex] = useState(0);
@@ -1279,6 +1248,9 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
   const providers = searchConfig.providers || SEARCH_PROVIDER_FALLBACKS;
   const preferredSearchProvider = providers.find((provider) => provider.id === searchConfig.selected_provider)?.id || providers[0]?.id || 'firecrawl';
   const webSearchSelected = Boolean(searchConfig.enabled && webSearchPreferenceEnabled && selectedSearchProvider);
+  const mcpMode = String(mcpSelection?.mode || 'off');
+  const selectedMcpServer = mcpServers.find((server) => String(server.id) === String(mcpSelection?.serverId || '')) || null;
+  const mcpLabel = mcpMode === 'auto' ? 'MCP 自动' : selectedMcpServer ? `MCP · ${selectedMcpServer.name}` : 'MCP';
   const searchProviderList = webSearchSelected ? [selectedSearchProvider] : [];
   const isSearchProviderReady = (providerId) => {
     const provider = providers.find((item) => item.id === providerId);
@@ -1370,7 +1342,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
     chip.setAttribute('role', 'button');
     chip.setAttribute('data-notus-mention', encodeURIComponent(JSON.stringify(mention)));
     chip.setAttribute('title', `${mention.name}\n${mention.path}`);
-    chip.setAttribute('aria-label', `预览${mention.type === 'folder' ? '目录' : '笔记'}：${mention.name}`);
+    chip.setAttribute('aria-label', `预览${mention.type === 'folder' ? '目录' : mention.type === 'skill' ? 'Skill' : '笔记'}：${mention.name}`);
     const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     icon.setAttribute('viewBox', '0 0 24 24');
     icon.setAttribute('fill', 'none');
@@ -1381,7 +1353,9 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     path.setAttribute('d', mention.type === 'folder'
       ? 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2M3 7v11a2 2 0 0 0 2 2h13.5a2 2 0 0 0 1.9-1.4l2-6A1 1 0 0 0 21.5 11H5a2 2 0 0 0-2 2V7z'
-      : 'M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9zM14 3v6h6');
+      : mention.type === 'skill'
+        ? 'M4 5.5A2.5 2.5 0 0 1 6.5 3H11v16H6.5A2.5 2.5 0 0 0 4 21zM20 5.5A2.5 2.5 0 0 0 17.5 3H13v16h4.5A2.5 2.5 0 0 1 20 21z'
+        : 'M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9zM14 3v6h6');
     icon.appendChild(path);
     const label = document.createElement('span');
     label.className = 'notus-mention-item__label';
@@ -1626,7 +1600,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
     composerInteractionRef.current = true;
     const mention = {
       id: String(option?.id || option?.value || option?.path || ''),
-      type: option?.type === 'folder' || option?.kind === 'folder' ? 'folder' : 'file',
+      type: option?.type === 'folder' || option?.kind === 'folder' ? 'folder' : option?.type === 'skill' || option?.kind === 'skill' ? 'skill' : 'file',
       name: String(option?.name || option?.label || option?.path || '未命名文件'),
       path: String(option?.path || option?.preview || ''),
     };
@@ -1805,6 +1779,9 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
         webSearchEnabled: webSearchSelected,
         searchProvider: selectedSearchProvider || null,
         searchProviders: searchProviderList,
+        mcpSelection: mcpMode === 'server' && selectedMcpServer
+          ? { mode: 'server', serverId: selectedMcpServer.id }
+          : mcpMode === 'auto' ? { mode: 'auto' } : { mode: 'off' },
         onTaskAccepted: clearAcceptedComposer,
       });
     } catch (error) {
@@ -2014,7 +1991,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
                       })}
                     >
                       <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-                        {option.kind === 'folder' ? <Icons.folderOpen size={15} style={{ color: C.accent, flexShrink: 0 }} /> : <Icons.file size={15} style={{ color: C.accent, flexShrink: 0 }} />}
+                        {option.kind === 'folder' ? <Icons.folderOpen size={15} style={{ color: C.accent, flexShrink: 0 }} /> : option.kind === 'skill' ? <Icons.skill size={15} style={{ color: C.accent, flexShrink: 0 }} /> : <Icons.file size={15} style={{ color: C.accent, flexShrink: 0 }} />}
                         <span style={{ minWidth: 0, fontSize: 13, fontWeight: 700, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{option.label}</span>
                       </span>
                       <span style={{ minWidth: 0, fontSize: 12, color: C.tertiary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{option.preview}</span>
@@ -2022,13 +1999,13 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
                   ))}
                 </div>
               ) : (
-                <div style={{ padding: '8px 10px', fontSize: 12, color: C.tertiary }}>没有匹配的文件或目录</div>
+                <div style={{ padding: '8px 10px', fontSize: 12, color: C.tertiary }}>没有匹配的文件、目录或 Skill</div>
               )}
             </div>
           ) : null}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 12px 12px', gap: 10 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flexWrap: 'wrap' }}>
             <button type="button" aria-label="添加附件" onClick={() => fileInputRef.current?.click()} disabled={busy || disabled} style={transitionButton({ width: 30, height: 30, borderRadius: 10, background: 'transparent', color: C.tertiary, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, opacity: busy || disabled ? 0.5 : 1 })}><Icons.paperclip size={18} /></button>
             <button type="button" aria-label="添加图片" onClick={() => imageInputRef.current?.click()} disabled={busy || disabled} style={transitionButton({ width: 30, height: 30, borderRadius: 10, background: 'transparent', color: C.tertiary, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, opacity: busy || disabled ? 0.5 : 1 })}><Icons.image size={18} /></button>
             {showAgentConfirmMode ? <AgentConfirmModeSelect value={agentConfirmMode} onChange={onAgentConfirmModeChange} disabled={busy || disabled} /> : null}
@@ -2045,6 +2022,27 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
                         <button type="button" role="radio" aria-checked={checked} key={provider.id} onClick={() => selectSearchProvider(provider.id)} style={transitionButton({ width: '100%', minHeight: 34, padding: '0 16px', background: checked ? 'rgba(251,228,210,0.30)' : 'transparent', color: checked ? C.accent : C.secondary, display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 13, fontWeight: checked ? 800 : 500, textAlign: 'left' })}>{provider.name}{checked ? <Icons.check size={14} style={{ color: C.accent }} /> : null}</button>
                       );
                     })}
+                  </div>
+                </>
+              ) : null}
+            </div>
+            <div style={{ position: 'relative' }}>
+              <button type="button" aria-label="选择 MCP Server" onClick={() => { setSearchOpen(false); setModelOpen(false); setMcpOpen((value) => !value); }} disabled={busy || disabled} style={transitionButton({ height: 28, maxWidth: 160, padding: '0 10px', borderRadius: 8, background: mcpMode !== 'off' ? 'rgba(251,228,210,0.40)' : 'transparent', color: mcpMode !== 'off' ? C.accent : C.tertiary, display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: mcpMode !== 'off' ? 800 : 600, opacity: busy || disabled ? 0.5 : 1 })}><Icons.mcp size={15} /><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{mcpLabel}</span></button>
+              {mcpOpen ? (
+                <>
+                  <button type="button" aria-label="关闭 MCP Server 选择" onClick={() => setMcpOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 19, border: 0, background: 'transparent', padding: 0 }} />
+                  <div role="radiogroup" aria-label="MCP Server" style={{ position: 'absolute', bottom: 'calc(100% + 4px)', left: 0, width: 'min(280px, calc(100vw - 32px))', maxHeight: '40vh', overflowY: 'auto', padding: '8px 0', borderRadius: 14, background: '#fff', boxShadow: '0 -10px 40px -10px rgba(0,0,0,0.10), inset 0 0 0 1px rgba(229,227,216,0.95)', zIndex: 20 }}>
+                    <div style={{ padding: '6px 16px', color: '#A3A19A', fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5 }}>MCP 工具</div>
+                    {[{ id: 'off', label: '不使用 MCP', description: '本次任务不提供外部 MCP 工具。' }, { id: 'auto', label: '自动', description: '按任务描述从已启用 Server 中选择相关工具。' }].map((item) => {
+                      const checked = mcpMode === item.id;
+                      return <button type="button" role="radio" aria-checked={checked} key={item.id} onClick={() => { onMcpSelectionChange?.(item.id === 'auto' ? { mode: 'auto' } : { mode: 'off' }); setMcpOpen(false); }} style={transitionButton({ width: '100%', padding: '8px 16px', background: checked ? 'rgba(251,228,210,0.30)' : 'transparent', color: checked ? C.accent : C.secondary, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10, textAlign: 'left' })}><span><span style={{ display: 'block', fontSize: 13, fontWeight: checked ? 800 : 600 }}>{item.label}</span><span style={{ display: 'block', marginTop: 2, fontSize: 11, lineHeight: 1.45, color: C.tertiary }}>{item.description}</span></span>{checked ? <Icons.check size={14} style={{ color: C.accent, flexShrink: 0, marginTop: 3 }} /> : null}</button>;
+                    })}
+                    {mcpServers.filter((server) => server.enabled).length > 0 ? <div style={{ margin: '6px 0', borderTop: '1px solid #F2F0EA' }} /> : null}
+                    {mcpServers.filter((server) => server.enabled).map((server) => {
+                      const checked = mcpMode === 'server' && String(selectedMcpServer?.id) === String(server.id);
+                      return <button type="button" role="radio" aria-checked={checked} key={server.id} onClick={() => { onMcpSelectionChange?.({ mode: 'server', serverId: server.id }); setMcpOpen(false); }} style={transitionButton({ width: '100%', padding: '8px 16px', background: checked ? 'rgba(251,228,210,0.30)' : 'transparent', color: checked ? C.accent : C.secondary, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, textAlign: 'left' })}><span style={{ minWidth: 0 }}><span style={{ display: 'block', fontSize: 13, fontWeight: checked ? 800 : 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{server.name}</span><span style={{ display: 'block', marginTop: 2, fontSize: 11, color: C.tertiary }}>{server.transport === 'stdio' ? 'stdio' : 'Streamable HTTP'}</span></span>{checked ? <Icons.check size={14} style={{ color: C.accent, flexShrink: 0 }} /> : null}</button>;
+                    })}
+                    {mcpServers.filter((server) => server.enabled).length === 0 ? <div style={{ padding: '8px 16px', color: C.tertiary, fontSize: 12, lineHeight: 1.6 }}>暂无已启用的 MCP Server，可在设置中添加。</div> : null}
                   </div>
                 </>
               ) : null}
@@ -2282,7 +2280,7 @@ function SearchConfigView({ config, onSaved, onBack, selectProvider }) {
 }
 
 export function AgentWorkspace({ messages, streamText, loading, error, activeSteps, llmConfigs, selectedConfigId, onConfigChange, onSend, onStop, onApplyOperationSet, onApplyOperationFile, onRollbackOperationFile, onDiscardOperationFile, onCitationClick, citationSelection, disabled, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [] }) {
-  const router = useRouter();
+  const { openSettings } = useSettingsDialog();
   const toast = useToast();
   const [searchConfig, setSearchConfig] = useState({ enabled: false, selected_provider: 'firecrawl', modes: {}, counts: {}, api_key_set: {}, providers: SEARCH_PROVIDER_FALLBACKS });
   const [searchPreference, setSearchPreference] = useState(() => readAgentInputPreference());
@@ -2292,6 +2290,8 @@ export function AgentWorkspace({ messages, streamText, loading, error, activeSte
   const [detailOperationSet, setDetailOperationSet] = useState(null);
   const [attachmentDetail, setAttachmentDetail] = useState(null);
   const [previewMention, setPreviewMention] = useState(null);
+  const [mcpServers, setMcpServers] = useState([]);
+  const [mcpSelection, setMcpSelection] = useState(() => readMcpSelectionPreference());
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
   const [rewrittenMessages, setRewrittenMessages] = useState({});
   const [removingMessageIds, setRemovingMessageIds] = useState(() => new Set());
@@ -2299,6 +2299,25 @@ export function AgentWorkspace({ messages, streamText, loading, error, activeSte
   const scrollContainerRef = useRef(null);
   const shouldStickToBottomRef = useRef(true);
   const sourceMessages = useMemo(() => (Array.isArray(messages) ? messages : []), [messages]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/mcp/servers', { cache: 'no-store' })
+      .then((response) => response.ok ? response.json() : { servers: [] })
+      .then((payload) => { if (!cancelled) setMcpServers(Array.isArray(payload?.servers) ? payload.servers : []); })
+      .catch(() => { if (!cancelled) setMcpServers([]); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const handleMcpSelectionChange = useCallback((next) => {
+    const normalized = next?.mode === 'auto'
+      ? { mode: 'auto' }
+      : next?.mode === 'server' && next?.serverId
+        ? { mode: 'server', serverId: String(next.serverId) }
+        : { mode: 'off' };
+    setMcpSelection(normalized);
+    try { window.localStorage.setItem(MCP_SELECTION_STORAGE_KEY, JSON.stringify(normalized)); } catch {}
+  }, []);
   const visibleMessages = sourceMessages
     .filter((message) => !hiddenMessageIds.has(String(message.id)))
     .map((message) => {
@@ -2399,7 +2418,6 @@ export function AgentWorkspace({ messages, streamText, loading, error, activeSte
   const promptMessage = searchPromptReason === 'missing_api_key'
     ? `${promptProvider?.name || '该搜索服务商'} 需要先配置 API Key。前往设置后会自动切换到对应服务商。`
     : '需要开启联网搜索功能才能使用，请前往设置 → 搜索配置 → 启用联网搜索。';
-  const searchSettingsHref = `/settings/search${promptProvider?.id ? `?provider=${encodeURIComponent(promptProvider.id)}` : ''}`;
   const selectedModelId = selectedConfigId || llmConfigs?.[0]?.id || null;
   const activeSearchProvider = String(searchPreference?.searchProvider || '').trim();
   const activeWebSearchEnabled = Boolean(searchConfig.enabled && searchPreference?.webSearchEnabled && activeSearchProvider);
@@ -2494,6 +2512,7 @@ export function AgentWorkspace({ messages, streamText, loading, error, activeSte
         webSearchEnabled: activeWebSearchEnabled,
         searchProvider: activeWebSearchEnabled ? activeSearchProvider : null,
         searchProviders: activeWebSearchEnabled ? [activeSearchProvider] : [],
+        mcpSelection,
         skipUserMessageAppend: options.reason === 'rewrite',
       });
       return true;
@@ -2511,6 +2530,7 @@ export function AgentWorkspace({ messages, streamText, loading, error, activeSte
     selectedModelId,
     sourceMessages,
     toast,
+    mcpSelection,
   ]);
 
   return (
@@ -2569,9 +2589,9 @@ export function AgentWorkspace({ messages, streamText, loading, error, activeSte
           <Icons.chevronDown size={14} />
         </button>
       ) : null}
-      <AgentInput loading={Boolean(loading)} disabled={Boolean(disabled)} llmConfigs={llmConfigs || []} selectedConfigId={selectedConfigId} onConfigChange={onConfigChange} onSend={onSend} onStop={onStop} searchConfig={searchConfig} searchPreference={searchPreference} onSearchPreferenceChange={handleSearchPreferenceChange} onRequireSearchConfig={requireSearchConfig} placeholder={placeholder} agentConfirmMode={agentConfirmMode} onAgentConfirmModeChange={onAgentConfirmModeChange} attachmentMode={attachmentMode} mentionOptions={mentionOptions} onPreviewMention={setPreviewMention} />
+      <AgentInput loading={Boolean(loading)} disabled={Boolean(disabled)} llmConfigs={llmConfigs || []} selectedConfigId={selectedConfigId} onConfigChange={onConfigChange} onSend={onSend} onStop={onStop} searchConfig={searchConfig} searchPreference={searchPreference} onSearchPreferenceChange={handleSearchPreferenceChange} onRequireSearchConfig={requireSearchConfig} mcpServers={mcpServers} mcpSelection={mcpSelection} onMcpSelectionChange={handleMcpSelectionChange} placeholder={placeholder} agentConfirmMode={agentConfirmMode} onAgentConfirmModeChange={onAgentConfirmModeChange} attachmentMode={attachmentMode} mentionOptions={mentionOptions} onPreviewMention={setPreviewMention} />
       <MentionPreviewDialog mention={previewMention} onClose={() => setPreviewMention(null)} />
-      <Dialog open={searchPromptOpen} onClose={() => setSearchPromptOpen(false)} title={promptTitle} maxWidth={420} footer={<><Button variant="ghost" onClick={() => setSearchPromptOpen(false)}>取消</Button><Button variant="primary" onClick={() => { setSearchPromptOpen(false); navigateWithFallback(router, searchSettingsHref); }}>前往设置</Button></>}>
+      <Dialog open={searchPromptOpen} onClose={() => setSearchPromptOpen(false)} title={promptTitle} maxWidth={420} footer={<><Button variant="ghost" onClick={() => setSearchPromptOpen(false)}>取消</Button><Button variant="primary" onClick={() => { setSearchPromptOpen(false); openSettings('search', { provider: promptProvider?.id }); }}>前往设置</Button></>}>
         <div style={{ fontSize: 14, color: C.secondary, lineHeight: 1.8 }}>{promptMessage}</div>
       </Dialog>
       <DiffDialog

@@ -27,5 +27,5 @@ function start(name, command, args, extraEnv = {}) {
   children.push(child);
 }
 
-start('web', 'npm', ['--prefix', 'notus', 'run', 'dev']);
+start('web', 'npm', ['--prefix', 'notus', 'run', 'dev'], { NOTUS_RUNTIME_TARGET: 'electron' });
 start('desktop', 'node', ['desktop/scripts/dev-electron.js']);

@@ -24,6 +24,21 @@ function runTests() {
   assert.ok(canvasBlock.includes('完成'));
 
   const sidebar = read('components/Layout/Sidebar.js');
+  const shell = read('components/Layout/Shell.js');
+  const resizableLayout = read('components/ui/ResizableLayout.js');
+  const globalStyles = read('styles/globals.css');
+  const desktopMain = fs.readFileSync(path.resolve(root, '..', 'desktop/main/index.js'), 'utf8');
+  assert.ok(!shell.includes('minWidth: 1360'));
+  assert.ok(!globalStyles.includes('min-width: 1360px'));
+  assert.ok(globalStyles.includes('@media (max-width: 900px)'));
+  assert.ok(globalStyles.includes('.notus-resizable-layout'));
+  assert.ok(globalStyles.includes('.notus-sidebar.is-mobile'));
+  assert.ok(resizableLayout.includes('notus-resizable-layout__panel--left'));
+  assert.ok(resizableLayout.includes('notus-resizable-layout__handle'));
+  assert.ok(sidebar.includes('const isSidebarCollapsed = isMobileViewport ? !mobileSidebarOpen : sidebarCollapsed;'));
+  assert.ok(sidebar.includes('setMobileSidebarOpen((current) => !current);'));
+  assert.ok(desktopMain.includes('minWidth: 390'));
+  assert.ok(desktopMain.includes('minHeight: 640'));
   assert.ok(!sidebar.includes('activeTocKey'));
   assert.ok(sidebar.includes('const selected = Boolean(t.active);'));
   assert.ok(sidebar.includes('var(--accent-subtle)'));
@@ -39,9 +54,42 @@ function runTests() {
   assert.ok(dropdownSelect.includes('zIndex: menuZIndex'));
 
   const tooltip = read('components/ui/Tooltip.js');
-  assert.ok(tooltip.includes("maxWidth: 'min(280px, calc(100vw - 24px))'"));
-  assert.ok(tooltip.includes("whiteSpace: 'normal'"));
-  assert.ok(tooltip.includes("overflowWrap: 'anywhere'"));
+  assert.ok(tooltip.includes("maxWidth: 'calc(100vw - 24px)'"));
+  assert.ok(tooltip.includes("whiteSpace: 'nowrap'"));
+  assert.ok(tooltip.includes("textOverflow: 'ellipsis'"));
+
+  const segmentedTabs = read('components/ui/SegmentedTabs.js');
+  assert.ok(segmentedTabs.includes('export function SegmentedTabs'));
+
+  const settings = read('components/Settings/SettingsScreen.js');
+  assert.ok(settings.includes('closeOnBackdrop={false}'));
+  assert.ok(settings.includes('showHeader'));
+  assert.ok(!settings.includes('title="设置"'));
+  assert.ok(settings.includes('const SettingsPageHeader'));
+  assert.ok(settings.includes('const SettingsPageHeader = ({ title, icon })'));
+  assert.ok(!settings.includes('SettingsPageHeader = ({ title, icon, description })'));
+  assert.ok(settings.includes('const SETTINGS_CONTENT_MAX_WIDTH = 860'));
+  assert.ok(settings.includes('const SETTINGS_SURFACE_STYLE'));
+  assert.ok(settings.includes('<section style={{ ...SETTINGS_SURFACE_STYLE, display: \'grid\', gap: 24 }}>'));
+  assert.ok(!settings.includes("maxWidth: 672"));
+  assert.ok((settings.match(/<SettingsPageHeader/g) || []).length >= 8);
+  assert.ok(settings.includes('图片上传位置'));
+  assert.ok(settings.includes('前往图床设置'));
+  assert.ok(settings.includes('options={IMAGE_STORAGE_OPTIONS}'));
+  assert.ok(!settings.includes('IMAGE_STORAGE_OPTIONS.map((item) => ({ ...item, icon:'));
+  assert.ok(settings.includes('CLOUD_IMAGE_STORAGE_OPTIONS.map'));
+  assert.ok(settings.includes('请先在个性化页切换上传位置，再清除密钥'));
+  assert.ok(!settings.includes("        设置\n      </div>"));
+  assert.ok(settings.includes('height: 42'));
+  assert.ok(!settings.includes('>上传位置</div>'));
+  assert.ok(settings.includes('className="notus-settings-dialog"'));
+  assert.ok(settings.includes('className="notus-settings-nav"'));
+
+  const settingsApi = read('pages/api/settings/index.js');
+  assert.ok(settingsApi.includes('provider_configs: providerConfigs'));
+  assert.ok(settingsApi.includes('body.images.active_provider'));
+  assert.ok(settingsApi.includes('body.images.provider_config'));
+  assert.ok(settingsApi.includes('materializeLegacyImageStorageProfile'));
 
   const conversationDrawer = read('components/ChatArea/ConversationDrawer.js');
   assert.ok(conversationDrawer.includes('ConfirmDialog'));
@@ -49,6 +97,7 @@ function runTests() {
   assert.ok(conversationDrawer.includes('onDelete?.(pendingDelete.id, pendingDelete)'));
 
   const agentWorkspace = read('components/AgentWorkspace/AgentWorkspace.js');
+  assert.ok(agentWorkspace.includes('<SegmentedTabs'));
   assert.ok(agentWorkspace.includes('function OperationSetCard'));
   assert.ok(agentWorkspace.includes('function DiffDialog'));
   assert.ok(agentWorkspace.includes("attachmentMode === 'parsed'"));
@@ -57,7 +106,7 @@ function runTests() {
   assert.ok(agentWorkspace.includes('const MAX_PARSED_ATTACHMENTS = 10;'));
   assert.ok(agentWorkspace.includes('const MAX_IMAGES_PER_MESSAGE = 30;'));
   assert.ok(agentWorkspace.includes("aria-label=\"添加图片\""));
-  assert.ok(agentWorkspace.includes('没有匹配的文件或目录'));
+  assert.ok(agentWorkspace.includes('没有匹配的文件'));
   assert.ok(agentWorkspace.includes('mentionOptions = []'));
   assert.ok(agentWorkspace.includes('const activeMention = useMemo'));
   assert.ok(agentWorkspace.includes('function AgentWorkspace({'));

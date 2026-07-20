@@ -1,11 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
-import { TopBar } from '../Layout/TopBar';
 import { NotusLogo, Icons } from '../ui/Icons';
 import { Button } from '../ui/Button';
 import { DropdownSelect } from '../ui/DropdownSelect';
 import { SearchInput, TextInput } from '../ui/Input';
-import { ConfirmDialog } from '../ui/Dialog';
+import { ConfirmDialog, Dialog } from '../ui/Dialog';
 import { ProgressBar } from '../ui/ProgressBar';
 import { Badge } from '../ui/Badge';
 import { Toggle } from '../ui/Toggle';
@@ -19,45 +18,95 @@ import { useShortcuts, normalizeShortcut, DEFAULT_SHORTCUTS } from '../../contex
 import { navigateWithFallback } from '../../utils/navigation';
 import { desktop as desktopClient } from '../../utils/platformClient';
 import { readJsonResponse } from '../../utils/fetchJson';
+import { SegmentedTabs } from '../ui/SegmentedTabs';
 
 const APP_VERSION = packageMeta.version || '0.1.2';
+const SETTINGS_CONTENT_MAX_WIDTH = 860;
+const SETTINGS_PAGE_TITLE_STYLE = {
+  fontFamily: 'Georgia, Songti SC, STSong, serif',
+  fontSize: 22,
+  lineHeight: 1.25,
+  fontWeight: 700,
+  letterSpacing: '-0.012em',
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+};
+
+const SETTINGS_SURFACE_STYLE = {
+  background: '#fff',
+  border: '1px solid #E5E3D8',
+  borderRadius: 14,
+  padding: 24,
+  boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
+};
+
+const SETTINGS_RESOURCE_ROW_STYLE = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 12,
+  justifyContent: 'space-between',
+  border: '1px solid #ECE9DF',
+  borderRadius: 12,
+  padding: '12px 14px',
+  background: '#FDFCFB',
+};
+
+const SETTINGS_RESOURCE_ICON_STYLE = {
+  width: 34,
+  height: 34,
+  borderRadius: 10,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  flexShrink: 0,
+  background: '#F6E8E1',
+  color: '#BE6247',
+  border: '1px solid #EFD9CF',
+};
+
+const SettingsPageHeader = ({ title, icon }) => (
+  <div style={{ borderBottom: '1px solid #E5E3D8', paddingBottom: 16, marginBottom: 28 }}>
+    <div style={SETTINGS_PAGE_TITLE_STYLE}>
+      {icon}
+      {title}
+    </div>
+  </div>
+);
 
 export const SETTINGS_SECTIONS = [
-  { id: 'model', label: '模型配置', icon: <Icons.robot size={14} />, href: '/settings/model' },
-  { id: 'search', label: '搜索配置', icon: <Icons.settings size={14} />, href: '/settings/search' },
-  { id: 'personalization', label: '个性化', icon: <Icons.palette size={14} />, href: '/settings/personalization' },
-  { id: 'image-storage', label: '图床', icon: <Icons.image size={14} />, href: '/settings/image-storage' },
-  { id: 'storage', label: '存储', icon: <Icons.database size={14} />, href: '/settings/storage' },
-  { id: 'logs', label: '日志', icon: <Icons.list size={14} />, href: '/settings/logs' },
-  { id: 'shortcuts', label: '快捷键', icon: <Icons.dots size={14} />, href: '/settings/shortcuts' },
-  { id: 'about', label: '关于', icon: <Icons.info size={14} />, href: '/settings/about' },
+  { id: 'model', label: '模型配置', icon: <Icons.robot size={17} /> },
+  { id: 'search', label: '搜索配置', icon: <Icons.settings size={17} /> },
+  { id: 'skills', label: 'Skill', icon: <Icons.skill size={17} /> },
+  { id: 'mcp', label: 'MCP', icon: <Icons.mcp size={17} /> },
+  { id: 'personalization', label: '个性化', icon: <Icons.palette size={17} /> },
+  { id: 'image-storage', label: '图床', icon: <Icons.image size={17} /> },
+  { id: 'storage', label: '存储', icon: <Icons.database size={17} /> },
+  { id: 'logs', label: '日志', icon: <Icons.list size={17} /> },
+  { id: 'shortcuts', label: '快捷键', icon: <Icons.keyboard size={17} /> },
+  { id: 'about', label: '关于', icon: <Icons.info size={17} /> },
 ];
 
-const SettingsNav = ({ active }) => {
-  const router = useRouter();
-
+const SettingsNav = ({ active, onSelect }) => {
   return (
-    <div style={{ width: 208, background: 'var(--bg-sidebar)', borderRight: '1px solid var(--border-subtle)', padding: 16, flexShrink: 0 }}>
-      <div style={{ fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: 0.5, padding: '4px 10px 8px' }}>
-        设置
-      </div>
+    <div className="notus-settings-nav" style={{ width: 224, background: 'var(--bg-sidebar)', borderRight: '1px solid var(--border-subtle)', padding: '20px 16px', flexShrink: 0 }}>
       {SETTINGS_SECTIONS.map((item) => {
         const activeItem = item.id === active;
         return (
           <div
             key={item.id}
-            onClick={() => navigateWithFallback(router, item.href)}
+            onClick={() => onSelect(item.id)}
             style={{
-              height: 32,
-              padding: '0 10px',
+              height: 42,
+              padding: '0 12px',
               display: 'flex',
               alignItems: 'center',
-              gap: 8,
+              gap: 10,
               borderRadius: 'var(--radius-sm)',
-              marginBottom: 2,
+              marginBottom: 4,
               background: activeItem ? 'var(--accent-subtle)' : 'transparent',
               color: activeItem ? 'var(--accent)' : 'var(--text-primary)',
-              fontSize: 'var(--text-sm)',
+              fontSize: 'var(--text-base)',
               fontWeight: activeItem ? 500 : 400,
               cursor: 'pointer',
             }}
@@ -326,13 +375,8 @@ const ModelConfig = () => {
   };
 
   return (
-    <div style={{ maxWidth: 672, margin: '0 auto', padding: '8px 0 16px', color: '#2D2D2D' }}>
-      <div style={{ borderBottom: '1px solid #E5E3D8', paddingBottom: 16, marginBottom: 32 }}>
-        <div style={{ fontFamily: 'Georgia, Songti SC, STSong, serif', fontSize: 20, lineHeight: 1.25, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8, letterSpacing: '-0.012em' }}>
-          <Icons.cpu size={20} style={{ color: '#D97757' }} />模型配置
-        </div>
-        <div style={{ fontSize: 12, color: '#8A8881', marginTop: 6, lineHeight: 1.55 }}>配置工作区索引检索所需的向量模型，以及 AI Agent 所用的大语言模型。</div>
-      </div>
+    <div style={{ width: '100%', color: '#2D2D2D' }}>
+      <SettingsPageHeader title="模型配置" icon={<Icons.cpu size={20} style={{ color: '#D97757' }} />} />
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 32 }}>
         <section style={{ background: '#fff', border: '1px solid #E5E3D8', borderRadius: 12, padding: 24, boxShadow: '0 1px 2px rgba(0,0,0,0.04)', display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -552,14 +596,10 @@ const SearchConfig = () => {
   };
 
   return (
-    <div style={{ color: '#2D2D2D' }}>
-      <div style={{ borderBottom: '1px solid #E5E3D8', paddingBottom: 16, marginBottom: 24 }}>
-        <div style={{ fontFamily: 'Georgia, Songti SC, STSong, serif', fontSize: 22, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8 }}>
-          <Icons.settings size={20} style={{ color: '#D97757' }} />搜索引擎配置
-        </div>
-      </div>
+    <div style={{ width: '100%', color: '#2D2D2D' }}>
+      <SettingsPageHeader title="搜索引擎配置" icon={<Icons.settings size={20} style={{ color: '#D97757' }} />} />
 
-      <div style={{ background: '#fff', border: '1px solid #E5E3D8', borderRadius: 14, padding: 24, display: 'grid', gap: 24, boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }}>
+      <div style={{ ...SETTINGS_SURFACE_STYLE, display: 'grid', gap: 24 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid #F2F0EA', paddingBottom: 20 }}>
           <div>
             <div style={{ fontSize: 15, fontWeight: 700 }}>启用联网搜索</div>
@@ -732,11 +772,8 @@ const Logs = () => {
   }, [agentConversationId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div>
-      <div style={{ fontSize: 'var(--text-xl)', fontWeight: 600, marginBottom: 6 }}>日志</div>
-      <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', marginBottom: 28 }}>
-        查看最近的服务端结构化日志，用于排查导入、索引、模型配置和运行时错误。
-      </div>
+    <div style={{ width: '100%' }}>
+      <SettingsPageHeader title="日志" icon={<Icons.list size={20} style={{ color: '#D97757' }} />} />
 
       <Section title="Agent Loop 执行日志">
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
@@ -848,13 +885,16 @@ const Logs = () => {
   );
 };
 
-const Personalization = () => {
+const Personalization = ({ onOpenImageSettings }) => {
   const toast = useToast();
   const [titleFilenameBindingEnabled, setTitleFilenameBindingEnabled] = useState(false);
   const [savingTitleFilenameBinding, setSavingTitleFilenameBinding] = useState(false);
   const [defaultEditorOpen, setDefaultEditorOpen] = useState(true);
   const [defaultAgentOpen, setDefaultAgentOpen] = useState(true);
   const [savingWorkspaceDefaults, setSavingWorkspaceDefaults] = useState(false);
+  const [imageSettings, setImageSettings] = useState(null);
+  const [imageTarget, setImageTarget] = useState('local');
+  const [savingImageTarget, setSavingImageTarget] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -865,6 +905,11 @@ const Personalization = () => {
         setTitleFilenameBindingEnabled(Boolean(settings.editor?.title_filename_binding_enabled));
         setDefaultEditorOpen(settings.editor?.default_editor_open !== false);
         setDefaultAgentOpen(settings.editor?.default_agent_open !== false);
+        const currentTarget = settings.images?.storage_mode === 'object_storage'
+          ? settings.images?.object_storage?.provider
+          : 'local';
+        setImageSettings(settings.images || null);
+        setImageTarget(IMAGE_STORAGE_OPTIONS.some((item) => item.value === currentTarget) ? currentTarget : 'local');
       })
       .catch(() => toast('读取配置失败', 'error'));
     return () => {
@@ -899,6 +944,41 @@ const Personalization = () => {
     }
   };
 
+  const isConfiguredImageTarget = (target) => {
+    if (target === 'local') return true;
+    return Boolean(imageSettings?.provider_configs?.[target]?.configured);
+  };
+
+  const handleImageTargetChange = async (target) => {
+    setImageTarget(target);
+    if (!isConfiguredImageTarget(target)) {
+      const option = IMAGE_STORAGE_OPTIONS.find((item) => item.value === target);
+      toast(<span>{option?.label || '该图床'}尚未配置，<a href={`/settings/image-storage?provider=${encodeURIComponent(target)}`} onClick={(event) => { event.preventDefault(); onOpenImageSettings?.(target); }} style={{ color: 'var(--accent)', textDecoration: 'underline' }}>前往图床设置</a></span>, 'warning');
+      return;
+    }
+    if (savingImageTarget) return;
+    setSavingImageTarget(true);
+    try {
+      const response = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ images: target === 'local'
+          ? { storage_mode: 'local' }
+          : { storage_mode: 'object_storage', active_provider: target } }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || '图片上传位置保存失败');
+      setImageSettings(payload.images || null);
+      toast(target === 'local' ? '图片将保存到本地资源目录' : '图片上传位置已保存', 'success');
+    } catch (error) {
+      const restored = imageSettings?.storage_mode === 'object_storage' ? imageSettings?.object_storage?.provider : 'local';
+      setImageTarget(restored || 'local');
+      toast(error.message || '图片上传位置保存失败', 'error');
+    } finally {
+      setSavingImageTarget(false);
+    }
+  };
+
   const handleWorkspaceDefaultToggle = async (field, nextValue) => {
     if (savingWorkspaceDefaults) return;
     const setter = field === 'default_editor_open' ? setDefaultEditorOpen : setDefaultAgentOpen;
@@ -925,21 +1005,10 @@ const Personalization = () => {
   };
 
   return (
-    <div>
-      <div style={{ fontSize: 'var(--text-xl)', fontWeight: 600, marginBottom: 28 }}>个性化</div>
-      <div style={{ display: 'grid', gap: 12 }}>
-        <div
-          style={{
-            border: '1px solid var(--border-subtle)',
-            borderRadius: 'var(--radius-lg)',
-            background: 'var(--bg-elevated)',
-            padding: 16,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 16,
-          }}
-        >
+    <div style={{ width: '100%' }}>
+      <SettingsPageHeader title="个性化" icon={<Icons.palette size={20} style={{ color: '#D97757' }} />} />
+      <section style={{ ...SETTINGS_SURFACE_STYLE, display: 'grid', gap: 24 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, paddingBottom: 20, borderBottom: '1px solid #F2F0EA' }}>
           <div style={{ fontSize: 'var(--text-sm)', fontWeight: 600 }}>标题与文件名双向绑定</div>
           <div style={{ flexShrink: 0 }}>
             <Toggle
@@ -948,16 +1017,7 @@ const Personalization = () => {
             />
           </div>
         </div>
-        <div
-          style={{
-            border: '1px solid var(--border-subtle)',
-            borderRadius: 'var(--radius-lg)',
-            background: 'var(--bg-elevated)',
-            padding: 16,
-            display: 'grid',
-            gap: 14,
-          }}
-        >
+        <div style={{ display: 'grid', gap: 14, paddingBottom: 20, borderBottom: '1px solid #F2F0EA' }}>
           <div>
             <div style={{ fontSize: 'var(--text-sm)', fontWeight: 600 }}>打开文件时的工作区</div>
             <div style={{ marginTop: 4, fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', lineHeight: 1.6 }}>从未打开文件的状态进入某篇文件时使用。切换已打开的文件会保留当前面板状态。</div>
@@ -971,7 +1031,14 @@ const Personalization = () => {
             <Toggle on={defaultAgentOpen} onChange={(value) => handleWorkspaceDefaultToggle('default_agent_open', value)} />
           </div>
         </div>
-      </div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 'var(--text-sm)', fontWeight: 600 }}>图片上传位置</div>
+            <div style={{ marginTop: 4, fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', lineHeight: 1.6 }}>选择已配置的图床后，新图片会使用对应位置保存。</div>
+          </div>
+          <SegmentedTabs value={imageTarget} onChange={handleImageTargetChange} disabled={savingImageTarget} ariaLabel="图片上传位置" minWidth={84} height={30} style={{ flexShrink: 0 }} options={IMAGE_STORAGE_OPTIONS} />
+        </div>
+      </section>
     </div>
   );
 };
@@ -983,111 +1050,60 @@ const IMAGE_STORAGE_OPTIONS = [
   { value: 'r2', label: 'Cloudflare R2' },
 ];
 
-const ImageStorageConfig = () => {
+const CLOUD_IMAGE_STORAGE_OPTIONS = IMAGE_STORAGE_OPTIONS.filter((item) => item.value !== 'local');
+
+const ImageStorageProviderConfig = ({ provider, savedConfig, isActive, onSaved }) => {
   const toast = useToast();
-  const [target, setTarget] = useState('local');
-  const [objectStorage, setObjectStorage] = useState({
-    bucket: '',
-    region: '',
-    endpoint: '',
-    prefix: 'notus/images',
-    publicBaseUrl: '',
-    accessKeyId: '',
-    secretAccessKey: '',
-  });
+  const [objectStorage, setObjectStorage] = useState({ bucket: '', region: '', endpoint: '', prefix: 'notus/images', publicBaseUrl: '', accessKeyId: '', secretAccessKey: '' });
   const [savedKeys, setSavedKeys] = useState({ accessKeyId: false, secretAccessKey: false });
   const [clearKeys, setClearKeys] = useState({ accessKeyId: false, secretAccessKey: false });
   const [saving, setSaving] = useState(false);
   const savedConfigRef = useRef(null);
+  const label = CLOUD_IMAGE_STORAGE_OPTIONS.find((item) => item.value === provider)?.label || provider;
 
-  const applySettings = (settings) => {
-    const saved = settings.images?.object_storage || {};
-    const provider = ['cos', 'oss', 'r2'].includes(saved.provider) ? saved.provider : 'cos';
-    const nextTarget = settings.images?.storage_mode === 'object_storage' ? provider : 'local';
+  const applyConfig = useCallback((config = {}) => {
     const nextObjectStorage = {
-      bucket: saved.bucket || '',
-      region: saved.region || '',
-      endpoint: saved.endpoint || '',
-      prefix: saved.prefix || 'notus/images',
-      publicBaseUrl: saved.public_base_url || '',
-      accessKeyId: '',
-      secretAccessKey: '',
+      bucket: config.bucket || '', region: config.region || '', endpoint: config.endpoint || '', prefix: config.prefix || 'notus/images',
+      publicBaseUrl: config.public_base_url || '', accessKeyId: '', secretAccessKey: '',
     };
-    const nextSavedKeys = {
-      accessKeyId: Boolean(saved.access_key_id_set),
-      secretAccessKey: Boolean(saved.secret_access_key_set),
-    };
-    savedConfigRef.current = { target: nextTarget, objectStorage: nextObjectStorage, savedKeys: nextSavedKeys };
-    setTarget(nextTarget);
+    const nextSavedKeys = { accessKeyId: Boolean(config.access_key_id_set), secretAccessKey: Boolean(config.secret_access_key_set) };
+    savedConfigRef.current = { objectStorage: nextObjectStorage, savedKeys: nextSavedKeys };
     setObjectStorage(nextObjectStorage);
     setSavedKeys(nextSavedKeys);
     setClearKeys({ accessKeyId: false, secretAccessKey: false });
-  };
+  }, []);
 
-  const restoreSavedConfig = () => {
-    const saved = savedConfigRef.current;
-    if (!saved) return;
-    setTarget(saved.target);
-    setObjectStorage(saved.objectStorage);
-    setSavedKeys(saved.savedKeys);
-    setClearKeys({ accessKeyId: false, secretAccessKey: false });
-  };
-
-  useEffect(() => {
-    let cancelled = false;
-    fetch('/api/settings')
-      .then((response) => response.json())
-      .then((settings) => {
-        if (!cancelled) applySettings(settings);
-      })
-      .catch(() => toast('读取图床配置失败', 'error'));
-    return () => {
-      cancelled = true;
-    };
-  }, [toast]);
+  useEffect(() => { applyConfig(savedConfig); }, [applyConfig, savedConfig]);
 
   const updateObjectStorage = (field, value) => {
     setObjectStorage((current) => ({ ...current, [field]: value }));
-    if (field === 'accessKeyId' || field === 'secretAccessKey') {
-      setClearKeys((current) => ({ ...current, [field]: false }));
-    }
+    if (field === 'accessKeyId' || field === 'secretAccessKey') setClearKeys((current) => ({ ...current, [field]: false }));
   };
 
   const handleSave = async () => {
     if (saving) return;
-    const cloudEnabled = target !== 'local';
     setSaving(true);
     try {
       const response = await fetch('/api/settings', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          images: {
-            storage_mode: cloudEnabled ? 'object_storage' : 'local',
-            object_storage: {
-              provider: cloudEnabled ? target : undefined,
-              bucket: objectStorage.bucket,
-              region: objectStorage.region,
-              ...(target !== 'cos' ? { endpoint: objectStorage.endpoint } : {}),
-              prefix: objectStorage.prefix,
-              public_base_url: objectStorage.publicBaseUrl,
-              ...(objectStorage.accessKeyId ? { access_key_id: objectStorage.accessKeyId } : {}),
-              ...(objectStorage.secretAccessKey ? { secret_access_key: objectStorage.secretAccessKey } : {}),
-              ...(clearKeys.accessKeyId ? { clear_access_key_id: true } : {}),
-              ...(clearKeys.secretAccessKey ? { clear_secret_access_key: true } : {}),
-            },
-          },
-        }),
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ images: { provider_config: {
+          provider, bucket: objectStorage.bucket, region: objectStorage.region,
+          ...(provider !== 'cos' ? { endpoint: objectStorage.endpoint } : {}), prefix: objectStorage.prefix,
+          public_base_url: objectStorage.publicBaseUrl,
+          ...(objectStorage.accessKeyId ? { access_key_id: objectStorage.accessKeyId } : {}),
+          ...(objectStorage.secretAccessKey ? { secret_access_key: objectStorage.secretAccessKey } : {}),
+          ...(clearKeys.accessKeyId ? { clear_access_key_id: true } : {}),
+          ...(clearKeys.secretAccessKey ? { clear_secret_access_key: true } : {}),
+        } } }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || '图床配置保存失败');
-      applySettings(result);
-      toast(cloudEnabled ? `${IMAGE_STORAGE_OPTIONS.find((item) => item.value === target)?.label} 已启用` : '图片将保存到本地资源目录', 'success');
+      applyConfig(result.images?.provider_configs?.[provider]);
+      onSaved?.(result);
+      toast(`${label} 配置已保存`, 'success');
     } catch (error) {
       toast(error.message || '图床配置保存失败', 'error');
-    } finally {
-      setSaving(false);
-    }
+    } finally { setSaving(false); }
   };
 
   const providerHints = {
@@ -1095,99 +1111,62 @@ const ImageStorageConfig = () => {
     oss: '地域使用 oss-cn-hangzhou 等 OSS Region；Endpoint 留空时由 SDK 按地域生成。',
     r2: 'Endpoint 使用 https://<ACCOUNT_ID>.r2.cloudflarestorage.com，Region 固定为 auto。',
   };
-  const cloudEnabled = target !== 'local';
+
+  const restoreSavedConfig = () => {
+    const saved = savedConfigRef.current;
+    if (!saved) return;
+    setObjectStorage(saved.objectStorage);
+    setSavedKeys(saved.savedKeys);
+    setClearKeys({ accessKeyId: false, secretAccessKey: false });
+  };
 
   return (
-    <div style={{ color: '#2D2D2D' }}>
-      <div style={{ borderBottom: '1px solid #E5E3D8', paddingBottom: 16, marginBottom: 24 }}>
-        <div style={{ fontFamily: 'Georgia, Songti SC, STSong, serif', fontSize: 22, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8 }}>
-          <Icons.image size={20} style={{ color: '#D97757' }} />图床配置
-        </div>
+    <section style={{ background: '#fff', border: '1px solid #E5E3D8', borderRadius: 14, padding: 24, display: 'grid', gap: 20, boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }}>
+      <div style={{ fontSize: 17, fontWeight: 700, color: '#2D2D2D' }}>{label}</div>
+      <div style={{ display: 'grid', gap: 14, border: '1px solid #F2F0EA', background: '#FDFCFB', borderRadius: 14, padding: 16 }}>
+        <div style={{ padding: '12px 14px', borderRadius: 10, border: '1px solid rgba(234, 179, 8, 0.26)', background: 'rgba(234, 179, 8, 0.1)', color: '#9A6B08', fontSize: 13, lineHeight: 1.6 }}>{providerHints[provider]}</div>
+        <Field label="Bucket 名称"><TextInput value={objectStorage.bucket} onChange={(event) => updateObjectStorage('bucket', event.target.value)} placeholder={provider === 'cos' ? 'example-1250000000' : 'notus-images'} /></Field>
+        {provider === 'cos' ? <Field label="地域 Region"><TextInput value={objectStorage.region} onChange={(event) => updateObjectStorage('region', event.target.value)} placeholder="ap-guangzhou" /></Field>
+          : provider === 'oss' ? <><Field label="地域 Region"><TextInput value={objectStorage.region} onChange={(event) => updateObjectStorage('region', event.target.value)} placeholder="oss-cn-hangzhou" /></Field><Field label="自定义 Endpoint" hint="可选。使用默认 OSS Endpoint 时留空。"><TextInput value={objectStorage.endpoint} onChange={(event) => updateObjectStorage('endpoint', event.target.value)} placeholder="https://oss-cn-hangzhou.aliyuncs.com" /></Field></>
+            : <Field label="S3 Endpoint"><TextInput value={objectStorage.endpoint} onChange={(event) => updateObjectStorage('endpoint', event.target.value)} placeholder="https://<ACCOUNT_ID>.r2.cloudflarestorage.com" /></Field>}
+        <Field label="对象前缀" hint="默认 notus/images。新图片按 年/月/内容哈希 写入，不能包含 ..。"><TextInput value={objectStorage.prefix} onChange={(event) => updateObjectStorage('prefix', event.target.value)} placeholder="notus/images" /></Field>
+        <Field label="公开访问基础 URL" hint="填写 Bucket 的公开域名或 CDN 域名。该地址会直接写入 Markdown，请勿填写临时签名链接。"><TextInput value={objectStorage.publicBaseUrl} onChange={(event) => updateObjectStorage('publicBaseUrl', event.target.value)} placeholder="https://images.example.com" /></Field>
+        <Field label={`Access Key ID${savedKeys.accessKeyId ? '（已保存）' : ''}`} hint="密钥只保存在服务端设置库，读取设置时不会回显。留空会保留已保存的值。"><TextInput masked value={objectStorage.accessKeyId} onChange={(event) => updateObjectStorage('accessKeyId', event.target.value)} placeholder={savedKeys.accessKeyId ? '留空以保留当前密钥' : '填写 Access Key ID'} /></Field>
+        <Field label={`Secret Access Key${savedKeys.secretAccessKey ? '（已保存）' : ''}`}><TextInput masked value={objectStorage.secretAccessKey} onChange={(event) => updateObjectStorage('secretAccessKey', event.target.value)} placeholder={savedKeys.secretAccessKey ? '留空以保留当前密钥' : '填写 Secret Access Key'} /></Field>
+        {(savedKeys.accessKeyId || savedKeys.secretAccessKey) && (isActive
+          ? <div style={{ marginTop: -6, fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>正在使用此图床。请先在个性化页切换上传位置，再清除密钥。</div>
+          : <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: -6 }}>
+            {savedKeys.accessKeyId && <Button size="sm" variant="ghost" onClick={() => setClearKeys((current) => ({ ...current, accessKeyId: !current.accessKeyId }))}>{clearKeys.accessKeyId ? '将清除 Access Key ID' : '清除 Access Key ID'}</Button>}
+            {savedKeys.secretAccessKey && <Button size="sm" variant="ghost" onClick={() => setClearKeys((current) => ({ ...current, secretAccessKey: !current.secretAccessKey }))}>{clearKeys.secretAccessKey ? '将清除 Secret Access Key' : '清除 Secret Access Key'}</Button>}
+          </div>)}
       </div>
-      <div style={{ background: '#fff', border: '1px solid #E5E3D8', borderRadius: 14, padding: 24, display: 'grid', gap: 24, boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }}>
-        <div style={{ display: 'grid', gap: 10 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: '#4B4944' }}>上传位置</div>
-          <div style={{ display: 'flex', gap: 8, padding: 4, background: '#F9F9F8', border: '1px solid #E5E3D8', borderRadius: 10, overflowX: 'auto' }}>
-            {IMAGE_STORAGE_OPTIONS.map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                onClick={() => setTarget(option.value)}
-                style={{
-                  flex: 1,
-                  minWidth: 112,
-                  height: 32,
-                  border: target === option.value ? '1px solid rgba(229,227,216,0.8)' : '1px solid transparent',
-                  borderRadius: 8,
-                  background: target === option.value ? '#fff' : 'transparent',
-                  color: target === option.value ? '#D97757' : '#6B6963',
-                  boxShadow: target === option.value ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
-                  fontSize: 13,
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                }}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-        </div>
-        {!cloudEnabled && (
-          <div style={{ padding: '12px 14px', borderRadius: 10, border: '1px solid rgba(74, 140, 217, 0.24)', background: 'rgba(74, 140, 217, 0.08)', color: '#3B6EA8', fontSize: 13, lineHeight: 1.6 }}>
-            图片会保存到本地资源目录，并以相对路径写入 Markdown。
-          </div>
-        )}
-        {cloudEnabled && (
-          <div style={{ display: 'grid', gap: 14, border: '1px solid #F2F0EA', background: '#FDFCFB', borderRadius: 14, padding: 16 }}>
-            <div style={{ padding: '12px 14px', borderRadius: 10, border: '1px solid rgba(234, 179, 8, 0.26)', background: 'rgba(234, 179, 8, 0.1)', color: '#9A6B08', fontSize: 13, lineHeight: 1.6 }}>
-              {providerHints[target]}
-            </div>
-            <Field label="Bucket 名称">
-              <TextInput value={objectStorage.bucket} onChange={(event) => updateObjectStorage('bucket', event.target.value)} placeholder={target === 'cos' ? 'example-1250000000' : 'notus-images'} />
-            </Field>
-            {target === 'cos' ? (
-              <Field label="地域 Region">
-                <TextInput value={objectStorage.region} onChange={(event) => updateObjectStorage('region', event.target.value)} placeholder="ap-guangzhou" />
-              </Field>
-            ) : target === 'oss' ? (
-              <>
-                <Field label="地域 Region">
-                  <TextInput value={objectStorage.region} onChange={(event) => updateObjectStorage('region', event.target.value)} placeholder="oss-cn-hangzhou" />
-                </Field>
-                <Field label="自定义 Endpoint" hint="可选。使用默认 OSS Endpoint 时留空。">
-                  <TextInput value={objectStorage.endpoint} onChange={(event) => updateObjectStorage('endpoint', event.target.value)} placeholder="https://oss-cn-hangzhou.aliyuncs.com" />
-                </Field>
-              </>
-            ) : (
-              <Field label="S3 Endpoint">
-                <TextInput value={objectStorage.endpoint} onChange={(event) => updateObjectStorage('endpoint', event.target.value)} placeholder="https://<ACCOUNT_ID>.r2.cloudflarestorage.com" />
-              </Field>
-            )}
-            <Field label="对象前缀" hint="默认 notus/images。新图片按 年/月/内容哈希 写入，不能包含 ..。">
-              <TextInput value={objectStorage.prefix} onChange={(event) => updateObjectStorage('prefix', event.target.value)} placeholder="notus/images" />
-            </Field>
-            <Field label="公开访问基础 URL" hint="填写 Bucket 的公开域名或 CDN 域名。该地址会直接写入 Markdown，请勿填写临时签名链接。">
-              <TextInput value={objectStorage.publicBaseUrl} onChange={(event) => updateObjectStorage('publicBaseUrl', event.target.value)} placeholder="https://images.example.com" />
-            </Field>
-            <Field label={`Access Key ID${savedKeys.accessKeyId ? '（已保存）' : ''}`} hint="密钥只保存在服务端设置库，读取设置时不会回显。留空会保留已保存的值。">
-              <TextInput masked value={objectStorage.accessKeyId} onChange={(event) => updateObjectStorage('accessKeyId', event.target.value)} placeholder={savedKeys.accessKeyId ? '留空以保留当前密钥' : '填写 Access Key ID'} />
-            </Field>
-            <Field label={`Secret Access Key${savedKeys.secretAccessKey ? '（已保存）' : ''}`}>
-              <TextInput masked value={objectStorage.secretAccessKey} onChange={(event) => updateObjectStorage('secretAccessKey', event.target.value)} placeholder={savedKeys.secretAccessKey ? '留空以保留当前密钥' : '填写 Secret Access Key'} />
-            </Field>
-            {(savedKeys.accessKeyId || savedKeys.secretAccessKey) && (
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: -6 }}>
-                {savedKeys.accessKeyId && <Button size="sm" variant="ghost" onClick={() => setClearKeys((current) => ({ ...current, accessKeyId: !current.accessKeyId }))}>{clearKeys.accessKeyId ? '将清除 Access Key ID' : '清除 Access Key ID'}</Button>}
-                {savedKeys.secretAccessKey && <Button size="sm" variant="ghost" onClick={() => setClearKeys((current) => ({ ...current, secretAccessKey: !current.secretAccessKey }))}>{clearKeys.secretAccessKey ? '将清除 Secret Access Key' : '清除 Secret Access Key'}</Button>}
-              </div>
-            )}
-          </div>
-        )}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, borderTop: '1px solid #F2F0EA', paddingTop: 16 }}>
-          <Button variant="ghost" onClick={restoreSavedConfig}>取消</Button>
-          <Button variant="primary" loading={saving} onClick={handleSave}>保存</Button>
-        </div>
-      </div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, borderTop: '1px solid #F2F0EA', paddingTop: 16 }}><Button variant="ghost" onClick={restoreSavedConfig}>取消</Button><Button variant="primary" loading={saving} onClick={handleSave}>保存</Button></div>
+    </section>
+  );
+};
+
+const ImageStorageConfig = () => {
+  const toast = useToast();
+  const [providerConfigs, setProviderConfigs] = useState({});
+  const [activeProvider, setActiveProvider] = useState('');
+
+  const applySettings = useCallback((settings) => {
+    setProviderConfigs(settings.images?.provider_configs || {});
+    setActiveProvider(settings.images?.storage_mode === 'object_storage' ? settings.images?.object_storage?.provider || '' : '');
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/settings').then((response) => response.json()).then((settings) => {
+      if (!cancelled) applySettings(settings);
+    }).catch(() => toast('读取图床配置失败', 'error'));
+    return () => { cancelled = true; };
+  }, [applySettings, toast]);
+
+  return (
+    <div style={{ width: '100%', color: '#2D2D2D' }}>
+      <SettingsPageHeader title="图床配置" icon={<Icons.image size={20} style={{ color: '#D97757' }} />} />
+      <div style={{ display: 'grid', gap: 20 }}>{CLOUD_IMAGE_STORAGE_OPTIONS.map((item) => <ImageStorageProviderConfig key={item.value} provider={item.value} savedConfig={providerConfigs[item.value]} isActive={activeProvider === item.value} onSaved={applySettings} />)}</div>
     </div>
   );
 };
@@ -1300,8 +1279,8 @@ const Storage = () => {
   const runtimeLabel = getRuntimeLabel(profile.runtimeTarget);
 
   return (
-    <div>
-      <div style={{ fontSize: 'var(--text-xl)', fontWeight: 600, marginBottom: 28 }}>存储</div>
+    <div style={{ width: '100%' }}>
+      <SettingsPageHeader title="存储" icon={<Icons.database size={20} style={{ color: '#D97757' }} />} />
       <Section title="运行环境">
         <Field label="当前平台">
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -1403,11 +1382,8 @@ const ShortcutsSettings = () => {
   }, [shortcutList]);
 
   return (
-    <div>
-      <div style={{ fontSize: 'var(--text-xl)', fontWeight: 600, marginBottom: 6 }}>快捷键</div>
-      <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', marginBottom: 28 }}>
-        在这里集中维护常用操作的快捷键。输入框中的快捷键提示默认隐藏，但实际操作仍会按这里的配置生效。
-      </div>
+    <div style={{ width: '100%' }}>
+      <SettingsPageHeader title="快捷键" icon={<Icons.keyboard size={20} style={{ color: '#D97757' }} />} />
 
       {capabilities.supportsDesktopShell && (
         <Section title="桌面端说明">
@@ -1505,10 +1481,177 @@ const ShortcutsSettings = () => {
   );
 };
 
+const SkillsSettings = () => {
+  const toast = useToast();
+  const [skills, setSkills] = useState([]);
+  const [roots, setRoots] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [scanning, setScanning] = useState(false);
+  const [installOpen, setInstallOpen] = useState(false);
+  const [repositoryUrl, setRepositoryUrl] = useState('');
+  const [ref, setRef] = useState('');
+  const [subdirectory, setSubdirectory] = useState('');
+  const [installing, setInstalling] = useState(false);
+
+  const load = useCallback(async () => {
+    const response = await fetch('/api/skills', { cache: 'no-store' });
+    const payload = await readJsonResponse(response, { fallbackMessage: '读取 Skills 失败' });
+    setSkills(Array.isArray(payload.skills) ? payload.skills : []);
+    setRoots(Array.isArray(payload.roots) ? payload.roots : []);
+  }, []);
+
+  useEffect(() => {
+    load().catch((error) => toast(error.message || '读取 Skills 失败', 'error')).finally(() => setLoading(false));
+  }, [load, toast]);
+
+  const rescan = async () => {
+    setScanning(true);
+    try {
+      const response = await fetch('/api/skills', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'rescan' }) });
+      const payload = await readJsonResponse(response, { fallbackMessage: '扫描 Skills 失败' });
+      setSkills(Array.isArray(payload.skills) ? payload.skills : []);
+      await load();
+      toast('已完成本机 Skill 扫描', 'success');
+    } catch (error) { toast(error.message || '扫描 Skills 失败', 'error'); } finally { setScanning(false); }
+  };
+
+  const toggleSkill = async (skill, enabled) => {
+    try {
+      const response = await fetch(`/api/skills/${encodeURIComponent(skill.id)}/state`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) });
+      const payload = await readJsonResponse(response, { fallbackMessage: '更新 Skill 状态失败' });
+      setSkills((current) => current.map((item) => String(item.id) === String(skill.id) ? payload.skill : item));
+    } catch (error) { toast(error.message || '更新 Skill 状态失败', 'error'); }
+  };
+
+  const installFromGit = async () => {
+    if (!repositoryUrl.trim()) { toast('请填写 HTTPS Git 仓库地址', 'warning'); return; }
+    setInstalling(true);
+    try {
+      const response = await fetch('/api/skills/install/git', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repositoryUrl, ref, subdirectory, conflictPolicy: 'reject' }) });
+      const payload = await readJsonResponse(response, { fallbackMessage: '安装 Skill 失败' });
+      setInstallOpen(false); setRepositoryUrl(''); setRef(''); setSubdirectory('');
+      await load();
+      toast(`已安装 ${payload.skills?.length || 0} 个 Skill`, 'success');
+    } catch (error) { toast(error.message || '安装 Skill 失败', 'error'); } finally { setInstalling(false); }
+  };
+
+  return (
+    <div style={{ width: '100%', color: '#2D2D2D' }}>
+      <SettingsPageHeader title="Skill" icon={<Icons.skill size={20} style={{ color: '#D97757' }} />} />
+      <div style={{ display: 'grid', gap: 18 }}>
+        <section style={{ ...SETTINGS_SURFACE_STYLE, display: 'grid', gap: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div style={{ ...SETTINGS_RESOURCE_ICON_STYLE, width: 40, height: 40, borderRadius: 12 }}><Icons.skill size={19} /></div>
+              <div><div style={{ fontSize: 15, fontWeight: 700 }}>本机 Skill</div><div style={{ marginTop: 3, fontSize: 12, color: '#8A8881' }}>{loading ? '正在读取…' : `${skills.length} 个已发现`}</div></div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <Button variant="ghost" loading={scanning} onClick={rescan}><Icons.refresh size={14} />重新扫描</Button>
+              <Button variant="primary" onClick={() => setInstallOpen(true)}><Icons.download size={14} />从 Git 安装</Button>
+            </div>
+          </div>
+          <div style={{ display: 'grid', gap: 8 }}>
+            {skills.map((skill) => (
+              <div key={skill.id} style={{ ...SETTINGS_RESOURCE_ROW_STYLE, flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 11, minWidth: 0, flex: '1 1 340px' }}>
+                  <div style={SETTINGS_RESOURCE_ICON_STYLE}><Icons.skill size={17} /></div>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap', fontSize: 14, fontWeight: 700 }}><span>{skill.name}</span><Badge tone={skill.status === 'valid' ? 'success' : 'warning'}>{skill.status === 'valid' ? '有效' : skill.status}</Badge></div>
+                    <div style={{ marginTop: 4, color: '#6B6963', fontSize: 12, lineHeight: 1.55 }}>{skill.description || '未提供描述'}</div>
+                    <div style={{ marginTop: 5, color: '#A3A19A', fontSize: 11 }}>{skill.source_label || '本机'} · {skill.managed ? 'Notus 管理' : '外部目录'}</div>
+                  </div>
+                </div>
+                <Toggle on={Boolean(skill.enabled)} disabled={skill.status !== 'valid'} onChange={(enabled) => toggleSkill(skill, enabled)} />
+              </div>
+            ))}
+            {!loading && skills.length === 0 ? <div style={{ padding: '24px 16px', border: '1px dashed #D9D5CA', borderRadius: 12, color: '#8A8881', fontSize: 13, textAlign: 'center' }}>尚未发现可用 Skill</div> : null}
+          </div>
+        </section>
+        <section style={{ ...SETTINGS_SURFACE_STYLE, display: 'grid', gap: 10, padding: 18 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: '0.02em', color: '#6B6963' }}>扫描位置</div>
+          {roots.map((root) => <div key={root.id} style={{ display: 'flex', gap: 10, alignItems: 'baseline', fontSize: 12, minWidth: 0 }}><Badge tone={root.managed_by_notus ? 'success' : 'default'}>{root.managed_by_notus ? '管理目录' : '外部目录'}</Badge><code style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#6B6963' }}>{root.path}</code></div>)}
+        </section>
+      </div>
+      <Dialog open={installOpen} onClose={() => setInstallOpen(false)} title="从 Git 安装 Skill" maxWidth={520} footer={<><Button variant="ghost" onClick={() => setInstallOpen(false)}>取消</Button><Button variant="primary" loading={installing} onClick={installFromGit}>安装</Button></>}><div style={{ display: 'grid', gap: 16 }}><Field label="HTTPS 仓库地址"><TextInput value={repositoryUrl} onChange={(event) => setRepositoryUrl(event.target.value)} placeholder="https://github.com/org/skills.git" /></Field><Field label="分支或 Tag" hint="可选"><TextInput value={ref} onChange={(event) => setRef(event.target.value)} placeholder="main" /></Field><Field label="Skill 所在子目录" hint="可选；仓库根目录中的所有 Skill 会被发现。"><TextInput value={subdirectory} onChange={(event) => setSubdirectory(event.target.value)} placeholder="skills" /></Field></div></Dialog>
+    </div>
+  );
+};
+
+const McpSettings = () => {
+  const toast = useToast();
+  const [servers, setServers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [capabilities, setCapabilities] = useState(null);
+  const [draft, setDraft] = useState(null);
+  const [testingId, setTestingId] = useState('');
+  const empty = { name: '', transport: 'streamable_http', enabled: true, url: '', command: '', args: '', cwd: '', defaultPolicy: 'ask' };
+  const load = useCallback(async () => { const response = await fetch('/api/mcp/servers', { cache: 'no-store' }); const payload = await readJsonResponse(response, { fallbackMessage: '读取 MCP Server 失败' }); setServers(Array.isArray(payload.servers) ? payload.servers : []); }, []);
+  useEffect(() => { Promise.all([load(), fetch('/api/runtime/capabilities', { cache: 'no-store' }).then((response) => readJsonResponse(response, { fallbackMessage: '读取运行环境能力失败' }))]).then(([, payload]) => setCapabilities(payload)).catch((error) => toast(error.message || '读取 MCP Server 失败', 'error')).finally(() => setLoading(false)); }, [load, toast]);
+  const edit = (server = null) => setDraft(server ? { id: server.id, name: server.name, transport: server.transport, enabled: server.enabled, url: server.config?.http?.url || '', command: server.config?.stdio?.command || '', args: (server.config?.stdio?.args || []).join(' '), cwd: server.config?.stdio?.cwd || '', defaultPolicy: server.tool_policy?.default || 'ask' } : { ...empty, transport: capabilities?.mcp?.stdio ? 'stdio' : 'streamable_http' });
+  const save = async () => {
+    if (!draft?.name?.trim()) { toast('请填写 MCP Server 名称', 'warning'); return; }
+    const args = String(draft.args || '').match(/(?:[^\s"]+|"[^"]*")+/g)?.map((item) => item.replace(/^"|"$/g, '')) || [];
+    const body = { name: draft.name, transport: draft.transport, enabled: Boolean(draft.enabled), toolPolicy: { default: draft.defaultPolicy }, ...(draft.transport === 'stdio' ? { stdio: { command: draft.command, args, cwd: draft.cwd } } : { http: { url: draft.url } }) };
+    try { const response = await fetch(draft.id ? `/api/mcp/servers/${encodeURIComponent(draft.id)}` : '/api/mcp/servers', { method: draft.id ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); await readJsonResponse(response, { fallbackMessage: '保存 MCP Server 失败' }); setDraft(null); await load(); toast('MCP Server 已保存', 'success'); } catch (error) { toast(error.message || '保存 MCP Server 失败', 'error'); }
+  };
+  const test = async (server) => { setTestingId(server.id); try { const response = await fetch(`/api/mcp/servers/${encodeURIComponent(server.id)}/test`, { method: 'POST' }); const result = await readJsonResponse(response, { fallbackMessage: 'MCP 连接测试失败' }); toast(`连接成功，发现 ${result.tool_count || 0} 个工具`, 'success'); await load(); } catch (error) { toast(error.message || 'MCP 连接测试失败', 'error'); } finally { setTestingId(''); } };
+  const remove = async (server) => { if (!window.confirm(`删除 MCP Server“${server.name}”？`)) return; try { const response = await fetch(`/api/mcp/servers/${encodeURIComponent(server.id)}`, { method: 'DELETE' }); await readJsonResponse(response, { fallbackMessage: '删除 MCP Server 失败' }); await load(); toast('MCP Server 已删除', 'success'); } catch (error) { toast(error.message || '删除 MCP Server 失败', 'error'); } };
+  const supportsStdio = Boolean(capabilities?.mcp?.stdio);
+  const transportOptions = [
+    ...(supportsStdio ? [{ value: 'stdio', label: 'stdio' }] : []),
+    { value: 'streamable_http', label: 'Streamable HTTP' },
+  ];
+  return (
+    <div style={{ width: '100%', color: '#2D2D2D' }}>
+      <SettingsPageHeader title="MCP" icon={<Icons.mcp size={20} style={{ color: '#D97757' }} />} />
+      <div style={{ display: 'grid', gap: 18 }}>
+        <section style={{ ...SETTINGS_SURFACE_STYLE, display: 'grid', gap: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div style={{ ...SETTINGS_RESOURCE_ICON_STYLE, width: 40, height: 40, borderRadius: 12 }}><Icons.mcp size={19} /></div>
+              <div><div style={{ fontSize: 15, fontWeight: 700 }}>MCP Server</div><div style={{ marginTop: 3, fontSize: 12, color: '#8A8881' }}>{loading ? '正在读取…' : `${servers.length} 个已配置`}</div></div>
+            </div>
+            {capabilities ? <Button variant="primary" onClick={() => edit()}><Icons.plus size={14} />添加 Server</Button> : null}
+          </div>
+          <div style={{ display: 'grid', gap: 8 }}>
+            {servers.map((server) => (
+              <div key={server.id} style={{ ...SETTINGS_RESOURCE_ROW_STYLE, flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 11, minWidth: 0, flex: '1 1 330px' }}>
+                  <div style={SETTINGS_RESOURCE_ICON_STYLE}><Icons.mcp size={17} /></div>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ display: 'flex', gap: 7, alignItems: 'center', flexWrap: 'wrap', fontSize: 14, fontWeight: 700 }}><span>{server.name}</span><Badge tone={server.enabled ? 'success' : 'default'}>{server.enabled ? '已启用' : '已停用'}</Badge></div>
+                    <div style={{ marginTop: 4, fontSize: 12, color: '#8A8881', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{server.transport === 'stdio' ? `stdio · ${server.config?.stdio?.command || ''}` : `Streamable HTTP · ${server.config?.http?.url || ''}`}</div>
+                    {server.last_error_message ? <div style={{ marginTop: 4, fontSize: 11, color: 'var(--danger)' }}>{server.last_error_message}</div> : null}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <Button size="sm" variant="ghost" loading={testingId === server.id} onClick={() => test(server)}>测试</Button>
+                  <Button size="sm" variant="ghost" onClick={() => edit(server)}>编辑</Button>
+                  <Button size="sm" variant="ghost" onClick={() => remove(server)}>删除</Button>
+                </div>
+              </div>
+            ))}
+            {!loading && servers.length === 0 ? <div style={{ padding: '24px 16px', border: '1px dashed #D9D5CA', borderRadius: 12, color: '#8A8881', fontSize: 13, textAlign: 'center' }}>尚未添加 MCP Server</div> : null}
+          </div>
+        </section>
+      </div>
+      <Dialog open={Boolean(draft)} onClose={() => setDraft(null)} title={draft?.id ? '编辑 MCP Server' : '添加 MCP Server'} maxWidth={560} footer={<><Button variant="ghost" onClick={() => setDraft(null)}>取消</Button><Button variant="primary" onClick={save}>保存</Button></>}>
+        {draft ? <div style={{ display: 'grid', gap: 16 }}>
+          <Field label="名称"><TextInput value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="例如：本地文件工具" /></Field>
+          {supportsStdio ? <Field label="传输方式"><SegmentedTabs value={draft.transport} onChange={(transport) => setDraft({ ...draft, transport })} options={transportOptions} /></Field> : null}
+          {draft.transport === 'stdio' ? <><Field label="命令"><TextInput value={draft.command} onChange={(event) => setDraft({ ...draft, command: event.target.value })} placeholder="npx" /></Field><Field label="参数" hint="用空格分隔；带空格的参数可用双引号。"><TextInput value={draft.args} onChange={(event) => setDraft({ ...draft, args: event.target.value })} placeholder="-y @modelcontextprotocol/server-filesystem /path" /></Field><Field label="工作目录" hint="可选，必须为绝对路径。"><TextInput value={draft.cwd} onChange={(event) => setDraft({ ...draft, cwd: event.target.value })} placeholder="/Users/name/project" /></Field></> : <Field label="Server URL" hint="桌面开发环境允许 localhost HTTP；其他地址必须使用 HTTPS。"><TextInput value={draft.url} onChange={(event) => setDraft({ ...draft, url: event.target.value })} placeholder="https://example.com/mcp" /></Field>}
+          <Field label="默认工具权限"><SegmentedTabs value={draft.defaultPolicy} onChange={(defaultPolicy) => setDraft({ ...draft, defaultPolicy })} options={[{ value: 'ask', label: '每次询问' }, { value: 'allow', label: '默认允许' }, { value: 'deny', label: '默认拒绝' }]} /></Field>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}><span style={{ fontSize: 13, fontWeight: 600 }}>启用此 Server</span><Toggle on={Boolean(draft.enabled)} onChange={(enabled) => setDraft({ ...draft, enabled })} /></div>
+        </div> : null}
+      </Dialog>
+    </div>
+  );
+};
+
 const About = () => {
   return (
-    <div>
-      <div style={{ fontSize: 'var(--text-xl)', fontWeight: 600, marginBottom: 28 }}>关于</div>
+    <div style={{ width: '100%' }}>
+      <SettingsPageHeader title="关于" icon={<Icons.info size={20} style={{ color: '#D97757' }} />} />
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', marginBottom: 24 }}>
         <div style={{ width: 56, height: 56, borderRadius: 12, background: 'var(--accent-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
           <NotusLogo size={36} />
@@ -1531,6 +1674,8 @@ const About = () => {
 const CONTENT_MAP = {
   model: ModelConfig,
   search: SearchConfig,
+  skills: SkillsSettings,
+  mcp: McpSettings,
   personalization: Personalization,
   'image-storage': ImageStorageConfig,
   storage: Storage,
@@ -1539,30 +1684,38 @@ const CONTENT_MAP = {
   about: About,
 };
 
-export function SettingsScreen({ section }) {
-  const Content = CONTENT_MAP[section] || CONTENT_MAP.model;
+export function SettingsDialog({ open, section = 'model', onClose }) {
+  const [activeSection, setActiveSection] = useState(section);
+
+  useEffect(() => { setActiveSection(section); }, [section]);
+
+  const Content = CONTENT_MAP[activeSection] || CONTENT_MAP.model;
+  const openImageSettings = () => setActiveSection('image-storage');
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', minWidth: 1360, minHeight: 800 }}>
-      <TopBar active="" showSettingsButton={false} />
-      <div
-        style={{
-          flex: 1,
-          display: 'flex',
-          overflow: 'hidden',
-          minHeight: 0,
-          position: 'relative',
-          isolation: 'isolate',
-          zIndex: 0,
-        }}
-      >
-        <SettingsNav active={section} />
-        <div style={{ flex: 1, overflow: 'auto', background: 'var(--bg-primary)', padding: 32, minWidth: 0 }}>
-          <div style={{ maxWidth: 920, margin: '0 auto' }}>
-            <Content />
+    <Dialog
+      open={open}
+      onClose={onClose}
+      className="notus-settings-dialog"
+      showHeader
+      maxWidth={1180}
+      closeOnBackdrop={false}
+      bodyStyle={{ padding: 0, flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex' }}
+      dialogStyle={{ width: 'min(1180px, calc(100vw - 64px))', height: 'min(760px, calc(100vh - 64px))', margin: 0, display: 'flex', flexDirection: 'column' }}
+    >
+      <div className="notus-settings-layout" style={{ flex: 1, minHeight: 0, display: 'flex', overflow: 'hidden' }}>
+        <SettingsNav active={activeSection} onSelect={setActiveSection} />
+        <div className="notus-settings-content" style={{ flex: 1, overflow: 'auto', background: 'var(--bg-primary)', padding: 32, minWidth: 0 }}>
+          <div className="notus-settings-content__inner" style={{ width: '100%', maxWidth: SETTINGS_CONTENT_MAX_WIDTH, margin: '0 auto' }}>
+            <Content onOpenImageSettings={openImageSettings} />
           </div>
         </div>
       </div>
-    </div>
+    </Dialog>
   );
+}
+
+export function SettingsScreen({ section }) {
+  const router = useRouter();
+  return <SettingsDialog open section={section} onClose={() => router.replace('/files')} />;
 }

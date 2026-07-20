@@ -258,6 +258,8 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
   const activeTab = sidebarActiveTab === 'toc' && !tocDisabled ? 'toc' : 'tree';
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [isMobileViewport, setIsMobileViewport] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const [createMode, setCreateMode] = useState(null);
   const [newName, setNewName] = useState('');
@@ -295,26 +297,46 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
   const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
+    const query = window.matchMedia('(max-width: 700px)');
+    const updateViewport = () => {
+      setIsMobileViewport(query.matches);
+      if (!query.matches) setMobileSidebarOpen(false);
+    };
+    updateViewport();
+    query.addEventListener('change', updateViewport);
+    return () => query.removeEventListener('change', updateViewport);
+  }, []);
+
+  const isSidebarCollapsed = isMobileViewport ? !mobileSidebarOpen : sidebarCollapsed;
+  const toggleResponsiveSidebar = useCallback(() => {
+    if (isMobileViewport) {
+      setMobileSidebarOpen((current) => !current);
+      return;
+    }
+    toggleSidebarCollapsed();
+  }, [isMobileViewport, toggleSidebarCollapsed]);
+
+  useEffect(() => {
     setHydrated(true);
   }, []);
 
   useEffect(() => {
-    if (!sidebarCollapsed) return undefined;
+    if (!isSidebarCollapsed) return undefined;
     setSearchOpen(false);
     setSearchQuery('');
     return undefined;
-  }, [sidebarCollapsed]);
+  }, [isSidebarCollapsed]);
 
   useEffect(() => {
     const handleKeydown = (event) => {
       if (matchShortcut(event, shortcuts.sidebarToggle.combo)) {
         event.preventDefault();
-        toggleSidebarCollapsed();
+        toggleResponsiveSidebar();
       }
     };
     document.addEventListener('keydown', handleKeydown);
     return () => document.removeEventListener('keydown', handleKeydown);
-  }, [matchShortcut, shortcuts.sidebarToggle.combo, toggleSidebarCollapsed]);
+  }, [matchShortcut, shortcuts.sidebarToggle.combo, toggleResponsiveSidebar]);
 
   // Close context menu on outside click
   useEffect(() => {
@@ -348,13 +370,13 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
   const handleActivateTab = useCallback((nextTab) => {
     if (nextTab === 'toc' && tocDisabled) return;
     setSidebarActiveTab(nextTab);
-    if (sidebarCollapsed) {
-      toggleSidebarCollapsed();
+    if (isSidebarCollapsed) {
+      toggleResponsiveSidebar();
     }
-  }, [setSidebarActiveTab, sidebarCollapsed, tocDisabled, toggleSidebarCollapsed]);
+  }, [setSidebarActiveTab, isSidebarCollapsed, tocDisabled, toggleResponsiveSidebar]);
 
   const restoreSidebarScroll = useCallback(() => {
-    if (sidebarCollapsed) return;
+    if (isSidebarCollapsed) return;
     const container = scrollContainerRef.current;
     if (!container) return;
     const targetTop = Number(sidebarScrollByTabRef.current?.[activeTab]) || 0;
@@ -364,7 +386,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
       }
     });
     return () => window.cancelAnimationFrame(frameId);
-  }, [activeTab, sidebarCollapsed]);
+  }, [activeTab, isSidebarCollapsed]);
 
   useEffect(() => () => {
     if (saveScrollFrameRef.current) {
@@ -599,6 +621,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
     }
     const action = () => {
       selectFile(file);
+      if (isMobileViewport) setMobileSidebarOpen(false);
       if (!navigateOnFileSelect) return;
       const href = `/${currentPage}?fileId=${encodeURIComponent(file.id)}`;
       if (router.pathname !== `/${currentPage}`) {
@@ -862,8 +885,8 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
   };
 
   return (
-    <div style={{
-      width: sidebarCollapsed ? 40 : width,
+    <div className={`notus-sidebar${isMobileViewport ? ' is-mobile' : ''}${mobileSidebarOpen ? ' is-mobile-open' : ''}${isSidebarCollapsed ? ' is-collapsed' : ''}`} style={{
+      width: isSidebarCollapsed ? 40 : width,
       background: 'var(--bg-sidebar)',
       borderRight: '1px solid var(--border-subtle)',
       display: 'flex',
@@ -1365,11 +1388,11 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
         height: 40,
         display: 'flex',
         alignItems: 'center',
-        padding: sidebarCollapsed ? '0 5px' : '0 6px',
+        padding: isSidebarCollapsed ? '0 5px' : '0 6px',
         borderBottom: '1px solid var(--border-subtle)',
         gap: 2,
       }}>
-        {!sidebarCollapsed && (
+        {!isSidebarCollapsed && (
           <>
             <button
               onClick={() => handleActivateTab('tree')}
@@ -1417,11 +1440,11 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
 
         <div style={{ flex: 1 }} />
 
-        <Tooltip content={sidebarCollapsed ? '展开侧边栏' : `收起侧边栏（${displayShortcut(shortcuts.sidebarToggle.combo)}）`}>
+        <Tooltip content={isSidebarCollapsed ? '展开' : '折叠'}>
           <button
             type="button"
-            title={sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}
-            onClick={toggleSidebarCollapsed}
+            title={isSidebarCollapsed ? '展开' : '折叠'}
+            onClick={toggleResponsiveSidebar}
             style={{
               width: 28,
               height: 28,
@@ -1434,11 +1457,11 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
             onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-hover)'}
             onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
           >
-            {sidebarCollapsed ? <Icons.chevronRight size={14} /> : <Icons.chevronLeft size={14} />}
+            {isSidebarCollapsed ? <Icons.chevronRight size={14} /> : <Icons.chevronLeft size={14} />}
           </button>
         </Tooltip>
 
-        {!sidebarCollapsed && (
+        {!isSidebarCollapsed && (
         <button
           title="搜索文件"
           onClick={() => {
@@ -1466,7 +1489,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
           <Icons.search size={14} />
         </button>
         )}
-        {!sidebarCollapsed && (
+        {!isSidebarCollapsed && (
         <button
           title="导入 Markdown"
           onClick={handleOpenImportDialog}
@@ -1477,7 +1500,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
           <Icons.upload size={14} />
         </button>
         )}
-        {!sidebarCollapsed && (
+        {!isSidebarCollapsed && (
         <button
           title="导出 Markdown"
           onClick={handleOpenExportDialog}
@@ -1488,7 +1511,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
           <Icons.download size={14} />
         </button>
         )}
-        {!sidebarCollapsed && (
+        {!isSidebarCollapsed && (
         <button
           title="新建文件"
           onClick={() => {
@@ -1503,7 +1526,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
           <Icons.filePlus size={14} />
         </button>
         )}
-        {!sidebarCollapsed && (
+        {!isSidebarCollapsed && (
         <button
           title="新建文件夹"
           onClick={() => {
@@ -1520,7 +1543,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
         )}
       </div>
 
-      {!sidebarCollapsed && activeTab === 'tree' && searchOpen && (
+      {!isSidebarCollapsed && activeTab === 'tree' && searchOpen && (
         <div style={{ padding: '8px 10px 6px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', gap: 8 }}>
           <SearchInput
             ref={searchInputRef}
@@ -1552,7 +1575,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
         </div>
       )}
 
-      {!sidebarCollapsed && (
+      {!isSidebarCollapsed && (
       <div
         ref={scrollContainerRef}
         onScroll={handleSidebarScroll}

@@ -32,7 +32,7 @@ export const Shell = ({
   }, [active, setActiveWorkspacePage]);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', minWidth: 1360, minHeight: 800 }}>
+    <div className="notus-shell" style={{ display: 'flex', flexDirection: 'column', height: '100dvh', minHeight: 0 }}>
       <TopBar
         active={active}
         fileName={fileName}
@@ -48,7 +48,7 @@ export const Shell = ({
         onToggleEditor={onToggleEditor}
         onToggleAgent={onToggleAgent}
       />
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0, position: 'relative', isolation: 'isolate', zIndex: 0 }}>
+      <div className="notus-shell__body" style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0, position: 'relative', isolation: 'isolate', zIndex: 0 }}>
         <Sidebar
           active={active}
           tocDisabled={tocDisabled}
@@ -56,7 +56,7 @@ export const Shell = ({
           requestAction={requestAction}
           navigateOnFileSelect={navigateOnFileSelect}
         />
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
+        <div className="notus-shell__content" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
           {children}
         </div>
       </div>

@@ -33,7 +33,7 @@ export const ToastProvider = ({ children }) => {
   return (
     <ToastContext.Provider value={show}>
       {children}
-      <div style={{
+      <div className="notus-toast-stack" style={{
         position: 'fixed',
         top: 16,
         right: 16,
@@ -45,6 +45,7 @@ export const ToastProvider = ({ children }) => {
       }}>
         {toasts.map((t) => (
           <div
+            className="notus-toast"
             key={t.id}
             style={{
               background: 'var(--bg-elevated)',

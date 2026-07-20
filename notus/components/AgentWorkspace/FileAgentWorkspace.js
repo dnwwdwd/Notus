@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/router';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AgentWorkspace } from './AgentWorkspace';
 import { ClarifyDrawer } from '../ChatArea/ClarifyDrawer';
 import { ConversationDrawer } from '../ChatArea/ConversationDrawer';
@@ -21,8 +20,9 @@ import {
   formatConversationExportMarkdown,
 } from '../../utils/conversationExport';
 import { readApiResponse } from '../../utils/http';
-import { navigateWithFallback } from '../../utils/navigation';
+import { useSettingsDialog } from '../../contexts/SettingsDialogContext';
 import { segmentsToAgentInput } from '../../utils/messageMentions';
+import { normalizeConversationId, readActiveConversationId, saveActiveConversationId } from '../../utils/activeConversationPersistence';
 
 const CONFIRM_MODE_STORAGE_KEY = 'notus-files-agent-confirm-mode';
 const AUTO_CONFIRM = 'auto_confirm';
@@ -64,6 +64,24 @@ function mapFileMention(file) {
     preview: path,
     kind: 'file',
     searchText: `${name} ${file?.name || ''} ${path}`,
+  };
+}
+
+function mapSkillMention(skill) {
+  const id = String(skill?.id || '').trim();
+  const name = String(skill?.name || '未命名 Skill').trim();
+  if (!id) return null;
+  return {
+    value: `skill:${id}`,
+    id,
+    name,
+    path: id,
+    type: 'skill',
+    token: `@{skill:${id}}`,
+    label: name,
+    preview: `${skill?.description || '本地 Skill'} · ${skill?.source_label || '本机'}`,
+    kind: 'skill',
+    searchText: `${name} ${skill?.description || ''} ${skill?.source_label || ''}`,
   };
 }
 
@@ -120,8 +138,29 @@ function dedupeMentionOptions(options = []) {
   });
 }
 
+function McpApprovalDrawer({ interaction, submitting, onDecision }) {
+  const approval = interaction?.payload?.approval || {};
+  const serverName = approval.server_name || 'MCP Server';
+  const toolName = approval.tool_name || '未知工具';
+  const input = approval.input && typeof approval.input === 'object' ? JSON.stringify(approval.input, null, 2) : '';
+  const options = [
+    { id: 'once', label: '仅本次允许', description: '只允许下一次相同工具调用。' },
+    { id: 'session', label: '本次任务允许', description: '当前 Agent session 内允许。' },
+    { id: 'always', label: '以后默认允许', description: '保存为此 Server 工具的默认允许。' },
+    { id: 'deny', label: '拒绝', description: '继续任务，但不调用该工具。' },
+  ];
+  return (
+    <section aria-label="MCP 工具授权" style={{ width: 'min(620px, 100%)', margin: '0 auto', padding: 16, border: '1px solid var(--border-subtle)', borderRadius: 16, background: 'var(--bg-elevated)', boxShadow: '0 -12px 30px rgba(45,45,45,0.10)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 15, fontWeight: 700, color: 'var(--text-primary)' }}><Icons.mcp size={17} style={{ color: 'var(--accent)' }} />允许 MCP 工具调用？</div>
+      <div style={{ marginTop: 8, fontSize: 13, lineHeight: 1.65, color: 'var(--text-secondary)' }}><strong>{serverName}</strong> 想调用 <code>{toolName}</code>。MCP 返回内容属于外部数据，授权只适用于这项工具调用。</div>
+      {input ? <pre style={{ margin: '10px 0 0', maxHeight: 118, overflow: 'auto', padding: 10, borderRadius: 10, background: 'var(--bg-secondary)', color: 'var(--text-secondary)', fontSize: 11, lineHeight: 1.55, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{input}</pre> : null}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 8, marginTop: 12 }}>{options.map((option) => <button key={option.id} type="button" disabled={submitting} onClick={() => onDecision?.(option.id)} style={{ border: '1px solid var(--border-subtle)', borderRadius: 10, padding: '9px 10px', background: option.id === 'deny' ? 'var(--bg-secondary)' : 'var(--bg-primary)', color: option.id === 'deny' ? 'var(--text-secondary)' : 'var(--text-primary)', textAlign: 'left', cursor: submitting ? 'wait' : 'pointer' }}><span style={{ display: 'block', fontSize: 12, fontWeight: 700 }}>{option.label}</span><span style={{ display: 'block', marginTop: 3, fontSize: 11, lineHeight: 1.45, color: 'var(--text-tertiary)' }}>{option.description}</span></button>)}</div>
+    </section>
+  );
+}
+
 export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles, onFilesChanged, beforeAgentRun }) {
-  const router = useRouter();
+  const { openSettings } = useSettingsDialog();
   const toast = useToast();
   const { status: appStatus, loading: appStatusLoading } = useAppStatus();
   const { configs: llmConfigs, activeConfigId, loading: llmConfigsLoading, setActiveConfig } = useLlmConfigs();
@@ -138,6 +177,8 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
   const [clarifyPhase, setClarifyPhase] = useState('expanded-question');
   const [selectedLlmConfigId, setSelectedLlmConfigId] = useState(null);
   const [agentConfirmMode, setAgentConfirmMode] = useState(() => readConfirmMode());
+  const [skills, setSkills] = useState([]);
+  const restoredConversationRef = useRef(false);
 
   const aiState = deriveAiReadiness({
     appStatus,
@@ -150,7 +191,19 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     ...allFiles.map(mapFileMention).filter((item) => item.preview),
     ...collectFolderMentions(fileTree),
     ...collectFolderMentionsFromFiles(allFiles),
-  ]), [allFiles, fileTree]);
+    ...skills.map(mapSkillMention).filter(Boolean),
+  ]), [allFiles, fileTree, skills]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/skills', { cache: 'no-store' })
+      .then((response) => response.ok ? response.json() : { skills: [] })
+      .then((payload) => {
+        if (!cancelled) setSkills((Array.isArray(payload?.skills) ? payload.skills : []).filter((skill) => skill?.enabled && skill?.status === 'valid'));
+      })
+      .catch(() => { if (!cancelled) setSkills([]); });
+    return () => { cancelled = true; };
+  }, []);
   const operationSetById = useMemo(() => Object.fromEntries(
     pendingOperationSets.map((item) => [String(item.id || item.operation_set_id), item])
   ), [pendingOperationSets]);
@@ -180,14 +233,20 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     return Array.isArray(payload) ? payload : [];
   }, []);
 
+  const setPersistedActiveConversationId = useCallback((conversationId) => {
+    const nextId = normalizeConversationId(conversationId);
+    setActiveConversationId(nextId);
+    saveActiveConversationId(nextId);
+  }, []);
+
   const refreshConversationList = useCallback(async (preferredId = null) => {
     const rows = await fetchConversationList();
     setConversationList(rows);
     if (preferredId && rows.some((item) => Number(item.id) === Number(preferredId))) {
-      setActiveConversationId(Number(preferredId));
+      setPersistedActiveConversationId(preferredId);
     }
     return rows;
-  }, [fetchConversationList]);
+  }, [fetchConversationList, setPersistedActiveConversationId]);
 
   const loadConversation = useCallback(async (conversationId) => {
     const response = await fetch(`/api/conversations/${conversationId}`, { cache: 'no-store' });
@@ -195,17 +254,31 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     setMessages(mapConversationMessages(payload.messages, 'canvas'));
     setPendingOperationSets(Array.isArray(payload.pending_operation_sets) ? payload.pending_operation_sets : []);
     setPendingInteractions(Array.isArray(payload.pending_interactions) ? payload.pending_interactions : []);
-    setActiveConversationId(Number(conversationId));
+    setPersistedActiveConversationId(conversationId);
     setHistoryDrawerOpen(false);
     return payload;
-  }, []);
+  }, [setPersistedActiveConversationId]);
 
   useEffect(() => {
     let cancelled = false;
     setConversationListLoading(true);
     fetchConversationList()
-      .then((rows) => {
-        if (!cancelled) setConversationList(rows);
+      .then(async (rows) => {
+        if (cancelled) return;
+        setConversationList(rows);
+        if (restoredConversationRef.current) return;
+        restoredConversationRef.current = true;
+        const savedId = readActiveConversationId();
+        if (!savedId) return;
+        if (!rows.some((item) => Number(item.id) === savedId)) {
+          saveActiveConversationId(null);
+          return;
+        }
+        try {
+          await loadConversation(savedId);
+        } catch {
+          saveActiveConversationId(null);
+        }
       })
       .catch(() => {
         if (!cancelled) setConversationList([]);
@@ -214,7 +287,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
         if (!cancelled) setConversationListLoading(false);
       });
     return () => { cancelled = true; };
-  }, [fetchConversationList]);
+  }, [fetchConversationList, loadConversation]);
 
   const notifyFilesChanged = useCallback(async () => {
     await refreshFiles?.({ background: true });
@@ -241,7 +314,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     onAppendAssistantMessage: (message) => setMessages((previous) => upsertById(previous, message)),
     onInteractionRequest: (interaction) => setPendingInteractions((previous) => upsertById(previous, interaction)),
     onConversationId: (conversationId) => {
-      if (conversationId) setActiveConversationId(Number(conversationId));
+      if (conversationId) setPersistedActiveConversationId(conversationId);
     },
     onConversationSettled: (conversationId) => {
       if (conversationId) refreshConversationList(Number(conversationId)).catch(() => {});
@@ -272,6 +345,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
 
   const buildAgentTask = useCallback((query, options = {}) => {
     const mentions = Array.isArray(options.mentions) ? options.mentions : [];
+    const skillMentions = mentions.filter((mention) => mention?.type === 'skill').map((mention) => String(mention.id || mention.path || '')).filter(Boolean);
     const mentionSegments = Array.isArray(options.mentionSegments) ? options.mentionSegments : [];
     const agentInput = segmentsToAgentInput(mentionSegments) || query;
     return {
@@ -289,8 +363,10 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     media_items: options.mediaItems || [],
     mentions,
     mention_segments: mentionSegments,
+    skill_mentions: skillMentions,
     web_search_enabled: Boolean(options.webSearchEnabled),
     search_provider: options.searchProvider || undefined,
+    mcp_selection: options.mcpSelection || { mode: 'off' },
     route_reason: 'files_agent_input',
     skip_user_message_append: Boolean(options.skipUserMessageAppend),
     onTaskAccepted: options.onTaskAccepted,
@@ -318,13 +394,13 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
       toast('当前 Agent 任务仍在执行，请先停止或等待完成', 'info');
       return;
     }
-    setActiveConversationId(null);
+    setPersistedActiveConversationId(null);
     setMessages([]);
     setPendingOperationSets([]);
     setPendingInteractions([]);
     setHistoryDrawerOpen(false);
     agentLoop.clearActiveAgentSession();
-  }, [agentLoop, toast]);
+  }, [agentLoop, setPersistedActiveConversationId, toast]);
 
   const handleDeleteConversation = useCallback(async (conversationId) => {
     setDeletingConversationId(Number(conversationId));
@@ -405,6 +481,18 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     }
   }, [respondToInteraction, resumeInteraction, toast]);
 
+  const handleMcpApproval = useCallback(async (interaction, decision) => {
+    setInteractionSubmittingId(interaction.id);
+    try {
+      const payload = await respondToInteraction(interaction, { action: decision });
+      if (payload.should_continue) await resumeInteraction(payload.interaction || interaction);
+    } catch (error) {
+      toast(error.message || 'MCP 授权失败', 'error');
+    } finally {
+      setInteractionSubmittingId(null);
+    }
+  }, [respondToInteraction, resumeInteraction, toast]);
+
   const displayedMessages = useMemo(() => messages.map((message) => {
     const operationSetId = String(message?.meta?.operation_set_id || message?.operationSet?.id || '');
     return operationSetId && operationSetById[operationSetId]
@@ -414,8 +502,8 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
   const inputDisabled = !aiUiState.ready || agentLoop.loading || sessionLocked || Boolean(activeInteraction && clarifyPhase !== 'collapsed');
 
   return (
-    <div style={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative', background: 'var(--bg-primary)' }}>
-      <div style={{ height: 48, padding: '0 12px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', flexShrink: 0 }}>
+    <div className="notus-file-agent-workspace" style={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative', background: 'var(--bg-primary)' }}>
+      <div className="notus-file-agent-workspace__header" style={{ height: 48, padding: '0 12px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', flexShrink: 0 }}>
         <div style={{ display: 'flex', gap: 4 }}>
           <Tooltip content="查看历史对话"><span><IconButton label="查看历史对话" size={30} active={historyDrawerOpen} onClick={() => setHistoryDrawerOpen(true)}><Icons.clock size={14} /></IconButton></span></Tooltip>
           <Tooltip content="新建对话"><span><IconButton label="新建对话" size={30} disabled={agentLoop.loading || sessionLocked} onClick={handleNewConversation}><Icons.plus size={14} /></IconButton></span></Tooltip>
@@ -444,19 +532,11 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
           attachmentMode="parsed"
           mentionOptions={mentionOptions}
         />
-        {aiUiState.showLockedState ? <AiLockedState compact variant="panel" onAction={() => navigateWithFallback(router, '/settings/model')} /> : null}
+        {aiUiState.showLockedState ? <AiLockedState compact variant="panel" onAction={() => openSettings('model')} /> : null}
       </div>
       {activeInteraction ? (
         <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, zIndex: 8, padding: '44px 12px 0', background: 'linear-gradient(180deg, transparent, var(--bg-primary) 28%)' }}>
-          <ClarifyDrawer
-            interaction={activeInteraction}
-            submitting={interactionSubmittingId === activeInteraction.id}
-            submitLabel="继续执行"
-            onPhaseChange={setClarifyPhase}
-            onSubmit={handleInteractionSubmit}
-            onRetry={resumeInteraction}
-            onCancel={(interaction) => respondToInteraction(interaction, { action: 'cancel' }).catch(() => {})}
-          />
+          {activeInteraction.kind === 'mcp_approval' ? <McpApprovalDrawer interaction={activeInteraction} submitting={interactionSubmittingId === activeInteraction.id} onDecision={(decision) => handleMcpApproval(activeInteraction, decision)} /> : <ClarifyDrawer interaction={activeInteraction} submitting={interactionSubmittingId === activeInteraction.id} submitLabel="继续执行" onPhaseChange={setClarifyPhase} onSubmit={handleInteractionSubmit} onRetry={resumeInteraction} onCancel={(interaction) => respondToInteraction(interaction, { action: 'cancel' }).catch(() => {})} />}
         </div>
       ) : null}
       <ConversationDrawer
@@ -468,7 +548,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
         onSelect={(id) => loadConversation(id).catch((error) => toast(error.message || '读取对话失败', 'error'))}
         onDelete={handleDeleteConversation}
         onExport={handleExportConversation}
-        onViewAgentLogs={(id) => navigateWithFallback(router, `/settings/logs?conversation_id=${encodeURIComponent(id)}`)}
+        onViewAgentLogs={() => openSettings('logs')}
         deletingConversationId={deletingConversationId}
         exportingConversationId={exportingConversationId}
       />

@@ -15,6 +15,7 @@ function runTests() {
   const canvasPage = read('pages/canvas.js');
   const canvasBlock = read('components/Canvas/CanvasBlock.js');
   const sidebar = read('components/Layout/Sidebar.js');
+  const fileAgentWorkspace = read('components/AgentWorkspace/FileAgentWorkspace.js');
   const editorToc = read('hooks/useEditorToc.js');
   const documentNavigation = read('utils/documentNavigation.js');
   const aiLockedState = read('components/ui/AiLockedState.js');
@@ -34,26 +35,19 @@ function runTests() {
   assert.ok(documentNavigation.includes("document.querySelectorAll('.wysiwyg-root .tiptap.ProseMirror')"));
 
   assert.ok(filesPage.includes('window.setTimeout(savePosition'));
-  assert.ok(knowledgePage.includes('window.setTimeout(savePosition'));
-  assert.ok(canvasPage.includes('window.setTimeout(savePosition'));
   assert.ok(filesPage.includes("router.events.on('routeChangeStart', flushPosition)"));
-  assert.ok(knowledgePage.includes("router.events.on('routeChangeStart', flushPosition)"));
-  assert.ok(canvasPage.includes("router.events.on('routeChangeStart', flushPosition)"));
   assert.ok(filesPage.includes('restorePositionRef.current) return;'));
-  assert.ok(knowledgePage.includes('restoreDocPositionRef.current) return;'));
-  assert.ok(canvasPage.includes('restoreCanvasPositionRef.current) return;'));
   assert.ok(filesPage.includes('retryRestoreViewPosition('));
-  assert.ok(knowledgePage.includes('retryRestoreViewPosition('));
-  assert.ok(canvasPage.includes('retryRestoreViewPosition('));
   assert.ok(!filesPage.includes('savePositionFrameRef'));
-  assert.ok(!knowledgePage.includes('saveDocPositionFrameRef'));
-  assert.ok(!canvasPage.includes('saveCanvasPositionFrameRef'));
 
-  assert.ok(!canvasPage.includes('const hasPendingRoute = Boolean(pendingRouteFileIdRef.current);'));
-  assert.ok(knowledgePage.includes('tocDisabled={!activeFile || !editorOpen}'));
-  assert.ok(knowledgePage.includes('tocItems={tocItems}'));
-  assert.ok(knowledgePage.includes('variant="panel"'));
+  assert.ok(knowledgePage.includes("destination: '/files'"));
+  assert.ok(canvasPage.includes("destination: '/files'"));
+  assert.ok(!knowledgePage.includes('retryRestoreViewPosition('));
+  assert.ok(!canvasPage.includes('retryRestoreViewPosition('));
   assert.ok(aiLockedState.includes("variant === 'modal' || variant === 'panel'"));
+  assert.ok(fileAgentWorkspace.includes("const { openSettings } = useSettingsDialog();"));
+  assert.ok(fileAgentWorkspace.includes("<AiLockedState compact variant=\"panel\" onAction={() => openSettings('model')} />"));
+  assert.ok(!fileAgentWorkspace.includes("navigateWithFallback(router, '/settings/model')"));
 
   assert.ok(editorToc.includes('setActiveHeadingIndex(index);'));
   assert.ok(editorToc.includes('querySelectorAll(TOC_HEADING_SELECTOR)'));

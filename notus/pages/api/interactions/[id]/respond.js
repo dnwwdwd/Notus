@@ -12,6 +12,8 @@ const {
   normalizeInteractionResponse,
   updateInteraction,
 } = require('../../../../lib/conversationInteractions');
+const { setSessionMcpPermission } = require('../../../../lib/agentSession');
+const { setServerToolPermission } = require('../../../../lib/mcp');
 
 function buildCorrectionStateFromResponse(interaction, normalizedResponse) {
   const payload = interaction?.payload || {};
@@ -112,6 +114,47 @@ export default function handler(req, res) {
       error: statusError.message,
       code: statusError.code,
       interaction,
+      request_id: context.request_id,
+    });
+  }
+
+  if (interaction.kind === 'mcp_approval') {
+    const decision = String(action || '').trim();
+    if (!['once', 'session', 'always', 'deny'].includes(decision)) {
+      return res.status(400).json({ error: '请选择 MCP 授权方式', code: 'MCP_APPROVAL_DECISION_REQUIRED', request_id: context.request_id });
+    }
+    const approval = interaction.payload?.approval || {};
+    const sessionId = Number(interaction.payload?.agent_session_id || 0);
+    const permissionKey = `${approval.server_id || ''}:${approval.tool_name || ''}`;
+    if (!sessionId || !approval.server_id || !approval.tool_name) {
+      return res.status(409).json({ error: 'MCP 授权信息已失效', code: 'MCP_APPROVAL_INVALID', request_id: context.request_id });
+    }
+    if (decision === 'always') setServerToolPermission(approval.server_id, approval.tool_name, 'allow');
+    setSessionMcpPermission(sessionId, permissionKey, decision === 'once' ? 'allow_once' : decision === 'deny' ? 'deny' : 'allow');
+    const normalizedResponse = { decision, answers: { decision: { value: decision, label: decision } } };
+    const summaryText = decision === 'deny'
+      ? `已拒绝 MCP 工具 ${approval.server_name || ''} / ${approval.tool_name} 的调用。`
+      : `已允许 MCP 工具 ${approval.server_name || ''} / ${approval.tool_name} 的调用（${decision === 'once' ? '仅本次' : decision === 'session' ? '本次任务' : '以后默认允许'}）。`;
+    const answerMessageId = appendConversationMessage({
+      conversationId: interaction.conversation_id,
+      role: 'user',
+      content: summaryText,
+      meta: { interaction_id: interaction.id, interaction_resolution_status: 'resolved', mcp_approval: decision },
+    });
+    touchConversation(interaction.conversation_id);
+    const updatedInteraction = updateInteraction(interaction.id, {
+      response: normalizedResponse,
+      status: 'answered',
+      answerMessageId,
+      answeredAt: new Date().toISOString(),
+    });
+    return res.status(200).json({
+      interaction: updatedInteraction,
+      answer_message: getConversationMessageById(answerMessageId),
+      resolution_status: 'resolved',
+      normalized_response: normalizedResponse,
+      should_continue: true,
+      resume_payload: { interaction_id: updatedInteraction.id, conversation_id: updatedInteraction.conversation_id },
       request_id: context.request_id,
     });
   }

@@ -184,6 +184,74 @@ function ensureAgentLoopIndexes(database) {
   }
 }
 
+function ensureSkillMcpSchema(database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS skill_roots (
+      id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE, real_path TEXT, scope TEXT NOT NULL,
+      providers_json TEXT NOT NULL, writable INTEGER NOT NULL DEFAULT 0,
+      managed_by_notus INTEGER NOT NULL DEFAULT 0, watch_enabled INTEGER NOT NULL DEFAULT 0,
+      priority INTEGER NOT NULL DEFAULT 0, last_scan_at TEXT, last_error TEXT
+    );
+    CREATE TABLE IF NOT EXISTS skills (
+      id TEXT PRIMARY KEY, root_id TEXT NOT NULL REFERENCES skill_roots(id) ON DELETE CASCADE,
+      name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', directory_path TEXT NOT NULL,
+      real_path TEXT, skill_md_path TEXT NOT NULL, frontmatter_json TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL, validation_errors_json TEXT NOT NULL DEFAULT '[]', content_hash TEXT,
+      source_label TEXT, managed INTEGER NOT NULL DEFAULT 0, last_seen_at TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(root_id, directory_path)
+    );
+    CREATE INDEX IF NOT EXISTS idx_skills_name ON skills(name);
+    CREATE INDEX IF NOT EXISTS idx_skills_status ON skills(status);
+    CREATE TABLE IF NOT EXISTS skill_installations (
+      id TEXT PRIMARY KEY, skill_id TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+      method TEXT NOT NULL, repository_url TEXT, repository_ref TEXT, repository_commit TEXT,
+      repository_subdirectory TEXT, archive_sha256 TEXT, draft_id TEXT, installed_hash TEXT NOT NULL,
+      installed_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS skill_user_state (
+      owner_id TEXT NOT NULL, skill_id TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+      enabled INTEGER NOT NULL DEFAULT 1, priority_override INTEGER,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')), PRIMARY KEY(owner_id, skill_id)
+    );
+    CREATE TABLE IF NOT EXISTS skill_jobs (
+      id TEXT PRIMARY KEY, type TEXT NOT NULL, status TEXT NOT NULL, stage TEXT, progress INTEGER NOT NULL DEFAULT 0,
+      input_json TEXT NOT NULL DEFAULT '{}', result_json TEXT, error_code TEXT, error_message TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), finished_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS skill_drafts (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL, instructions TEXT NOT NULL,
+      files_json TEXT NOT NULL DEFAULT '[]', validation_json TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL DEFAULT 'draft',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), expires_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS mcp_servers (
+      id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, name TEXT NOT NULL, transport TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1, config_json TEXT NOT NULL, tool_policy_json TEXT NOT NULL,
+      last_test_status TEXT, last_test_at TEXT, last_error_code TEXT, last_error_message TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(owner_id, name)
+    );
+    CREATE TABLE IF NOT EXISTS mcp_tool_cache (
+      server_id TEXT NOT NULL REFERENCES mcp_servers(id) ON DELETE CASCADE, tool_name TEXT NOT NULL,
+      description TEXT, input_schema_json TEXT NOT NULL, schema_hash TEXT NOT NULL, discovered_at TEXT NOT NULL,
+      PRIMARY KEY(server_id, tool_name)
+    );
+    CREATE TABLE IF NOT EXISTS mcp_audit_logs (
+      id TEXT PRIMARY KEY, server_id TEXT, action TEXT NOT NULL, detail_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  [
+    ['skill_mentions_json', "TEXT NOT NULL DEFAULT '[]'"],
+    ['mcp_selection_json', "TEXT NOT NULL DEFAULT '{\"mode\":\"off\"}'"],
+    ['mcp_session_permissions_json', "TEXT NOT NULL DEFAULT '{}'"],
+  ].forEach(([column, definition]) => {
+    if (!hasColumn(database, 'agent_sessions', column)) {
+      database.exec(`ALTER TABLE agent_sessions ADD COLUMN ${column} ${definition};`);
+    }
+  });
+}
+
 function ensureConversationIndexes(database) {
   if (!hasColumn(database, 'conversations', 'kind') || !hasColumn(database, 'conversations', 'updated_at')) {
     return;
@@ -566,6 +634,7 @@ function ensureSchema(database, config) {
   ensureConversationIndexes(database);
   ensureMessagesSchema(database);
   ensureAgentLoopSchema(database);
+  ensureSkillMcpSchema(database);
   runMigrations(database);
   ensureAgentLoopIndexes(database);
   createVecTable(database, config.embeddingDim);

@@ -30,6 +30,8 @@ const {
   buildInteractionAnswerSummary,
   getInteractionById,
 } = require('./conversationInteractions');
+const { eligibleSkillSummaries } = require('./skills');
+const { prepareMcpTools } = require('./mcp');
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -247,6 +249,24 @@ function buildQuestionCardToolResult(interactionId, sessionId) {
   };
 }
 
+function buildInteractionResumeToolResult(interactionId, sessionId) {
+  const interaction = getInteractionById(interactionId);
+  if (interaction?.kind !== 'mcp_approval') return buildQuestionCardToolResult(interactionId, sessionId);
+  if (interaction.source !== 'agent_loop' || Number(interaction.payload?.agent_session_id || 0) !== Number(sessionId || 0)) {
+    return { isError: true, content: JSON.stringify({ error: 'INTERACTION_SESSION_MISMATCH', message: 'MCP 授权不属于当前 Agent 任务' }) };
+  }
+  if (interaction.status !== 'answered') {
+    return { isError: true, content: JSON.stringify({ error: 'MCP_APPROVAL_NOT_COMPLETED', message: 'MCP 授权尚未完成' }) };
+  }
+  const decision = String(interaction.response?.decision || interaction.response?.answers?.decision?.value || 'deny');
+  return {
+    // 用户拒绝权限不是系统错误；把它作为普通工具结果交还模型，
+    // 以便模型解释限制或继续完成不依赖该工具的内容。
+    isError: false,
+    content: JSON.stringify({ mcp_approval: decision, interaction_id: interaction.id, message: decision === 'deny' ? '用户拒绝了本次 MCP 调用。请不要尝试绕过授权。' : '用户已允许 MCP 调用。请在仍有必要时重新调用同一个工具。' }),
+  };
+}
+
 function buildInitialUserContent(session, options = {}) {
   const text = buildInitialUserMessage(session.goal, session, options);
   const images = Array.isArray(options.images) ? options.images : [];
@@ -273,7 +293,9 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMo
 
   const styleContext = await loadStyleContext(session);
   const continuationFileContext = buildContinuationFileContext(session);
-  const tools = buildToolDefinitions(session).filter((tool) => (
+  const skillCatalog = eligibleSkillSummaries(session.goal, session.skill_mentions || []);
+  const mcpContext = await prepareMcpTools(session.mcp_selection || { mode: 'off' }, session.goal);
+  const tools = buildToolDefinitions(session, { mcpTools: mcpContext.tools }).filter((tool) => (
     !(continuationFileContext?.requiresTargetReuse && tool?.name === 'create_note')
   ));
   const attachmentContext = session.conversation_id
@@ -283,7 +305,7 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMo
     ? formatWebSearchContextsForPrompt(session.conversation_id)
     : '';
   const systemPrompt = [
-    buildLoopSystemPrompt(session, { styleContext, continuationFileContext }),
+    buildLoopSystemPrompt(session, { styleContext, continuationFileContext, skillCatalog, mcpInstructions: mcpContext.instructions }),
     attachmentContext,
     webSearchContext,
   ].filter(Boolean).join('\n\n');
@@ -293,7 +315,7 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMo
     messages = checkpoint.messages;
     if (checkpoint.appliedToolUseId) {
       const questionCardResult = resumeInteractionId
-        ? buildQuestionCardToolResult(resumeInteractionId, session.id)
+        ? buildInteractionResumeToolResult(resumeInteractionId, session.id)
         : null;
       messages.push({ role: 'assistant', content: checkpoint.lastResponseContent || [] });
       messages.push({
@@ -397,7 +419,7 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMo
     for (const toolUse of toolUseBlocks) {
       emit({ type: 'tool_start', tool_name: toolUse.name, tool_input_summary: summarizeInput(toolUse), loop_index: loopIndex });
       const startedAt = Date.now();
-      let result = await executeToolSafely(toolUse, session, config.notesDir);
+      let result = await executeToolSafely(toolUse, session, config.notesDir, { mcpToolMap: mcpContext.map });
       if (!result?.error && toolUse.name === 'read_conversation_images' && result.image_context) {
         try {
           if (String(llmConfig?.llmApiProtocol || '').trim().toLowerCase() === 'anthropic') {
@@ -428,6 +450,14 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMo
       });
 
       emit({ type: 'tool_done', tool_name: toolUse.name, result_summary: summarizeToolResult(toolUse.name, result), loop_index: loopIndex, failed });
+
+      if (result?.pending_approval && result.interaction) {
+        saveMessagesCheckpoint(session.id, messages, content, toolUse.id);
+        updateSessionStatus(session.id, 'waiting_confirm');
+        emit({ type: 'interaction_request', loop_index: loopIndex, interaction: result.interaction, reason: 'mcp_approval_requested' });
+        emit({ type: 'loop_done', reason: 'mcp_approval_requested', loop_index: loopIndex, interaction_id: result.interaction.id });
+        return { status: 'waiting_confirm', reason: 'mcp_approval_requested', interaction: result.interaction, interaction_id: result.interaction.id };
+      }
 
       if (failed) {
         if (recordToolFail(session.id, toolUse.name)) {

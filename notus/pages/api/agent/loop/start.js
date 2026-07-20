@@ -42,6 +42,8 @@ export default async function handler(req, res) {
     const webSearchEnabled = Boolean(body.web_search_enabled ?? body.webSearchEnabled);
     const searchProvider = String(body.search_provider || body.searchProvider || '').trim();
     const toolProfile = String(body.tool_profile || body.toolProfile || '').trim() === 'read_only' ? 'read_only' : 'default';
+    const skillMentions = Array.isArray(body.skill_mentions ?? body.skillMentions) ? (body.skill_mentions ?? body.skillMentions).map(String).filter(Boolean) : [];
+    const mcpSelection = body.mcp_selection ?? body.mcpSelection ?? { mode: 'off' };
 
     if (sessionId) {
       const access = validateSessionAccess(sessionId, body.session_token);
@@ -109,6 +111,8 @@ export default async function handler(req, res) {
             web_search_enabled: webSearchEnabled,
             search_provider: searchProvider || null,
             tool_profile: toolProfile,
+            skill_mentions: skillMentions,
+            mcp_selection: mcpSelection,
           },
         });
         initialImages = getImageInputBlocks(images, { messageId });
@@ -126,6 +130,8 @@ export default async function handler(req, res) {
         webSearchEnabled,
         webSearchProvider: searchProvider,
         toolProfile,
+        skillMentions,
+        mcpSelection,
       });
       sessionId = created.sessionId;
       activeSessionId = sessionId;
@@ -148,9 +154,9 @@ export default async function handler(req, res) {
     });
 
     const finalSession = getSession(sessionId);
-    if (conversationId && finalSession.status === 'waiting_confirm' && loopResult?.reason === 'question_card_requested' && loopResult?.interaction?.id) {
+    if (conversationId && finalSession.status === 'waiting_confirm' && ['question_card_requested', 'mcp_approval_requested'].includes(loopResult?.reason) && loopResult?.interaction?.id) {
       const assistantMessage = String(loopResult.interaction?.payload?.clarify_intro || '').trim()
-        || '我先生成一张提问卡片，确认后继续执行。';
+        || (loopResult?.reason === 'mcp_approval_requested' ? 'MCP 工具需要你的授权，确认后继续执行。' : '我先生成一张提问卡片，确认后继续执行。');
       const messageId = appendConversationMessage({
         conversationId,
         role: 'assistant',
@@ -159,9 +165,9 @@ export default async function handler(req, res) {
           agent_loop: true,
           session_id: sessionId,
           status: finalSession.status,
-          answer_mode: 'clarify_needed',
+          answer_mode: loopResult?.reason === 'mcp_approval_requested' ? 'mcp_approval' : 'clarify_needed',
           interaction_id: loopResult.interaction.id,
-          interaction_kind: 'clarify_card',
+          interaction_kind: loopResult.interaction.kind || 'clarify_card',
           reason: loopResult.reason,
         },
       });

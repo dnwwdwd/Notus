@@ -11,6 +11,7 @@
     "test:platform": "npm --prefix notus run test:platform",
     "test:knowledge-routing": "npm --prefix notus run test:knowledge-routing",
     "test:knowledge-retrieval": "npm --prefix notus run test:knowledge-retrieval",
+    "test:conversation-persistence": "npm --prefix notus run test:conversation-persistence",
     "dev:desktop": "node desktop/scripts/dev-electron.js",
     "dev:desktop:all": "node desktop/scripts/dev-all.js",
     "build:desktop": "node desktop/scripts/build-desktop.js",

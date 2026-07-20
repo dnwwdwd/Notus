@@ -35,6 +35,11 @@ function ensureRuntime({ startBackground = true } = {}) {
     const config = readEnvConfig();
     ensureDirs(config);
     initDb();
+    try {
+      require('./skills').initializeSkills();
+    } catch (error) {
+      logger.warn('skills.runtime.init_failed', { error });
+    }
     logger.info('runtime.ready', {
       notes_dir: config.notesDir,
       db_path: config.dbPath,

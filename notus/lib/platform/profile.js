@@ -5,7 +5,7 @@ const { inferRuntimeTarget } = require('./target');
 function getPlatformProfile(env = process.env) {
   const runtimeTarget = inferRuntimeTarget(env);
   const paths = resolvePlatformPaths(env, { runtimeTarget });
-  const capabilities = getPlatformCapabilities(runtimeTarget, process.platform);
+  const capabilities = getPlatformCapabilities(runtimeTarget, process.platform, { dataRoot: paths.dataRoot });
 
   return {
     runtimeTarget,

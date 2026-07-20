@@ -45,6 +45,12 @@ function normalizeToolProfile(value) {
   return String(value || '').trim() === 'read_only' ? 'read_only' : 'default';
 }
 
+function normalizeMcpSelection(value) {
+  if (value?.mode === 'auto') return { mode: 'auto' };
+  if (value?.mode === 'server' && String(value.serverId || '').trim()) return { mode: 'server', serverId: String(value.serverId).trim() };
+  return { mode: 'off' };
+}
+
 function normalizeCreatedFiles(value) {
   const parsed = Array.isArray(value) ? value : safeJsonParse(value, []);
   return (Array.isArray(parsed) ? parsed : []).map((item) => {
@@ -73,6 +79,8 @@ function createSession({
   webSearchMode = '',
   webSearchCount = null,
   toolProfile = 'default',
+  skillMentions = [],
+  mcpSelection = { mode: 'off' },
 } = {}) {
   const normalizedGoal = String(goal || '').trim();
   if (!normalizedGoal) throw new Error('goal is required');
@@ -83,8 +91,9 @@ function createSession({
     INSERT INTO agent_sessions (
       goal, authorized_paths, authorized_ops, session_token, expires_at,
       soft_limit, hard_limit, search_knowledge_limit, conversation_id,
-      web_search_enabled, web_search_provider, web_search_mode, web_search_count, tool_profile, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      web_search_enabled, web_search_provider, web_search_mode, web_search_count, tool_profile,
+      skill_mentions_json, mcp_selection_json, mcp_session_permissions_json, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
   `).run(
     normalizedGoal,
     JSON.stringify(normalizeAuthorizedPaths(authorizedPaths)),
@@ -99,7 +108,10 @@ function createSession({
     String(webSearchProvider || '').trim(),
     String(webSearchMode || '').trim(),
     webSearchCount === null || webSearchCount === undefined ? null : Math.max(1, Number(webSearchCount) || 5),
-    normalizeToolProfile(toolProfile)
+    normalizeToolProfile(toolProfile),
+    JSON.stringify(Array.isArray(skillMentions) ? skillMentions.map(String).filter(Boolean) : []),
+    JSON.stringify(normalizeMcpSelection(mcpSelection)),
+    JSON.stringify({})
   );
   return { sessionId: Number(result.lastInsertRowid), token };
 }
@@ -126,6 +138,9 @@ function formatSession(row) {
       ? null
       : Number(row.web_search_count),
     tool_profile: normalizeToolProfile(row.tool_profile),
+    skill_mentions: safeJsonParse(row.skill_mentions_json, []),
+    mcp_selection: normalizeMcpSelection(safeJsonParse(row.mcp_selection_json, { mode: 'off' })),
+    mcp_session_permissions: safeJsonParse(row.mcp_session_permissions_json, {}),
     tool_call_counts: safeJsonParse(row.tool_call_counts, {}),
     consecutive_fails: safeJsonParse(row.consecutive_fails, {}),
     last_tool_results: safeJsonParse(row.last_tool_results, {}),
@@ -184,6 +199,29 @@ function updateSessionStatus(sessionId, status) {
 function updateSessionLoopCount(sessionId, loopCount) {
   getDb().prepare('UPDATE agent_sessions SET loop_count = ?, updated_at = datetime(\'now\') WHERE id = ?')
     .run(Math.max(0, Number(loopCount) || 0), normalizePositiveInt(sessionId));
+}
+
+function setSessionMcpPermission(sessionId, permissionKey, permission) {
+  const id = normalizePositiveInt(sessionId);
+  if (!id || !String(permissionKey || '').trim()) throw new Error('MCP permission key is required');
+  const row = getDb().prepare('SELECT mcp_session_permissions_json FROM agent_sessions WHERE id = ?').get(id);
+  const permissions = safeJsonParse(row?.mcp_session_permissions_json, {});
+  permissions[String(permissionKey)] = String(permission || 'deny');
+  getDb().prepare("UPDATE agent_sessions SET mcp_session_permissions_json = ?, updated_at = datetime('now') WHERE id = ?")
+    .run(JSON.stringify(permissions), id);
+  return getSession(id);
+}
+
+function consumeSessionMcpPermission(sessionId, permissionKey) {
+  const id = normalizePositiveInt(sessionId);
+  const key = String(permissionKey || '');
+  const row = getDb().prepare('SELECT mcp_session_permissions_json FROM agent_sessions WHERE id = ?').get(id);
+  const permissions = safeJsonParse(row?.mcp_session_permissions_json, {});
+  if (permissions[key] !== 'allow_once') return false;
+  delete permissions[key];
+  getDb().prepare("UPDATE agent_sessions SET mcp_session_permissions_json = ?, updated_at = datetime('now') WHERE id = ?")
+    .run(JSON.stringify(permissions), id);
+  return true;
 }
 
 function extendHardLimit(sessionId, extraLoops = 10) {
@@ -533,6 +571,8 @@ module.exports = {
   sanitizeSessionForRead,
   updateSessionStatus,
   updateSessionLoopCount,
+  setSessionMcpPermission,
+  consumeSessionMcpPermission,
   extendHardLimit,
   validateWrite,
   validateSessionAccess,

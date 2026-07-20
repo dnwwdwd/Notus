@@ -1,8 +1,10 @@
 const fs = require('fs');
+const http = require('http');
+const crypto = require('crypto');
 const net = require('net');
 const path = require('path');
 const { spawn } = require('child_process');
-const { app, BrowserWindow, Menu, dialog, globalShortcut, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, Menu, dialog, globalShortcut, ipcMain, shell, safeStorage } = require('electron');
 const { collectMarkdownEntries } = require('../shared/imports');
 const { buildManagedPaths, getManagedDataRoot } = require('../shared/paths');
 
@@ -14,6 +16,9 @@ let serverProcess = null;
 let cleanupOnQuit = false;
 let cleanupCompleted = false;
 let serverBaseUrl = process.env.NOTUS_DESKTOP_DEV_URL || 'http://127.0.0.1:3000';
+let secretBridgeServer = null;
+let secretBridgeUrl = '';
+let secretBridgeToken = '';
 
 app.setName('Notus');
 app.setPath('userData', managedPaths.dataRoot);
@@ -50,6 +55,100 @@ async function ensureManagedDirectories() {
     fs.promises.mkdir(managedPaths.logDir, { recursive: true }),
     fs.promises.mkdir(managedPaths.sessionDir, { recursive: true }),
   ]);
+}
+
+function secretBridgeStorePath() {
+  return path.join(managedPaths.dataRoot, 'secrets', 'electron-safe-storage.json');
+}
+
+function readSecretBridgeStore() {
+  const file = secretBridgeStorePath();
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch { return {}; }
+}
+
+function writeSecretBridgeStore(store) {
+  const file = secretBridgeStorePath();
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(file, JSON.stringify(store), { mode: 0o600 });
+}
+
+function sendSecretBridgeJson(res, status, payload) {
+  res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+  res.end(JSON.stringify(payload));
+}
+
+function readSecretBridgeBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > 64 * 1024) { reject(new Error('请求体过大')); req.destroy(); return; }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')); } catch { reject(new Error('请求格式错误')); }
+    });
+    req.on('error', reject);
+  });
+}
+
+async function startSecretBridge() {
+  if (secretBridgeServer || !safeStorage.isEncryptionAvailable()) return;
+  secretBridgeToken = crypto.randomBytes(32).toString('hex');
+  secretBridgeServer = http.createServer(async (req, res) => {
+    const suppliedToken = String(req.headers['x-notus-secret-token'] || '');
+    if (!suppliedToken || suppliedToken.length !== secretBridgeToken.length || !crypto.timingSafeEqual(Buffer.from(suppliedToken), Buffer.from(secretBridgeToken))) {
+      return sendSecretBridgeJson(res, 403, { error: '未授权的密钥请求' });
+    }
+    if (req.method !== 'POST') return sendSecretBridgeJson(res, 405, { error: '仅支持 POST' });
+    const action = String(req.url || '').replace(/^\/+/, '').split('?')[0];
+    try {
+      const body = await readSecretBridgeBody(req);
+      const store = readSecretBridgeStore();
+      if (action === 'set') {
+        const value = String(body.value || '');
+        if (!value) return sendSecretBridgeJson(res, 400, { error: '密钥不能为空' });
+        const id = crypto.randomUUID();
+        store[id] = safeStorage.encryptString(value).toString('base64');
+        writeSecretBridgeStore(store);
+        return sendSecretBridgeJson(res, 200, { id });
+      }
+      if (action === 'get') {
+        const encrypted = store[String(body.id || '')];
+        if (!encrypted) return sendSecretBridgeJson(res, 404, { error: '密钥不存在' });
+        return sendSecretBridgeJson(res, 200, { value: safeStorage.decryptString(Buffer.from(encrypted, 'base64')) });
+      }
+      if (action === 'delete') {
+        delete store[String(body.id || '')];
+        writeSecretBridgeStore(store);
+        return sendSecretBridgeJson(res, 200, { ok: true });
+      }
+      return sendSecretBridgeJson(res, 404, { error: '未知操作' });
+    } catch (error) { return sendSecretBridgeJson(res, 400, { error: error.message || '密钥服务失败' }); }
+  });
+  await new Promise((resolve, reject) => {
+    secretBridgeServer.once('error', reject);
+    secretBridgeServer.listen(0, '127.0.0.1', () => {
+      const address = secretBridgeServer.address();
+      secretBridgeUrl = `http://127.0.0.1:${address.port}`;
+      resolve();
+    });
+  });
+}
+
+function stopSecretBridge() {
+  return new Promise((resolve) => {
+    if (!secretBridgeServer) return resolve();
+    const target = secretBridgeServer;
+    secretBridgeServer = null;
+    secretBridgeUrl = '';
+    secretBridgeToken = '';
+    target.close(() => resolve());
+  });
 }
 
 function findFreePort() {
@@ -100,6 +199,7 @@ async function startServerIfNeeded() {
       HOSTNAME: '127.0.0.1',
       NOTUS_RUNTIME_TARGET: 'electron',
       NOTUS_DATA_ROOT: managedPaths.dataRoot,
+      ...(secretBridgeUrl ? { NOTUS_SECRET_BRIDGE_URL: secretBridgeUrl, NOTUS_SECRET_BRIDGE_TOKEN: secretBridgeToken } : {}),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -159,8 +259,8 @@ async function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 920,
-    minWidth: 1360,
-    minHeight: 800,
+    minWidth: 390,
+    minHeight: 640,
     show: false,
     backgroundColor: '#F7F2E8',
     webPreferences: {
@@ -304,6 +404,7 @@ ipcMain.handle('desktop:clear-local-data-and-quit', async () => {
 
 app.whenReady().then(async () => {
   await ensureManagedDirectories();
+  await startSecretBridge();
   registerGlobalShortcuts();
   buildAppMenu();
   await createWindow();
@@ -339,4 +440,5 @@ app.on('activate', () => {
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
   stopServer().catch(() => {});
+  stopSecretBridge().catch(() => {});
 });

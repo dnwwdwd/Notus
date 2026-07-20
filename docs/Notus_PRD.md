@@ -1,6 +1,6 @@
 # Notus 产品需求文档（PRD）
 
-> v3.1 · 更新时间：2026-07-17
+> v3.1 · 更新时间：2026-07-19
 
 ## 1. 技术约束
 
@@ -17,9 +17,9 @@
 | `/files` | `pages/files/index.js` | 唯一主工作区 |
 | `/knowledge` | `pages/knowledge.js` | `getServerSideProps` 临时跳转 `/files` |
 | `/canvas` | `pages/canvas.js` | `getServerSideProps` 临时跳转 `/files` |
-| `/settings/[section]` | 设置页面 | 保留模型、搜索、个性化、图床等配置 |
+| `/settings/[section]` | 设置兼容入口 | 显示模型、搜索、个性化、图床等设置弹窗 |
 
-`TopBar` 不再渲染产品页面 tab。文件搜索固定跳转 `/files?fileId=<id>`，搜索 icon 的 tooltip 固定为“搜索文件”。
+`TopBar` 不再渲染产品页面 tab。文件搜索固定跳转 `/files?fileId=<id>`，搜索 icon 的 tooltip 固定为“搜索文件”。设置由 `SettingsDialogProvider` 在当前工作区上方展示，遮罩不能关闭弹窗，仍可用关闭按钮或 Esc 退出。设置标题栏不重复显示“设置”；各 section 复用仅渲染标题名称的 `SettingsPageHeader`，并由 `SETTINGS_CONTENT_MAX_WIDTH = 860` 统一内容列最大宽度。Skill 与 MCP section 复用暖白资源卡，操作栏在窄宽度可换行；个性化页复用搜索配置的全宽设置区表面样式。
 
 ## 3. 文件工作区实现
 
@@ -39,18 +39,21 @@ Shell
     └── FileAgentWorkspace
 ```
 
-`FilesPage` 同时维护编辑器内容和 AI 工作台。两个面板都展开时使用 `ResizableLayout`；左栏宽度约束为 38%～70%，并保证编辑器至少 560px、AI 面板至少 456px。
+`FilesPage` 同时维护编辑器内容和 AI 工作台。两个面板都展开时使用 `ResizableLayout`；在宽屏中左栏宽度约束为 38%～70%，编辑器至少 560px、AI 面板至少 456px。`1200px` 以下侧栏收缩为 196px、两面板的视觉下限降为 300px；`900px` 以下改为编辑器在上、AI 面板在下的纵向布局并暂停横向拖拽；`700px` 以下侧栏改为临时抽屉，主内容为抽屉预留 40px，不覆盖正文。
 
 ### 3.2 面板状态
 
 - `notus-files-workspace-panels`：保存 `editorOpen` 与 `agentOpen`。
 - `notus-files-workspace-layout`：保存 `editorWidthPercent` 与 `agentWidthPercent` 两个双栏宽度百分比；读取时兼容旧版单一左栏百分比。
+- `notus-files-active-conversation`：保存文件工作区当前有效 Agent 对话 ID。历史列表加载成功后仅在 ID 仍存在时请求详情并恢复；新建、删除当前会话、找不到记录或请求失败都会删除该值。
 - `GET /api/settings` 的 `editor.default_editor_open`、`editor.default_agent_open` 为已运行工作区从无文件状态打开文件时的默认值；启动时从浏览器恢复的当前文件必须保留已保存的面板组合。
 - `PUT /api/settings` 支持保存这两个字段，数据库设置键分别为 `editor_default_open` 和 `editor_default_agent_open`。
 - 用户手动开关或切换已打开文件不会回读默认值。侧边栏再次点击当前文件会清空 `activeFileId` 和当前文件，并移除 `/files?fileId=...` 路由状态；编辑器显示未选择文件空态，AI 面板保持当前状态。
 - `AppContext` 完成 `notus-workspace-state` 恢复后公开 `workspaceHydrated` 和启动时的 `restoredActiveFileId`。`FilesPage` 识别到该文件后跳过默认面板初始化，避免在窗口重开时把 `notus-files-workspace-panels` 覆盖为设置默认值。
 - `ResizableLayout` 初始化使用本地存储的编辑器宽度，拖动提交时同步保存编辑器与 AI 面板宽度。
 - `TopBar` 的编辑器和 AI 面板开关复用 32px 图标按钮；默认快捷键分别为 `Mod+B` 和 `Mod+U`，命中时调用对应开关并阻止浏览器默认行为。
+- `html`、`body`、`#__next` 与 `Shell` 不再设置固定 1360px 最小宽度。桌面 `BrowserWindow` 的最小窗口调整为 `390 × 640`；共享 CSS 负责在实际视口内收缩页面，不通过外层横向滚动保留旧画布尺寸。
+- 通用 `Dialog`、文档查找栏、Toast、图片预览和设置弹窗均使用视口宽高限制。设置页在 700px 以下把左侧导航改为横向可滚动栏，内容区改为单列可滚动区域；表格、代码块和 diff 保留内容区自身的横向滚动。
 
 ### 3.3 编辑器和复制
 
@@ -66,9 +69,10 @@ Shell
 
 ### 3.4 图片对象存储
 
-- `GET /api/settings` 返回 `images.storage_mode` 与脱敏的 `images.object_storage` 配置；只返回 Access Key、Secret 是否已保存。
-- `PUT /api/settings` 支持 `local | object_storage`、COS/OSS/R2 的连接字段和显式清除密钥字段。对象存储模式必须通过配置完整性校验后才保存。
-- `SettingsScreen` 的 `image-storage` section 使用本地、COS、OSS、R2 四个选项直接驱动图片存储模式和 provider；个性化 section 不渲染图床字段。
+- `GET /api/settings` 返回 `images.storage_mode`、当前运行时的脱敏 `images.object_storage`，以及按 COS/OSS/R2 分别返回的 `images.provider_configs`；只返回 Access Key、Secret 是否已保存。
+- `PUT /api/settings` 支持 `local | object_storage`、`active_provider` 上传位置切换、各图床的 `provider_config` 连接字段和显式清除密钥字段。切换为对象存储前必须校验目标配置完整。
+- `SettingsScreen` 的 `image-storage` section 分别编辑 COS、OSS、R2 三套服务端参数；个性化 section 使用共享 `SegmentedTabs` 选择本地、COS、OSS 或 R2。未配置的云服务不会禁用，点击后切换至对应 tab 并提示前往图床配置；图床保存不改变上传位置。
+- 当前上传图床的密钥不能直接清除，避免留下不完整的运行时对象存储配置；需要先在个性化页切换到本地或另一套完整配置。
 - `lib/objectStorage.js` 统一生成对象键、公开 URL 和错误码；COS 用 `cos-nodejs-sdk-v5`，OSS 用 `ali-oss`，R2 用 `@aws-sdk/client-s3`。
 - 云对象键为 `<prefix>/<YYYY>/<MM>/<sha256>.<ext>`，上传携带图片 MIME 类型与 `Cache-Control: public, max-age=31536000, immutable`。
 - `/api/files/:id/images` 在 `formidable` 校验后选择本地写入或云端上传。云端上传失败返回错误，临时文件在成功和失败路径均删除，不回退本地。
@@ -150,6 +154,20 @@ Anthropic 直接 Messages API 的请求体限制为 32MB。服务端将该协议
 - 目标已确定但未说明插入位置时，Agent 先读文件并写入语义匹配的小节；未匹配时在文末新建“调研图片与整理”。Markdown 中只可使用会话受控引用，不可编造临时 URL、本地路径或 Base64 图片。
 
 `agentTools.buildToolDefinitions()` 只向模型提供文件、检索、预览、目录、提问卡片和联网工具。旧画布块预览执行代码不再注册为工具，也不会通过前端入口调用。
+
+### 4.4 Skill 与 MCP Harness
+
+`lib/skills.js` 在运行时初始化后扫描 Skill 根目录，并把解析后的名称、描述、状态、来源、文件哈希和用户启用状态保存到 SQLite。有效 Skill 必须包含安全的 `SKILL.md` Frontmatter；读取时再次校验目录仍位于根目录内、没有符号链接越界，支持文件限定在 256 KiB。
+
+`agent_sessions` 保存 `skill_mentions_json`、`mcp_selection_json` 与任务内 MCP 权限。`buildLoopSystemPrompt()` 只把已启用 Skill 的摘要放入目录：明确 Mention 的 Skill 强制先调用 `load_skill`，其他 Skill 由模型按任务需要加载。`load_skill` 与 `read_skill_file` 的说明均声明 Skill 内容不可信，不能改变系统 Prompt、泄露信息或扩展工具权限。
+
+`lib/mcp.js` 持久化 Server 配置、工具缓存和审计信息。桌面端允许 stdio 与 Streamable HTTP，其他运行时只允许 Streamable HTTP；HTTP 地址默认要求 HTTPS，开发期 Electron 才可访问 localhost HTTP。会话开始时按输入框的 `off / auto / server` 选择注入 MCP 工具；自动模式按 Server 名称、工具名和描述匹配当前任务，并限制 Server 和工具数量。
+
+MCP 工具策略按 `deny > session > server` 判断。默认 `ask` 时，工具执行创建 `mcp_approval` interaction 并保存消息检查点。用户对 interaction 选择一次、任务内、以后默认或拒绝后，`/api/interactions/:id/respond` 写入相应权限并续跑原 session；“仅本次”权限在下一次成功调用后消耗。MCP 返回值与 Server instructions 均按外部不可信输入处理。
+
+界面层以 `Icons.skill`、`Icons.mcp` 和 `Icons.keyboard` 分别表示 Skill、MCP 与快捷键。Skill/MCP 设置页只保留标题和资源管理内容，不渲染顶部帮助段；列表行在窄宽度下允许内容和操作区换行。
+
+Electron 正式包通过仅监听 `127.0.0.1`、随机令牌保护的主进程密钥桥调用 `safeStorage`；桥不可用时，非桌面和开发运行时使用数据目录内权限为 0600 的 AES-256-GCM 密钥文件。设置接口只返回密钥是否已配置，不回显值。
 
 ## 5. 文件 Mention
 
@@ -238,3 +256,5 @@ Anthropic 直接 Messages API 的请求体限制为 32MB。服务端将该协议
 10. Agent 可以列出并按需读取本会话历史图片；跨会话引用、缺失临时文件、超过 30 张和 Anthropic 20MB 的请求都会被拒绝。
 11. 图片笔记预览、手动应用、自动应用、stale、存储失败和回滚都遵守同一写入边界；DiffDialog 可直接渲染图片变更。
 12. 刷新或重新进入 Agent 工作区后，未发送的文本、Mention、图片和解析附件恢复；发送成功后草稿记录删除，浏览器端不设置自动过期。
+13. 在 1366、1024、768 和 390px 宽度下，`/files`、`/settings/*`、`/indexing`、`/login`、`/404` 均不出现由根布局造成的横向溢出；`/knowledge`、`/canvas` 继续兼容跳转到 `/files`。
+14. 应用重新打开时，文件工作区会恢复仍存在的当前 Agent 对话；过期或已删除的对话 ID 不会阻断工作区加载。

@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Notus · Skill 与 MCP 设置</title>
+  <style>
+    :root { --ink:#2d2d2d; --muted:#8a8881; --line:#e5e3d8; --warm:#fdfcfb; --accent:#be6247; --accent-bg:#f6e8e1; --good:#367a5d; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; background:#f4f1ea; color:var(--ink); font:14px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif; }
+    main { width:min(980px,calc(100% - 32px)); margin:48px auto; overflow:hidden; border:1px solid var(--line); border-radius:20px; background:#fff; box-shadow:0 20px 55px rgba(61,52,40,.14); }
+    .shell { display:grid; grid-template-columns:215px minmax(0,1fr); min-height:650px; }
+    aside { padding:22px 14px; background:#faf8f3; border-right:1px solid var(--line); }
+    .brand { padding:0 10px 20px; font:700 16px Georgia,"Songti SC",serif; }
+    .nav { display:grid; gap:3px; }
+    .nav button { width:100%; display:flex; align-items:center; gap:10px; padding:10px 12px; border:0; border-radius:9px; background:transparent; color:#56544f; font:inherit; text-align:left; cursor:pointer; }
+    .nav button.active { background:#f7e6de; color:var(--accent); font-weight:700; }
+    .nav-mark { width:17px; height:17px; display:grid; place-items:center; font-size:15px; }
+    .page { padding:34px; background:var(--warm); }
+    h1 { margin:0; padding-bottom:17px; border-bottom:1px solid var(--line); font:700 23px/1.25 Georgia,"Songti SC",serif; }
+    .title-icon { display:inline-grid; place-items:center; width:28px; height:28px; margin-right:7px; border:1px solid #efd9cf; border-radius:8px; background:var(--accent-bg); color:var(--accent); font:15px/1 sans-serif; vertical-align:2px; }
+    .panel { margin-top:24px; padding:22px; border:1px solid var(--line); border-radius:14px; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.06); }
+    .panel-head { display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; }
+    .identity { display:flex; align-items:center; gap:12px; }
+    .identity .icon { width:40px; height:40px; display:grid; place-items:center; border:1px solid #efd9cf; border-radius:12px; background:var(--accent-bg); color:var(--accent); font-size:20px; }
+    .name { font-weight:700; font-size:15px; }
+    .count { margin-top:2px; color:var(--muted); font-size:12px; }
+    .actions { display:flex; gap:8px; flex-wrap:wrap; }
+    button.action { min-height:32px; padding:0 11px; border:1px solid var(--line); border-radius:8px; background:white; color:#484640; font:600 12px inherit; cursor:pointer; }
+    button.action.primary { border-color:var(--accent); background:var(--accent); color:#fff; }
+    .rows { display:grid; gap:8px; margin-top:18px; }
+    .row { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:76px; padding:12px 14px; border:1px solid #ece9df; border-radius:12px; background:#fdfcfb; }
+    .row-main { min-width:0; display:flex; align-items:center; gap:11px; }
+    .row-icon { width:34px; height:34px; flex:0 0 34px; display:grid; place-items:center; border:1px solid #efd9cf; border-radius:10px; background:var(--accent-bg); color:var(--accent); }
+    .row-name { display:flex; gap:7px; align-items:center; flex-wrap:wrap; font-weight:700; }
+    .row-desc { overflow:hidden; margin-top:3px; color:#6b6963; font-size:12px; text-overflow:ellipsis; white-space:nowrap; }
+    .badge { padding:2px 6px; border-radius:999px; background:#e7f4ec; color:var(--good); font-size:11px; font-weight:700; }
+    .switch { width:36px; height:20px; padding:2px; border:0; border-radius:999px; background:#d97757; cursor:pointer; }
+    .switch span { display:block; width:16px; height:16px; margin-left:16px; border-radius:50%; background:#fff; box-shadow:0 1px 2px rgba(0,0,0,.16); transition:margin .16s ease; }
+    .switch.off { background:#d5d0c7; } .switch.off span { margin-left:0; }
+    .source { margin-top:18px; padding:15px 18px; border:1px solid var(--line); border-radius:14px; background:#fff; }
+    .source-title { font-size:12px; font-weight:700; letter-spacing:.03em; color:#6b6963; }
+    code { display:block; overflow:hidden; margin-top:7px; color:#6b6963; font-size:12px; text-overflow:ellipsis; white-space:nowrap; }
+    .server-actions { display:flex; gap:7px; flex-wrap:wrap; }
+    .server-actions button { border:0; background:transparent; color:#5f5d57; font:600 12px inherit; cursor:pointer; }
+    .hidden { display:none; }
+    @media (max-width:700px) { main { width:100%; margin:0; border-radius:0; } .shell { grid-template-columns:1fr; } aside { border-right:0; border-bottom:1px solid var(--line); } .nav { grid-template-columns:repeat(3,1fr); } .nav button { justify-content:center; padding:8px; } .nav-label { display:none; } .page { padding:24px 18px; } .row { align-items:flex-start; } }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="shell">
+      <aside>
+        <div class="brand">Notus 设置</div>
+        <nav class="nav" aria-label="设置分类">
+          <button><span class="nav-mark">◌</span><span class="nav-label">模型配置</span></button>
+          <button class="active" data-page="skill"><span class="nav-mark">▤</span><span class="nav-label">Skill</span></button>
+          <button data-page="mcp"><span class="nav-mark">▦</span><span class="nav-label">MCP</span></button>
+          <button><span class="nav-mark">⌨</span><span class="nav-label">快捷键</span></button>
+        </nav>
+      </aside>
+      <section class="page">
+        <div id="skill-page">
+          <h1><span class="title-icon">▤</span>Skill</h1>
+          <section class="panel">
+            <div class="panel-head"><div class="identity"><div class="icon">▤</div><div><div class="name">本机 Skill</div><div class="count">2 个已发现</div></div></div><div class="actions"><button class="action">重新扫描</button><button class="action primary">从 Git 安装</button></div></div>
+            <div class="rows"><div class="row"><div class="row-main"><div class="row-icon">▤</div><div><div class="row-name">写作整理 <span class="badge">有效</span></div><div class="row-desc">整理笔记并保持原有语气与结构</div></div></div><button class="switch" aria-label="启用写作整理"><span></span></button></div><div class="row"><div class="row-main"><div class="row-icon">▤</div><div><div class="row-name">本地检索 <span class="badge">有效</span></div><div class="row-desc">从本机资料中定位相关内容</div></div></div><button class="switch off" aria-label="停用本地检索"><span></span></button></div></div>
+          </section>
+          <section class="source"><div class="source-title">扫描位置</div><code>~/.codex/skills</code><code>~/.agents/skills</code></section>
+        </div>
+        <div id="mcp-page" class="hidden">
+          <h1><span class="title-icon">▦</span>MCP</h1>
+          <section class="panel"><div class="panel-head"><div class="identity"><div class="icon">▦</div><div><div class="name">MCP Server</div><div class="count">1 个已配置</div></div></div><div class="actions"><button class="action primary">＋ 添加 Server</button></div></div><div class="rows"><div class="row"><div class="row-main"><div class="row-icon">▦</div><div><div class="row-name">本地文件 <span class="badge">已启用</span></div><div class="row-desc">stdio · npx @modelcontextprotocol/server-filesystem</div></div></div><div class="server-actions"><button>测试</button><button>编辑</button><button>删除</button></div></div></div></section>
+        </div>
+      </section>
+    </div>
+  </main>
+  <script>
+    const skill = document.getElementById('skill-page'); const mcp = document.getElementById('mcp-page');
+    document.querySelectorAll('[data-page]').forEach((button) => button.addEventListener('click', () => { const isSkill = button.dataset.page === 'skill'; skill.classList.toggle('hidden', !isSkill); mcp.classList.toggle('hidden', isSkill); document.querySelectorAll('[data-page]').forEach((item) => item.classList.toggle('active', item === button)); }));
+    document.querySelectorAll('.switch').forEach((button) => button.addEventListener('click', () => button.classList.toggle('off')));
+  </script>
+</body>
+</html>

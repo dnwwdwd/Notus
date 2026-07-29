@@ -99,6 +99,7 @@ function readEnvConfig() {
     dbPath,
     logDir: platform.paths.logDir,
     sessionDir: platform.paths.sessionDir,
+    agentDir: platform.paths.agentDir,
     logLevel: String(process.env.LOG_LEVEL || DEFAULTS.logLevel).trim().toLowerCase(),
     embeddingBatchSize: numberFromEnv(process.env.EMBEDDING_BATCH_SIZE, DEFAULTS.embeddingBatchSize),
 

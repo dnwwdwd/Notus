@@ -19,6 +19,8 @@ import { navigateWithFallback } from '../../utils/navigation';
 import { desktop as desktopClient } from '../../utils/platformClient';
 import { readJsonResponse } from '../../utils/fetchJson';
 import { SegmentedTabs } from '../ui/SegmentedTabs';
+import { FileOperationDiffDialog } from '../AIPanel/FileOperationDiffDialog';
+import { Tooltip } from '../ui/Tooltip';
 
 const APP_VERSION = packageMeta.version || '0.1.2';
 const SETTINGS_CONTENT_MAX_WIDTH = 860;
@@ -65,6 +67,13 @@ const SETTINGS_RESOURCE_ICON_STYLE = {
   border: '1px solid #EFD9CF',
 };
 
+const EXTERNAL_MCP_PERMISSION_GROUPS = [
+  { title: '基础只读', items: [['search_files', '按文件名与路径搜索'], ['list_files', '列出笔记文件'], ['get_note', '读取笔记内容'], ['list_skills', '列出 Skill'], ['list_mcp_servers', '列出 MCP Server']] },
+  { title: '文件写入', items: [['create_note', '创建笔记'], ['patch_note', '局部修改笔记'], ['replace_note', '完整替换笔记'], ['move_note', '移动笔记'], ['rename_note', '重命名笔记']] },
+];
+const EXTERNAL_MCP_MANUAL_PERMISSION_GROUP = { title: '手动确认', items: [['get_change_status', '查询待确认变更状态']] };
+const EXTERNAL_MCP_DEFAULT_PERMISSIONS = EXTERNAL_MCP_PERMISSION_GROUPS[0].items.map(([id]) => id);
+
 const SettingsPageHeader = ({ title, icon }) => (
   <div style={{ borderBottom: '1px solid #E5E3D8', paddingBottom: 16, marginBottom: 28 }}>
     <div style={SETTINGS_PAGE_TITLE_STYLE}>
@@ -80,6 +89,7 @@ export const SETTINGS_SECTIONS = [
   { id: 'skills', label: 'Skill', icon: <Icons.skill size={17} /> },
   { id: 'mcp', label: 'MCP', icon: <Icons.mcp size={17} /> },
   { id: 'personalization', label: '个性化', icon: <Icons.palette size={17} /> },
+  { id: 'global-agent', label: '全局 Agent', icon: <Icons.robot size={17} /> },
   { id: 'image-storage', label: '图床', icon: <Icons.image size={17} /> },
   { id: 'storage', label: '存储', icon: <Icons.database size={17} /> },
   { id: 'logs', label: '日志', icon: <Icons.list size={17} /> },
@@ -376,7 +386,7 @@ const ModelConfig = () => {
 
   return (
     <div style={{ width: '100%', color: '#2D2D2D' }}>
-      <SettingsPageHeader title="模型配置" icon={<Icons.cpu size={20} style={{ color: '#D97757' }} />} />
+      <SettingsPageHeader title="模型配置" icon={<Icons.robot size={20} style={{ color: '#D97757' }} />} />
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 32 }}>
         <section style={{ background: '#fff', border: '1px solid #E5E3D8', borderRadius: 12, padding: 24, boxShadow: '0 1px 2px rgba(0,0,0,0.04)', display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -1050,7 +1060,19 @@ const IMAGE_STORAGE_OPTIONS = [
   { value: 'r2', label: 'Cloudflare R2' },
 ];
 
-const CLOUD_IMAGE_STORAGE_OPTIONS = IMAGE_STORAGE_OPTIONS.filter((item) => item.value !== 'local');
+const CLOUD_IMAGE_STORAGE_OPTIONS = [
+  { value: 'oss', label: '阿里云 OSS' },
+  { value: 'cos', label: '腾讯云 COS' },
+  { value: 'r2', label: 'Cloudflare R2' },
+];
+
+function notifySkillsChanged() {
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('notus-skills-changed'));
+}
+
+function notifyMcpServersChanged() {
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('notus-mcp-servers-changed'));
+}
 
 const ImageStorageProviderConfig = ({ provider, savedConfig, isActive, onSaved }) => {
   const toast = useToast();
@@ -1149,16 +1171,23 @@ const ImageStorageConfig = () => {
   const toast = useToast();
   const [providerConfigs, setProviderConfigs] = useState({});
   const [activeProvider, setActiveProvider] = useState('');
+  const [selectedProvider, setSelectedProvider] = useState(CLOUD_IMAGE_STORAGE_OPTIONS[0].value);
 
-  const applySettings = useCallback((settings) => {
+  const applySettings = useCallback((settings, { initializeSelectedProvider = false } = {}) => {
     setProviderConfigs(settings.images?.provider_configs || {});
-    setActiveProvider(settings.images?.storage_mode === 'object_storage' ? settings.images?.object_storage?.provider || '' : '');
+    const nextActiveProvider = settings.images?.storage_mode === 'object_storage' ? settings.images?.object_storage?.provider || '' : '';
+    setActiveProvider(nextActiveProvider);
+    if (initializeSelectedProvider) {
+      setSelectedProvider(CLOUD_IMAGE_STORAGE_OPTIONS.some((item) => item.value === nextActiveProvider)
+        ? nextActiveProvider
+        : CLOUD_IMAGE_STORAGE_OPTIONS[0].value);
+    }
   }, []);
 
   useEffect(() => {
     let cancelled = false;
     fetch('/api/settings').then((response) => response.json()).then((settings) => {
-      if (!cancelled) applySettings(settings);
+      if (!cancelled) applySettings(settings, { initializeSelectedProvider: true });
     }).catch(() => toast('读取图床配置失败', 'error'));
     return () => { cancelled = true; };
   }, [applySettings, toast]);
@@ -1166,7 +1195,18 @@ const ImageStorageConfig = () => {
   return (
     <div style={{ width: '100%', color: '#2D2D2D' }}>
       <SettingsPageHeader title="图床配置" icon={<Icons.image size={20} style={{ color: '#D97757' }} />} />
-      <div style={{ display: 'grid', gap: 20 }}>{CLOUD_IMAGE_STORAGE_OPTIONS.map((item) => <ImageStorageProviderConfig key={item.value} provider={item.value} savedConfig={providerConfigs[item.value]} isActive={activeProvider === item.value} onSaved={applySettings} />)}</div>
+      <div style={{ display: 'grid', gap: 16 }}>
+        <div style={{ display: 'grid', gap: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#4B4944' }}>图床服务商</div>
+          <div style={{ display: 'flex', gap: 8, padding: 4, background: '#F9F9F8', border: '1px solid #E5E3D8', borderRadius: 10, overflowX: 'auto' }}>
+            {CLOUD_IMAGE_STORAGE_OPTIONS.map((provider) => {
+              const active = provider.value === selectedProvider;
+              return <button key={provider.value} type="button" onClick={() => setSelectedProvider(provider.value)} style={{ flex: 1, minWidth: 96, height: 32, border: active ? '1px solid rgba(229,227,216,0.8)' : '1px solid transparent', borderRadius: 8, background: active ? '#fff' : 'transparent', color: active ? '#D97757' : '#6B6963', boxShadow: active ? '0 1px 3px rgba(0,0,0,0.08)' : 'none', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>{provider.label}</button>;
+            })}
+          </div>
+        </div>
+        <ImageStorageProviderConfig provider={selectedProvider} savedConfig={providerConfigs[selectedProvider]} isActive={activeProvider === selectedProvider} onSaved={applySettings} />
+      </div>
     </div>
   );
 };
@@ -1484,20 +1524,23 @@ const ShortcutsSettings = () => {
 const SkillsSettings = () => {
   const toast = useToast();
   const [skills, setSkills] = useState([]);
-  const [roots, setRoots] = useState([]);
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
-  const [installOpen, setInstallOpen] = useState(false);
+  const [gitInstallOpen, setGitInstallOpen] = useState(false);
+  const [zipInstallOpen, setZipInstallOpen] = useState(false);
   const [repositoryUrl, setRepositoryUrl] = useState('');
-  const [ref, setRef] = useState('');
-  const [subdirectory, setSubdirectory] = useState('');
+  const [zipFile, setZipFile] = useState(null);
+  const [zipDragging, setZipDragging] = useState(false);
   const [installing, setInstalling] = useState(false);
+  const [updatingId, setUpdatingId] = useState('');
+  const [zipReplaceExisting, setZipReplaceExisting] = useState(false);
+  const zipInputRef = useRef(null);
+  const zipDragCounterRef = useRef(0);
 
   const load = useCallback(async () => {
     const response = await fetch('/api/skills', { cache: 'no-store' });
     const payload = await readJsonResponse(response, { fallbackMessage: '读取 Skills 失败' });
     setSkills(Array.isArray(payload.skills) ? payload.skills : []);
-    setRoots(Array.isArray(payload.roots) ? payload.roots : []);
   }, []);
 
   useEffect(() => {
@@ -1511,6 +1554,7 @@ const SkillsSettings = () => {
       const payload = await readJsonResponse(response, { fallbackMessage: '扫描 Skills 失败' });
       setSkills(Array.isArray(payload.skills) ? payload.skills : []);
       await load();
+      notifySkillsChanged();
       toast('已完成本机 Skill 扫描', 'success');
     } catch (error) { toast(error.message || '扫描 Skills 失败', 'error'); } finally { setScanning(false); }
   };
@@ -1520,6 +1564,7 @@ const SkillsSettings = () => {
       const response = await fetch(`/api/skills/${encodeURIComponent(skill.id)}/state`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) });
       const payload = await readJsonResponse(response, { fallbackMessage: '更新 Skill 状态失败' });
       setSkills((current) => current.map((item) => String(item.id) === String(skill.id) ? payload.skill : item));
+      notifySkillsChanged();
     } catch (error) { toast(error.message || '更新 Skill 状态失败', 'error'); }
   };
 
@@ -1527,75 +1572,284 @@ const SkillsSettings = () => {
     if (!repositoryUrl.trim()) { toast('请填写 HTTPS Git 仓库地址', 'warning'); return; }
     setInstalling(true);
     try {
-      const response = await fetch('/api/skills/install/git', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repositoryUrl, ref, subdirectory, conflictPolicy: 'reject' }) });
+      const response = await fetch('/api/skills/install/git', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repositoryUrl, conflictPolicy: 'reject' }) });
       const payload = await readJsonResponse(response, { fallbackMessage: '安装 Skill 失败' });
-      setInstallOpen(false); setRepositoryUrl(''); setRef(''); setSubdirectory('');
+      setGitInstallOpen(false); setRepositoryUrl('');
       await load();
+      notifySkillsChanged();
       toast(`已安装 ${payload.skills?.length || 0} 个 Skill`, 'success');
     } catch (error) { toast(error.message || '安装 Skill 失败', 'error'); } finally { setInstalling(false); }
   };
 
+  const selectZipFile = (files) => {
+    const file = Array.from(files || [])[0];
+    if (!file) return;
+    if (!/\.zip$/i.test(file.name || '')) { toast('请选择 .zip 格式的 Skill 压缩包', 'warning'); return; }
+    if (file.size > 100 * 1024 * 1024) { toast('ZIP 文件不能超过 100 MiB', 'warning'); return; }
+    setZipFile(file);
+  };
+
+  const closeZipInstall = () => {
+    if (installing) return;
+    zipDragCounterRef.current = 0;
+    setZipDragging(false);
+    setZipFile(null);
+    setZipReplaceExisting(false);
+    setZipInstallOpen(false);
+  };
+
+  const updateSkill = async (skill) => {
+    setUpdatingId(String(skill.id));
+    try {
+      const response = await fetch(`/api/skills/${encodeURIComponent(skill.id)}/update`, { method: 'POST' });
+      await readJsonResponse(response, { fallbackMessage: '更新 Skill 失败' });
+      await load();
+      notifySkillsChanged();
+      toast(`已更新 ${skill.name}`, 'success');
+    } catch (error) { toast(error.message || '更新 Skill 失败', 'error'); } finally { setUpdatingId(''); }
+  };
+
+  const installFromZip = async () => {
+    if (!zipFile) { toast('请选择 ZIP 文件', 'warning'); return; }
+    setInstalling(true);
+    try {
+      const form = new FormData();
+      form.append('file', zipFile, zipFile.name);
+      form.append('conflictPolicy', zipReplaceExisting ? 'replace' : 'reject');
+      const response = await fetch('/api/skills/install/zip', { method: 'POST', body: form });
+      const payload = await readJsonResponse(response, { fallbackMessage: '导入 Skill 失败' });
+      zipDragCounterRef.current = 0;
+      setZipDragging(false);
+      setZipFile(null);
+      setZipReplaceExisting(false);
+      setZipInstallOpen(false);
+      await load();
+      notifySkillsChanged();
+      toast(`已导入 ${payload.skills?.length || 0} 个 Skill`, 'success');
+    } catch (error) { toast(error.message || '导入 Skill 失败', 'error'); } finally { setInstalling(false); }
+  };
+
+  const formatZipFileSize = (bytes) => {
+    if (bytes < 1024 * 1024) return `${Math.max(1, Math.ceil(bytes / 1024))} KiB`;
+    return `${(bytes / (1024 * 1024)).toFixed(bytes >= 10 * 1024 * 1024 ? 0 : 1)} MiB`;
+  };
+
   return (
     <div style={{ width: '100%', color: '#2D2D2D' }}>
-      <SettingsPageHeader title="Skill" icon={<Icons.skill size={20} style={{ color: '#D97757' }} />} />
-      <div style={{ display: 'grid', gap: 18 }}>
-        <section style={{ ...SETTINGS_SURFACE_STYLE, display: 'grid', gap: 16 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <div style={{ ...SETTINGS_RESOURCE_ICON_STYLE, width: 40, height: 40, borderRadius: 12 }}><Icons.skill size={19} /></div>
-              <div><div style={{ fontSize: 15, fontWeight: 700 }}>本机 Skill</div><div style={{ marginTop: 3, fontSize: 12, color: '#8A8881' }}>{loading ? '正在读取…' : `${skills.length} 个已发现`}</div></div>
-            </div>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <Button variant="ghost" loading={scanning} onClick={rescan}><Icons.refresh size={14} />重新扫描</Button>
-              <Button variant="primary" onClick={() => setInstallOpen(true)}><Icons.download size={14} />从 Git 安装</Button>
-            </div>
-          </div>
+      <div style={{ display: 'grid', gap: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
+          <Button variant="ghost" loading={scanning} onClick={rescan}><Icons.refresh size={14} />重新扫描</Button>
+          <Button variant="secondary" onClick={() => setZipInstallOpen(true)}><Icons.upload size={14} />导入 ZIP</Button>
+          <Button variant="primary" onClick={() => setGitInstallOpen(true)}><Icons.download size={14} />从 Git 安装</Button>
+        </div>
+        <section style={{ ...SETTINGS_SURFACE_STYLE, display: 'grid', gap: 8, padding: 14 }}>
           <div style={{ display: 'grid', gap: 8 }}>
             {skills.map((skill) => (
               <div key={skill.id} style={{ ...SETTINGS_RESOURCE_ROW_STYLE, flexWrap: 'wrap' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 11, minWidth: 0, flex: '1 1 340px' }}>
                   <div style={SETTINGS_RESOURCE_ICON_STYLE}><Icons.skill size={17} /></div>
                   <div style={{ minWidth: 0 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap', fontSize: 14, fontWeight: 700 }}><span>{skill.name}</span><Badge tone={skill.status === 'valid' ? 'success' : 'warning'}>{skill.status === 'valid' ? '有效' : skill.status}</Badge></div>
+                    <div style={{ fontSize: 14, fontWeight: 700 }}><span>{skill.name}</span></div>
                     <div style={{ marginTop: 4, color: '#6B6963', fontSize: 12, lineHeight: 1.55 }}>{skill.description || '未提供描述'}</div>
-                    <div style={{ marginTop: 5, color: '#A3A19A', fontSize: 11 }}>{skill.source_label || '本机'} · {skill.managed ? 'Notus 管理' : '外部目录'}</div>
                   </div>
                 </div>
-                <Toggle on={Boolean(skill.enabled)} disabled={skill.status !== 'valid'} onChange={(enabled) => toggleSkill(skill, enabled)} />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  {skill.can_update ? <Button variant="ghost" loading={updatingId === String(skill.id)} disabled={Boolean(updatingId)} onClick={() => updateSkill(skill)}><Icons.refresh size={14} />更新</Button> : null}
+                  <Toggle on={Boolean(skill.enabled)} disabled={skill.status !== 'valid'} onChange={(enabled) => toggleSkill(skill, enabled)} />
+                </div>
               </div>
             ))}
             {!loading && skills.length === 0 ? <div style={{ padding: '24px 16px', border: '1px dashed #D9D5CA', borderRadius: 12, color: '#8A8881', fontSize: 13, textAlign: 'center' }}>尚未发现可用 Skill</div> : null}
           </div>
         </section>
-        <section style={{ ...SETTINGS_SURFACE_STYLE, display: 'grid', gap: 10, padding: 18 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: '0.02em', color: '#6B6963' }}>扫描位置</div>
-          {roots.map((root) => <div key={root.id} style={{ display: 'flex', gap: 10, alignItems: 'baseline', fontSize: 12, minWidth: 0 }}><Badge tone={root.managed_by_notus ? 'success' : 'default'}>{root.managed_by_notus ? '管理目录' : '外部目录'}</Badge><code style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#6B6963' }}>{root.path}</code></div>)}
-        </section>
       </div>
-      <Dialog open={installOpen} onClose={() => setInstallOpen(false)} title="从 Git 安装 Skill" maxWidth={520} footer={<><Button variant="ghost" onClick={() => setInstallOpen(false)}>取消</Button><Button variant="primary" loading={installing} onClick={installFromGit}>安装</Button></>}><div style={{ display: 'grid', gap: 16 }}><Field label="HTTPS 仓库地址"><TextInput value={repositoryUrl} onChange={(event) => setRepositoryUrl(event.target.value)} placeholder="https://github.com/org/skills.git" /></Field><Field label="分支或 Tag" hint="可选"><TextInput value={ref} onChange={(event) => setRef(event.target.value)} placeholder="main" /></Field><Field label="Skill 所在子目录" hint="可选；仓库根目录中的所有 Skill 会被发现。"><TextInput value={subdirectory} onChange={(event) => setSubdirectory(event.target.value)} placeholder="skills" /></Field></div></Dialog>
+      <Dialog open={gitInstallOpen} onClose={() => !installing && setGitInstallOpen(false)} closeOnBackdrop={false} title="从 Git 安装 Skill" maxWidth={520} footer={<><Button variant="ghost" disabled={installing} onClick={() => setGitInstallOpen(false)}>取消</Button><Button variant="primary" loading={installing} onClick={installFromGit}>安装</Button></>}><div style={{ display: 'grid', gap: 16 }}><Field label="HTTPS 仓库地址" hint="将依次尝试 main 和 master 分支；仓库根目录必须包含 SKILL.md。"><TextInput value={repositoryUrl} onChange={(event) => setRepositoryUrl(event.target.value)} placeholder="https://github.com/org/skill.git" /></Field></div></Dialog>
+      <Dialog
+        open={zipInstallOpen}
+        onClose={closeZipInstall}
+        closeOnBackdrop={false}
+        title="导入 ZIP Skill"
+        maxWidth={560}
+        footer={<><Button variant="ghost" disabled={installing} onClick={closeZipInstall}>取消</Button><Button variant="primary" loading={installing} onClick={installFromZip}>导入 Skill</Button></>}
+      >
+        <div style={{ display: 'grid', gap: 14 }}>
+          <input ref={zipInputRef} type="file" accept=".zip,application/zip,application/x-zip-compressed" style={{ display: 'none' }} onChange={(event) => { selectZipFile(event.target.files); event.target.value = ''; }} />
+          <div
+            role="button"
+            tabIndex={installing ? -1 : 0}
+            aria-label="上传 ZIP Skill 压缩包"
+            onClick={() => { if (!installing) zipInputRef.current?.click(); }}
+            onKeyDown={(event) => { if (!installing && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); zipInputRef.current?.click(); } }}
+            onDragEnter={(event) => { event.preventDefault(); if (!installing) { zipDragCounterRef.current += 1; setZipDragging(true); } }}
+            onDragOver={(event) => event.preventDefault()}
+            onDragLeave={(event) => { event.preventDefault(); zipDragCounterRef.current = Math.max(0, zipDragCounterRef.current - 1); if (zipDragCounterRef.current === 0) setZipDragging(false); }}
+            onDrop={(event) => { event.preventDefault(); zipDragCounterRef.current = 0; setZipDragging(false); if (!installing) selectZipFile(event.dataTransfer.files); }}
+            style={{
+              display: 'grid',
+              justifyItems: 'center',
+              gap: 8,
+              padding: '24px 18px',
+              borderRadius: 12,
+              border: `2px dashed ${zipDragging ? 'var(--accent)' : '#D9D5CA'}`,
+              background: zipDragging ? 'var(--accent-subtle)' : '#FDFCFB',
+              textAlign: 'center',
+              cursor: installing ? 'not-allowed' : 'pointer',
+              transition: 'border-color var(--transition-fast), background var(--transition-fast)',
+            }}
+          >
+            <span style={{ color: zipDragging ? 'var(--accent)' : '#BE6247', display: 'inline-flex' }}><Icons.upload size={28} /></span>
+            {zipFile ? <><div style={{ maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 14, fontWeight: 700 }}>{zipFile.name}</div><div style={{ color: '#8A8881', fontSize: 12 }}>{formatZipFileSize(zipFile.size)}</div></> : <><div style={{ fontSize: 14, fontWeight: 700 }}>拖入 ZIP 文件或点击上传</div><div style={{ color: '#8A8881', fontSize: 12 }}>最大 100 MiB</div></>}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+            <div><div style={{ fontSize: 13, fontWeight: 600 }}>覆盖同名受管 Skill</div><div style={{ marginTop: 3, color: '#8A8881', fontSize: 12, lineHeight: 1.5 }}>开启后会替换压缩包中同名的 Notus 管理 Skill。</div></div>
+            <Toggle on={zipReplaceExisting} disabled={installing} onChange={setZipReplaceExisting} />
+          </div>
+        </div>
+      </Dialog>
     </div>
   );
 };
 
+const ExternalMcpAccess = () => {
+  const toast = useToast();
+  const [tokens, setTokens] = useState([]);
+  const [changes, setChanges] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [draft, setDraft] = useState(null);
+  const [rawToken, setRawToken] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [detailChange, setDetailChange] = useState(null);
+  const endpoint = typeof window === 'undefined' ? '/api/mcp' : `${window.location.origin}/api/mcp`;
+  const emptyDraft = { name: '', enabled: true, approval_mode: 'manual', permissions: EXTERNAL_MCP_DEFAULT_PERMISSIONS };
+
+  const load = useCallback(async () => {
+    const [tokensResponse, changesResponse] = await Promise.all([
+      fetch('/api/settings/mcp/tokens', { cache: 'no-store' }),
+      fetch('/api/settings/mcp/changes?status=pending,conflict', { cache: 'no-store' }),
+    ]);
+    const [tokenPayload, changePayload] = await Promise.all([
+      readJsonResponse(tokensResponse, { fallbackMessage: '读取 MCP Token 失败' }),
+      readJsonResponse(changesResponse, { fallbackMessage: '读取待确认变更失败' }),
+    ]);
+    setTokens(Array.isArray(tokenPayload.tokens) ? tokenPayload.tokens : []);
+    setChanges(Array.isArray(changePayload.changes) ? changePayload.changes : []);
+  }, []);
+
+  useEffect(() => { load().catch((cause) => toast(cause.message || '读取外部 MCP 配置失败', 'error')).finally(() => setLoading(false)); }, [load, toast]);
+
+  const copy = async (value, successMessage) => {
+    try { await navigator.clipboard.writeText(value); toast(successMessage, 'success'); } catch { toast('复制失败，请手动复制', 'warning'); }
+  };
+  const togglePermission = (permission, enabled) => setDraft((current) => ({
+    ...current,
+    permissions: enabled ? [...new Set([...(current.permissions || []), permission])] : (current.permissions || []).filter((item) => item !== permission),
+  }));
+  const save = async () => {
+    if (!draft?.name?.trim()) { toast('请填写 MCP Token 名称', 'warning'); return; }
+    setSaving(true);
+    try {
+      const response = await fetch(draft.id ? `/api/settings/mcp/tokens/${encodeURIComponent(draft.id)}` : '/api/settings/mcp/tokens', {
+        method: draft.id ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: draft.name, enabled: Boolean(draft.enabled), approval_mode: draft.approval_mode, permissions: draft.permissions || [] }),
+      });
+      const payload = await readJsonResponse(response, { fallbackMessage: '保存 MCP Token 失败' });
+      setDraft(null);
+      if (payload.raw_token) setRawToken(payload.raw_token);
+      await load();
+      toast('MCP Token 已保存', 'success');
+    } catch (cause) { toast(cause.message || '保存 MCP Token 失败', 'error'); } finally { setSaving(false); }
+  };
+  const rotate = async (token) => {
+    if (!window.confirm(`重新生成“${token.name}”的 Token？旧 Token 会立即失效。`)) return;
+    try {
+      const response = await fetch(`/api/settings/mcp/tokens/${encodeURIComponent(token.id)}/rotate`, { method: 'POST' });
+      const payload = await readJsonResponse(response, { fallbackMessage: '重新生成 MCP Token 失败' });
+      setRawToken(payload.raw_token || '');
+      await load();
+    } catch (cause) { toast(cause.message || '重新生成 MCP Token 失败', 'error'); }
+  };
+  const remove = async (token) => {
+    if (!window.confirm(`删除 MCP Token“${token.name}”？外部 Agent 将立即无法继续调用。`)) return;
+    try { const response = await fetch(`/api/settings/mcp/tokens/${encodeURIComponent(token.id)}`, { method: 'DELETE' }); await readJsonResponse(response, { fallbackMessage: '删除 MCP Token 失败' }); await load(); toast('MCP Token 已删除', 'success'); } catch (cause) { toast(cause.message || '删除 MCP Token 失败', 'error'); }
+  };
+  const applyChange = async () => {
+    if (!detailChange) return;
+    try { const response = await fetch(`/api/settings/mcp/changes/${encodeURIComponent(detailChange.id)}/apply`, { method: 'POST' }); const payload = await readJsonResponse(response, { fallbackMessage: '应用文件变更失败' }); setDetailChange(payload.change || null); await load(); toast('文件变更已应用', 'success'); } catch (cause) { toast(cause.message || '应用文件变更失败', 'error'); await load(); }
+  };
+  const rejectChange = async () => {
+    if (!detailChange) return;
+    try { const response = await fetch(`/api/settings/mcp/changes/${encodeURIComponent(detailChange.id)}/reject`, { method: 'POST' }); const payload = await readJsonResponse(response, { fallbackMessage: '拒绝文件变更失败' }); setDetailChange(payload.change || null); await load(); toast('已拒绝该文件变更', 'success'); } catch (cause) { toast(cause.message || '拒绝文件变更失败', 'error'); }
+  };
+  const changeOperationSet = detailChange ? {
+    id: detailChange.id,
+    status: detailChange.status,
+    patches: [{
+      id: detailChange.id,
+      file_path: detailChange.payload?.path || detailChange.path,
+      old_path: detailChange.payload?.path || '',
+      new_path: detailChange.payload?.new_path || '',
+      old: detailChange.payload?.before || '',
+      new: detailChange.payload?.after ?? detailChange.payload?.content ?? '',
+      change_type: detailChange.tool_name === 'create_note' ? 'create' : ['move_note', 'rename_note'].includes(detailChange.tool_name) ? 'move_file' : 'modify',
+      status: detailChange.status,
+      error: detailChange.error_message || '',
+    }],
+  } : null;
+
+  return <>
+    <section style={{ ...SETTINGS_SURFACE_STYLE, display: 'grid', gap: 16, padding: 18 }}>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 11, alignItems: 'center' }}>
+          <div style={SETTINGS_RESOURCE_ICON_STYLE}><Icons.mcp size={17} /></div>
+          <div><div style={{ fontSize: 14, fontWeight: 700 }}>供外部 Agent 调用</div><div style={{ marginTop: 3, color: '#6B6963', fontSize: 12, lineHeight: 1.55 }}>使用 Streamable HTTP 和独立 MCP Token；删除与联网搜索不会对外开放。</div></div>
+        </div>
+        <Button variant="primary" onClick={() => setDraft({ ...emptyDraft })}><Icons.plus size={14} />创建 Token</Button>
+      </div>
+      <div style={{ display: 'flex', gap: 8, minWidth: 0, alignItems: 'center', padding: '9px 10px', borderRadius: 10, background: '#FDFCFB', border: '1px solid #ECE9DF' }}>
+        <code style={{ minWidth: 0, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#6B6963', fontSize: 12 }}>{endpoint}</code>
+        <Button size="sm" variant="ghost" onClick={() => copy(endpoint, 'MCP 地址已复制')}><Icons.copy size={13} />复制</Button>
+      </div>
+      <div style={{ display: 'grid', gap: 8 }}>
+        {tokens.map((token) => <div key={token.id} style={{ ...SETTINGS_RESOURCE_ROW_STYLE, flexWrap: 'wrap' }}>
+          <div style={{ minWidth: 0, flex: '1 1 300px' }}><div style={{ display: 'flex', gap: 7, alignItems: 'center', flexWrap: 'wrap', fontSize: 14, fontWeight: 700 }}><span>{token.name}</span><Badge tone={token.enabled ? 'success' : 'default'}>{token.enabled ? '已启用' : '已停用'}</Badge><Badge tone="default">{token.approval_mode === 'auto' ? '自动应用' : '手动确认'}</Badge></div><div style={{ marginTop: 4, color: '#8A8881', fontSize: 12 }}>{token.permissions?.length || 0} 项工具已授权{token.last_used_at ? ' · 最近已使用' : ''}</div></div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><Button size="sm" variant="ghost" onClick={() => setDraft({ ...token, permissions: token.permissions || [] })}>编辑</Button><Button size="sm" variant="ghost" onClick={() => rotate(token)}>重新生成</Button><Button size="sm" variant="ghost" onClick={() => remove(token)}>删除</Button></div>
+        </div>)}
+        {!loading && tokens.length === 0 ? <div style={{ padding: '18px 12px', border: '1px dashed #D9D5CA', borderRadius: 12, color: '#8A8881', fontSize: 13, textAlign: 'center' }}>尚未创建外部 MCP Token</div> : null}
+      </div>
+    </section>
+    <section style={{ ...SETTINGS_SURFACE_STYLE, display: 'grid', gap: 12, padding: 18 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}><div><div style={{ fontSize: 14, fontWeight: 700 }}>待确认变更</div><div style={{ marginTop: 3, color: '#8A8881', fontSize: 12 }}>来自手动确认 Token 的文件写入请求。</div></div><Badge tone={changes.length ? 'default' : 'success'}>{changes.length ? `${changes.length} 项待处理` : '暂无待处理'}</Badge></div>
+      {changes.map((change) => <div key={change.id} style={{ ...SETTINGS_RESOURCE_ROW_STYLE, flexWrap: 'wrap' }}><div style={{ minWidth: 0, flex: '1 1 300px' }}><div style={{ fontSize: 13, fontWeight: 700 }}>{change.token_name} · {change.tool_name}</div><div style={{ marginTop: 4, color: change.status === 'conflict' ? 'var(--danger)' : '#8A8881', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{change.status === 'conflict' ? change.error_message || '文件已变化' : change.path || '文件变更'}</div></div><Button size="sm" variant="ghost" onClick={() => setDetailChange(change)}>查看 Diff</Button></div>)}
+      {!loading && changes.length === 0 ? <div style={{ color: '#8A8881', fontSize: 12 }}>手动确认 Token 生成的变更会显示在这里。</div> : null}
+    </section>
+    <Dialog open={Boolean(draft)} onClose={() => !saving && setDraft(null)} closeOnBackdrop={false} title={draft?.id ? '编辑 MCP Token' : '创建 MCP Token'} maxWidth={620} footer={<><Button variant="ghost" disabled={saving} onClick={() => setDraft(null)}>取消</Button><Button variant="primary" loading={saving} onClick={save}>{draft?.id ? '保存' : '创建'}</Button></>}>
+      {draft ? <div style={{ display: 'grid', gap: 16 }}><Field label="名称"><TextInput value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="例如：桌面自动化 Agent" /></Field><Field label="应用模式" hint="自动应用仍会校验文件哈希和局部替换内容；手动确认会先进入本页待确认变更。"><SegmentedTabs value={draft.approval_mode} onChange={(approval_mode) => setDraft((current) => ({ ...current, approval_mode, permissions: approval_mode === 'auto' ? (current.permissions || []).filter((permission) => permission !== 'get_change_status') : current.permissions }))} options={[{ value: 'manual', label: '手动确认' }, { value: 'auto', label: '自动应用' }]} /></Field>{[...EXTERNAL_MCP_PERMISSION_GROUPS, ...(draft.approval_mode === 'manual' ? [EXTERNAL_MCP_MANUAL_PERMISSION_GROUP] : [])].map((group) => <div key={group.title} style={{ display: 'grid', gap: 9 }}><div style={{ fontSize: 13, fontWeight: 700 }}>{group.title}</div>{group.items.map(([permission, label]) => <div key={permission} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}><span style={{ fontSize: 13, color: '#4D4A45' }}>{label}</span><Toggle on={(draft.permissions || []).includes(permission)} onChange={(enabled) => togglePermission(permission, enabled)} /></div>)}</div>)}<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}><span style={{ fontSize: 13, fontWeight: 600 }}>启用此 Token</span><Toggle on={Boolean(draft.enabled)} onChange={(enabled) => setDraft({ ...draft, enabled })} /></div></div> : null}
+    </Dialog>
+    <Dialog open={Boolean(rawToken)} onClose={() => setRawToken('')} closeOnBackdrop={false} title="请立即保存 MCP Token" maxWidth={620} footer={<Button variant="primary" onClick={() => setRawToken('')}>我已保存</Button>}><div style={{ display: 'grid', gap: 12 }}><NoteBox tone="warning">Token 只会显示这一次。关闭后无法再次查看，只能重新生成。</NoteBox><div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}><TextInput value={rawToken} readOnly onFocus={(event) => event.target.select()} style={{ paddingRight: 42, fontFamily: 'var(--font-mono)' }} /><Tooltip content="复制 Token"><button type="button" aria-label="复制 Token" onClick={() => copy(rawToken, 'MCP Token 已复制')} style={{ position: 'absolute', right: 8, width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)', border: 'none', background: 'transparent', borderRadius: 'var(--radius-sm)', cursor: 'pointer', transition: 'color var(--transition-fast)' }} onMouseEnter={(event) => { event.currentTarget.style.color = 'var(--text-secondary)'; }} onMouseLeave={(event) => { event.currentTarget.style.color = 'var(--text-tertiary)'; }}><Icons.copy size={14} /></button></Tooltip></div></div></Dialog>
+    <FileOperationDiffDialog operationSet={changeOperationSet} open={Boolean(detailChange)} onClose={() => setDetailChange(null)} onApplyAll={applyChange} onApplyFile={applyChange} onDiscardFile={rejectChange} allowDiscardPending discardLabel="拒绝变更" />
+  </>;
+};
+
 const McpSettings = () => {
   const toast = useToast();
+  const [activeTab, setActiveTab] = useState('connected');
   const [servers, setServers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [capabilities, setCapabilities] = useState(null);
   const [draft, setDraft] = useState(null);
   const [testingId, setTestingId] = useState('');
-  const empty = { name: '', transport: 'streamable_http', enabled: true, url: '', command: '', args: '', cwd: '', defaultPolicy: 'ask' };
-  const load = useCallback(async () => { const response = await fetch('/api/mcp/servers', { cache: 'no-store' }); const payload = await readJsonResponse(response, { fallbackMessage: '读取 MCP Server 失败' }); setServers(Array.isArray(payload.servers) ? payload.servers : []); }, []);
+  const empty = { name: '', transport: 'streamable_http', enabled: true, url: '', command: '', args: '', cwd: '' };
+  const load = useCallback(async () => { const response = await fetch('/api/settings/mcp/servers', { cache: 'no-store' }); const payload = await readJsonResponse(response, { fallbackMessage: '读取 MCP Server 失败' }); setServers(Array.isArray(payload.servers) ? payload.servers : []); }, []);
   useEffect(() => { Promise.all([load(), fetch('/api/runtime/capabilities', { cache: 'no-store' }).then((response) => readJsonResponse(response, { fallbackMessage: '读取运行环境能力失败' }))]).then(([, payload]) => setCapabilities(payload)).catch((error) => toast(error.message || '读取 MCP Server 失败', 'error')).finally(() => setLoading(false)); }, [load, toast]);
-  const edit = (server = null) => setDraft(server ? { id: server.id, name: server.name, transport: server.transport, enabled: server.enabled, url: server.config?.http?.url || '', command: server.config?.stdio?.command || '', args: (server.config?.stdio?.args || []).join(' '), cwd: server.config?.stdio?.cwd || '', defaultPolicy: server.tool_policy?.default || 'ask' } : { ...empty, transport: capabilities?.mcp?.stdio ? 'stdio' : 'streamable_http' });
+  const edit = (server = null) => setDraft(server ? { id: server.id, name: server.name, transport: server.transport, enabled: server.enabled, url: server.config?.http?.url || '', command: server.config?.stdio?.command || '', args: (server.config?.stdio?.args || []).join(' '), cwd: server.config?.stdio?.cwd || '' } : { ...empty, transport: capabilities?.mcp?.stdio ? 'stdio' : 'streamable_http' });
   const save = async () => {
     if (!draft?.name?.trim()) { toast('请填写 MCP Server 名称', 'warning'); return; }
     const args = String(draft.args || '').match(/(?:[^\s"]+|"[^"]*")+/g)?.map((item) => item.replace(/^"|"$/g, '')) || [];
-    const body = { name: draft.name, transport: draft.transport, enabled: Boolean(draft.enabled), toolPolicy: { default: draft.defaultPolicy }, ...(draft.transport === 'stdio' ? { stdio: { command: draft.command, args, cwd: draft.cwd } } : { http: { url: draft.url } }) };
-    try { const response = await fetch(draft.id ? `/api/mcp/servers/${encodeURIComponent(draft.id)}` : '/api/mcp/servers', { method: draft.id ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); await readJsonResponse(response, { fallbackMessage: '保存 MCP Server 失败' }); setDraft(null); await load(); toast('MCP Server 已保存', 'success'); } catch (error) { toast(error.message || '保存 MCP Server 失败', 'error'); }
+    const body = { name: draft.name, transport: draft.transport, enabled: Boolean(draft.enabled), ...(draft.transport === 'stdio' ? { stdio: { command: draft.command, args, cwd: draft.cwd } } : { http: { url: draft.url } }) };
+    try { const response = await fetch(draft.id ? `/api/settings/mcp/servers/${encodeURIComponent(draft.id)}` : '/api/settings/mcp/servers', { method: draft.id ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); await readJsonResponse(response, { fallbackMessage: '保存 MCP Server 失败' }); setDraft(null); await load(); notifyMcpServersChanged(); toast('MCP Server 已保存', 'success'); } catch (error) { toast(error.message || '保存 MCP Server 失败', 'error'); }
   };
-  const test = async (server) => { setTestingId(server.id); try { const response = await fetch(`/api/mcp/servers/${encodeURIComponent(server.id)}/test`, { method: 'POST' }); const result = await readJsonResponse(response, { fallbackMessage: 'MCP 连接测试失败' }); toast(`连接成功，发现 ${result.tool_count || 0} 个工具`, 'success'); await load(); } catch (error) { toast(error.message || 'MCP 连接测试失败', 'error'); } finally { setTestingId(''); } };
-  const remove = async (server) => { if (!window.confirm(`删除 MCP Server“${server.name}”？`)) return; try { const response = await fetch(`/api/mcp/servers/${encodeURIComponent(server.id)}`, { method: 'DELETE' }); await readJsonResponse(response, { fallbackMessage: '删除 MCP Server 失败' }); await load(); toast('MCP Server 已删除', 'success'); } catch (error) { toast(error.message || '删除 MCP Server 失败', 'error'); } };
+  const test = async (server) => { setTestingId(server.id); try { const response = await fetch(`/api/settings/mcp/servers/${encodeURIComponent(server.id)}/test`, { method: 'POST' }); const result = await readJsonResponse(response, { fallbackMessage: 'MCP 连接测试失败' }); toast(`连接成功，发现 ${result.tool_count || 0} 个工具`, 'success'); await load(); } catch (error) { toast(error.message || 'MCP 连接测试失败', 'error'); } finally { setTestingId(''); } };
+  const remove = async (server) => { if (!window.confirm(`删除 MCP Server“${server.name}”？`)) return; try { const response = await fetch(`/api/settings/mcp/servers/${encodeURIComponent(server.id)}`, { method: 'DELETE' }); await readJsonResponse(response, { fallbackMessage: '删除 MCP Server 失败' }); await load(); notifyMcpServersChanged(); toast('MCP Server 已删除', 'success'); } catch (error) { toast(error.message || '删除 MCP Server 失败', 'error'); } };
   const supportsStdio = Boolean(capabilities?.mcp?.stdio);
   const transportOptions = [
     ...(supportsStdio ? [{ value: 'stdio', label: 'stdio' }] : []),
@@ -1603,46 +1857,196 @@ const McpSettings = () => {
   ];
   return (
     <div style={{ width: '100%', color: '#2D2D2D' }}>
-      <SettingsPageHeader title="MCP" icon={<Icons.mcp size={20} style={{ color: '#D97757' }} />} />
-      <div style={{ display: 'grid', gap: 18 }}>
-        <section style={{ ...SETTINGS_SURFACE_STYLE, display: 'grid', gap: 16 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', alignItems: 'center' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <div style={{ ...SETTINGS_RESOURCE_ICON_STYLE, width: 40, height: 40, borderRadius: 12 }}><Icons.mcp size={19} /></div>
-              <div><div style={{ fontSize: 15, fontWeight: 700 }}>MCP Server</div><div style={{ marginTop: 3, fontSize: 12, color: '#8A8881' }}>{loading ? '正在读取…' : `${servers.length} 个已配置`}</div></div>
-            </div>
+      <div style={{ display: 'grid', gap: 16 }}>
+        <SegmentedTabs value={activeTab} onChange={setActiveTab} style={{ justifySelf: 'start' }} options={[{ value: 'connected', label: '调用 MCP' }, { value: 'external', label: 'MCP 服务' }]} />
+        {activeTab === 'external' ? <ExternalMcpAccess /> : <>
+          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
             {capabilities ? <Button variant="primary" onClick={() => edit()}><Icons.plus size={14} />添加 Server</Button> : null}
           </div>
-          <div style={{ display: 'grid', gap: 8 }}>
-            {servers.map((server) => (
-              <div key={server.id} style={{ ...SETTINGS_RESOURCE_ROW_STYLE, flexWrap: 'wrap' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 11, minWidth: 0, flex: '1 1 330px' }}>
-                  <div style={SETTINGS_RESOURCE_ICON_STYLE}><Icons.mcp size={17} /></div>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ display: 'flex', gap: 7, alignItems: 'center', flexWrap: 'wrap', fontSize: 14, fontWeight: 700 }}><span>{server.name}</span><Badge tone={server.enabled ? 'success' : 'default'}>{server.enabled ? '已启用' : '已停用'}</Badge></div>
-                    <div style={{ marginTop: 4, fontSize: 12, color: '#8A8881', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{server.transport === 'stdio' ? `stdio · ${server.config?.stdio?.command || ''}` : `Streamable HTTP · ${server.config?.http?.url || ''}`}</div>
-                    {server.last_error_message ? <div style={{ marginTop: 4, fontSize: 11, color: 'var(--danger)' }}>{server.last_error_message}</div> : null}
+          <section style={{ ...SETTINGS_SURFACE_STYLE, display: 'grid', gap: 8, padding: 14 }}>
+            <div style={{ display: 'grid', gap: 8 }}>
+              {servers.map((server) => (
+                <div key={server.id} style={{ ...SETTINGS_RESOURCE_ROW_STYLE, flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 11, minWidth: 0, flex: '1 1 330px' }}>
+                    <div style={SETTINGS_RESOURCE_ICON_STYLE}><Icons.mcp size={17} /></div>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ display: 'flex', gap: 7, alignItems: 'center', flexWrap: 'wrap', fontSize: 14, fontWeight: 700 }}><span>{server.name}</span><Badge tone={server.enabled ? 'success' : 'default'}>{server.enabled ? '已启用' : '已停用'}</Badge></div>
+                      <div style={{ marginTop: 4, fontSize: 12, color: '#8A8881', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{server.transport === 'stdio' ? `stdio · ${server.config?.stdio?.command || ''}` : `Streamable HTTP · ${server.config?.http?.url || ''}`}</div>
+                      {server.last_error_message ? <div style={{ marginTop: 4, fontSize: 11, color: 'var(--danger)' }}>{server.last_error_message}</div> : null}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <Button size="sm" variant="ghost" loading={testingId === server.id} onClick={() => test(server)}>测试</Button>
+                    <Button size="sm" variant="ghost" onClick={() => edit(server)}>编辑</Button>
+                    <Button size="sm" variant="ghost" onClick={() => remove(server)}>删除</Button>
                   </div>
                 </div>
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  <Button size="sm" variant="ghost" loading={testingId === server.id} onClick={() => test(server)}>测试</Button>
-                  <Button size="sm" variant="ghost" onClick={() => edit(server)}>编辑</Button>
-                  <Button size="sm" variant="ghost" onClick={() => remove(server)}>删除</Button>
-                </div>
-              </div>
-            ))}
-            {!loading && servers.length === 0 ? <div style={{ padding: '24px 16px', border: '1px dashed #D9D5CA', borderRadius: 12, color: '#8A8881', fontSize: 13, textAlign: 'center' }}>尚未添加 MCP Server</div> : null}
-          </div>
-        </section>
+              ))}
+              {!loading && servers.length === 0 ? <div style={{ padding: '24px 16px', border: '1px dashed #D9D5CA', borderRadius: 12, color: '#8A8881', fontSize: 13, textAlign: 'center' }}>尚未添加 MCP Server</div> : null}
+            </div>
+          </section>
+        </>}
       </div>
-      <Dialog open={Boolean(draft)} onClose={() => setDraft(null)} title={draft?.id ? '编辑 MCP Server' : '添加 MCP Server'} maxWidth={560} footer={<><Button variant="ghost" onClick={() => setDraft(null)}>取消</Button><Button variant="primary" onClick={save}>保存</Button></>}>
+      <Dialog open={Boolean(draft)} onClose={() => setDraft(null)} closeOnBackdrop={false} title={draft?.id ? '编辑 MCP Server' : '添加 MCP Server'} maxWidth={560} footer={<><Button variant="ghost" onClick={() => setDraft(null)}>取消</Button><Button variant="primary" onClick={save}>保存</Button></>}>
         {draft ? <div style={{ display: 'grid', gap: 16 }}>
           <Field label="名称"><TextInput value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="例如：本地文件工具" /></Field>
           {supportsStdio ? <Field label="传输方式"><SegmentedTabs value={draft.transport} onChange={(transport) => setDraft({ ...draft, transport })} options={transportOptions} /></Field> : null}
-          {draft.transport === 'stdio' ? <><Field label="命令"><TextInput value={draft.command} onChange={(event) => setDraft({ ...draft, command: event.target.value })} placeholder="npx" /></Field><Field label="参数" hint="用空格分隔；带空格的参数可用双引号。"><TextInput value={draft.args} onChange={(event) => setDraft({ ...draft, args: event.target.value })} placeholder="-y @modelcontextprotocol/server-filesystem /path" /></Field><Field label="工作目录" hint="可选，必须为绝对路径。"><TextInput value={draft.cwd} onChange={(event) => setDraft({ ...draft, cwd: event.target.value })} placeholder="/Users/name/project" /></Field></> : <Field label="Server URL" hint="桌面开发环境允许 localhost HTTP；其他地址必须使用 HTTPS。"><TextInput value={draft.url} onChange={(event) => setDraft({ ...draft, url: event.target.value })} placeholder="https://example.com/mcp" /></Field>}
-          <Field label="默认工具权限"><SegmentedTabs value={draft.defaultPolicy} onChange={(defaultPolicy) => setDraft({ ...draft, defaultPolicy })} options={[{ value: 'ask', label: '每次询问' }, { value: 'allow', label: '默认允许' }, { value: 'deny', label: '默认拒绝' }]} /></Field>
+          {draft.transport === 'stdio' ? <><Field label="命令"><TextInput value={draft.command} onChange={(event) => setDraft({ ...draft, command: event.target.value })} placeholder="npx" /></Field><Field label="参数" hint="用空格分隔；带空格的参数可用双引号。"><TextInput value={draft.args} onChange={(event) => setDraft({ ...draft, args: event.target.value })} placeholder="-y @modelcontextprotocol/server-filesystem /path" /></Field><Field label="工作目录" hint="可选，必须为绝对路径。"><TextInput value={draft.cwd} onChange={(event) => setDraft({ ...draft, cwd: event.target.value })} placeholder="/Users/name/project" /></Field></> : <Field label="URL"><TextInput value={draft.url} onChange={(event) => setDraft({ ...draft, url: event.target.value })} placeholder="https://example.com/mcp" /></Field>}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}><span style={{ fontSize: 13, fontWeight: 600 }}>启用此 Server</span><Toggle on={Boolean(draft.enabled)} onChange={(enabled) => setDraft({ ...draft, enabled })} /></div>
         </div> : null}
+      </Dialog>
+    </div>
+  );
+};
+
+const GLOBAL_AGENT_FILE_OPTIONS = [
+  { value: 'soul', label: 'Agent 性格', description: '长期影响 Agent 的沟通方式和风险表达。' },
+  { value: 'style', label: '写作风格', description: '只在创作、改写、润色等写作任务中加载。' },
+  { value: 'memory', label: '全局记忆', description: '保存跨会话仍然有价值的偏好、项目背景和已确认决策。' },
+];
+
+const GLOBAL_AGENT_HISTORY_SOURCES = {
+  system_init: '首次初始化',
+  user_settings: '设置页保存',
+  agent_explicit: 'Agent 明确更新',
+  restore_default: '恢复默认',
+  rollback: '历史回滚',
+  external_edit: '外部编辑器修改',
+};
+
+const GlobalAgentFiles = () => {
+  const toast = useToast();
+  const [activeFile, setActiveFile] = useState('soul');
+  const [metadata, setMetadata] = useState([]);
+  const [content, setContent] = useState('');
+  const [expectedHash, setExpectedHash] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [history, setHistory] = useState([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyDetail, setHistoryDetail] = useState(null);
+  const activeMeta = metadata.find((item) => item.file === activeFile) || null;
+  const activeOption = GLOBAL_AGENT_FILE_OPTIONS.find((item) => item.value === activeFile) || GLOBAL_AGENT_FILE_OPTIONS[0];
+
+  const loadList = useCallback(async () => {
+    const response = await fetch('/api/settings/agent-files', { cache: 'no-store' });
+    const payload = await readJsonResponse(response, { fallbackMessage: '读取全局 Agent 文件失败' });
+    setMetadata(Array.isArray(payload.files) ? payload.files : []);
+    return payload;
+  }, []);
+
+  const loadFile = useCallback(async (file) => {
+    setLoading(true);
+    try {
+      const response = await fetch(`/api/settings/agent-files/${encodeURIComponent(file)}`, { cache: 'no-store' });
+      const payload = await readJsonResponse(response, { fallbackMessage: '读取全局 Agent 文件失败' });
+      setContent(String(payload.content || ''));
+      setExpectedHash(String(payload.hash || ''));
+      setMetadata((current) => current.map((item) => item.file === file ? { ...item, ...payload } : item));
+    } catch (error) {
+      toast(error.message || '读取全局 Agent 文件失败', 'error');
+    } finally {
+      setLoading(false);
+    }
+  }, [toast]);
+
+  useEffect(() => { loadList().catch((error) => toast(error.message || '读取全局 Agent 文件失败', 'error')); }, [loadList, toast]);
+  useEffect(() => { loadFile(activeFile); }, [activeFile, loadFile]);
+
+  const save = async () => {
+    if (!content.trim() && !window.confirm('文件将被清空。确定继续保存吗？')) return;
+    setSaving(true);
+    try {
+      const response = await fetch(`/api/settings/agent-files/${encodeURIComponent(activeFile)}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content, expected_hash: expectedHash, allow_empty: !content.trim() }),
+      });
+      const payload = await readJsonResponse(response, { fallbackMessage: '保存全局 Agent 文件失败' });
+      setContent(String(payload.content || content));
+      setExpectedHash(String(payload.hash || ''));
+      await loadList();
+      toast('全局 Agent 文件已保存', 'success');
+    } catch (error) {
+      toast(error.message || '保存失败，当前编辑内容已保留', 'error');
+    } finally { setSaving(false); }
+  };
+
+  const restoreDefault = async () => {
+    if (!window.confirm(`恢复 ${activeOption.label} 的默认内容？当前内容会保留在历史版本中。`)) return;
+    setSaving(true);
+    try {
+      const response = await fetch(`/api/settings/agent-files/${encodeURIComponent(activeFile)}/restore-default`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expected_hash: expectedHash }),
+      });
+      const payload = await readJsonResponse(response, { fallbackMessage: '恢复默认内容失败' });
+      setContent(String(payload.content || ''));
+      setExpectedHash(String(payload.hash || ''));
+      await loadList();
+      toast('已恢复默认内容', 'success');
+    } catch (error) { toast(error.message || '恢复默认内容失败', 'error'); } finally { setSaving(false); }
+  };
+
+  const openHistory = async () => {
+    try {
+      const response = await fetch(`/api/settings/agent-files/${encodeURIComponent(activeFile)}/history`, { cache: 'no-store' });
+      const payload = await readJsonResponse(response, { fallbackMessage: '读取历史版本失败' });
+      setHistory(Array.isArray(payload.versions) ? payload.versions : []);
+      setHistoryDetail(null);
+      setHistoryOpen(true);
+    } catch (error) { toast(error.message || '读取历史版本失败', 'error'); }
+  };
+
+  const readHistory = async (version) => {
+    try {
+      const response = await fetch(`/api/settings/agent-files/${encodeURIComponent(activeFile)}/history/${encodeURIComponent(version.id)}`, { cache: 'no-store' });
+      setHistoryDetail(await readJsonResponse(response, { fallbackMessage: '读取历史内容失败' }));
+    } catch (error) { toast(error.message || '读取历史内容失败', 'error'); }
+  };
+
+  const rollback = async (version) => {
+    if (!window.confirm('回滚后会创建新的历史版本。确定继续吗？')) return;
+    setSaving(true);
+    try {
+      const response = await fetch(`/api/settings/agent-files/${encodeURIComponent(activeFile)}/history/${encodeURIComponent(version.id)}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expected_hash: expectedHash }),
+      });
+      const payload = await readJsonResponse(response, { fallbackMessage: '回滚历史版本失败' });
+      setContent(String(payload.content || ''));
+      setExpectedHash(String(payload.hash || ''));
+      await loadList();
+      setHistoryOpen(false);
+      toast('已回滚到所选历史版本', 'success');
+    } catch (error) { toast(error.message || '回滚历史版本失败', 'error'); } finally { setSaving(false); }
+  };
+
+  const openAgentDirectory = async () => {
+    const result = await desktopClient.openAgentDirectory();
+    if (!result?.ok) toast('无法打开全局 Agent 文件目录', 'error');
+  };
+
+  return (
+    <div style={{ width: '100%', color: '#2D2D2D' }}>
+      <SettingsPageHeader title="全局 Agent" icon={<Icons.robot size={20} style={{ color: '#D97757' }} />} />
+      <section style={{ ...SETTINGS_SURFACE_STYLE, display: 'grid', gap: 18 }}>
+        <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.65 }}>三份 Markdown 文件会在后续 Agent 请求中生效。它们不能修改系统权限、危险操作确认或 MCP、文件系统和网络访问范围。</div>
+        <SegmentedTabs value={activeFile} onChange={setActiveFile} ariaLabel="全局 Agent 文件" options={GLOBAL_AGENT_FILE_OPTIONS.map((item) => ({ value: item.value, label: item.label }))} />
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+          <div><div style={{ fontSize: 14, fontWeight: 700 }}>{activeOption.label}</div><div style={{ marginTop: 4, fontSize: 12, color: 'var(--text-tertiary)' }}>{activeOption.description}</div></div>
+          <div style={{ fontSize: 12, color: activeMeta?.over_recommended ? 'var(--warning)' : 'var(--text-tertiary)' }}>{content.length} 字符 · 建议不超过 {activeMeta?.recommended_chars || 0} 字符</div>
+        </div>
+        <textarea value={content} onChange={(event) => setContent(event.target.value)} disabled={loading || saving} spellCheck={false} aria-label={`${activeOption.label} Markdown 内容`} style={{ width: '100%', minHeight: 300, resize: 'vertical', boxSizing: 'border-box', border: '1px solid var(--border-primary)', borderRadius: 10, padding: 14, color: 'var(--text-primary)', background: 'var(--bg-secondary)', font: '13px/1.65 var(--font-mono)', outline: 'none' }} />
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><Button size="sm" variant="ghost" disabled={saving || loading} onClick={() => loadFile(activeFile)}>取消修改</Button><Button size="sm" variant="ghost" disabled={saving || loading} onClick={restoreDefault}>恢复默认</Button><Button size="sm" variant="ghost" disabled={saving || loading} onClick={openHistory}>历史版本</Button>{desktopClient.available() ? <Button size="sm" variant="ghost" onClick={openAgentDirectory}>打开所在位置</Button> : null}</div>
+          <Button size="sm" variant="primary" loading={saving} disabled={loading} onClick={save}>保存</Button>
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>最后更新：{activeMeta?.updated_at ? new Date(activeMeta.updated_at).toLocaleString() : '读取中'}</div>
+      </section>
+      <Dialog open={historyOpen} onClose={() => setHistoryOpen(false)} closeOnBackdrop={false} title={`${activeOption.label}历史版本`} maxWidth={760} footer={<Button variant="ghost" onClick={() => setHistoryOpen(false)}>关闭</Button>}>
+        <div style={{ display: 'grid', gap: 10, maxHeight: '65vh', overflowY: 'auto' }}>
+          {history.map((version) => <div key={version.id} style={{ ...SETTINGS_RESOURCE_ROW_STYLE, alignItems: 'flex-start', flexWrap: 'wrap' }}><div style={{ minWidth: 0, flex: '1 1 240px' }}><div style={{ fontSize: 13, fontWeight: 700 }}>{GLOBAL_AGENT_HISTORY_SOURCES[version.source] || version.source}</div><div style={{ marginTop: 4, fontSize: 12, color: 'var(--text-tertiary)' }}>{new Date(version.created_at).toLocaleString()} · {String(version.hash || '').slice(0, 12)}</div></div><div style={{ display: 'flex', gap: 8 }}><Button size="sm" variant="ghost" onClick={() => readHistory(version)}>查看</Button><Button size="sm" variant="ghost" disabled={saving} onClick={() => rollback(version)}>回滚</Button></div></div>)}
+          {history.length === 0 ? <div style={{ color: 'var(--text-tertiary)', fontSize: 13 }}>尚无历史版本。</div> : null}
+          {historyDetail ? <textarea readOnly value={historyDetail.content || ''} aria-label="历史版本内容" style={{ width: '100%', minHeight: 220, boxSizing: 'border-box', border: '1px solid var(--border-primary)', borderRadius: 10, padding: 12, background: 'var(--bg-secondary)', font: '12px/1.6 var(--font-mono)' }} /> : null}
+        </div>
       </Dialog>
     </div>
   );
@@ -1677,6 +2081,7 @@ const CONTENT_MAP = {
   skills: SkillsSettings,
   mcp: McpSettings,
   personalization: Personalization,
+  'global-agent': GlobalAgentFiles,
   'image-storage': ImageStorageConfig,
   storage: Storage,
   logs: Logs,
@@ -1690,12 +2095,14 @@ export function SettingsDialog({ open, section = 'model', onClose }) {
   useEffect(() => { setActiveSection(section); }, [section]);
 
   const Content = CONTENT_MAP[activeSection] || CONTENT_MAP.model;
+  const activeSectionMeta = SETTINGS_SECTIONS.find((item) => item.id === activeSection) || SETTINGS_SECTIONS[0];
   const openImageSettings = () => setActiveSection('image-storage');
 
   return (
     <Dialog
       open={open}
       onClose={onClose}
+      title={<span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>{activeSectionMeta.icon}{activeSectionMeta.label}</span>}
       className="notus-settings-dialog"
       showHeader
       maxWidth={1180}

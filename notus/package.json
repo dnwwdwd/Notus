@@ -1,6 +1,6 @@
 {
   "name": "notus",
-  "version": "0.1.8",
+  "version": "0.1.12",
   "private": true,
   "engines": {
     "node": "20.19.x"
@@ -12,11 +12,14 @@
     "lint": "next lint",
     "test:platform": "node tests/platform.test.js",
     "test:agent-session": "node tests/agent-session-paths.test.js",
+    "test:agent-research": "node tests/agent-research.test.js",
+    "test:global-agent-files": "node tests/global-agent-files.test.js",
     "test:knowledge-routing": "node tests/knowledge-routing.test.js",
     "test:knowledge-retrieval": "node tests/knowledge-retrieval.test.js",
     "test:file-revisions": "node tests/file-revisions.test.js",
+    "test:editor-image-upload": "node tests/editor-image-upload-route.test.js",
     "test:object-storage": "node tests/object-storage.test.js",
-    "test:skill-mcp": "node tests/skill-mcp.test.js",
+    "test:skill-mcp": "node tests/skill-mcp.test.js && node tests/skill-lazycat-rescan.test.js && node tests/external-mcp.test.js",
     "test:conversation-persistence": "node tests/conversation-persistence.test.js"
   },
   "dependencies": {

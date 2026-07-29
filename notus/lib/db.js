@@ -95,6 +95,7 @@ function ensureAgentLoopSchema(database) {
       tool_call_counts         TEXT NOT NULL DEFAULT '{}',
       consecutive_fails        TEXT NOT NULL DEFAULT '{}',
       last_tool_results        TEXT NOT NULL DEFAULT '{}',
+      research_state_json      TEXT NOT NULL DEFAULT '{}',
       messages_checkpoint      TEXT,
       checkpoint_tool_use_id   TEXT,
       waiting_since            TEXT,
@@ -133,6 +134,30 @@ function ensureAgentLoopSchema(database) {
     );
     CREATE INDEX IF NOT EXISTS idx_runlogs_session
       ON agent_run_logs(session_id, loop_index);
+
+    CREATE TABLE IF NOT EXISTS agent_research_receipts (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id     INTEGER NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+      conversation_id INTEGER REFERENCES conversations(id) ON DELETE SET NULL,
+      source_type    TEXT NOT NULL,
+      phase          TEXT NOT NULL DEFAULT '',
+      query          TEXT NOT NULL DEFAULT '',
+      source_title   TEXT NOT NULL DEFAULT '',
+      source_ref     TEXT NOT NULL DEFAULT '',
+      provider       TEXT NOT NULL DEFAULT '',
+      status         TEXT NOT NULL DEFAULT 'success',
+      result_count   INTEGER NOT NULL DEFAULT 0,
+      duration_ms    INTEGER NOT NULL DEFAULT 0,
+      content_hash   TEXT NOT NULL DEFAULT '',
+      error_code     TEXT NOT NULL DEFAULT '',
+      summary        TEXT NOT NULL DEFAULT '',
+      details_json   TEXT NOT NULL DEFAULT '{}',
+      created_at     TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_research_receipts_session
+      ON agent_research_receipts(session_id, id ASC);
+    CREATE INDEX IF NOT EXISTS idx_agent_research_receipts_conversation
+      ON agent_research_receipts(conversation_id, id ASC);
   `);
 
   [
@@ -141,6 +166,7 @@ function ensureAgentLoopSchema(database) {
     ['web_search_mode', 'TEXT'],
     ['web_search_count', 'INTEGER'],
     ['tool_profile', "TEXT NOT NULL DEFAULT 'default'"],
+    ['research_state_json', "TEXT NOT NULL DEFAULT '{}'"],
   ].forEach(([column, definition]) => {
     if (!hasColumn(database, 'agent_sessions', column)) {
       database.exec(`ALTER TABLE agent_sessions ADD COLUMN ${column} ${definition};`);
@@ -240,6 +266,25 @@ function ensureSkillMcpSchema(database) {
       id TEXT PRIMARY KEY, server_id TEXT, action TEXT NOT NULL, detail_json TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+    CREATE TABLE IF NOT EXISTS external_mcp_tokens (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL COLLATE NOCASE UNIQUE, token_hash TEXT NOT NULL UNIQUE,
+      enabled INTEGER NOT NULL DEFAULT 1, approval_mode TEXT NOT NULL DEFAULT 'manual', permissions_json TEXT NOT NULL DEFAULT '[]',
+      last_used_at TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS external_mcp_changes (
+      id TEXT PRIMARY KEY, token_id TEXT REFERENCES external_mcp_tokens(id) ON DELETE SET NULL,
+      token_name TEXT NOT NULL, tool_name TEXT NOT NULL, payload_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending', error_code TEXT, error_message TEXT,
+      applied_at TEXT, rejected_at TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_external_mcp_changes_status
+      ON external_mcp_changes(status, updated_at DESC);
+    CREATE TABLE IF NOT EXISTS external_mcp_audit_logs (
+      id TEXT PRIMARY KEY, token_id TEXT, tool_name TEXT NOT NULL, status TEXT NOT NULL,
+      detail_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_external_mcp_audit_token
+      ON external_mcp_audit_logs(token_id, created_at DESC);
   `);
   [
     ['skill_mentions_json', "TEXT NOT NULL DEFAULT '[]'"],

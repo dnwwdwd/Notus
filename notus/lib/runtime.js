@@ -15,6 +15,7 @@ function ensureDirs(config) {
   fs.mkdirSync(require('path').dirname(config.dbPath), { recursive: true });
   fs.mkdirSync(config.logDir, { recursive: true });
   fs.mkdirSync(config.sessionDir, { recursive: true });
+  fs.mkdirSync(config.agentDir, { recursive: true });
 }
 
 function scheduleRetries() {
@@ -39,6 +40,13 @@ function ensureRuntime({ startBackground = true } = {}) {
       require('./skills').initializeSkills();
     } catch (error) {
       logger.warn('skills.runtime.init_failed', { error });
+    }
+    try {
+      const { initializeGlobalAgentFiles, startGlobalAgentFileWatcher } = require('./globalAgentFiles');
+      initializeGlobalAgentFiles();
+      if (startBackground) startGlobalAgentFileWatcher();
+    } catch (error) {
+      logger.warn('agent_files.runtime.init_failed', { error });
     }
     logger.info('runtime.ready', {
       notes_dir: config.notesDir,

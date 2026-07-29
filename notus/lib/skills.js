@@ -95,7 +95,7 @@ function walkSkill(dir, rootReal) {
   visit(dir);
   return { files, total };
 }
-function inspectSkill(root, directory) {
+function inspectSkill(root, directory, options = {}) {
   const errors = [];
   const skillMd = path.join(directory, 'SKILL.md');
   let frontmatter = {};
@@ -116,7 +116,7 @@ function inspectSkill(root, directory) {
     const name = String(frontmatter.name || '').trim();
     const description = String(frontmatter.description || '').trim();
     if (!NAME_RE.test(name) || name.length > 64) errors.push({ code: 'SKILL_NAME_INVALID', message: 'name 必须使用小写短横线名称' });
-    if (path.basename(directory) !== name) errors.push({ code: 'SKILL_NAME_MISMATCH', message: 'name 与目录名不一致' });
+    if (!options.allowDirectoryNameMismatch && path.basename(directory) !== name) errors.push({ code: 'SKILL_NAME_MISMATCH', message: 'name 与目录名不一致' });
     if (!description || description.length > 1024) errors.push({ code: 'SKILL_DESCRIPTION_REQUIRED', message: 'description 不能为空且最长 1024 字符' });
     if (String(frontmatter.compatibility || '').length > 500) errors.push({ code: 'SKILL_COMPATIBILITY_TOO_LONG', message: 'compatibility 过长' });
     if (frontmatter.metadata !== undefined && (!frontmatter.metadata || Array.isArray(frontmatter.metadata) || typeof frontmatter.metadata !== 'object')) errors.push({ code: 'SKILL_METADATA_INVALID', message: 'metadata 必须是对象' });
@@ -141,7 +141,9 @@ function inspectSkill(root, directory) {
 }
 function scanRoot(root) {
   const db = getDb();
-  const seen = new Set();
+  // 同一批扫描必须共享标记。若逐条取时间、结束时再取一次时间，已扫描
+  // 的记录也会因毫秒差满足“早于扫描结束”，被错误标记为 missing。
+  const scanMarker = now();
   try {
     if (!fs.existsSync(root.path)) return [];
     const entries = fs.readdirSync(root.path, { withFileTypes: true }).filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'));
@@ -153,12 +155,11 @@ function scanRoot(root) {
       if (!fs.existsSync(path.join(directory, 'SKILL.md'))) return;
       const skill = inspectSkill(root, directory);
       const relative = path.relative(root.path, directory).replace(/\\/g, '/');
-      seen.add(relative);
       let realPath = null; try { realPath = fs.realpathSync(directory); } catch {}
       const existing = db.prepare('SELECT id FROM skills WHERE root_id = ? AND directory_path = ?').get(root.id, relative);
-      upsert.run({ id: existing?.id || crypto.randomUUID(), root_id: root.id, name: skill.name, description: skill.description, directory_path: relative, real_path: realPath, skill_md_path: skill.skillMd, frontmatter_json: JSON.stringify(skill.frontmatter), status: skill.status, validation_errors_json: JSON.stringify(skill.errors), content_hash: skill.contentHash, source_label: sourceLabel(root), managed: root.managedByNotus ? 1 : 0, last_seen_at: now() });
+      upsert.run({ id: existing?.id || crypto.randomUUID(), root_id: root.id, name: skill.name, description: skill.description, directory_path: relative, real_path: realPath, skill_md_path: skill.skillMd, frontmatter_json: JSON.stringify(skill.frontmatter), status: skill.status, validation_errors_json: JSON.stringify(skill.errors), content_hash: skill.contentHash, source_label: sourceLabel(root), managed: root.managedByNotus ? 1 : 0, last_seen_at: scanMarker });
     });
-    db.prepare(`UPDATE skills SET status = 'missing', updated_at = datetime('now') WHERE root_id = ? AND last_seen_at < ?`).run(root.id, now());
+    db.prepare(`UPDATE skills SET status = 'missing', updated_at = datetime('now') WHERE root_id = ? AND last_seen_at <> ?`).run(root.id, scanMarker);
     db.prepare(`UPDATE skill_roots SET last_scan_at = datetime('now'), last_error = NULL WHERE id = ?`).run(root.id);
   } catch (error) {
     db.prepare(`UPDATE skill_roots SET last_error = ? WHERE id = ?`).run(error.message, root.id);
@@ -188,9 +189,20 @@ function initializeSkills() {
   scanAllSkills();
   startSkillWatchers().catch(() => { watchersStarted = false; });
 }
+function getCurrentInstallation(skillId) {
+  return getDb().prepare('SELECT * FROM skill_installations WHERE skill_id = ? ORDER BY updated_at DESC, installed_at DESC, rowid DESC LIMIT 1').get(String(skillId || '')) || null;
+}
 function formatSkill(row) {
   const enabled = getDb().prepare('SELECT enabled FROM skill_user_state WHERE owner_id = ? AND skill_id = ?').get(OWNER_ID, row.id);
-  return { ...row, managed: Boolean(row.managed), enabled: enabled ? Boolean(enabled.enabled) : true, frontmatter: parseJson(row.frontmatter_json, {}), validation_errors: parseJson(row.validation_errors_json, []) };
+  const installation = getCurrentInstallation(row.id);
+  return {
+    ...row,
+    managed: Boolean(row.managed),
+    enabled: enabled ? Boolean(enabled.enabled) : true,
+    can_update: Boolean(row.managed && installation?.method === 'git' && installation.repository_url),
+    frontmatter: parseJson(row.frontmatter_json, {}),
+    validation_errors: parseJson(row.validation_errors_json, []),
+  };
 }
 function listSkills({ rootId = '', includeMissing = false } = {}) {
   const db = getDb();
@@ -229,54 +241,161 @@ function createJob(type, input = {}) { const id = crypto.randomUUID(); getDb().p
 function updateJob(id, stage, progress, extra = {}) { getDb().prepare(`UPDATE skill_jobs SET stage=?,progress=?,status=?,result_json=?,error_code=?,error_message=?,updated_at=datetime('now'),finished_at=CASE WHEN ? IN ('completed','failed') THEN datetime('now') ELSE NULL END WHERE id=?`).run(stage, progress, extra.status || 'running', extra.result ? JSON.stringify(extra.result) : null, extra.errorCode || null, extra.errorMessage || null, extra.status || 'running', id); }
 function getJob(id) { const row = getDb().prepare('SELECT * FROM skill_jobs WHERE id = ?').get(id); return row ? { ...row, input: parseJson(row.input_json, {}), result: parseJson(row.result_json, null) } : null; }
 function validateGitUrl(value) { const url = new URL(String(value || '')); if (url.protocol !== 'https:' || url.username || url.password) throw Object.assign(new Error('只支持不含凭据的 HTTPS Git URL'), { code: 'SKILL_SOURCE_UNREACHABLE' }); return url.toString(); }
+function isMissingPathError(error) { return error?.code === 'ENOENT' || error?.code === 'ENOTDIR'; }
+function skillSourceUnavailable(candidate) {
+  return Object.assign(new Error(`Skill 安装源目录不可用：${path.basename(candidate) || '临时目录'}`), { code: 'SKILL_SOURCE_UNAVAILABLE' });
+}
 function discoverCandidates(root) {
   const result = [];
   const visit = (dir, depth) => {
     if (depth > 4) return;
-    if (fs.existsSync(path.join(dir, 'SKILL.md'))) result.push(dir);
-    fs.readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.isDirectory() && !['.git', 'node_modules'].includes(entry.name)).forEach((entry) => visit(path.join(dir, entry.name), depth + 1));
+    try {
+      if (fs.existsSync(path.join(dir, 'SKILL.md'))) result.push(dir);
+      fs.readdirSync(dir, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && !['.git', 'node_modules'].includes(entry.name))
+        .forEach((entry) => visit(path.join(dir, entry.name), depth + 1));
+    } catch (error) {
+      // 解压目录或临时目录在遍历期间被清理时，跳过失效候选；不能把底层 scandir ENOENT 直接返回给用户。
+      if (isMissingPathError(error)) return;
+      throw error;
+    }
   };
   visit(root, 0);
-  return [...new Set(result)];
+  return [...new Set(result)].filter((candidate) => {
+    try {
+      return fs.statSync(candidate).isDirectory() && fs.statSync(path.join(candidate, 'SKILL.md')).isFile();
+    } catch (error) {
+      if (isMissingPathError(error)) return false;
+      throw error;
+    }
+  });
 }
 function installCandidate(candidate, source = {}) {
   const caps = getCapabilities();
   const managed = caps.skills.managedRoot;
   fs.mkdirSync(path.join(managed, '.staging'), { recursive: true, mode: 0o700 });
+  try {
+    if (!fs.statSync(candidate).isDirectory()) throw skillSourceUnavailable(candidate);
+  } catch (error) {
+    if (error.code === 'SKILL_SOURCE_UNAVAILABLE') throw error;
+    if (isMissingPathError(error)) throw skillSourceUnavailable(candidate);
+    throw error;
+  }
   const syntheticRoot = { path: path.dirname(candidate), providers: ['source'] };
-  const inspected = inspectSkill(syntheticRoot, candidate);
+  const inspected = inspectSkill(syntheticRoot, candidate, { allowDirectoryNameMismatch: Boolean(source.allowDirectoryNameMismatch) });
+  if (inspected.errors.some((item) => isMissingPathError(item))) throw skillSourceUnavailable(candidate);
   if (inspected.status !== 'valid') throw Object.assign(new Error(inspected.errors.map((item) => item.message).join('；')), { code: 'SKILL_INVALID' });
+  if (source.expectedName && inspected.name !== source.expectedName) throw Object.assign(new Error('更新后的 Skill name 不得变更'), { code: 'SKILL_UPDATE_NAME_MISMATCH' });
   const target = path.join(managed, inspected.name);
   if (fs.existsSync(target) && source.conflictPolicy !== 'replace') throw Object.assign(new Error('同名 Skill 已存在'), { code: 'SKILL_ALREADY_EXISTS' });
   const stage = path.join(managed, '.staging', `${crypto.randomUUID()}-${inspected.name}`);
-  fs.cpSync(candidate, stage, { recursive: true, dereference: false, errorOnExist: true });
-  if (fs.existsSync(target)) fs.rmSync(target, { recursive: true, force: true });
-  fs.renameSync(stage, target);
-  scanAllSkills();
-  const installed = listSkills().find((item) => item.managed && item.name === inspected.name && item.status === 'valid');
-  if (!installed) throw new Error('安装后的 Skill 未被索引');
-  getDb().prepare('INSERT INTO skill_installations (id,skill_id,method,repository_url,repository_ref,repository_commit,repository_subdirectory,archive_sha256,draft_id,installed_hash,installed_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').run(crypto.randomUUID(), installed.id, source.method || 'local', source.repositoryUrl || null, source.ref || null, source.commit || null, source.subdirectory || null, source.archiveSha256 || null, source.draftId || null, installed.content_hash, now(), now());
-  return installed;
+  const backup = path.join(managed, '.staging', `${crypto.randomUUID()}-${inspected.name}.backup`);
+  try {
+    fs.cpSync(candidate, stage, {
+      recursive: true,
+      dereference: false,
+      errorOnExist: true,
+      filter: (entry) => !['.git', 'node_modules'].includes(path.basename(entry)),
+    });
+  } catch (error) {
+    fs.rmSync(stage, { recursive: true, force: true });
+    if (isMissingPathError(error)) throw skillSourceUnavailable(candidate);
+    throw error;
+  }
+  let replaced = false;
+  try {
+    if (fs.existsSync(target)) {
+      fs.renameSync(target, backup);
+      replaced = true;
+    }
+    fs.renameSync(stage, target);
+    scanAllSkills();
+    const targetPath = path.resolve(target);
+    const installed = listSkills().find((item) => (
+      item.name === inspected.name
+      && item.status === 'valid'
+      && path.resolve(String(item.real_path || (item.skill_md_path ? path.dirname(item.skill_md_path) : ''))) === targetPath
+    ));
+    if (!installed) throw new Error('安装后的 Skill 未被索引');
+    getDb().prepare('INSERT INTO skill_installations (id,skill_id,method,repository_url,repository_ref,repository_commit,repository_subdirectory,archive_sha256,draft_id,installed_hash,installed_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').run(crypto.randomUUID(), installed.id, source.method || 'local', source.repositoryUrl || null, source.ref || null, source.commit || null, source.subdirectory || null, source.archiveSha256 || null, source.draftId || null, installed.content_hash, now(), now());
+    if (replaced) fs.rmSync(backup, { recursive: true, force: true });
+    return installed;
+  } catch (error) {
+    if (fs.existsSync(target)) fs.rmSync(target, { recursive: true, force: true });
+    if (replaced && fs.existsSync(backup)) fs.renameSync(backup, target);
+    scanAllSkills();
+    throw error;
+  } finally {
+    fs.rmSync(stage, { recursive: true, force: true });
+    if (fs.existsSync(backup) && !replaced) fs.rmSync(backup, { recursive: true, force: true });
+  }
+}
+async function cloneGitMainOrMaster({ dir, url, token = '' } = {}) {
+  let cloneError = null;
+  for (const ref of ['main', 'master']) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      await git.clone({ fs, http, dir, url, ref, singleBranch: true, depth: 1, onAuth: token ? () => ({ username: 'oauth2', password: token }) : undefined });
+      return ref;
+    } catch (error) {
+      cloneError = error;
+    }
+  }
+  throw cloneError || Object.assign(new Error('无法克隆 main 或 master 分支'), { code: 'SKILL_SOURCE_UNREACHABLE' });
 }
 async function installFromGit(input = {}) {
-  const jobId = createJob('git_install', { repository_url: input.repositoryUrl, ref: input.ref || '' });
+  const jobId = createJob('git_install', { repository_url: input.repositoryUrl });
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'notus-skill-git-'));
   try {
     const url = validateGitUrl(input.repositoryUrl);
     updateJob(jobId, 'cloning_or_uploading', 20);
     const token = input.credentialId ? await readSecret(input.credentialId) : String(input.token || '');
-    await git.clone({ fs, http, dir: temp, url, ref: input.ref || undefined, singleBranch: Boolean(input.ref), depth: 1, onAuth: token ? () => ({ username: 'oauth2', password: token }) : undefined });
-    const root = input.subdirectory ? path.resolve(temp, input.subdirectory) : temp;
-    if (!root.startsWith(temp)) throw Object.assign(new Error('子目录越界'), { code: 'SKILL_PATH_OUTSIDE_ROOT' });
+    const selectedRef = await cloneGitMainOrMaster({ dir: temp, url, token });
     updateJob(jobId, 'finding_skills', 50);
-    const candidates = discoverCandidates(root);
-    if (!candidates.length) throw Object.assign(new Error('仓库中没有 Skill'), { code: 'SKILL_INVALID' });
-    const selected = input.selectedSkillPaths?.length ? candidates.filter((candidate) => input.selectedSkillPaths.includes(path.relative(temp, candidate).replace(/\\/g, '/'))) : candidates;
-    const installed = selected.map((candidate) => installCandidate(candidate, { method: 'git', repositoryUrl: url, ref: input.ref || '', subdirectory: path.relative(temp, candidate).replace(/\\/g, '/'), conflictPolicy: input.conflictPolicy }));
+    if (!fs.existsSync(path.join(temp, 'SKILL.md'))) throw Object.assign(new Error('仓库根目录缺少 SKILL.md'), { code: 'SKILL_INVALID' });
+    const installed = [installCandidate(temp, {
+      method: 'git',
+      repositoryUrl: url,
+      ref: selectedRef,
+      subdirectory: '',
+      conflictPolicy: input.conflictPolicy,
+      allowDirectoryNameMismatch: true,
+    })];
     updateJob(jobId, 'completed', 100, { status: 'completed', result: { skills: installed } });
     return { jobId, skills: installed };
   } catch (error) {
     updateJob(jobId, 'failed', 100, { status: 'failed', errorCode: error.code || 'SKILL_INSTALL_FAILED', errorMessage: error.message });
+    throw error;
+  } finally { fs.rmSync(temp, { recursive: true, force: true }); }
+}
+async function updateSkillFromGit(id) {
+  const skill = getSkill(id);
+  if (!skill) throw Object.assign(new Error('Skill 不存在'), { code: 'SKILL_NOT_FOUND' });
+  if (!skill.managed) throw Object.assign(new Error('只能更新 Notus 管理的 Skill'), { code: 'SKILL_NOT_MANAGED' });
+  const installation = getCurrentInstallation(skill.id);
+  if (installation?.method !== 'git' || !installation.repository_url) throw Object.assign(new Error('该 Skill 不支持从 Git 更新'), { code: 'SKILL_UPDATE_UNAVAILABLE' });
+  const jobId = createJob('git_update', { skill_id: skill.id, repository_url: installation.repository_url });
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'notus-skill-git-update-'));
+  try {
+    const url = validateGitUrl(installation.repository_url);
+    updateJob(jobId, 'cloning_or_uploading', 20);
+    const selectedRef = await cloneGitMainOrMaster({ dir: temp, url });
+    updateJob(jobId, 'finding_skills', 50);
+    if (!fs.existsSync(path.join(temp, 'SKILL.md'))) throw Object.assign(new Error('仓库根目录缺少 SKILL.md'), { code: 'SKILL_INVALID' });
+    const updated = installCandidate(temp, {
+      method: 'git',
+      repositoryUrl: url,
+      ref: selectedRef,
+      subdirectory: '',
+      conflictPolicy: 'replace',
+      allowDirectoryNameMismatch: true,
+      expectedName: skill.name,
+    });
+    updateJob(jobId, 'completed', 100, { status: 'completed', result: { skill: updated } });
+    return { jobId, skill: updated };
+  } catch (error) {
+    updateJob(jobId, 'failed', 100, { status: 'failed', errorCode: error.code || 'SKILL_UPDATE_FAILED', errorMessage: error.message });
     throw error;
   } finally { fs.rmSync(temp, { recursive: true, force: true }); }
 }
@@ -340,4 +459,4 @@ function deleteSkill(id) {
   fs.rmSync(target, { recursive: true, force: true }); scanAllSkills(); return { deleted: true };
 }
 
-module.exports = { getCapabilities, skillRoots, initializeSkills, stopSkillWatchers, scanAllSkills, listSkills, getSkill, setSkillEnabled, eligibleSkillSummaries, loadSkill, readSkillFile, installFromGit, installFromZip, createSkillDraft, getSkillDraft, installSkillDraft, deleteSkill, getJob, saveSecret };
+module.exports = { getCapabilities, skillRoots, initializeSkills, stopSkillWatchers, scanAllSkills, listSkills, getSkill, setSkillEnabled, eligibleSkillSummaries, loadSkill, readSkillFile, discoverCandidates, cloneGitMainOrMaster, installFromGit, updateSkillFromGit, installFromZip, createSkillDraft, getSkillDraft, installSkillDraft, deleteSkill, getJob, saveSecret };

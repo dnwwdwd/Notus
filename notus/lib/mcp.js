@@ -10,13 +10,11 @@ const OWNER_ID = 'local-user';
 const connections = new Map();
 const MAX_AUTO_SERVERS = 3;
 const MAX_AUTO_TOOLS = 20;
+const TOOL_CACHE_TTL_MS = 5 * 60 * 1000;
 
 function parseJson(value, fallback) { try { return JSON.parse(value || ''); } catch { return fallback; } }
 function hash(value) { return crypto.createHash('sha256').update(value).digest('hex'); }
 function caps() { return getSkillMcpCapabilities(inferRuntimeTarget(), { dataRoot: getEffectiveConfig().dataRoot }); }
-function cleanPolicy(input = {}) {
-  return { default: ['ask', 'allow', 'deny'].includes(input.default) ? input.default : 'ask', allow: Array.isArray(input.allow) ? input.allow.map(String) : [], deny: Array.isArray(input.deny) ? input.deny.map(String) : [] };
-}
 function cleanHeaders(headers = []) {
   return (Array.isArray(headers) ? headers : []).map((item) => ({ name: String(item?.name || '').trim(), value: String(item?.value || ''), secretId: String(item?.secretId || ''), secret: Boolean(item?.secret) })).filter((item) => item.name);
 }
@@ -28,7 +26,8 @@ function sanitizeConfig(config = {}) {
 }
 function formatServer(row) {
   if (!row) return null;
-  return { ...row, enabled: Boolean(row.enabled), config: sanitizeConfig(parseJson(row.config_json, {})), tool_policy: cleanPolicy(parseJson(row.tool_policy_json, {})) };
+  const { tool_policy_json: _toolPolicyJson, ...server } = row;
+  return { ...server, enabled: Boolean(row.enabled), config: sanitizeConfig(parseJson(row.config_json, {})) };
 }
 function listServers({ includeDisabled = true } = {}) {
   const rows = getDb().prepare(`SELECT * FROM mcp_servers WHERE owner_id = ? ${includeDisabled ? '' : 'AND enabled = 1'} ORDER BY name`).all(OWNER_ID);
@@ -37,6 +36,13 @@ function listServers({ includeDisabled = true } = {}) {
   return rows.map(formatServer).filter((server) => server.transport !== 'stdio' || caps().mcp.stdio);
 }
 function getServer(id) { return formatServer(getDb().prepare('SELECT * FROM mcp_servers WHERE id = ? AND owner_id = ?').get(String(id || ''), OWNER_ID)); }
+function findServerByName(name, excludeId = '') {
+  const normalized = String(name || '').trim();
+  if (!normalized) return null;
+  return getDb().prepare(`SELECT id FROM mcp_servers
+    WHERE owner_id = ? AND lower(name) = lower(?) AND id <> ? LIMIT 1`)
+    .get(OWNER_ID, normalized, String(excludeId || '')) || null;
+}
 function assertTransport(transport) {
   if (!['stdio', 'streamable_http'].includes(transport)) throw Object.assign(new Error('MCP transport 无效'), { code: 'MCP_CONFIG_INVALID' });
   if (transport === 'stdio' && !caps().mcp.stdio) throw Object.assign(new Error('当前运行环境不支持 stdio MCP'), { code: 'MCP_TRANSPORT_UNAVAILABLE' });
@@ -79,28 +85,20 @@ async function saveServer(input = {}, id = '') {
   if (id && !existing) throw Object.assign(new Error('MCP Server 不存在'), { code: 'MCP_SERVER_NOT_FOUND' });
   const name = String(input.name || existing?.name || '').trim();
   if (!name || name.length > 80) throw Object.assign(new Error('请填写 MCP Server 名称'), { code: 'MCP_CONFIG_INVALID' });
+  if (findServerByName(name, existing?.id)) {
+    throw Object.assign(new Error(`MCP Server“${name}”已存在`), { code: 'MCP_SERVER_ALREADY_EXISTS' });
+  }
   const normalized = await normalizeConfig(input, existing);
   const serverId = existing?.id || crypto.randomUUID();
-  const policy = cleanPolicy(input.toolPolicy || parseJson(existing?.tool_policy_json, {}));
+  // 旧版本已经写入的工具策略继续留在数据库中，避免升级时丢失数据；
+  // MCP 是否可调用现在只由当前 AI 输入框的 Server 选择决定。
+  const legacyPolicy = existing?.tool_policy_json || JSON.stringify({});
   const enabled = input.enabled === undefined ? (existing ? existing.enabled : true) : Boolean(input.enabled);
   getDb().prepare(`INSERT INTO mcp_servers (id,owner_id,name,transport,enabled,config_json,tool_policy_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,datetime('now'),datetime('now'))
-    ON CONFLICT(id) DO UPDATE SET name=excluded.name,transport=excluded.transport,enabled=excluded.enabled,config_json=excluded.config_json,tool_policy_json=excluded.tool_policy_json,updated_at=datetime('now')`).run(serverId, OWNER_ID, name, normalized.transport, enabled ? 1 : 0, JSON.stringify(normalized.config), JSON.stringify(policy));
+    ON CONFLICT(id) DO UPDATE SET name=excluded.name,transport=excluded.transport,enabled=excluded.enabled,config_json=excluded.config_json,tool_policy_json=excluded.tool_policy_json,updated_at=datetime('now')`).run(serverId, OWNER_ID, name, normalized.transport, enabled ? 1 : 0, JSON.stringify(normalized.config), legacyPolicy);
   // 连接缓存以 owner:id 为键。配置更新后应清理旧连接，避免继续使用旧地址、命令或凭据。
   await disconnectServer(serverId);
   return getServer(serverId);
-}
-function setServerToolPermission(serverId, toolName, permission) {
-  const server = getServer(serverId);
-  if (!server) throw Object.assign(new Error('MCP Server 不存在'), { code: 'MCP_SERVER_NOT_FOUND' });
-  const policy = cleanPolicy(server.tool_policy);
-  const name = String(toolName || '');
-  policy.allow = policy.allow.filter((item) => item !== name);
-  policy.deny = policy.deny.filter((item) => item !== name);
-  if (permission === 'allow') policy.allow.push(name);
-  if (permission === 'deny') policy.deny.push(name);
-  getDb().prepare("UPDATE mcp_servers SET tool_policy_json = ?, updated_at = datetime('now') WHERE id = ?")
-    .run(JSON.stringify(policy), server.id);
-  return getServer(server.id);
 }
 async function removeServer(id) {
   await disconnectServer(id);
@@ -148,6 +146,11 @@ async function cacheTools(server, tools = []) {
   db.transaction(() => { remove.run(server.id); tools.forEach((tool) => insert.run(server.id, tool.name, tool.description || '', JSON.stringify(tool.inputSchema || tool.input_schema || { type: 'object', properties: {} }), hash(JSON.stringify(tool.inputSchema || tool.input_schema || {})), new Date().toISOString())); })();
 }
 function cachedTools(serverId) { return getDb().prepare('SELECT * FROM mcp_tool_cache WHERE server_id = ? ORDER BY tool_name').all(serverId).map((item) => ({ ...item, input_schema: parseJson(item.input_schema_json, { type: 'object', properties: {} }) })); }
+function isToolCacheStale(serverId, referenceTime = Date.now()) {
+  const row = getDb().prepare('SELECT MAX(discovered_at) AS discovered_at FROM mcp_tool_cache WHERE server_id = ?').get(serverId);
+  const discoveredAt = Date.parse(row?.discovered_at || '');
+  return !Number.isFinite(discoveredAt) || referenceTime - discoveredAt >= TOOL_CACHE_TTL_MS;
+}
 async function refreshTools(server) { const connection = await openConnection(server); const result = await connection.client.listTools(); const tools = result?.tools || []; await cacheTools(server, tools); return { tools, instructions: connection.instructions || '' }; }
 async function testServer(id) {
   const server = getServer(id); if (!server) throw Object.assign(new Error('MCP Server 不存在'), { code: 'MCP_SERVER_NOT_FOUND' });
@@ -173,6 +176,9 @@ async function prepareMcpTools(selection = {}, goal = '') {
   if (mode === 'off') return { tools: [], map: {}, instructions: [] };
   const servers = listServers({ includeDisabled: false });
   let selected = mode === 'server' ? servers.filter((item) => item.id === selection.serverId) : servers;
+  // 连接测试会写入缓存；长期运行或重启后，首次任务也应在缓存过期时静默
+  // 刷新，避免自动选择和工具 schema 长期停留在旧版本。
+  await Promise.all(selected.filter((server) => isToolCacheStale(server.id)).map((server) => refreshTools(server).catch(() => null)));
   if (mode === 'auto') {
     const terms = intentTerms(goal);
     const ranked = selected.map((server) => ({ server, score: cachedTools(server.id).reduce((score, tool) => score + terms.reduce((sum, term) => sum + (String(`${server.name} ${tool.tool_name} ${tool.description}`).toLowerCase().includes(term) ? 1 : 0), 0), 0) })).sort((left, right) => right.score - left.score || String(left.server.name).localeCompare(String(right.server.name)));
@@ -189,15 +195,11 @@ async function prepareMcpTools(selection = {}, goal = '') {
   }
   return { tools: tools.slice(0, MAX_AUTO_TOOLS), map, instructions };
 }
-function policyFor(server, toolName) { const policy = server.tool_policy || cleanPolicy(parseJson(getDb().prepare('SELECT tool_policy_json FROM mcp_servers WHERE id = ?').get(server.id)?.tool_policy_json, {})); if (policy.deny.includes(toolName)) return 'deny'; if (policy.allow.includes(toolName)) return 'allow'; return policy.default; }
-async function callMcpTool(mapping, args, sessionPermissions = {}) {
+async function callMcpTool(mapping, args) {
   const server = getServer(mapping?.serverId); if (!server || !server.enabled) return { error: 'MCP_TOOL_NOT_FOUND', message: 'MCP 工具不可用' };
-  const permission = sessionPermissions[`${server.id}:${mapping.toolName}`] || policyFor(server, mapping.toolName);
-  if (permission === 'deny') return { error: 'MCP_TOOL_DENIED', message: '该 MCP 工具未获允许' };
-  if (permission === 'ask') return { error: 'MCP_APPROVAL_REQUIRED', message: '该 MCP 工具需要用户允许后才能调用', approval: { server_id: server.id, server_name: server.name, tool_name: mapping.toolName, input: args } };
   try { const connection = await openConnection(server); const result = await connection.client.callTool({ name: mapping.toolName, arguments: args || {} }); return normalizeToolResult(result); } catch (error) { return { error: error.code || 'MCP_CONNECTION_FAILED', message: error.message }; }
 }
 function normalizeToolResult(result) {
   const value = result || {}; const serialized = JSON.stringify(value); if (serialized.length > 60000) return { truncated: true, summary: serialized.slice(0, 60000), is_error: Boolean(value.isError) }; return { content: value.content || [], structured_content: value.structuredContent || null, is_error: Boolean(value.isError) };
 }
-module.exports = { caps, listServers, getServer, saveServer, setServerToolPermission, removeServer, testServer, cachedTools, refreshTools, disconnectServer, closeAllConnections, prepareMcpTools, callMcpTool, alias };
+module.exports = { caps, listServers, getServer, saveServer, removeServer, testServer, cachedTools, isToolCacheStale, refreshTools, disconnectServer, closeAllConnections, prepareMcpTools, callMcpTool, alias };

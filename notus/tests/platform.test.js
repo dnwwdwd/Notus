@@ -13,6 +13,7 @@ function runTests() {
   assert.strictEqual(webPaths.notesDir, '/tmp/notus-data/notes');
   assert.strictEqual(webPaths.assetsDir, '/tmp/notus-data/assets');
   assert.strictEqual(webPaths.dbPath, '/tmp/notus-data/notus.db');
+  assert.strictEqual(webPaths.agentDir, '/tmp/notus-data/agent');
 
   const explicitPaths = resolvePlatformPaths(
     {
@@ -26,6 +27,13 @@ function runTests() {
   assert.strictEqual(explicitPaths.notesDir, '/custom/notes');
   assert.strictEqual(explicitPaths.dbPath, '/custom/index.db');
   assert.strictEqual(explicitPaths.assetsDir, '/tmp/notus-managed/assets');
+  assert.strictEqual(explicitPaths.agentDir, '/tmp/notus-managed/agent');
+
+  const lazycatPaths = resolvePlatformPaths(
+    { NOTUS_RUNTIME_TARGET: 'lazycat' },
+    { cwd, runtimeTarget: 'lazycat' }
+  );
+  assert.strictEqual(lazycatPaths.agentDir, '/lzcapp/var/notus/agent');
 
   const lazycatProfile = getPlatformProfile({
     NOTES_DIR: '/lzcapp/var/notes',
@@ -34,6 +42,9 @@ function runTests() {
   });
   assert.strictEqual(lazycatProfile.runtimeTarget, 'lazycat');
   assert.strictEqual(lazycatProfile.capabilities.supportsDesktopShell, false);
+
+  const explicitLazycatProfile = getPlatformProfile({ NOTUS_RUNTIME_TARGET: 'lazycat' });
+  assert.strictEqual(explicitLazycatProfile.runtimeTarget, 'lazycat');
 
   const electronProfile = getPlatformProfile({
     NOTUS_RUNTIME_TARGET: 'electron',

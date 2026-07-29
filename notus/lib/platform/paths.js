@@ -16,6 +16,7 @@ function buildDefaultLayout(runtimeTarget, cwd = process.cwd()) {
       dbPath: path.join(dataRoot, 'data', 'index.db'),
       logDir: path.join(dataRoot, 'logs'),
       sessionDir: path.join(dataRoot, 'session'),
+      agentDir: path.join(dataRoot, 'agent'),
     };
   }
 
@@ -28,6 +29,7 @@ function buildDefaultLayout(runtimeTarget, cwd = process.cwd()) {
       dbPath: '/lzcapp/var/data/index.db',
       logDir: '/lzcapp/var/logs',
       sessionDir: '/lzcapp/cache/notus/session',
+      agentDir: path.join(dataRoot, 'agent'),
     };
   }
 
@@ -39,6 +41,7 @@ function buildDefaultLayout(runtimeTarget, cwd = process.cwd()) {
     dbPath: path.join(dataRoot, 'notus.db'),
     logDir: path.join(dataRoot, 'logs'),
     sessionDir: path.join(dataRoot, '.session'),
+    agentDir: path.join(dataRoot, 'agent'),
   };
 }
 
@@ -50,6 +53,7 @@ function derivePathsFromDataRoot(runtimeTarget, dataRoot) {
       dbPath: path.join(dataRoot, 'notus.db'),
       logDir: path.join(dataRoot, 'logs'),
       sessionDir: path.join(dataRoot, '.session'),
+      agentDir: path.join(dataRoot, 'agent'),
     };
   }
 
@@ -60,6 +64,7 @@ function derivePathsFromDataRoot(runtimeTarget, dataRoot) {
       dbPath: path.join(dataRoot, 'data', 'index.db'),
       logDir: path.join(dataRoot, 'logs'),
       sessionDir: '/lzcapp/cache/notus/session',
+      agentDir: path.join(dataRoot, 'agent'),
     };
   }
 
@@ -69,6 +74,7 @@ function derivePathsFromDataRoot(runtimeTarget, dataRoot) {
     dbPath: path.join(dataRoot, 'data', 'index.db'),
     logDir: path.join(dataRoot, 'logs'),
     sessionDir: path.join(dataRoot, 'session'),
+    agentDir: path.join(dataRoot, 'agent'),
   };
 }
 
@@ -87,6 +93,7 @@ function resolvePlatformPaths(env = process.env, options = {}) {
     dbPath: absolutePath(env.DB_PATH, derived.dbPath, cwd),
     logDir: absolutePath(env.LOG_DIR, derived.logDir, cwd),
     sessionDir: absolutePath(env.SESSION_DIR, derived.sessionDir, cwd),
+    agentDir: absolutePath(env.AGENT_DIR, derived.agentDir, cwd),
   };
 }
 

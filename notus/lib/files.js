@@ -528,11 +528,11 @@ function createFolder(folderPath) {
   };
 }
 
-function createFile(filePath, content = '') {
+function createFile(filePath, content = '', options = {}) {
   const initialContent = content || `# ${getBaseName(filePath).replace(/\.md$/i, '')}\n\n`;
   const finalPath = writeMarkdownFile(filePath, injectFrontmatterId(initialContent));
   const row = upsertFileRecord(finalPath, readMarkdownFile(finalPath), 0);
-  return {
+  const createdFile = {
     id: row.id,
     path: row.path,
     title: row.title,
@@ -541,6 +541,17 @@ function createFile(filePath, content = '') {
     indexed: row.indexed,
     updated_at: row.updated_at,
   };
+  const bindingEnabled = options.titleFilenameBindingEnabled !== undefined
+    ? Boolean(options.titleFilenameBindingEnabled)
+    : isTitleFilenameBindingEnabled();
+  if (!bindingEnabled) {
+    return {
+      ...createdFile,
+      title_binding_applied: false,
+      title_binding_warning: '',
+    };
+  }
+  return updateFile(createdFile.id, createdFile.content, { titleFilenameBindingEnabled: true });
 }
 
 function saveFileByPath(filePath, content = '', options = {}) {

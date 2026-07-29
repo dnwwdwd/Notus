@@ -1,6 +1,7 @@
 const { ensureRuntime } = require('../../../../lib/runtime');
 const { countSnapshots, listRecentSessions, listRunLogs } = require('../../../../lib/agentSession');
 const { listOperationSetsBySession } = require('../../../../lib/canvasOperationSets');
+const { sanitizeResearchReceipts } = require('../../../../lib/agentResearch');
 
 function normalizeLimit(value, fallback, max) {
   const next = Number(value);
@@ -24,6 +25,7 @@ export default function handler(req, res) {
         ...session,
         snapshots_count: countSnapshots(session.id),
         run_logs: runLogs.slice(Math.max(0, runLogs.length - logLimit)),
+        research_receipts: sanitizeResearchReceipts(session.id),
         operation_sets: listOperationSetsBySession(session.id),
       };
     });

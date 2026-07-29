@@ -1,6 +1,7 @@
 const { ensureRuntime } = require('../../../../lib/runtime');
 const { getSession, listRunLogs, countSnapshots, sanitizeSessionForRead, validateSessionAccess } = require('../../../../lib/agentSession');
 const { listOperationSetsBySession } = require('../../../../lib/canvasOperationSets');
+const { sanitizeResearchReceipts } = require('../../../../lib/agentResearch');
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed', code: 'METHOD_NOT_ALLOWED' });
@@ -17,6 +18,7 @@ export default async function handler(req, res) {
     return res.status(200).json({
       session: token ? session : sanitizeSessionForRead(session),
       run_logs: listRunLogs(sessionId),
+      research_receipts: sanitizeResearchReceipts(sessionId),
       snapshots_count: countSnapshots(sessionId),
       operation_sets: listOperationSetsBySession(sessionId),
     });

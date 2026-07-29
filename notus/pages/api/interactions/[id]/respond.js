@@ -12,8 +12,7 @@ const {
   normalizeInteractionResponse,
   updateInteraction,
 } = require('../../../../lib/conversationInteractions');
-const { setSessionMcpPermission } = require('../../../../lib/agentSession');
-const { setServerToolPermission } = require('../../../../lib/mcp');
+const { setSessionWriteTarget } = require('../../../../lib/agentSession');
 
 function buildCorrectionStateFromResponse(interaction, normalizedResponse) {
   const payload = interaction?.payload || {};
@@ -119,44 +118,7 @@ export default function handler(req, res) {
   }
 
   if (interaction.kind === 'mcp_approval') {
-    const decision = String(action || '').trim();
-    if (!['once', 'session', 'always', 'deny'].includes(decision)) {
-      return res.status(400).json({ error: '请选择 MCP 授权方式', code: 'MCP_APPROVAL_DECISION_REQUIRED', request_id: context.request_id });
-    }
-    const approval = interaction.payload?.approval || {};
-    const sessionId = Number(interaction.payload?.agent_session_id || 0);
-    const permissionKey = `${approval.server_id || ''}:${approval.tool_name || ''}`;
-    if (!sessionId || !approval.server_id || !approval.tool_name) {
-      return res.status(409).json({ error: 'MCP 授权信息已失效', code: 'MCP_APPROVAL_INVALID', request_id: context.request_id });
-    }
-    if (decision === 'always') setServerToolPermission(approval.server_id, approval.tool_name, 'allow');
-    setSessionMcpPermission(sessionId, permissionKey, decision === 'once' ? 'allow_once' : decision === 'deny' ? 'deny' : 'allow');
-    const normalizedResponse = { decision, answers: { decision: { value: decision, label: decision } } };
-    const summaryText = decision === 'deny'
-      ? `已拒绝 MCP 工具 ${approval.server_name || ''} / ${approval.tool_name} 的调用。`
-      : `已允许 MCP 工具 ${approval.server_name || ''} / ${approval.tool_name} 的调用（${decision === 'once' ? '仅本次' : decision === 'session' ? '本次任务' : '以后默认允许'}）。`;
-    const answerMessageId = appendConversationMessage({
-      conversationId: interaction.conversation_id,
-      role: 'user',
-      content: summaryText,
-      meta: { interaction_id: interaction.id, interaction_resolution_status: 'resolved', mcp_approval: decision },
-    });
-    touchConversation(interaction.conversation_id);
-    const updatedInteraction = updateInteraction(interaction.id, {
-      response: normalizedResponse,
-      status: 'answered',
-      answerMessageId,
-      answeredAt: new Date().toISOString(),
-    });
-    return res.status(200).json({
-      interaction: updatedInteraction,
-      answer_message: getConversationMessageById(answerMessageId),
-      resolution_status: 'resolved',
-      normalized_response: normalizedResponse,
-      should_continue: true,
-      resume_payload: { interaction_id: updatedInteraction.id, conversation_id: updatedInteraction.conversation_id },
-      request_id: context.request_id,
-    });
+    return res.status(410).json({ error: 'MCP 逐工具授权已停用，请重新发送任务并在输入框选择 MCP Server', code: 'MCP_APPROVAL_RETIRED', request_id: context.request_id });
   }
 
   const { response, raw_text: rawText, article, article_hash: articleHash, schema_version: schemaVersion } = req.body || {};
@@ -211,6 +173,25 @@ export default function handler(req, res) {
 
   const summaryText = buildInteractionAnswerSummary(interaction, normalizedResponse);
   const nextStatus = normalizedResponse.resolution_status === 'resolved' ? 'answered' : 'pending';
+  if (nextStatus === 'answered' && interaction.payload?.write_target_preflight) {
+    const selected = String(normalizedResponse.answers?.write_target?.value || '').trim();
+    const candidates = Array.isArray(interaction.payload?.write_target_candidates)
+      ? interaction.payload.write_target_candidates
+      : [];
+    const candidate = candidates.find((item) => String(item?.filePath || '') === selected);
+    const sessionId = Number(interaction.payload?.agent_session_id || 0);
+    if (!sessionId || (!candidate && selected !== '__new_article__')) {
+      return res.status(400).json({
+        error: '写作目标无效，请重新选择。',
+        code: 'WRITE_TARGET_INVALID',
+        interaction,
+        request_id: context.request_id,
+      });
+    }
+    setSessionWriteTarget(sessionId, selected === '__new_article__'
+      ? { mode: 'new' }
+      : { mode: 'modify', file_path: candidate.filePath, operation_set_id: candidate.operationSetId });
+  }
   const correctionState = buildCorrectionStateFromResponse(interaction, normalizedResponse);
   const answerMessageId = appendConversationMessage({
     conversationId: interaction.conversation_id,

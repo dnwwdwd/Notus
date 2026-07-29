@@ -52,7 +52,9 @@ function upsertById(list = [], item = null) {
 
 function mapFileMention(file) {
   const path = String(file?.path || '').trim();
-  const name = String(file?.name || path.split('/').pop() || file?.title || '未命名文件').trim();
+  const title = String(file?.title || '').trim();
+  const fileName = String(file?.name || path.split('/').pop() || '').trim();
+  const name = fileName || title || '未命名文件';
   return {
     value: String(file?.id || path),
     id: String(file?.id || path),
@@ -63,8 +65,15 @@ function mapFileMention(file) {
     label: name,
     preview: path,
     kind: 'file',
-    searchText: `${name} ${file?.name || ''} ${path}`,
+    searchText: [fileName, title, path].filter(Boolean).join(' '),
   };
+}
+
+function collectFileMentions(nodes = []) {
+  return (Array.isArray(nodes) ? nodes : []).flatMap((node) => {
+    if (node?.type === 'file') return [mapFileMention(node)];
+    return collectFileMentions(node?.children || []);
+  });
 }
 
 function mapSkillMention(skill) {
@@ -159,7 +168,7 @@ function McpApprovalDrawer({ interaction, submitting, onDecision }) {
   );
 }
 
-export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles, onFilesChanged, beforeAgentRun }) {
+export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles, onFilesChanged, beforeAgentRun, fullWidth = false, onOpenDiffFile }) {
   const { openSettings } = useSettingsDialog();
   const toast = useToast();
   const { status: appStatus, loading: appStatusLoading } = useAppStatus();
@@ -168,6 +177,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
   const [conversationList, setConversationList] = useState([]);
   const [activeConversationId, setActiveConversationId] = useState(null);
   const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
+  const [historySearchQuery, setHistorySearchQuery] = useState('');
   const [conversationListLoading, setConversationListLoading] = useState(false);
   const [deletingConversationId, setDeletingConversationId] = useState(null);
   const [exportingConversationId, setExportingConversationId] = useState(null);
@@ -188,6 +198,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
   });
   const aiUiState = useStableAiReadiness(aiState);
   const mentionOptions = useMemo(() => dedupeMentionOptions([
+    ...collectFileMentions(fileTree),
     ...allFiles.map(mapFileMention).filter((item) => item.preview),
     ...collectFolderMentions(fileTree),
     ...collectFolderMentionsFromFiles(allFiles),
@@ -196,13 +207,15 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
 
   useEffect(() => {
     let cancelled = false;
-    fetch('/api/skills', { cache: 'no-store' })
+    const refreshSkills = () => fetch('/api/skills', { cache: 'no-store' })
       .then((response) => response.ok ? response.json() : { skills: [] })
       .then((payload) => {
         if (!cancelled) setSkills((Array.isArray(payload?.skills) ? payload.skills : []).filter((skill) => skill?.enabled && skill?.status === 'valid'));
       })
       .catch(() => { if (!cancelled) setSkills([]); });
-    return () => { cancelled = true; };
+    refreshSkills();
+    window.addEventListener('notus-skills-changed', refreshSkills);
+    return () => { cancelled = true; window.removeEventListener('notus-skills-changed', refreshSkills); };
   }, []);
   const operationSetById = useMemo(() => Object.fromEntries(
     pendingOperationSets.map((item) => [String(item.id || item.operation_set_id), item])
@@ -227,8 +240,10 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     });
   }, [activeConfigId, llmConfigs]);
 
-  const fetchConversationList = useCallback(async () => {
-    const response = await fetch('/api/conversations?kind=canvas&limit=80', { cache: 'no-store' });
+  const fetchConversationList = useCallback(async (query = '') => {
+    const params = new URLSearchParams({ kind: 'canvas', limit: '80' });
+    if (String(query || '').trim()) params.set('q', String(query).trim());
+    const response = await fetch(`/api/conversations?${params.toString()}`, { cache: 'no-store' });
     const payload = await readApiResponse(response, '读取对话列表失败');
     return Array.isArray(payload) ? payload : [];
   }, []);
@@ -239,14 +254,14 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     saveActiveConversationId(nextId);
   }, []);
 
-  const refreshConversationList = useCallback(async (preferredId = null) => {
-    const rows = await fetchConversationList();
+  const refreshConversationList = useCallback(async (preferredId = null, query = historySearchQuery) => {
+    const rows = await fetchConversationList(query);
     setConversationList(rows);
     if (preferredId && rows.some((item) => Number(item.id) === Number(preferredId))) {
       setPersistedActiveConversationId(preferredId);
     }
     return rows;
-  }, [fetchConversationList, setPersistedActiveConversationId]);
+  }, [fetchConversationList, historySearchQuery, setPersistedActiveConversationId]);
 
   const loadConversation = useCallback(async (conversationId) => {
     const response = await fetch(`/api/conversations/${conversationId}`, { cache: 'no-store' });
@@ -288,6 +303,18 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
       });
     return () => { cancelled = true; };
   }, [fetchConversationList, loadConversation]);
+
+  useEffect(() => {
+    if (!historyDrawerOpen) return undefined;
+    const timer = window.setTimeout(() => {
+      setConversationListLoading(true);
+      fetchConversationList(historySearchQuery)
+        .then((rows) => setConversationList(rows))
+        .catch(() => setConversationList([]))
+        .finally(() => setConversationListLoading(false));
+    }, 180);
+    return () => window.clearTimeout(timer);
+  }, [fetchConversationList, historyDrawerOpen, historySearchQuery]);
 
   const notifyFilesChanged = useCallback(async () => {
     await refreshFiles?.({ background: true });
@@ -398,6 +425,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     setMessages([]);
     setPendingOperationSets([]);
     setPendingInteractions([]);
+    setHistorySearchQuery('');
     setHistoryDrawerOpen(false);
     agentLoop.clearActiveAgentSession();
   }, [agentLoop, setPersistedActiveConversationId, toast]);
@@ -531,6 +559,8 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
           onAgentConfirmModeChange={updateConfirmMode}
           attachmentMode="parsed"
           mentionOptions={mentionOptions}
+          fullWidth={fullWidth}
+          onOpenDiffFile={onOpenDiffFile}
         />
         {aiUiState.showLockedState ? <AiLockedState compact variant="panel" onAction={() => openSettings('model')} /> : null}
       </div>
@@ -541,10 +571,13 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
       ) : null}
       <ConversationDrawer
         open={historyDrawerOpen}
-        onClose={() => setHistoryDrawerOpen(false)}
+        onClose={() => { setHistoryDrawerOpen(false); setHistorySearchQuery(''); }}
         conversations={conversationList}
         activeConversationId={activeConversationId}
         loading={conversationListLoading}
+        searchQuery={historySearchQuery}
+        onSearchQueryChange={setHistorySearchQuery}
+        emptyText={historySearchQuery.trim() ? '没有匹配的历史对话' : '暂无历史对话'}
         onSelect={(id) => loadConversation(id).catch((error) => toast(error.message || '读取对话失败', 'error'))}
         onDelete={handleDeleteConversation}
         onExport={handleExportConversation}

@@ -8,6 +8,7 @@ const {
 const { listOperationSetsByConversation, listOperationSetsBySession } = require('../../../lib/canvasOperationSets');
 const { listInteractionsByConversation } = require('../../../lib/conversationInteractions');
 const { countSnapshots, listRunLogs, listSessionsByConversation } = require('../../../lib/agentSession');
+const { sanitizeResearchReceipts } = require('../../../lib/agentResearch');
 
 export default function handler(req, res) {
   const context = createRequestContext(req, res, '/api/conversations/[id]');
@@ -40,6 +41,7 @@ export default function handler(req, res) {
       ...session,
       snapshots_count: countSnapshots(session.id),
       run_logs: listRunLogs(session.id),
+      research_receipts: sanitizeResearchReceipts(session.id),
       operation_sets: listOperationSetsBySession(session.id),
     }));
     if (conversation.kind === 'canvas') {

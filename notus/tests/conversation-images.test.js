@@ -34,6 +34,11 @@ assert.throws(
 );
 
 assert.strictEqual(normalizeMessageImages([{ name: 'one.png', stored_name: 'one.png' }]).length, 1);
+assert.strictEqual(
+  normalizeMessageImages([{ name: 'one.png', extension: '.png', stored_name: 'one.png' }]).length,
+  1,
+  '图片上传接口单独返回 extension 时，服务端仍须保留该图片供视觉输入与受控预览使用。'
+);
 assert.strictEqual(normalizeMessageImages([{ name: 'one.svg', stored_name: 'one.svg' }]).length, 0);
 assert.strictEqual(normalizeMessageAttachments([{ name: 'brief.pdf', upload_order: 3 }])[0].upload_order, 3);
 

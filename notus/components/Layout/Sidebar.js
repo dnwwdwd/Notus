@@ -260,6 +260,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
   const [searchQuery, setSearchQuery] = useState('');
   const [isMobileViewport, setIsMobileViewport] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [autoCollapsed, setAutoCollapsed] = useState(false);
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const [createMode, setCreateMode] = useState(null);
   const [newName, setNewName] = useState('');
@@ -297,24 +298,36 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
   const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
-    const query = window.matchMedia('(max-width: 700px)');
+    const query = window.matchMedia('(max-width: 960px)');
     const updateViewport = () => {
       setIsMobileViewport(query.matches);
-      if (!query.matches) setMobileSidebarOpen(false);
+      if (query.matches) {
+        setAutoCollapsed(true);
+        setMobileSidebarOpen(false);
+      }
     };
     updateViewport();
     query.addEventListener('change', updateViewport);
     return () => query.removeEventListener('change', updateViewport);
   }, []);
 
-  const isSidebarCollapsed = isMobileViewport ? !mobileSidebarOpen : sidebarCollapsed;
+  const isSidebarCollapsed = autoCollapsed || (isMobileViewport ? !mobileSidebarOpen : sidebarCollapsed);
   const toggleResponsiveSidebar = useCallback(() => {
+    if (autoCollapsed) {
+      setAutoCollapsed(false);
+      if (isMobileViewport) {
+        setMobileSidebarOpen(true);
+      } else if (sidebarCollapsed) {
+        toggleSidebarCollapsed();
+      }
+      return;
+    }
     if (isMobileViewport) {
       setMobileSidebarOpen((current) => !current);
       return;
     }
     toggleSidebarCollapsed();
-  }, [isMobileViewport, toggleSidebarCollapsed]);
+  }, [autoCollapsed, isMobileViewport, sidebarCollapsed, toggleSidebarCollapsed]);
 
   useEffect(() => {
     setHydrated(true);

@@ -1,4 +1,4 @@
-import { normalizeMentionSegments, normalizeMessageMentions, parseLegacyMentions, segmentsToContent, segmentsToMentions } from './messageMentions';
+import { normalizeMentionSegments, normalizeMessageMentions, parseLegacyMentions, segmentsToContent, segmentsToMentions } from './messageMentions.js';
 
 export function createDraftConversationKey(prefix = 'draft') {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -83,6 +83,7 @@ export function mapConversationMessages(messages = [], kind = 'knowledge') {
         id: message.id || `${message.role}-${Math.random().toString(16).slice(2)}`,
         role: message.role,
         content: segmentsToContent(mentionSegments),
+        createdAt: message.created_at || message.updated_at || '',
         conversationId: Number(message.conversation_id || 0) || null,
         attachments,
         citations,

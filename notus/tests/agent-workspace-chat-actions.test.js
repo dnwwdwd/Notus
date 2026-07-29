@@ -16,7 +16,7 @@ async function runTests() {
     'aria-label="滚动到最新消息"',
     'scrollContainerToBottom(container, \'smooth\')',
     '<Icons.chevronDown size={14} />',
-    'function UserMessageRow({ message, disabled, removing = false, onResendMessage, onOpenAttachment })',
+    'function UserMessageRow({ message, disabled, removing = false, onResendMessage, onOpenAttachment, onPreviewMention, onPreviewImages })',
     'function AssistantMessageRow({ message, disabled, removing = false, onRetryMessage, previousUserMessage',
     'aria-label="AI 回复操作"',
     'aria-label="用户消息操作"',
@@ -88,7 +88,7 @@ async function runTests() {
 
   assert.deepStrictEqual(
     mapped[0].attachments,
-    [{ name: 'brief.pdf', size: 1024, type: 'application/pdf' }],
+    [{ name: 'brief.pdf', size: 1024, type: 'application/pdf', media_kind: 'attachment', upload_order: 0 }],
     'mapConversationMessages should keep attachments so edit/retry can reuse them'
   );
 
@@ -123,7 +123,7 @@ async function runTests() {
   assert.ok(workspaceSource.includes('function AttachmentContentDialog'));
   assert.ok(workspaceSource.includes("fetch('/api/agent/attachments/content'"));
   assert.ok(workspaceSource.includes('PDF 不支持复制'));
-  assert.ok(workspaceSource.includes("aria-label={`查看附件内容：${file.name || '未命名附件'}`}"));
+  assert.ok(workspaceSource.includes("`查看附件内容：${file.name || '未命名附件'}`"));
 
   console.log('agent workspace chat actions tests passed');
 }

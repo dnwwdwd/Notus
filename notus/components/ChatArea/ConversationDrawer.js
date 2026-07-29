@@ -11,6 +11,8 @@ export function ConversationDrawer({
   activeConversationId = null,
   loading = false,
   emptyText = '暂无历史对话',
+  searchQuery = '',
+  onSearchQueryChange,
   onSelect,
   onDelete,
   onExport,
@@ -87,6 +89,19 @@ export function ConversationDrawer({
           >
             <Icons.x size={14} />
           </button>
+        </div>
+
+        <div style={{ padding: '10px 12px 2px', flexShrink: 0 }}>
+          <label style={{ position: 'relative', display: 'block' }}>
+            <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)', display: 'inline-flex', pointerEvents: 'none' }}><Icons.search size={14} /></span>
+            <input
+              value={searchQuery}
+              onChange={(event) => onSearchQueryChange?.(event.target.value)}
+              placeholder="搜索对话或消息"
+              aria-label="搜索对话或消息"
+              style={{ width: '100%', height: 34, boxSizing: 'border-box', border: '1px solid var(--border-primary)', borderRadius: 'var(--radius-sm)', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none', padding: '0 10px 0 32px', fontSize: 12, fontFamily: 'inherit' }}
+            />
+          </label>
         </div>
 
         <div style={{ flex: 1, overflow: 'auto', padding: 10, display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'stretch', minHeight: 0 }}>

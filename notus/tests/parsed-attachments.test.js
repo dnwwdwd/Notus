@@ -33,7 +33,7 @@ async function runTests() {
   const { getEffectiveConfig } = require('../lib/config');
   const { createConversation } = require('../lib/conversations');
   const { parseDocument, extractWebUrls } = require('../lib/attachmentParsing');
-  const { parseAgentInputSources } = require('../lib/agentInputSources');
+  const { parseAgentInputSources, parseGitHubRepositoryReadme } = require('../lib/agentInputSources');
   const {
     formatAttachmentsForPrompt,
     hasAttachment,
@@ -101,7 +101,40 @@ async function runTests() {
   });
   assert.ok(results.some((item) => item.source === 'upload-note.txt' && item.status === 'success'));
   assert.ok(events.some((event) => event.type === 'attachment_parse_start'));
+
+  const imageEvents = [];
+  const imageResults = await parseAgentInputSources({
+    conversationId: conversation.id,
+    attachments: [{ name: 'screen.png', stored_name: 'screen.png', type: 'image/png', source_kind: 'image', media_kind: 'image' }],
+    onEvent: (event) => imageEvents.push(event),
+  });
+  assert.deepStrictEqual(imageResults, [], '图片不能进入文本附件解析');
+  assert.deepStrictEqual(imageEvents, [], '图片不能产生附件解析步骤');
   assert.deepStrictEqual(extractWebUrls('参考 https://example.com/a 和 https://example.com/file.pdf'), ['https://example.com/a']);
+
+  const originalFetch = global.fetch;
+  const githubFetchCalls = [];
+  global.fetch = async (url) => {
+    githubFetchCalls.push(String(url));
+    if (String(url).endsWith('/readme')) {
+      return new Response('# Notus\n\nGitHub README 内容', { status: 200, headers: { 'content-type': 'text/plain' } });
+    }
+    return new Response(JSON.stringify({ full_name: 'dnwwdwd/Notus', description: 'Notus project' }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    const github = await parseGitHubRepositoryReadme('https://github.com/dnwwdwd/Notus');
+    assert.strictEqual(github.status, 'success');
+    assert.strictEqual(github.metadata.title, 'dnwwdwd/Notus README');
+    assert.ok(github.text.includes('GitHub README 内容'));
+    assert.strictEqual(githubFetchCalls.length, 2, 'GitHub 仓库直连应先确认仓库，再读取 README');
+    global.fetch = async (url) => String(url).endsWith('/readme')
+      ? new Response('', { status: 404 })
+      : new Response(JSON.stringify({ full_name: 'dnwwdwd/NoReadme' }), { status: 200, headers: { 'content-type': 'application/json' } });
+    const missingReadme = await parseGitHubRepositoryReadme('https://github.com/dnwwdwd/NoReadme');
+    assert.strictEqual(missingReadme.errorCode, 'README_MISSING');
+  } finally {
+    global.fetch = originalFetch;
+  }
 
   const server = http.createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });

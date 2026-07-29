@@ -75,7 +75,7 @@ function deleteConversation(id) {
   return true;
 }
 
-function listConversations({ kind = null, fileId, draftKey, limit = 20 } = {}) {
+function listConversations({ kind = null, fileId, draftKey, query = '', limit = 20 } = {}) {
   const db = getDb();
   const conditions = [];
   const params = [];
@@ -106,6 +106,21 @@ function listConversations({ kind = null, fileId, draftKey, limit = 20 } = {}) {
     } else {
       conditions.push('c.draft_key IS NULL');
     }
+  }
+
+  const normalizedQuery = String(query || '').trim().toLowerCase();
+  if (normalizedQuery) {
+    const fuzzyQuery = `%${normalizedQuery}%`;
+    conditions.push(`(
+      LOWER(c.title) LIKE ?
+      OR EXISTS (
+        SELECT 1 FROM messages m
+        WHERE m.conversation_id = c.id
+          AND m.role IN ('user', 'assistant')
+          AND LOWER(m.content) LIKE ?
+      )
+    )`);
+    params.push(fuzzyQuery, fuzzyQuery);
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -334,6 +349,12 @@ function rewriteConversationFromMessage({ conversationId, messageId, content } =
       rewritten: true,
       rewritten_at: new Date().toISOString(),
     };
+    const previousUserQuery = String(previousMeta?.user_query || '').trim();
+    const previousGoal = String(previousMeta?.agent_goal || '').trim();
+    nextMeta.user_query = nextContent;
+    if (previousGoal && previousUserQuery && previousGoal.endsWith(previousUserQuery)) {
+      nextMeta.agent_goal = `${previousGoal.slice(0, -previousUserQuery.length)}${nextContent}`;
+    }
 
     db.prepare(`
       UPDATE messages

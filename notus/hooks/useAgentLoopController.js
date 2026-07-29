@@ -51,7 +51,16 @@ async function readSse(response, onEvent) {
 async function readErrorResponse(response, fallback) {
   const text = await response.text().catch(() => '');
   const parsed = parseJson(text, null);
-  return parsed?.error || parsed?.code || text || fallback;
+  const requestId = String(response.headers?.get('x-request-id') || '').trim();
+  const suffix = requestId ? `（请求编号：${requestId}）` : '';
+  const message = String(parsed?.error || parsed?.code || '').trim();
+  if (message && !/<\/?[a-z][^>]*>/i.test(message)) return `${message}${suffix}`;
+
+  // Next.js 的兜底 500 页、反向代理错误页等非 JSON 内容不能作为聊天正文渲染。
+  // 仅向用户提供 HTTP 状态与可用于查日志的请求编号。
+  const status = Number(response.status || 0);
+  const statusSuffix = status ? `（HTTP ${status}${requestId ? `，请求编号：${requestId}` : ''}）` : suffix;
+  return `${fallback}${statusSuffix}`;
 }
 
 function upsertStep(list = [], step = null) {
@@ -79,6 +88,47 @@ function toolLabel(name = '') {
 
 function reasonLabel(reason = '') {
   return getAgentLoopReasonLabel(reason);
+}
+
+function mediaKey(item = {}) {
+  return String(item?.id || item?.stored_name || item?.storedName || item?.name || '');
+}
+
+function buildUserMessageMedia(input = {}, conversationId = null) {
+  const images = Array.isArray(input.images) ? input.images : [];
+  const imagesByKey = new Map(images.map((image) => [mediaKey(image), image]).filter(([key]) => key));
+  const mediaItems = Array.isArray(input.media_items)
+    ? input.media_items
+    : Array.isArray(input.mediaItems)
+      ? input.mediaItems
+      : Array.isArray(input.attachments)
+        ? input.attachments
+        : [];
+  const seenImages = new Set();
+  const merged = mediaItems.map((item) => {
+    const key = mediaKey(item);
+    const image = imagesByKey.get(key);
+    if (!image) return { ...item, conversation_id: conversationId || item?.conversation_id || item?.conversationId || null };
+    seenImages.add(key);
+    return {
+      ...item,
+      ...image,
+      source_kind: 'image',
+      media_kind: 'image',
+      conversation_id: conversationId || image?.conversation_id || image?.conversationId || null,
+    };
+  });
+  images.forEach((image) => {
+    const key = mediaKey(image);
+    if (key && seenImages.has(key)) return;
+    merged.push({
+      ...image,
+      source_kind: 'image',
+      media_kind: 'image',
+      conversation_id: conversationId || image?.conversation_id || image?.conversationId || null,
+    });
+  });
+  return merged.sort((left, right) => Number(left?.upload_order || 0) - Number(right?.upload_order || 0));
 }
 
 function buildEventStep(event = {}) {
@@ -340,6 +390,7 @@ export function useAgentLoopController({
       id: makeMessageId('agent-loop-assistant'),
       role: 'assistant',
       content: '',
+      createdAt: new Date().toISOString(),
       ...message,
     });
   }, [onAppendAssistantMessage]);
@@ -376,6 +427,9 @@ export function useAgentLoopController({
         search_knowledge_limit: input?.search_knowledge_limit === undefined ? 5 : input.search_knowledge_limit,
         attachments: Array.isArray(input?.attachments) ? input.attachments : [],
         images: Array.isArray(input?.images) ? input.images : [],
+        media_items: Array.isArray(input?.media_items)
+          ? input.media_items
+          : (Array.isArray(input?.mediaItems) ? input.mediaItems : []),
         mentions: Array.isArray(input?.mentions) ? input.mentions : [],
         mention_segments: Array.isArray(input?.mention_segments) ? input.mention_segments : (Array.isArray(input?.mentionSegments) ? input.mentionSegments : []),
         web_search_enabled: Boolean(input?.web_search_enabled ?? input?.webSearchEnabled),
@@ -405,13 +459,20 @@ export function useAgentLoopController({
       });
     };
 
-    const appendUserMessage = () => {
+    const appendUserMessage = (event = {}) => {
       if (!options.appendUserMessage || !input?.goal || body.skip_user_message_append) return;
       onAppendUserMessage?.({
-        id: makeMessageId('agent-loop-user'),
+        id: Number(event.user_message_id || event.userMessageId || 0) || makeMessageId('agent-loop-user'),
         role: 'user',
         content: input.display_query || input.user_query || input.goal,
-        attachments: input.media_items || input.mediaItems || input.attachments || [],
+        createdAt: event.created_at || event.createdAt || new Date().toISOString(),
+        conversationId: Number(event.conversation_id || event.conversationId || 0) || null,
+        attachments: buildUserMessageMedia({
+          ...input,
+          // 以服务端在用户消息落库后回传的图片为准。它们已经过格式、归属
+          // 和顺序校验，避免前端临时媒体对象丢失会话字段后生成失效预览地址。
+          images: Array.isArray(event.images) ? event.images : input.images,
+        }, Number(event.conversation_id || event.conversationId || 0) || null),
         mentions: input.mentions || [],
         mentionSegments: input.mention_segments || input.mentionSegments || [],
         meta: {
@@ -441,6 +502,9 @@ export function useAgentLoopController({
       await readSse(response, async (event) => {
         const step = buildEventStep(event);
         if (step) appendStep(step);
+        if (event.type === 'tool_done' && event.tool_name === 'install_skill_from_git' && !event.failed && typeof window !== 'undefined') {
+          window.dispatchEvent(new Event('notus-skills-changed'));
+        }
         if (event.conversation_id) {
           onConversationId?.(Number(event.conversation_id));
         }
@@ -452,7 +516,7 @@ export function useAgentLoopController({
         }
 
         if (event.type === 'session_created') {
-          appendUserMessage();
+          appendUserMessage(event);
           notifyTaskAccepted(event);
           setActiveAgentSession({
             id: event.session_id,
@@ -484,6 +548,9 @@ export function useAgentLoopController({
               : text;
             setStreamText(assistantTextRef.current);
           }
+        } else if (event.type === 'assistant_text_replace') {
+          assistantTextRef.current = String(event.text || '').trim();
+          setStreamText(assistantTextRef.current);
         } else if (event.type === 'waiting_preview_confirm') {
           const current = sessionRef.current || {};
           const token = current.token || resumeToken;
@@ -560,6 +627,8 @@ export function useAgentLoopController({
               reason: event.reason || '',
               interaction_id: event.interaction_id || current.interaction_id || null,
               operation_set_id: event.operation_set_id || operationSet?.id || null,
+              research_summary: event.research_summary || null,
+              write_summary: event.write_summary || null,
             },
             operationSet,
           });

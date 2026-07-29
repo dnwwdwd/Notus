@@ -17,6 +17,8 @@ import { resolveLlmProviderLabel } from '../../lib/llmForm';
 import { useSettingsDialog } from '../../contexts/SettingsDialogContext';
 import { SegmentedTabs } from '../ui/SegmentedTabs';
 import { readAgentInputPreference, writeAgentInputPreference } from '../../utils/agentInputPreferences';
+import { getAgentImagePreviewUrl } from '../../utils/agentMedia';
+import { formatMessageTimestamp } from '../../utils/messageTimestamps';
 import {
   clearAgentComposerDraft,
   readAgentComposerDraft,
@@ -56,19 +58,23 @@ const AGENT_CONFIRM_MODE_OPTIONS = [
   {
     value: 'auto_confirm',
     label: '自动',
-    description: 'Agent 完成后自动应用所有修改，可在对话记录中查看详情和回滚。',
+    description: '自动应用修改',
     icon: 'zap',
   },
   {
     value: 'manual_confirm',
     label: '手动',
-    description: 'Agent 完成后需逐文件手动确认，未确认内容在下次任务时自动废弃。',
+    description: '手动应用修改',
     icon: 'hand',
   },
 ];
+const AGENT_INPUT_TEXTAREA_DEFAULT_ROWS = 5;
+const AGENT_INPUT_LINE_HEIGHT = 22;
+const AGENT_CHAT_CONTENT_WIDTH = '95%';
 const CHAT_STICKY_BOTTOM_THRESHOLD = 56;
 const CHAT_JUMP_BUTTON_OFFSET = 240;
 const MCP_SELECTION_STORAGE_KEY = 'notus-agent-mcp-selection';
+const AGENT_TASK_RECEIPTS_ENABLED = false;
 const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
 
 function readMcpSelectionPreference() {
@@ -76,7 +82,8 @@ function readMcpSelectionPreference() {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(MCP_SELECTION_STORAGE_KEY) || '{}');
     if (parsed?.mode === 'auto') return { mode: 'auto' };
-    if (parsed?.mode === 'server' && parsed.serverId) return { mode: 'server', serverId: String(parsed.serverId) };
+    // 旧版本允许固定到某个 Server；输入框现已收敛为任务级自动开关，旧偏好继续按开启处理。
+    if (parsed?.mode === 'server') return { mode: 'auto' };
   } catch {}
   return { mode: 'off' };
 }
@@ -131,6 +138,7 @@ const PARSED_ATTACHMENT_ACCEPT = '.pdf,.docx,.md,.markdown,.txt,text/plain,text/
 const PARSED_ATTACHMENT_EXTENSIONS = new Set(['.pdf', '.docx', '.md', '.markdown', '.txt']);
 const IMAGE_ACCEPT = 'image/png,image/jpeg,image/webp,image/gif';
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
+const IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif']);
 const LONG_PASTE_ATTACHMENT_THRESHOLD = 100;
 const MAX_PARSED_ATTACHMENTS = 10;
 const MAX_IMAGES_PER_MESSAGE = 30;
@@ -215,20 +223,27 @@ function isSupportedParsedFile(file) {
 }
 
 function isSupportedImageFile(file) {
-  return IMAGE_EXTENSIONS.has(fileExtension(file?.name));
+  return IMAGE_EXTENSIONS.has(fileExtension(file?.name))
+    || IMAGE_MIME_TYPES.has(String(file?.type || '').trim().toLowerCase());
+}
+
+function getClipboardFiles(clipboard) {
+  const files = Array.from(clipboard?.files || []).filter(Boolean);
+  if (files.length > 0) return files;
+  return Array.from(clipboard?.items || [])
+    .filter((item) => item?.kind === 'file' && typeof item.getAsFile === 'function')
+    .map((item) => item.getAsFile())
+    .filter(Boolean);
 }
 
 function isImageMedia(file = {}) {
-  return file?.media_kind === 'image' || file?.source_kind === 'image';
+  return file?.media_kind === 'image'
+    || file?.source_kind === 'image'
+    || isSupportedImageFile(file);
 }
 
 function imagePreviewUrl(file = {}) {
-  if (file.previewUrl) return file.previewUrl;
-  const conversationId = Number(file.conversation_id || file.conversationId || 0);
-  if (file.stored_name && Number.isInteger(conversationId) && conversationId > 0) {
-    return `/api/agent/images/${encodeURIComponent(file.stored_name)}?conversation_id=${encodeURIComponent(conversationId)}`;
-  }
-  return '';
+  return getAgentImagePreviewUrl(file);
 }
 
 function toDisplayAttachment(file) {
@@ -243,13 +258,65 @@ function isPdfAttachment(file = {}) {
   return type.includes('pdf') || extension === '.pdf' || name.endsWith('.pdf');
 }
 
-function FileChip({ file, onRemove, readOnly, onOpen, onPreview }) {
+function FileChip({ file, onRemove, readOnly, onOpen, onPreview, imageOnly = false, imageSize = 72 }) {
   const image = isImageMedia(file);
   const type = fileType(file);
   const previewUrl = image ? imagePreviewUrl(file) : '';
   const canPreview = image && Boolean(previewUrl) && typeof onPreview === 'function';
   const canOpen = readOnly && !image && typeof onOpen === 'function';
   const interactive = canPreview || canOpen;
+  const removeButton = !readOnly ? (
+    <button
+      type="button"
+      aria-label={image ? '移除图片' : '移除附件'}
+      onClick={(event) => {
+        event.stopPropagation();
+        onRemove?.(file.id);
+      }}
+      style={transitionButton({
+        position: 'absolute',
+        top: -6,
+        right: -6,
+        width: 20,
+        height: 20,
+        borderRadius: '50%',
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        background: C.tertiary,
+        color: '#fff',
+        zIndex: 1,
+      })}
+    >
+      <Icons.x size={11} />
+    </button>
+  ) : null;
+
+  if (image && imageOnly && previewUrl) {
+    const imageStyle = {
+      width: imageSize,
+      height: imageSize,
+      display: 'block',
+      padding: 0,
+      overflow: 'hidden',
+      border: 0,
+      borderRadius: 12,
+      background: C.soft,
+      cursor: canPreview ? 'pointer' : 'default',
+      boxShadow: '0 1px 6px rgba(45,45,45,0.10), inset 0 0 0 1px rgba(229,227,216,0.9)',
+    };
+    const thumbnail = (
+      // 本地对象 URL 与会话临时图片不经过 Next 图片优化。
+      // eslint-disable-next-line @next/next/no-img-element
+      <img src={previewUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+    );
+    return (
+      <div style={{ position: 'relative', display: 'inline-flex', flexShrink: 0 }}>
+        {canPreview ? <button type="button" aria-label={`预览图片：${file.name || '未命名图片'}`} onClick={() => onPreview?.(file)} className="notus-agent-pressable" style={transitionButton(imageStyle)}>{thumbnail}</button> : <div style={imageStyle}>{thumbnail}</div>}
+        {removeButton}
+      </div>
+    );
+  }
   const content = (
     <>
       {image && previewUrl ? (
@@ -310,31 +377,7 @@ function FileChip({ file, onRemove, readOnly, onOpen, onPreview }) {
       ) : (
         <div style={commonStyle}>{content}</div>
       )}
-      {!readOnly ? (
-        <button
-          type="button"
-          aria-label="移除附件"
-          onClick={(event) => {
-            event.stopPropagation();
-            onRemove?.(file.id);
-          }}
-          style={transitionButton({
-            position: 'absolute',
-            top: -6,
-            right: -6,
-            width: 20,
-            height: 20,
-            borderRadius: '50%',
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            background: C.tertiary,
-            color: '#fff',
-          })}
-        >
-          <Icons.x size={11} />
-        </button>
-      ) : null}
+      {removeButton}
     </div>
   );
 }
@@ -850,7 +893,40 @@ function OperationSetCard({ operationSet, onOpenDetail }) {
   );
 }
 
-function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRollbackFile, onDiscardFile }) {
+function isDocumentPath(value) {
+  return /\.md$/i.test(String(value || '').trim());
+}
+
+function DiffFileLink({ path, onOpenFile, style }) {
+  if (!isDocumentPath(path)) return <span style={style}>{path}</span>;
+  return (
+    <button
+      type="button"
+      onClick={() => onOpenFile?.(path)}
+      style={transitionButton({
+        padding: 0,
+        border: 0,
+        background: 'transparent',
+        color: C.accent,
+        font: 'inherit',
+        textAlign: 'left',
+        textDecoration: 'underline',
+        textUnderlineOffset: 2,
+        cursor: 'pointer',
+        ...style,
+      })}
+    >
+      {path}
+    </button>
+  );
+}
+
+function diffSidebarFileName(path) {
+  const normalized = String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  return normalized.split('/').filter(Boolean).pop() || '全文';
+}
+
+function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRollbackFile, onDiscardFile, onOpenFile }) {
   const operations = operationItems(operationSet);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [busyKey, setBusyKey] = useState('');
@@ -895,6 +971,10 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
       setBusyKey('');
     }
   };
+  const openDiffFile = (path) => {
+    onClose?.();
+    onOpenFile?.(path);
+  };
 
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 80, background: 'rgba(45,45,45,0.28)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
@@ -902,7 +982,7 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
         <div style={{ minHeight: 58, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '14px 18px', borderBottom: '1px solid ' + C.border, background: C.page }}>
           <div style={{ minWidth: 0 }}>
             <div style={{ fontSize: 15, fontWeight: 900, color: C.text }}>修改详情</div>
-            <div style={{ marginTop: 3, fontSize: 12, color: C.tertiary }}>{pendingCount > 0 ? `${pendingCount} 个文件待确认` : '本次任务的文件已全部处理'}</div>
+            {pendingCount > 0 ? <div style={{ marginTop: 3, fontSize: 12, color: C.tertiary }}>{pendingCount} 个文件待确认</div> : null}
           </div>
           <button type="button" aria-label="关闭" onClick={onClose} style={transitionButton({ width: 34, height: 34, borderRadius: 10, background: '#fff', color: C.secondary, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', boxShadow: 'inset 0 0 0 1px rgba(229,227,216,0.95)' })}><Icons.x size={16} /></button>
         </div>
@@ -913,19 +993,19 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
               const active = index === selectedIndex;
               const statusMeta = patchStatusMeta(operation.status);
               return (
-                <button key={operation.id || index} type="button" onClick={() => setSelectedIndex(index)} style={transitionButton({ width: '100%', textAlign: 'left', display: 'grid', gap: 4, padding: '9px 10px', borderRadius: 10, background: active ? '#fff' : 'transparent', color: active ? C.text : C.secondary, boxShadow: active ? 'inset 0 0 0 1px rgba(229,227,216,0.92)' : 'none' })}>
-                  <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                <div key={operation.id || index} style={{ display: 'grid', gap: 4, padding: '9px 10px', borderRadius: 10, background: active ? '#fff' : 'transparent', color: active ? C.text : C.secondary, boxShadow: active ? 'inset 0 0 0 1px rgba(229,227,216,0.92)' : 'none' }}>
+                  <button type="button" onClick={() => setSelectedIndex(index)} style={transitionButton({ width: '100%', padding: 0, background: 'transparent', color: 'inherit', textAlign: 'left', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 })}>
                     <span style={{ minWidth: 0, fontSize: 12, fontWeight: 800, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{operationLabel(operation)}</span>
                     <span style={{ flexShrink: 0, width: 7, height: 7, borderRadius: 999, background: statusMeta.color }} />
-                  </span>
-                  <span style={{ fontSize: 10.5, color: C.tertiary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pathText}</span>
-                </button>
+                  </button>
+                  <span title={pathText} style={{ minWidth: 0, fontSize: 10.5, color: C.tertiary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{diffSidebarFileName(pathText)}</span>
+                </div>
               );
             })}
           </div>
           <div style={{ minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', background: '#FAFAFA', overflow: 'hidden' }}>
             <div style={{ minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '8px 12px', borderBottom: '1px solid ' + C.border, background: '#fff' }}>
-              <span style={{ minWidth: 0, fontSize: 12, color: C.secondary, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{activePath}</span>
+              <DiffFileLink path={activePath} onOpenFile={openDiffFile} style={{ minWidth: 0, fontSize: 12, color: isDocumentPath(activePath) ? C.accent : C.secondary, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} />
               <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 800, color: activeStatus.color, background: activeStatus.bg, borderRadius: 999, padding: '4px 8px' }}>{activeStatus.label}</span>
             </div>
             <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '12px 0', overscrollBehavior: 'contain' }}>
@@ -1000,7 +1080,7 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
   );
 }
 
-function UserMessageRow({ message, disabled, removing = false, onResendMessage, onOpenAttachment, onPreviewMention }) {
+function UserMessageRow({ message, disabled, removing = false, onResendMessage, onOpenAttachment, onPreviewMention, onPreviewImages }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(String(message.content || ''));
   const [sending, setSending] = useState(false);
@@ -1025,11 +1105,16 @@ function UserMessageRow({ message, disabled, removing = false, onResendMessage, 
     }
   }, [canEdit, draft, message, onResendMessage, sending]);
 
+  const messageImages = Array.isArray(message.attachments) ? message.attachments.filter(isImageMedia) : [];
+  const messageAttachments = Array.isArray(message.attachments) ? message.attachments.filter((file) => !isImageMedia(file)) : [];
+  const hasTextContent = Boolean(String(message.content || '').trim() || (Array.isArray(message.mentions) && message.mentions.length > 0));
+  const timestamp = formatMessageTimestamp(message.createdAt);
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8, minWidth: 0, maxWidth: '100%', overflow: 'hidden', opacity: removing ? 0 : 1, transform: removing ? 'translateY(-6px)' : 'translateY(0)', transition: 'opacity 220ms ease, transform 220ms ease' }}>
-      {Array.isArray(message.attachments) && message.attachments.length > 0 ? (
+      {messageAttachments.length > 0 ? (
         <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8, minWidth: 0, maxWidth: '100%' }}>
-          {message.attachments.map((file) => (
+          {messageAttachments.map((file) => (
             <FileChip
               key={file.id || file.name}
               file={file}
@@ -1037,6 +1122,22 @@ function UserMessageRow({ message, disabled, removing = false, onResendMessage, 
               onOpen={onOpenAttachment ? (attachment) => onOpenAttachment(attachment, message) : undefined}
             />
           ))}
+        </div>
+      ) : null}
+      {messageImages.length > 0 ? (
+        <div data-message-image-row="true" style={{ display: 'grid', gap: 5, justifyItems: 'start', alignSelf: 'flex-end', minWidth: 0, maxWidth: '100%' }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8, minWidth: 0, maxWidth: '100%' }}>
+            {messageImages.map((file) => (
+              <FileChip
+                key={file.id || file.name}
+                file={file}
+                readOnly
+                imageOnly
+                imageSize={112}
+                onPreview={(selectedFile) => onPreviewImages?.(message, selectedFile)}
+              />
+            ))}
+          </div>
         </div>
       ) : null}
       {editing ? (
@@ -1064,8 +1165,8 @@ function UserMessageRow({ message, disabled, removing = false, onResendMessage, 
             <button type="button" disabled={disabled || sending || !String(draft || '').trim()} onClick={() => { void submitEdit(); }} style={transitionButton({ height: 30, padding: '0 12px', borderRadius: 9, background: C.accent, color: '#fff', fontSize: 12, fontWeight: 800, opacity: (disabled || sending || !String(draft || '').trim()) ? 0.55 : 1, cursor: (disabled || sending || !String(draft || '').trim()) ? 'not-allowed' : 'pointer' })}>{sending ? '发送中...' : '发送'}</button>
           </div>
         </div>
-      ) : (String(message.content || '').trim() || (Array.isArray(message.mentions) && message.mentions.length > 0)) ? (
-        <div style={{ maxWidth: '80%', minWidth: 0, padding: '13px 18px', borderRadius: '20px 20px 6px 20px', background: C.muted, color: C.text, fontSize: 15, lineHeight: 1.7, overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
+      ) : hasTextContent ? (
+        <div data-message-bubble="true" style={{ maxWidth: '80%', minWidth: 0, padding: '13px 18px', borderRadius: '20px 20px 6px 20px', background: C.muted, color: C.text, fontSize: 15, lineHeight: 1.7, overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
           <div className="notus-message-mention-flow">
             {(message.mentionSegments || []).map((segment, index) => segment.type === 'mention' ? (
               <MentionItem key={`${segment.mention?.id || index}-${index}`} {...segment.mention} inline readonly onPreview={onPreviewMention} />
@@ -1073,13 +1174,75 @@ function UserMessageRow({ message, disabled, removing = false, onResendMessage, 
           </div>
         </div>
       ) : null}
-      {!editing && String(message.content || '').trim() ? (
-        <div aria-label="用户消息操作" style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 4, minHeight: 28 }}>
-          <CopyMessageButton text={message.content} disabled={disabled} successMessage="已复制用户消息" />
-          <MessageIconButton label="改写" onClick={() => setEditing(true)} disabled={disabled || !canEdit}>
-            <Icons.edit size={14} />
-          </MessageIconButton>
+      {!editing && (String(message.content || '').trim() || timestamp) ? (
+        <div aria-label="用户消息操作" style={{ width: hasTextContent ? 'min(80%, 560px)' : undefined, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8, minHeight: 28 }}>
+          <MessageTimestamp value={timestamp} align="left" inline />
+          {String(message.content || '').trim() ? <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <CopyMessageButton text={message.content} disabled={disabled} successMessage="已复制用户消息" />
+            <MessageIconButton label="改写" onClick={() => setEditing(true)} disabled={disabled || !canEdit}>
+              <Icons.edit size={14} />
+            </MessageIconButton>
+          </div> : null}
         </div>
+      ) : null}
+    </div>
+  );
+}
+
+function MessageTimestamp({ value, align = 'left', inline = false }) {
+  if (!value) return null;
+  return (
+    <div data-message-timestamp={align} style={{ display: 'flex', justifyContent: align === 'right' ? 'flex-end' : 'flex-start', marginTop: inline ? 0 : 7, color: C.tertiary, fontSize: 11, lineHeight: 1.25, fontVariantNumeric: 'tabular-nums', userSelect: 'none', whiteSpace: 'nowrap' }}>
+      {value}
+    </div>
+  );
+}
+
+function TaskReceiptCards({ researchSummary, writeSummary }) {
+  const sources = Array.isArray(researchSummary?.sources) ? researchSummary.sources : [];
+  const changes = Array.isArray(writeSummary?.changes) ? writeSummary.changes : [];
+  if (!AGENT_TASK_RECEIPTS_ENABLED || (sources.length === 0 && changes.length === 0)) return null;
+  const statusLabel = (status) => {
+    if (status === 'success' || status === 'applied') return '已读取';
+    if (status === 'partial') return '部分读取';
+    if (status === 'pending') return '待确认';
+    if (status === 'empty') return '无补充结果';
+    if (status === 'error' || status === 'failed') return '失败';
+    return status || '已记录';
+  };
+  return (
+    <div style={{ display: 'grid', gap: 10, marginTop: 12 }}>
+      {sources.length > 0 ? (
+        <section aria-label="已使用资料" style={{ padding: '10px 12px', borderRadius: 12, background: C.soft, boxShadow: 'inset 0 0 0 1px rgba(229,227,216,0.9)' }}>
+          <div style={{ marginBottom: 7, fontSize: 11, fontWeight: 800, color: C.secondary }}>已使用资料</div>
+          <div style={{ display: 'grid', gap: 7 }}>
+            {sources.map((source, index) => {
+              const ref = String(source?.ref || '');
+              const link = /^https?:\/\//i.test(ref);
+              return (
+                <div key={`${source?.type || 'source'}-${ref || index}`} style={{ minWidth: 0, display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', gap: '2px 8px', fontSize: 11.5, lineHeight: 1.55 }}>
+                  <span style={{ minWidth: 0, color: C.text, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{source?.title || '资料'}</span>
+                  <span style={{ color: source?.status === 'success' || source?.status === 'applied' ? '#278044' : C.tertiary, whiteSpace: 'nowrap' }}>{statusLabel(source?.status)}</span>
+                  {ref ? link ? <a href={ref} target="_blank" rel="noreferrer" style={{ minWidth: 0, color: C.accent, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ref}</a> : <span style={{ minWidth: 0, color: C.tertiary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ref}</span> : null}
+                  {source?.summary ? <span style={{ gridColumn: '1 / -1', color: C.tertiary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{source.summary}</span> : null}
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      ) : null}
+      {changes.length > 0 ? (
+        <section aria-label="文件变更" style={{ padding: '10px 12px', borderRadius: 12, background: C.soft, boxShadow: 'inset 0 0 0 1px rgba(229,227,216,0.9)' }}>
+          <div style={{ marginBottom: 7, fontSize: 11, fontWeight: 800, color: C.secondary }}>文件变更</div>
+          <div style={{ display: 'grid', gap: 5 }}>
+            {changes.map((change, index) => (
+              <div key={`${change?.operation_set_id || 'set'}-${change?.path || index}`} style={{ display: 'flex', minWidth: 0, alignItems: 'center', justifyContent: 'space-between', gap: 8, fontSize: 11.5 }}>
+                <span style={{ minWidth: 0, color: C.text, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{change?.path || '文件变更'}</span>
+                <span style={{ flexShrink: 0, color: change?.status === 'applied' ? '#278044' : C.tertiary }}>{change?.status === 'applied' ? '已应用' : change?.status === 'pending' ? '待确认' : statusLabel(change?.status)}</span>
+              </div>
+            ))}
+          </div>
+        </section>
       ) : null}
     </div>
   );
@@ -1088,6 +1251,7 @@ function UserMessageRow({ message, disabled, removing = false, onResendMessage, 
 function AssistantMessageRow({ message, disabled, removing = false, onRetryMessage, previousUserMessage, onOpenOperationSet, onCitationClick, citationSelection }) {
   const [retrying, setRetrying] = useState(false);
   const canRetry = Boolean(previousUserMessage?.content) && typeof onRetryMessage === 'function';
+  const timestamp = formatMessageTimestamp(message.createdAt);
 
   const handleRetry = useCallback(async () => {
     if (!canRetry || retrying) return;
@@ -1132,18 +1296,22 @@ function AssistantMessageRow({ message, disabled, removing = false, onRetryMessa
           </div>
         ) : null}
         {message.operationSet ? <OperationSetCard operationSet={message.operationSet} onOpenDetail={onOpenOperationSet} /> : null}
-        <div aria-label="AI 回复操作" style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', gap: 4, marginTop: 10, minHeight: 30 }}>
-          <CopyMessageButton text={message.content} disabled={false} successMessage="已复制 AI 回复" />
-          <MessageIconButton label="重试" onClick={() => { void handleRetry(); }} disabled={disabled || !canRetry || retrying}>
-            {retrying ? <InlineActionSpinner size={14} /> : <Icons.refresh size={14} />}
-          </MessageIconButton>
+        <TaskReceiptCards researchSummary={message.meta?.research_summary} writeSummary={message.meta?.write_summary} />
+        <div aria-label="AI 回复操作" style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', gap: 8, marginTop: 10, minHeight: 30 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <CopyMessageButton text={message.content} disabled={false} successMessage="已复制 AI 回复" />
+            <MessageIconButton label="重试" onClick={() => { void handleRetry(); }} disabled={disabled || !canRetry || retrying}>
+              {retrying ? <InlineActionSpinner size={14} /> : <Icons.refresh size={14} />}
+            </MessageIconButton>
+          </div>
+          <MessageTimestamp value={timestamp} align="right" inline />
         </div>
       </div>
     </div>
   );
 }
 
-function MessageList({ messages, streamText, loading, activeSteps, removingMessageIds, onOpenOperationSet, onCitationClick, citationSelection, actionDisabled = false, onResendMessage, onRetryMessage, onOpenAttachment, onPreviewMention }) {
+function MessageList({ messages, streamText, loading, activeSteps, removingMessageIds, onOpenOperationSet, onCitationClick, citationSelection, actionDisabled = false, onResendMessage, onRetryMessage, onOpenAttachment, onPreviewMention, onPreviewImages }) {
   if (messages.length === 0 && !loading) {
     return (
       <div style={{ minHeight: '42vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', color: C.tertiary }}>
@@ -1166,6 +1334,7 @@ function MessageList({ messages, streamText, loading, activeSteps, removingMessa
               onResendMessage={onResendMessage}
               onOpenAttachment={onOpenAttachment}
               onPreviewMention={onPreviewMention}
+              onPreviewImages={onPreviewImages}
             />
           );
         }
@@ -1210,12 +1379,12 @@ function AgentConfirmModeSelect({ value, onChange, disabled }) {
       disabled={disabled}
       ariaLabel="Agent 确认方式"
       style={{ background: C.soft, boxShadow: 'inset 0 0 0 1px rgba(229,227,216,0.86)' }}
-      options={AGENT_CONFIRM_MODE_OPTIONS.map((option) => ({ ...option, ariaLabel: `Agent 确认方式：${option.label}`, icon: option.icon === 'hand' ? Icons.hand : Icons.zap }))}
+      options={AGENT_CONFIRM_MODE_OPTIONS.map((option) => ({ ...option, ariaLabel: option.value === 'auto_confirm' ? '自动应用修改' : '手动应用修改', icon: option.icon === 'hand' ? Icons.hand : Icons.zap }))}
     />
   );
 }
 
-function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigChange, onSend, onStop, searchConfig, searchPreference, onSearchPreferenceChange, onRequireSearchConfig, mcpServers = [], mcpSelection = { mode: 'off' }, onMcpSelectionChange, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [], onPreviewMention }) {
+function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigChange, onSend, onStop, searchConfig, searchPreference, onSearchPreferenceChange, onRequireSearchConfig, mcpSelection = { mode: 'off' }, onMcpSelectionChange, mcpAvailable = false, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [], onPreviewMention }) {
   const [composerState, setComposerState] = useState({ content: '', mentions: [], segments: [] });
   const [files, setFiles] = useState([]);
   const [imagePreview, setImagePreview] = useState(null);
@@ -1226,6 +1395,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
   const [searchOpen, setSearchOpen] = useState(false);
   const [mcpOpen, setMcpOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
+  const [modelQuery, setModelQuery] = useState('');
   const [mentionQuery, setMentionQuery] = useState(null);
   const [activeMentionIndex, setActiveMentionIndex] = useState(0);
   const [dismissedMentionKey, setDismissedMentionKey] = useState('');
@@ -1238,6 +1408,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
   const uploadOrderRef = useRef(0);
   const selectedMediaCountRef = useRef({ image: 0, attachment: 0 });
   const previewUrlsRef = useRef(new Set());
+  const modelSearchRef = useRef(null);
   const composerDraftHydratedRef = useRef(false);
   const composerDraftSaveTimerRef = useRef(null);
   const composerInteractionRef = useRef(false);
@@ -1249,8 +1420,8 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
   const preferredSearchProvider = providers.find((provider) => provider.id === searchConfig.selected_provider)?.id || providers[0]?.id || 'firecrawl';
   const webSearchSelected = Boolean(searchConfig.enabled && webSearchPreferenceEnabled && selectedSearchProvider);
   const mcpMode = String(mcpSelection?.mode || 'off');
-  const selectedMcpServer = mcpServers.find((server) => String(server.id) === String(mcpSelection?.serverId || '')) || null;
-  const mcpLabel = mcpMode === 'auto' ? 'MCP 自动' : selectedMcpServer ? `MCP · ${selectedMcpServer.name}` : 'MCP';
+  const mcpEnabled = Boolean(mcpAvailable && mcpMode === 'auto');
+  const mcpLabel = 'MCP';
   const searchProviderList = webSearchSelected ? [selectedSearchProvider] : [];
   const isSearchProviderReady = (providerId) => {
     const provider = providers.find((item) => item.id === providerId);
@@ -1272,6 +1443,31 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
     });
     return groups;
   }, [llmConfigs]);
+  const filteredGroupedConfigs = useMemo(() => {
+    const query = modelQuery.trim().toLowerCase();
+    if (!query) return groupedConfigs;
+    return groupedConfigs
+      .map((group) => ({
+        ...group,
+        configs: group.configs.filter((config) => [modelLabel(config), providerLabel(config), config?.name]
+          .some((value) => String(value || '').toLowerCase().includes(query))),
+      }))
+      .filter((group) => group.configs.length > 0);
+  }, [groupedConfigs, modelQuery]);
+
+  useEffect(() => {
+    if (!modelOpen) {
+      setModelQuery('');
+      return undefined;
+    }
+    const timer = window.setTimeout(() => modelSearchRef.current?.focus(), 0);
+    return () => window.clearTimeout(timer);
+  }, [modelOpen]);
+  useEffect(() => {
+    if (mcpAvailable || mcpMode !== 'auto') return;
+    onMcpSelectionChange?.({ mode: 'off' });
+    setMcpOpen(false);
+  }, [mcpAvailable, mcpMode, onMcpSelectionChange]);
   const value = composerState.content;
   const mentions = composerState.mentions;
 
@@ -1439,23 +1635,56 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
     };
   }, [composerState, files]);
 
+  const resolveComposerTextPosition = useCallback((root, node, offset) => {
+    const findTextNode = (candidate, direction) => {
+      if (!candidate) return null;
+      if (candidate.nodeType === 3) return candidate;
+      if (candidate.nodeType !== 1 || candidate.hasAttribute?.('data-notus-mention')) return null;
+      const children = Array.from(candidate.childNodes || []);
+      const ordered = direction === 'forward' ? children : children.reverse();
+      for (const child of ordered) {
+        const found = findTextNode(child, direction);
+        if (found) return found;
+      }
+      return null;
+    };
+
+    if (node?.nodeType === 3) {
+      return {
+        textNode: node,
+        offset: Math.min(Math.max(Number(offset) || 0, 0), node.textContent.length),
+      };
+    }
+
+    const children = Array.from(node?.childNodes || []);
+    const boundary = Math.min(Math.max(Number(offset) || 0, 0), children.length);
+    const before = findTextNode(children[boundary - 1], 'backward');
+    if (before && root.contains(before)) return { textNode: before, offset: before.textContent.length };
+    const after = findTextNode(children[boundary], 'forward');
+    if (after && root.contains(after)) return { textNode: after, offset: 0 };
+    return null;
+  }, []);
+
   const readMentionQuery = useCallback(() => {
     const root = composerRef.current;
     if (typeof window === 'undefined' || !root) return null;
     const selection = window.getSelection?.();
     const node = selection?.anchorNode;
     if (!selection?.rangeCount || !node || !root.contains(node)) return null;
-    // 不依赖全局 Node 构造器；Electron 的隔离上下文中它不一定暴露在当前世界。
-    if (node.nodeType !== 3) return null;
-    const textNode = node;
-    const offset = Math.min(Number(selection.anchorOffset) || 0, textNode.textContent.length);
+    const position = resolveComposerTextPosition(root, node, selection.anchorOffset);
+    if (!position) return null;
+    const { textNode, offset } = position;
     const prefix = textNode.textContent.slice(0, offset);
-    const match = prefix.match(/(?:^|\s)@(?:\{([^}]*)|([^@\n]*))$/);
-    if (!match) return null;
     const start = prefix.lastIndexOf('@');
+    if (start < 0) return null;
+    // 中文任务常把 Mention 紧接在正文后，例如“请处理@会议纪要”。
+    // 仍跳过常见 ASCII 邮箱本地部分，避免输入邮箱时弹出文件候选。
+    if (/[A-Za-z0-9._%+-]/.test(prefix.charAt(start - 1))) return null;
+    const match = prefix.slice(start).match(/^@(?:\{([^}]*)|([^@\n]*))$/);
+    if (!match) return null;
     const key = `${Array.prototype.indexOf.call(root.childNodes, textNode)}:${start}:${prefix.slice(start)}`;
     return { textNode, start, end: offset, key, query: String(match[1] ?? match[2] ?? '').trim().toLowerCase() };
-  }, []);
+  }, [resolveComposerTextPosition]);
 
   const updateMentionQuery = useCallback(() => {
     try {
@@ -1636,6 +1865,17 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
     const rejected = [];
     const incoming = Array.from(fileList || []);
     const mediaKind = options.mediaKind === 'image' ? 'image' : 'attachment';
+    // 附件选择器允许用户混选文件。图片必须始终走视觉上传链路，不能因
+    // 从纸夹入口选中就退回到 PDF/DOCX 的文本解析链路。
+    if (mediaKind === 'attachment') {
+      const images = incoming.filter(isSupportedImageFile);
+      if (images.length > 0) {
+        addFiles(images, { ...options, mediaKind: 'image' });
+        const nonImages = incoming.filter((file) => !isSupportedImageFile(file));
+        if (nonImages.length === 0) return;
+        return addFiles(nonImages, options);
+      }
+    }
     const supported = incoming.filter((file) => {
       if (mediaKind === 'image' && !isSupportedImageFile(file)) {
         rejected.push(file.name || '未命名图片');
@@ -1734,7 +1974,12 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
   };
 
   const submit = async (forcedText) => {
-    const fallbackText = parsedAttachmentMode && files.length > 0 ? '请读取并分析已上传的文件或图片。' : '';
+    const hasPendingImages = files.some(isImageMedia);
+    const fallbackText = hasPendingImages
+      ? '请分析我上传的图片，并说明其中能够确认的内容。'
+      : parsedAttachmentMode && files.length > 0
+        ? '请读取并分析已上传的文件。'
+        : '';
     const currentComposer = serializeComposer();
     const text = String(forcedText || currentComposer.content || fallbackText || '').trim();
     if ((!text && files.length === 0 && currentComposer.mentions.length === 0) || busy || disabled || !selectedConfig) return;
@@ -1752,6 +1997,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
     setMentionQuery(null);
     setDismissedMentionKey('');
     setSearchOpen(false);
+    setMcpOpen(false);
     setModelOpen(false);
     setUploading(files.some((item) => item.fileObject));
     let taskAccepted = false;
@@ -1779,9 +2025,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
         webSearchEnabled: webSearchSelected,
         searchProvider: selectedSearchProvider || null,
         searchProviders: searchProviderList,
-        mcpSelection: mcpMode === 'server' && selectedMcpServer
-          ? { mode: 'server', serverId: selectedMcpServer.id }
-          : mcpMode === 'auto' ? { mode: 'auto' } : { mode: 'off' },
+        mcpSelection: mcpMode === 'auto' ? { mode: 'auto' } : { mode: 'off' },
         onTaskAccepted: clearAcceptedComposer,
       });
     } catch (error) {
@@ -1879,6 +2123,18 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
     });
     setSearchOpen(true);
   };
+  const toggleMcp = () => {
+    if (busy || disabled || !mcpAvailable) return;
+    setSearchOpen(false);
+    setModelOpen(false);
+    if (mcpMode === 'auto') {
+      onMcpSelectionChange?.({ mode: 'off' });
+      setMcpOpen(false);
+      return;
+    }
+    onMcpSelectionChange?.({ mode: 'auto' });
+    setMcpOpen(true);
+  };
   const selectSearchProvider = (providerId) => {
     if (!isSearchProviderReady(providerId)) {
       onRequireSearchConfig?.({ reason: 'missing_api_key', selectProvider: providerId });
@@ -1895,7 +2151,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
   const handlePaste = (event) => {
     if (!parsedAttachmentMode || busy || disabled) return;
     const clipboard = event.clipboardData;
-    const pastedFiles = Array.from(clipboard?.files || []);
+    const pastedFiles = getClipboardFiles(clipboard);
     if (pastedFiles.length > 0) {
       event.preventDefault();
       pastedFiles.forEach((file) => {
@@ -1919,10 +2175,10 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
   return (
     <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, padding: '40px 8px 24px', background: 'linear-gradient(0deg, ' + C.page + ' 0%, ' + C.page + ' 68%, rgba(253,252,251,0) 100%)', zIndex: 6 }}>
       {imagePreview ? <ImagePreviewOverlay preview={imagePreview} onClose={() => setImagePreview(null)} onMove={moveImagePreview} /> : null}
-      <div style={{ width: '95%', maxWidth: 'none', margin: '0 auto', borderRadius: 22, background: '#fff', boxShadow: focused ? '0 4px 24px rgba(217,119,87,0.08), inset 0 0 0 1px rgba(217,119,87,0.30)' : '0 2px 12px rgba(0,0,0,0.03), inset 0 0 0 1px rgba(229,227,216,0.95)', transitionProperty: 'box-shadow', transitionDuration: '180ms', transitionTimingFunction: 'cubic-bezier(0.16,1,0.3,1)', overflow: 'visible' }}>
-        <input ref={fileInputRef} type="file" multiple accept={parsedAttachmentMode ? PARSED_ATTACHMENT_ACCEPT : undefined} style={{ display: 'none' }} onChange={(event) => { addFiles(event.target.files, { mediaKind: 'attachment' }); event.target.value = ''; }} />
+      <div style={{ width: AGENT_CHAT_CONTENT_WIDTH, maxWidth: 'none', margin: '0 auto', borderRadius: 22, background: '#fff', boxShadow: focused ? '0 4px 24px rgba(217,119,87,0.08), inset 0 0 0 1px rgba(217,119,87,0.30)' : '0 2px 12px rgba(0,0,0,0.03), inset 0 0 0 1px rgba(229,227,216,0.95)', transitionProperty: 'box-shadow', transitionDuration: '180ms', transitionTimingFunction: 'cubic-bezier(0.16,1,0.3,1)', overflow: 'visible' }}>
+        <input ref={fileInputRef} type="file" multiple accept={parsedAttachmentMode ? `${PARSED_ATTACHMENT_ACCEPT},${IMAGE_ACCEPT}` : undefined} style={{ display: 'none' }} onChange={(event) => { addFiles(event.target.files, { mediaKind: 'attachment' }); event.target.value = ''; }} />
         <input ref={imageInputRef} type="file" multiple accept={IMAGE_ACCEPT} style={{ display: 'none' }} onChange={(event) => { addFiles(event.target.files, { mediaKind: 'image' }); event.target.value = ''; }} />
-        {files.length > 0 ? <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', padding: '14px 16px 4px', maxHeight: 150, overflowY: 'auto' }}>{files.map((file) => <FileChip key={file.id} file={file} onPreview={openImagePreview} onRemove={(id) => {
+        {files.length > 0 ? <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', padding: '14px 16px 4px', maxHeight: 150, overflowY: 'auto' }}>{files.map((file) => <FileChip key={file.id} file={file} imageOnly={isImageMedia(file)} onPreview={openImagePreview} onRemove={(id) => {
           composerInteractionRef.current = true;
           setImagePreview((previous) => previous?.images?.some((image) => image.id === id) ? null : previous);
           setFiles((prev) => {
@@ -1961,7 +2217,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
               updateMentionQuery();
             }}
             onKeyDown={handleKeyDown}
-            style={{ width: '100%', minHeight: 112, maxHeight: 196, overflowY: 'auto', outline: 'none', background: 'transparent', color: disabled ? C.tertiary : C.text, fontSize: 15, lineHeight: 1.65, padding: 0, fontFamily: 'inherit', boxSizing: 'border-box', whiteSpace: 'pre-wrap', overflowWrap: 'break-word', wordBreak: 'normal' }}
+            style={{ width: '100%', minHeight: AGENT_INPUT_TEXTAREA_DEFAULT_ROWS * AGENT_INPUT_LINE_HEIGHT + 2, maxHeight: 196, overflowY: 'auto', outline: 'none', background: 'transparent', color: disabled ? C.tertiary : C.text, fontSize: 15, lineHeight: 1.65, padding: 0, fontFamily: 'inherit', boxSizing: 'border-box', whiteSpace: 'pre-wrap', overflowWrap: 'break-word', wordBreak: 'normal' }}
           />
           {activeMention ? (
             <div style={{ position: 'absolute', left: 14, right: 14, bottom: 'calc(100% + 8px)', padding: 8, borderRadius: 16, background: '#fff', boxShadow: '0 -10px 40px -10px rgba(0,0,0,0.14), inset 0 0 0 1px rgba(229,227,216,0.95)', zIndex: 24 }}>
@@ -2027,22 +2283,12 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
               ) : null}
             </div>
             <div style={{ position: 'relative' }}>
-              <button type="button" aria-label="选择 MCP Server" onClick={() => { setSearchOpen(false); setModelOpen(false); setMcpOpen((value) => !value); }} disabled={busy || disabled} style={transitionButton({ height: 28, maxWidth: 160, padding: '0 10px', borderRadius: 8, background: mcpMode !== 'off' ? 'rgba(251,228,210,0.40)' : 'transparent', color: mcpMode !== 'off' ? C.accent : C.tertiary, display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: mcpMode !== 'off' ? 800 : 600, opacity: busy || disabled ? 0.5 : 1 })}><Icons.mcp size={15} /><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{mcpLabel}</span></button>
-              {mcpOpen ? (
+              <button type="button" aria-label={mcpAvailable ? '切换 MCP 自动工具' : '没有可用 MCP Server'} title={mcpAvailable ? undefined : '请先在设置中添加并启用 MCP Server'} onClick={toggleMcp} disabled={busy || disabled || !mcpAvailable} style={transitionButton({ height: 28, padding: '0 10px', borderRadius: 8, background: mcpEnabled ? 'rgba(251,228,210,0.40)' : 'transparent', color: mcpEnabled ? C.accent : C.tertiary, display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: mcpEnabled ? 800 : 600, opacity: busy || disabled || !mcpAvailable ? 0.5 : 1 })}><Icons.mcp size={15} /><span>{mcpLabel}</span></button>
+              {mcpOpen && mcpAvailable ? (
                 <>
-                  <button type="button" aria-label="关闭 MCP Server 选择" onClick={() => setMcpOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 19, border: 0, background: 'transparent', padding: 0 }} />
-                  <div role="radiogroup" aria-label="MCP Server" style={{ position: 'absolute', bottom: 'calc(100% + 4px)', left: 0, width: 'min(280px, calc(100vw - 32px))', maxHeight: '40vh', overflowY: 'auto', padding: '8px 0', borderRadius: 14, background: '#fff', boxShadow: '0 -10px 40px -10px rgba(0,0,0,0.10), inset 0 0 0 1px rgba(229,227,216,0.95)', zIndex: 20 }}>
-                    <div style={{ padding: '6px 16px', color: '#A3A19A', fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5 }}>MCP 工具</div>
-                    {[{ id: 'off', label: '不使用 MCP', description: '本次任务不提供外部 MCP 工具。' }, { id: 'auto', label: '自动', description: '按任务描述从已启用 Server 中选择相关工具。' }].map((item) => {
-                      const checked = mcpMode === item.id;
-                      return <button type="button" role="radio" aria-checked={checked} key={item.id} onClick={() => { onMcpSelectionChange?.(item.id === 'auto' ? { mode: 'auto' } : { mode: 'off' }); setMcpOpen(false); }} style={transitionButton({ width: '100%', padding: '8px 16px', background: checked ? 'rgba(251,228,210,0.30)' : 'transparent', color: checked ? C.accent : C.secondary, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10, textAlign: 'left' })}><span><span style={{ display: 'block', fontSize: 13, fontWeight: checked ? 800 : 600 }}>{item.label}</span><span style={{ display: 'block', marginTop: 2, fontSize: 11, lineHeight: 1.45, color: C.tertiary }}>{item.description}</span></span>{checked ? <Icons.check size={14} style={{ color: C.accent, flexShrink: 0, marginTop: 3 }} /> : null}</button>;
-                    })}
-                    {mcpServers.filter((server) => server.enabled).length > 0 ? <div style={{ margin: '6px 0', borderTop: '1px solid #F2F0EA' }} /> : null}
-                    {mcpServers.filter((server) => server.enabled).map((server) => {
-                      const checked = mcpMode === 'server' && String(selectedMcpServer?.id) === String(server.id);
-                      return <button type="button" role="radio" aria-checked={checked} key={server.id} onClick={() => { onMcpSelectionChange?.({ mode: 'server', serverId: server.id }); setMcpOpen(false); }} style={transitionButton({ width: '100%', padding: '8px 16px', background: checked ? 'rgba(251,228,210,0.30)' : 'transparent', color: checked ? C.accent : C.secondary, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, textAlign: 'left' })}><span style={{ minWidth: 0 }}><span style={{ display: 'block', fontSize: 13, fontWeight: checked ? 800 : 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{server.name}</span><span style={{ display: 'block', marginTop: 2, fontSize: 11, color: C.tertiary }}>{server.transport === 'stdio' ? 'stdio' : 'Streamable HTTP'}</span></span>{checked ? <Icons.check size={14} style={{ color: C.accent, flexShrink: 0 }} /> : null}</button>;
-                    })}
-                    {mcpServers.filter((server) => server.enabled).length === 0 ? <div style={{ padding: '8px 16px', color: C.tertiary, fontSize: 12, lineHeight: 1.6 }}>暂无已启用的 MCP Server，可在设置中添加。</div> : null}
+                  <button type="button" aria-label="关闭 MCP 自动下拉" onClick={() => setMcpOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 19, border: 0, background: 'transparent', padding: 0 }} />
+                  <div role="radiogroup" aria-label="MCP 工具" style={{ position: 'absolute', bottom: 'calc(100% + 4px)', left: 0, width: 132, padding: '8px 0', borderRadius: 14, background: '#fff', boxShadow: '0 -10px 40px -10px rgba(0,0,0,0.10), inset 0 0 0 1px rgba(229,227,216,0.95)', zIndex: 20 }}>
+                    <button type="button" role="radio" aria-checked={mcpMode === 'auto'} onClick={() => { onMcpSelectionChange?.({ mode: 'auto' }); setMcpOpen(false); }} style={transitionButton({ width: '100%', minHeight: 34, padding: '0 16px', background: mcpMode === 'auto' ? 'rgba(251,228,210,0.30)' : 'transparent', color: mcpMode === 'auto' ? C.accent : C.secondary, display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 13, fontWeight: mcpMode === 'auto' ? 800 : 600, textAlign: 'left' })}>自动{mcpMode === 'auto' ? <Icons.check size={14} style={{ color: C.accent }} /> : null}</button>
                   </div>
                 </>
               ) : null}
@@ -2050,12 +2296,13 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <div style={{ position: 'relative' }}>
-              <button type="button" onClick={() => { setSearchOpen(false); setModelOpen((prev) => !prev); }} disabled={busy || disabled || llmConfigs.length === 0} style={transitionButton({ maxWidth: 150, height: 28, padding: '0 8px', borderRadius: 8, background: 'transparent', color: C.secondary, display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 13, fontWeight: 700, opacity: llmConfigs.length === 0 || disabled ? 0.55 : 1 })}><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{modelLabel(selectedConfig)}</span><Icons.chevronDown size={13} /></button>
+              <button type="button" onClick={() => { setSearchOpen(false); setMcpOpen(false); setModelOpen((prev) => !prev); }} disabled={busy || disabled || llmConfigs.length === 0} style={transitionButton({ maxWidth: 150, height: 28, padding: '0 8px', borderRadius: 8, background: 'transparent', color: C.secondary, display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 13, fontWeight: 700, opacity: llmConfigs.length === 0 || disabled ? 0.55 : 1 })}><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{modelLabel(selectedConfig)}</span><Icons.chevronDown size={13} /></button>
               {modelOpen ? (
                 <>
                   <button type="button" aria-label="关闭模型下拉" onClick={() => setModelOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 19, border: 0, background: 'transparent', padding: 0 }} />
                   <div style={{ position: 'absolute', bottom: 'calc(100% + 4px)', right: 0, width: 260, maxHeight: '40vh', overflowY: 'auto', padding: '8px 0', borderRadius: 14, background: '#fff', boxShadow: '0 -10px 40px -10px rgba(0,0,0,0.10), inset 0 0 0 1px rgba(229,227,216,0.95)', zIndex: 20 }}>
-                    {groupedConfigs.length === 0 ? <div style={{ padding: 12, fontSize: 13, color: C.tertiary }}>暂无模型配置</div> : groupedConfigs.map((group, index) => (
+                    <div style={{ padding: '2px 8px 8px' }}><input ref={modelSearchRef} value={modelQuery} onChange={(event) => setModelQuery(event.target.value)} placeholder="搜索模型或 Provider" aria-label="搜索模型或 Provider" style={{ width: '100%', height: 32, padding: '0 10px', border: '1px solid #E5E3D8', borderRadius: 9, outline: 'none', boxSizing: 'border-box', color: C.text, fontSize: 12, fontFamily: 'inherit' }} /></div>
+                    {groupedConfigs.length === 0 ? <div style={{ padding: 12, fontSize: 13, color: C.tertiary }}>暂无模型配置</div> : filteredGroupedConfigs.length === 0 ? <div style={{ padding: 12, fontSize: 13, color: C.tertiary }}>没有匹配的模型或 Provider</div> : filteredGroupedConfigs.map((group, index) => (
                       <div key={group.label} style={{ marginTop: index > 0 ? 8 : 0, paddingTop: index > 0 ? 8 : 0, borderTop: index > 0 ? '1px solid #F2F0EA' : 'none' }}>
                         <div style={{ position: 'sticky', top: 0, padding: '6px 16px', color: '#A3A19A', fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, background: 'rgba(255,255,255,0.92)' }}>{group.label}</div>
                         {group.configs.map((config) => {
@@ -2279,7 +2526,7 @@ function SearchConfigView({ config, onSaved, onBack, selectProvider }) {
   );
 }
 
-export function AgentWorkspace({ messages, streamText, loading, error, activeSteps, llmConfigs, selectedConfigId, onConfigChange, onSend, onStop, onApplyOperationSet, onApplyOperationFile, onRollbackOperationFile, onDiscardOperationFile, onCitationClick, citationSelection, disabled, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [] }) {
+export function AgentWorkspace({ messages, streamText, loading, error, activeSteps, llmConfigs, selectedConfigId, onConfigChange, onSend, onStop, onApplyOperationSet, onApplyOperationFile, onRollbackOperationFile, onDiscardOperationFile, onCitationClick, citationSelection, disabled, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [], fullWidth = false, onOpenDiffFile }) {
   const { openSettings } = useSettingsDialog();
   const toast = useToast();
   const [searchConfig, setSearchConfig] = useState({ enabled: false, selected_provider: 'firecrawl', modes: {}, counts: {}, api_key_set: {}, providers: SEARCH_PROVIDER_FALLBACKS });
@@ -2290,8 +2537,9 @@ export function AgentWorkspace({ messages, streamText, loading, error, activeSte
   const [detailOperationSet, setDetailOperationSet] = useState(null);
   const [attachmentDetail, setAttachmentDetail] = useState(null);
   const [previewMention, setPreviewMention] = useState(null);
-  const [mcpServers, setMcpServers] = useState([]);
+  const [messageImagePreview, setMessageImagePreview] = useState(null);
   const [mcpSelection, setMcpSelection] = useState(() => readMcpSelectionPreference());
+  const [mcpAvailable, setMcpAvailable] = useState(false);
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
   const [rewrittenMessages, setRewrittenMessages] = useState({});
   const [removingMessageIds, setRemovingMessageIds] = useState(() => new Set());
@@ -2300,24 +2548,32 @@ export function AgentWorkspace({ messages, streamText, loading, error, activeSte
   const shouldStickToBottomRef = useRef(true);
   const sourceMessages = useMemo(() => (Array.isArray(messages) ? messages : []), [messages]);
 
-  useEffect(() => {
-    let cancelled = false;
-    fetch('/api/mcp/servers', { cache: 'no-store' })
-      .then((response) => response.ok ? response.json() : { servers: [] })
-      .then((payload) => { if (!cancelled) setMcpServers(Array.isArray(payload?.servers) ? payload.servers : []); })
-      .catch(() => { if (!cancelled) setMcpServers([]); });
-    return () => { cancelled = true; };
-  }, []);
-
   const handleMcpSelectionChange = useCallback((next) => {
-    const normalized = next?.mode === 'auto'
-      ? { mode: 'auto' }
-      : next?.mode === 'server' && next?.serverId
-        ? { mode: 'server', serverId: String(next.serverId) }
-        : { mode: 'off' };
+    const normalized = next?.mode === 'auto' ? { mode: 'auto' } : { mode: 'off' };
     setMcpSelection(normalized);
     try { window.localStorage.setItem(MCP_SELECTION_STORAGE_KEY, JSON.stringify(normalized)); } catch {}
   }, []);
+  const refreshMcpAvailability = useCallback(async () => {
+    try {
+      const response = await fetch('/api/settings/mcp/servers?enabled_only=1', { cache: 'no-store' });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || '读取 MCP Server 失败');
+      setMcpAvailable(Array.isArray(payload.servers) && payload.servers.length > 0);
+    } catch {
+      setMcpAvailable(false);
+    }
+  }, []);
+  useEffect(() => {
+    refreshMcpAvailability();
+    const onFocus = () => refreshMcpAvailability();
+    const onChanged = () => refreshMcpAvailability();
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('notus-mcp-servers-changed', onChanged);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('notus-mcp-servers-changed', onChanged);
+    };
+  }, [refreshMcpAvailability]);
   const visibleMessages = sourceMessages
     .filter((message) => !hiddenMessageIds.has(String(message.id)))
     .map((message) => {
@@ -2381,6 +2637,28 @@ export function AgentWorkspace({ messages, streamText, loading, error, activeSte
 
   const handleOpenAttachment = useCallback((attachment, message) => {
     setAttachmentDetail({ attachment, message });
+  }, []);
+
+  const openMessageImagePreview = useCallback((message, selectedFile) => {
+    const images = (Array.isArray(message?.attachments) ? message.attachments : [])
+      .filter(isImageMedia)
+      .map((file) => ({
+        id: file.id || file.stored_name || file.name,
+        src: imagePreviewUrl(file),
+        alt: file.name || '已上传图片',
+      }))
+      .filter((image) => image.src);
+    const selectedId = selectedFile?.id || selectedFile?.stored_name || selectedFile?.name;
+    const currentIndex = images.findIndex((image) => String(image.id) === String(selectedId));
+    if (currentIndex >= 0) setMessageImagePreview({ images, currentIndex });
+  }, []);
+
+  const moveMessageImagePreview = useCallback((direction) => {
+    setMessageImagePreview((previous) => {
+      if (!previous) return previous;
+      const currentIndex = Math.min(Math.max(previous.currentIndex + direction, 0), previous.images.length - 1);
+      return currentIndex === previous.currentIndex ? previous : { ...previous, currentIndex };
+    });
   }, []);
 
   useIsomorphicLayoutEffect(() => {
@@ -2453,10 +2731,23 @@ export function AgentWorkspace({ messages, streamText, loading, error, activeSte
       if (isRewrite) {
         const sourceId = sourceMessage?.id;
         const conversationId = Number(sourceMessage?.conversationId || sourceMessage?.conversation_id || 0) || null;
+        if (!conversationId || !Number.isFinite(Number(sourceId)) || Number(sourceId) <= 0) {
+          throw new Error('当前消息尚未完成服务端保存，无法改写。请稍后重试。');
+        }
         const sourceKey = String(sourceId || '');
         const sourceIndex = sourceMessages.findIndex((message) => String(message.id) === sourceKey);
         const futureMessages = sourceIndex >= 0 ? sourceMessages.slice(sourceIndex + 1) : [];
         const futureIds = futureMessages.map((message) => String(message.id));
+        const response = await fetch(`/api/conversations/${conversationId}/truncate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message_id: Number(sourceId),
+            content: nextContent,
+          }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || '清理后续对话失败');
 
         setRewrittenMessages((prev) => ({ ...prev, [sourceKey]: nextContent }));
         setRemovingMessageIds((prev) => {
@@ -2464,44 +2755,17 @@ export function AgentWorkspace({ messages, streamText, loading, error, activeSte
           futureIds.forEach((id) => next.add(id));
           return next;
         });
-
-        try {
-          if (conversationId && Number.isFinite(Number(sourceId)) && Number(sourceId) > 0) {
-            const response = await fetch(`/api/conversations/${conversationId}/truncate`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                message_id: Number(sourceId),
-                content: nextContent,
-              }),
-            });
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok) throw new Error(payload.error || '清理后续对话失败');
-          }
-          if (futureIds.length > 0) await wait(220);
-          setHiddenMessageIds((prev) => {
-            const next = new Set(prev);
-            futureIds.forEach((id) => next.add(id));
-            return next;
-          });
-          setRemovingMessageIds((prev) => {
-            const next = new Set(prev);
-            futureIds.forEach((id) => next.delete(id));
-            return next;
-          });
-        } catch (truncateError) {
-          setRewrittenMessages((prev) => {
-            const next = { ...prev };
-            delete next[sourceKey];
-            return next;
-          });
-          setRemovingMessageIds((prev) => {
-            const next = new Set(prev);
-            futureIds.forEach((id) => next.delete(id));
-            return next;
-          });
-          throw truncateError;
-        }
+        if (futureIds.length > 0) await wait(220);
+        setHiddenMessageIds((prev) => {
+          const next = new Set(prev);
+          futureIds.forEach((id) => next.add(id));
+          return next;
+        });
+        setRemovingMessageIds((prev) => {
+          const next = new Set(prev);
+          futureIds.forEach((id) => next.delete(id));
+          return next;
+        });
       }
 
       await onSend?.(nextContent, {
@@ -2535,8 +2799,9 @@ export function AgentWorkspace({ messages, streamText, loading, error, activeSte
 
   return (
     <div style={{ position: 'relative', height: '100%', minHeight: 0, minWidth: 0, maxWidth: '100%', background: C.page, color: C.text, overflow: 'hidden', WebkitFontSmoothing: 'antialiased', MozOsxFontSmoothing: 'grayscale' }}>
+      {messageImagePreview ? <ImagePreviewOverlay preview={messageImagePreview} onClose={() => setMessageImagePreview(null)} onMove={moveMessageImagePreview} /> : null}
       <main ref={scrollContainerRef} onScroll={handleChatScroll} style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden', padding: '32px 16px 320px' }}>
-        <div style={{ width: '100%', maxWidth: 768, minWidth: 0, margin: '0 auto', overflow: 'hidden' }}>
+        <div style={{ width: AGENT_CHAT_CONTENT_WIDTH, maxWidth: 'none', minWidth: 0, margin: '0 auto', overflow: 'hidden' }}>
           <MessageList
             messages={visibleMessages}
             streamText={streamText || ''}
@@ -2551,6 +2816,7 @@ export function AgentWorkspace({ messages, streamText, loading, error, activeSte
             onRetryMessage={handleResendMessage}
             onOpenAttachment={handleOpenAttachment}
             onPreviewMention={setPreviewMention}
+            onPreviewImages={openMessageImagePreview}
           />
           {error ? <div style={{ marginTop: 16, padding: '12px 14px', borderRadius: 14, background: 'rgba(217,119,87,0.08)', color: C.accentDark, fontSize: 13, lineHeight: 1.7 }}>{error}</div> : null}
           <div style={{ height: 12 }} />
@@ -2589,7 +2855,7 @@ export function AgentWorkspace({ messages, streamText, loading, error, activeSte
           <Icons.chevronDown size={14} />
         </button>
       ) : null}
-      <AgentInput loading={Boolean(loading)} disabled={Boolean(disabled)} llmConfigs={llmConfigs || []} selectedConfigId={selectedConfigId} onConfigChange={onConfigChange} onSend={onSend} onStop={onStop} searchConfig={searchConfig} searchPreference={searchPreference} onSearchPreferenceChange={handleSearchPreferenceChange} onRequireSearchConfig={requireSearchConfig} mcpServers={mcpServers} mcpSelection={mcpSelection} onMcpSelectionChange={handleMcpSelectionChange} placeholder={placeholder} agentConfirmMode={agentConfirmMode} onAgentConfirmModeChange={onAgentConfirmModeChange} attachmentMode={attachmentMode} mentionOptions={mentionOptions} onPreviewMention={setPreviewMention} />
+      <AgentInput loading={Boolean(loading)} disabled={Boolean(disabled)} llmConfigs={llmConfigs || []} selectedConfigId={selectedConfigId} onConfigChange={onConfigChange} onSend={onSend} onStop={onStop} searchConfig={searchConfig} searchPreference={searchPreference} onSearchPreferenceChange={handleSearchPreferenceChange} onRequireSearchConfig={requireSearchConfig} mcpSelection={mcpSelection} onMcpSelectionChange={handleMcpSelectionChange} mcpAvailable={mcpAvailable} placeholder={placeholder} agentConfirmMode={agentConfirmMode} onAgentConfirmModeChange={onAgentConfirmModeChange} attachmentMode={attachmentMode} mentionOptions={mentionOptions} onPreviewMention={setPreviewMention} />
       <MentionPreviewDialog mention={previewMention} onClose={() => setPreviewMention(null)} />
       <Dialog open={searchPromptOpen} onClose={() => setSearchPromptOpen(false)} title={promptTitle} maxWidth={420} footer={<><Button variant="ghost" onClick={() => setSearchPromptOpen(false)}>取消</Button><Button variant="primary" onClick={() => { setSearchPromptOpen(false); openSettings('search', { provider: promptProvider?.id }); }}>前往设置</Button></>}>
         <div style={{ fontSize: 14, color: C.secondary, lineHeight: 1.8 }}>{promptMessage}</div>
@@ -2602,6 +2868,7 @@ export function AgentWorkspace({ messages, streamText, loading, error, activeSte
         onApplyFile={onApplyOperationFile}
         onRollbackFile={onRollbackOperationFile}
         onDiscardFile={onDiscardOperationFile}
+        onOpenFile={onOpenDiffFile}
       />
       <AttachmentContentDialog
         open={Boolean(attachmentDetail)}

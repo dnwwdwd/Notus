@@ -30,7 +30,7 @@ assert.deepStrictEqual(anthropicMessages[0].content[1], image);
 const toolImageMessages = [
   {
     role: 'assistant',
-    content: [{ type: 'tool_use', id: 'tool-image', name: 'read_conversation_images', input: { image_refs: ['notus-conversation-image://1/img-1'] } }],
+    content: [{ type: 'tool_use', id: 'tool-image', name: 'get_task_activity', input: {} }],
   },
   {
     role: 'user',

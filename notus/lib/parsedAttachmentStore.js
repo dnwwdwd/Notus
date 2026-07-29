@@ -9,6 +9,7 @@ const TYPE_LABELS = {
   markdown: 'Markdown 文件',
   plaintext: '文本文件',
   webpage: '网页',
+  image_recognition: '图片识别结果',
 };
 
 function normalizePositiveInt(value) {
@@ -111,9 +112,12 @@ function formatAttachmentBlock(item, maxCharsPerSource) {
   const label = TYPE_LABELS[item.contentType] || '文件';
   const warning = item.warning ? `\n> ${item.warning}` : '';
   const title = item.metadata?.title ? `\n标题：${item.metadata.title}` : '';
+  const imageRefs = Array.isArray(item.metadata?.image_refs) ? item.metadata.image_refs.filter(Boolean) : [];
+  const imageReference = imageRefs.length > 0 ? `\n受控图片引用：${imageRefs.join('、')}` : '';
   return [
     `## 已导入${label}：${item.source}`,
     title,
+    imageReference,
     warning,
     '',
     truncateSourceText(item.text, maxCharsPerSource),

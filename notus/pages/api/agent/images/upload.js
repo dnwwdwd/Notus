@@ -8,8 +8,10 @@ const {
   IMAGE_MIME_TYPES,
   MAX_IMAGE_SIZE,
   MAX_IMAGES_PER_MESSAGE,
+  getImageExtensionFromMimeType,
   getImagesDir,
   isSupportedImageName,
+  isSupportedImageMimeType,
 } = require('../../../../lib/conversationImages');
 
 export const config = {
@@ -31,7 +33,9 @@ function parseForm(req, uploadDir) {
     maxFiles: MAX_IMAGES_PER_MESSAGE,
     filename: (_name, ext, part) => {
       const originalExt = path.extname(part?.originalFilename || '').toLowerCase();
-      const safeExt = IMAGE_MIME_TYPES.has(originalExt) ? originalExt : String(ext || '').toLowerCase();
+      const safeExt = IMAGE_MIME_TYPES.has(originalExt)
+        ? originalExt
+        : getImageExtensionFromMimeType(part?.mimetype) || String(ext || '').toLowerCase();
       return `${crypto.randomUUID()}${safeExt}`;
     },
   });
@@ -80,13 +84,14 @@ export default async function handler(req, res) {
     const images = [];
     const errors = [];
     uploadedFiles.forEach((file) => {
-      const name = sanitizeFileName(file.originalFilename || file.newFilename || '未命名图片');
-      const extension = path.extname(name).toLowerCase();
-      if (!isSupportedImageName(name)) {
+      const originalName = sanitizeFileName(file.originalFilename || file.newFilename || '未命名图片');
+      const extension = path.extname(originalName).toLowerCase() || getImageExtensionFromMimeType(file.mimetype);
+      if (!isSupportedImageName(originalName) && !isSupportedImageMimeType(file.mimetype)) {
         removeQuietly(file.filepath);
-        errors.push({ name, code: 'UNSUPPORTED_IMAGE_FORMAT', error: '当前支持 PNG、JPG、JPEG、WEBP 和 GIF 图片。' });
+        errors.push({ name: originalName, code: 'UNSUPPORTED_IMAGE_FORMAT', error: '当前支持 PNG、JPG、JPEG、WEBP 和 GIF 图片。' });
         return;
       }
+      const name = path.extname(originalName) ? originalName : `${originalName}${extension}`;
       images.push({
         id: `img-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
         name,

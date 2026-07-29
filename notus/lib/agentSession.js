@@ -144,6 +144,7 @@ function formatSession(row) {
     tool_call_counts: safeJsonParse(row.tool_call_counts, {}),
     consecutive_fails: safeJsonParse(row.consecutive_fails, {}),
     last_tool_results: safeJsonParse(row.last_tool_results, {}),
+    research_state: safeJsonParse(row.research_state_json, { version: 1, sources: {} }),
   };
 }
 
@@ -170,6 +171,7 @@ function sanitizeSessionForRead(session) {
     session_token: _sessionToken,
     messages_checkpoint: _messagesCheckpoint,
     checkpoint_tool_use_id: _checkpointToolUseId,
+    research_state: _researchState,
     ...safeSession
   } = session;
   return safeSession;
@@ -199,6 +201,21 @@ function updateSessionStatus(sessionId, status) {
 function updateSessionLoopCount(sessionId, loopCount) {
   getDb().prepare('UPDATE agent_sessions SET loop_count = ?, updated_at = datetime(\'now\') WHERE id = ?')
     .run(Math.max(0, Number(loopCount) || 0), normalizePositiveInt(sessionId));
+}
+
+function setSessionWriteTarget(sessionId, target = null) {
+  const id = normalizePositiveInt(sessionId);
+  if (!id) throw new Error('session_id is required');
+  const row = getDb().prepare('SELECT research_state_json FROM agent_sessions WHERE id = ?').get(id);
+  const state = safeJsonParse(row?.research_state_json, { version: 1, sources: {} });
+  state.write_target = target && typeof target === 'object' ? {
+    mode: String(target.mode || '').trim() === 'new' ? 'new' : 'modify',
+    file_path: String(target.file_path || '').replace(/\\/g, '/').trim(),
+    operation_set_id: normalizePositiveInt(target.operation_set_id),
+  } : null;
+  getDb().prepare("UPDATE agent_sessions SET research_state_json = ?, updated_at = datetime('now') WHERE id = ?")
+    .run(JSON.stringify(state), id);
+  return getSession(id);
 }
 
 function setSessionMcpPermission(sessionId, permissionKey, permission) {
@@ -449,12 +466,19 @@ function checkAndIncrementToolCount(sessionId, toolName) {
 function summarizeToolResult(toolName, result) {
   if (result?.error) return { error: result.error, message: result.message || result.reason || '' };
   switch (toolName) {
-    case 'search_knowledge': return { result_count: result?.results?.length || 0, remaining_calls: result?.remaining_calls };
+    case 'search_knowledge': return {
+      query: result?.query || '',
+      result_count: result?.results?.length || 0,
+      budget: result?.budget || null,
+      query_records: Array.isArray(result?.query_records) ? result.query_records.map((item) => ({ query: item.query, phase: item.phase, status: item.status, result_count: item.result_count })) : [],
+    };
     case 'web_search': return {
       query: result?.query || '',
       provider: result?.provider || '',
       result_count: result?.results?.length || 0,
       context_message_id: result?.context_message_id || null,
+      budget: result?.budget || null,
+      query_records: Array.isArray(result?.query_records) ? result.query_records.map((item) => ({ query: item.query, phase: item.phase, status: item.status, result_count: item.result_count })) : [],
     };
     case 'read_file': return { file_path: result?.file_path, char_count: String(result?.content || '').length };
     case 'create_note': return { path: result?.path, created: Boolean(result?.created) };
@@ -469,8 +493,38 @@ function summarizeToolResult(toolName, result) {
     case 'ask_question_card': return { interaction_id: result?.interaction_id, question_count: result?.question_count || 0 };
     case 'analyze_folder': return { file_count: result?.file_count || 0, total_count: result?.total_count || 0, truncated: Boolean(result?.truncated) };
     case 'check_links': return { orphan_count: result?.orphan_count || 0, broken_count: result?.broken_count || 0 };
+    case 'get_task_activity': return { receipt_count: result?.research_receipts?.length || 0, tool_count: result?.tool_records?.length || 0 };
+    case 'install_skill_from_git': return { installed: (result?.installed || []).map((item) => ({ id: item.id, name: item.name, enabled: Boolean(item.enabled) })) };
+    case 'add_mcp_server': return {
+      server: result?.server ? { id: result.server.id, name: result.server.name, transport: result.server.transport, enabled: Boolean(result.server.enabled) } : null,
+      test: result?.test ? { ok: Boolean(result.test.ok), tool_count: Number(result.test.tool_count || 0), error_code: result.test.error_code || '', message: result.test.message || '' } : null,
+    };
     default: return { ok: true };
   }
+}
+
+function sanitizeToolInputForLog(toolName, toolInput) {
+  if (toolName === 'add_mcp_server') {
+    const input = toolInput && typeof toolInput === 'object' ? toolInput : {};
+    const sanitizeEntries = (entries = []) => (Array.isArray(entries) ? entries : []).map((entry) => ({ name: String(entry?.name || '').trim(), configured: Boolean(String(entry?.value || '').trim() || entry?.secretId) })).filter((entry) => entry.name);
+    return {
+      name: String(input.name || '').trim(),
+      transport: String(input.transport || '').trim(),
+      ...(input.http ? { http: { url: String(input.http.url || '').trim(), headers: sanitizeEntries(input.http.headers), connectTimeoutMs: input.http.connectTimeoutMs, requestTimeoutMs: input.http.requestTimeoutMs } } : {}),
+      ...(input.stdio ? { stdio: { command: String(input.stdio.command || '').trim(), args: Array.isArray(input.stdio.args) ? input.stdio.args.map(String) : [], cwd: String(input.stdio.cwd || '').trim(), env: sanitizeEntries(input.stdio.env), connectTimeoutMs: input.stdio.connectTimeoutMs } } : {}),
+    };
+  }
+  return toolInput || null;
+}
+
+function redactToolSecretsFromThinking(toolName, toolInput, thinking) {
+  if (toolName !== 'add_mcp_server' || !thinking) return thinking || null;
+  const input = toolInput && typeof toolInput === 'object' ? toolInput : {};
+  const entries = [...(Array.isArray(input.http?.headers) ? input.http.headers : []), ...(Array.isArray(input.stdio?.env) ? input.stdio.env : [])];
+  return entries.reduce((text, entry) => {
+    const value = String(entry?.value || '');
+    return value ? String(text).split(value).join('[已隐藏]') : text;
+  }, String(thinking));
 }
 
 function logToolCall({ sessionId, loopIndex, toolName, toolInput, toolResult, thinking = null, status = 'success', durationMs = 0 } = {}) {
@@ -481,9 +535,9 @@ function logToolCall({ sessionId, loopIndex, toolName, toolInput, toolResult, th
     normalizePositiveInt(sessionId),
     Math.max(0, Number(loopIndex) || 0),
     toolName || null,
-    JSON.stringify(toolInput || null),
+    JSON.stringify(sanitizeToolInputForLog(toolName, toolInput)),
     JSON.stringify(summarizeToolResult(toolName, toolResult)),
-    thinking || null,
+    redactToolSecretsFromThinking(toolName, toolInput, thinking),
     String(status || 'success'),
     Math.max(0, Number(durationMs) || 0)
   );
@@ -571,6 +625,7 @@ module.exports = {
   sanitizeSessionForRead,
   updateSessionStatus,
   updateSessionLoopCount,
+  setSessionWriteTarget,
   setSessionMcpPermission,
   consumeSessionMcpPermission,
   extendHardLimit,

@@ -396,6 +396,13 @@ ipcMain.handle('desktop:open-data-directory', async () => {
   return output ? { ok: false, error: output } : { ok: true };
 });
 
+ipcMain.handle('desktop:open-agent-directory', async () => {
+  const agentDir = path.join(managedPaths.dataRoot, 'agent');
+  await fs.promises.mkdir(agentDir, { recursive: true });
+  const output = await shell.openPath(agentDir);
+  return output ? { ok: false, error: output } : { ok: true };
+});
+
 ipcMain.handle('desktop:clear-local-data-and-quit', async () => {
   cleanupOnQuit = true;
   setImmediate(() => app.quit());

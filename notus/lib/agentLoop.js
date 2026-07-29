@@ -23,15 +23,17 @@ const {
 const { applyPreviewWithConflictCheck, buildToolDefinitions, executeToolSafely, summarizeInput, validateToolUseBlock } = require('./agentTools');
 const { estimateChatRequestTokens } = require('./llmBudget');
 const {
-  assertImageContextSize,
-  MAX_ANTHROPIC_IMAGE_CONTEXT_BYTES,
-} = require('./conversationImages');
-const {
   buildInteractionAnswerSummary,
   getInteractionById,
 } = require('./conversationInteractions');
 const { eligibleSkillSummaries } = require('./skills');
 const { prepareMcpTools } = require('./mcp');
+const { buildGlobalAgentContext } = require('./globalAgentFiles');
+const {
+  formatResearchReceiptsForPrompt,
+  recordToolReceipt,
+  recordWriteReceipt,
+} = require('./agentResearch');
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -93,6 +95,17 @@ function isContinuationRewriteTask(goal = '') {
 }
 
 function buildContinuationFileContext(session) {
+  const confirmedTarget = session?.research_state?.write_target;
+  if (confirmedTarget?.mode === 'modify' && String(confirmedTarget.file_path || '').trim()) {
+    return {
+      requiresTargetReuse: true,
+      targets: [{
+        filePath: String(confirmedTarget.file_path).trim(),
+        operationSetId: Number(confirmedTarget.operation_set_id || 0) || null,
+        status: 'confirmed',
+      }],
+    };
+  }
   if (!session?.conversation_id || !isContinuationRewriteTask(session.goal)) return null;
   const operationSets = listOperationSetsByConversation(session.conversation_id, {
     statuses: ['pending', 'partial', 'applied'],
@@ -119,6 +132,57 @@ function buildContinuationFileContext(session) {
   return targets.length > 0
     ? { requiresTargetReuse: true, targets: targets.slice(0, 3) }
     : null;
+}
+
+function hasExplicitFileTarget(goal = '') {
+  const text = String(goal || '');
+  return /@\{(?:folder:)?[^}]+\.md\}/i.test(text)
+    || /(?:^|\s)[^\s，。！？?]+\.md(?:$|\s|，|。|！|？)/i.test(text);
+}
+
+function isExplicitContinueModifyTask(goal = '') {
+  return /(?:继续|接着|承接).{0,8}(?:修改|改写|润色|修订|更新|重写|续写)/.test(String(goal || ''));
+}
+
+function looksLikeWritingTask(goal = '') {
+  return /(写(?:一篇|文章|文档|笔记|报告|稿|内容)|创作|写作|整理成|生成(?:一篇|文章|文档|笔记|报告)|文章|文档|笔记|报告|稿件)/.test(String(goal || ''));
+}
+
+function getRecentArticleCandidates(conversationId) {
+  if (!conversationId) return [];
+  const operationSets = listOperationSetsByConversation(conversationId, {
+    statuses: ['pending', 'partial', 'applied'],
+  });
+  const seen = new Set();
+  const candidates = [];
+  for (const operationSet of operationSets.slice().reverse()) {
+    if (String(operationSet.status || '') !== 'applied') continue;
+    const patches = Array.isArray(operationSet.patches) ? operationSet.patches.slice().reverse() : [];
+    for (const patch of patches) {
+      const path = String(patch?.file_path || '').trim();
+      const created = patch?.change_type === 'create'
+        || (operationSet.mode === 'create_file' && String(patch?.old || '') === '' && Boolean(String(patch?.new || '')));
+      if (!created || !/\.md$/i.test(path) || seen.has(path)) continue;
+      seen.add(path);
+      candidates.push({
+        filePath: path,
+        title: path.split('/').pop().replace(/\.md$/i, ''),
+        operationSetId: Number(operationSet.id),
+        status: String(operationSet.status || 'pending'),
+      });
+      if (candidates.length >= 3) return candidates;
+    }
+  }
+  return candidates;
+}
+
+function buildWriteTargetPreflight(session) {
+  const goal = String(session?.goal || '');
+  const candidates = getRecentArticleCandidates(session?.conversation_id);
+  if (candidates.length === 0 || !looksLikeWritingTask(goal)) return null;
+  if (isExplicitNewFileTask(goal) || hasExplicitFileTarget(goal)) return null;
+  if (candidates.length === 1 && isExplicitContinueModifyTask(goal)) return null;
+  return { candidates };
 }
 
 function compactMessages(messages = [], tokenBudget = 60000) {
@@ -250,21 +314,7 @@ function buildQuestionCardToolResult(interactionId, sessionId) {
 }
 
 function buildInteractionResumeToolResult(interactionId, sessionId) {
-  const interaction = getInteractionById(interactionId);
-  if (interaction?.kind !== 'mcp_approval') return buildQuestionCardToolResult(interactionId, sessionId);
-  if (interaction.source !== 'agent_loop' || Number(interaction.payload?.agent_session_id || 0) !== Number(sessionId || 0)) {
-    return { isError: true, content: JSON.stringify({ error: 'INTERACTION_SESSION_MISMATCH', message: 'MCP 授权不属于当前 Agent 任务' }) };
-  }
-  if (interaction.status !== 'answered') {
-    return { isError: true, content: JSON.stringify({ error: 'MCP_APPROVAL_NOT_COMPLETED', message: 'MCP 授权尚未完成' }) };
-  }
-  const decision = String(interaction.response?.decision || interaction.response?.answers?.decision?.value || 'deny');
-  return {
-    // 用户拒绝权限不是系统错误；把它作为普通工具结果交还模型，
-    // 以便模型解释限制或继续完成不依赖该工具的内容。
-    isError: false,
-    content: JSON.stringify({ mcp_approval: decision, interaction_id: interaction.id, message: decision === 'deny' ? '用户拒绝了本次 MCP 调用。请不要尝试绕过授权。' : '用户已允许 MCP 调用。请在仍有必要时重新调用同一个工具。' }),
-  };
+  return buildQuestionCardToolResult(interactionId, sessionId);
 }
 
 function buildInitialUserContent(session, options = {}) {
@@ -280,7 +330,7 @@ function buildInitialUserContent(session, options = {}) {
   ];
 }
 
-async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMode = 'auto_confirm', resumeInteractionId = null, initialImages = [] } = {}) {
+async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMode = 'auto_confirm', resumeInteractionId = null, initialImages = [], currentImageRecognition = null } = {}) {
   let session = getSession(sessionId);
   const config = getEffectiveConfig();
   const emit = typeof onStream === 'function' ? onStream : () => {};
@@ -292,6 +342,7 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMo
   session = getSession(session.id);
 
   const styleContext = await loadStyleContext(session);
+  const globalAgentContext = buildGlobalAgentContext(session.goal);
   const continuationFileContext = buildContinuationFileContext(session);
   const skillCatalog = eligibleSkillSummaries(session.goal, session.skill_mentions || []);
   const mcpContext = await prepareMcpTools(session.mcp_selection || { mode: 'off' }, session.goal);
@@ -304,11 +355,15 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMo
   const webSearchContext = session.conversation_id && session.web_search_enabled
     ? formatWebSearchContextsForPrompt(session.conversation_id)
     : '';
-  const systemPrompt = [
-    buildLoopSystemPrompt(session, { styleContext, continuationFileContext, skillCatalog, mcpInstructions: mcpContext.instructions }),
-    attachmentContext,
-    webSearchContext,
-  ].filter(Boolean).join('\n\n');
+  const researchReceiptContext = formatResearchReceiptsForPrompt(session.id);
+  const systemPrompt = buildLoopSystemPrompt(session, {
+    styleContext,
+    globalAgentContext,
+    continuationFileContext,
+    skillCatalog,
+    mcpInstructions: mcpContext.instructions,
+    taskMaterialContext: [attachmentContext, webSearchContext, researchReceiptContext].filter(Boolean).join('\n\n'),
+  });
   const checkpoint = loadMessagesCheckpoint(session.id);
   let messages;
   if (checkpoint) {
@@ -341,6 +396,7 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMo
         recentConversationContext: buildRecentConversationContext(session),
         continuationFileContext,
         images: initialImages,
+        currentImageRecognition,
       }),
     }];
   }
@@ -415,26 +471,13 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMo
     }
 
     const toolResults = [];
-    const imageContextBlocks = [];
     for (const toolUse of toolUseBlocks) {
       emit({ type: 'tool_start', tool_name: toolUse.name, tool_input_summary: summarizeInput(toolUse), loop_index: loopIndex });
       const startedAt = Date.now();
-      let result = await executeToolSafely(toolUse, session, config.notesDir, { mcpToolMap: mcpContext.map });
-      if (!result?.error && toolUse.name === 'read_conversation_images' && result.image_context) {
-        try {
-          if (String(llmConfig?.llmApiProtocol || '').trim().toLowerCase() === 'anthropic') {
-            assertImageContextSize(result.image_context.images, MAX_ANTHROPIC_IMAGE_CONTEXT_BYTES);
-          }
-          result.image_context.blocks.forEach((image, index) => {
-            imageContextBlocks.push({
-              type: 'text',
-              text: `已读取会话图片 ${index + 1}${image?.name ? `（${image.name}）` : ''}${image?.image_ref ? `，引用：${image.image_ref}` : ''}：`,
-            }, image);
-          });
-        } catch (error) {
-          result = { error: error.code || 'IMAGE_CONTEXT_INVALID', message: error.message };
-        }
-      }
+      let result = await executeToolSafely(toolUse, session, config.notesDir, {
+        mcpToolMap: mcpContext.map,
+        llmConfig,
+      });
       const durationMs = Date.now() - startedAt;
       const failed = Boolean(result?.error);
 
@@ -448,16 +491,9 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMo
         status: failed ? 'failed' : 'success',
         durationMs,
       });
+      recordToolReceipt(session, toolUse.name, result);
 
       emit({ type: 'tool_done', tool_name: toolUse.name, result_summary: summarizeToolResult(toolUse.name, result), loop_index: loopIndex, failed });
-
-      if (result?.pending_approval && result.interaction) {
-        saveMessagesCheckpoint(session.id, messages, content, toolUse.id);
-        updateSessionStatus(session.id, 'waiting_confirm');
-        emit({ type: 'interaction_request', loop_index: loopIndex, interaction: result.interaction, reason: 'mcp_approval_requested' });
-        emit({ type: 'loop_done', reason: 'mcp_approval_requested', loop_index: loopIndex, interaction_id: result.interaction.id });
-        return { status: 'waiting_confirm', reason: 'mcp_approval_requested', interaction: result.interaction, interaction_id: result.interaction.id };
-      }
 
       if (failed) {
         if (recordToolFail(session.id, toolUse.name)) {
@@ -534,6 +570,11 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMo
           requires_confirmation: requiresConfirmation,
           changed_files: previewResult.changed_files || [],
         };
+        recordWriteReceipt(session, previewResult.operation_set || result.operation_set || {
+          id: result.operation_set_id,
+          patches: [],
+          status: actualApplied ? 'applied' : 'pending',
+        }, actualApplied ? 'applied' : 'pending');
 
         toolResults[toolResults.length - 1] = {
           type: 'tool_result',
@@ -573,7 +614,7 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMo
     }
 
     messages.push({ role: 'assistant', content });
-    messages.push({ role: 'user', content: [...toolResults, ...imageContextBlocks] });
+    messages.push({ role: 'user', content: toolResults });
   }
 }
 
@@ -583,4 +624,6 @@ module.exports = {
   parseResponse,
   runAgentLoop,
   sanitizeAssistantVisibleText,
+  buildWriteTargetPreflight,
+  getRecentArticleCandidates,
 };

@@ -124,7 +124,7 @@ export const TopBar = ({
   const router = useRouter();
   const { openSettings } = useSettingsDialog();
   const { allFiles, selectFile } = useApp();
-  const { shortcuts, matchShortcut, displayShortcut } = useShortcuts();
+  const { shortcuts, matchShortcut } = useShortcuts();
   const { compact, iconOnly } = useHeaderWidthMode();
   const searchInputRef = useRef(null);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -149,7 +149,7 @@ export const TopBar = ({
   const saveTooltip = saveState === 'saving'
     ? '正在保存当前文档'
     : saveState === 'dirty'
-      ? `未保存，点击保存（${displayShortcut(shortcuts.docSave.combo)}）`
+      ? '未保存，点击保存'
       : '当前文档已保存';
   const saveButtonDisabled = saveDisabled || saveState === 'saved';
   const dirtySaveOutline = 'color-mix(in srgb, var(--danger) 42%, var(--border-primary))';
@@ -381,7 +381,7 @@ export const TopBar = ({
         {typeof onToggleEditor === 'function' && (
           <HeaderIconButton
             label={editorOpen ? '收起富文本编辑器' : '展开富文本编辑器'}
-            tooltip={`${editorOpen ? '收起富文本编辑器' : '展开富文本编辑器'}（${displayShortcut(shortcuts.editorToggle.combo)}）`}
+            tooltip={editorOpen ? '收起富文本编辑器' : '展开富文本编辑器'}
             active={Boolean(editorOpen)}
             selectedIcon
             onClick={onToggleEditor}
@@ -393,7 +393,7 @@ export const TopBar = ({
         {typeof onToggleAgent === 'function' && (
           <HeaderIconButton
             label={agentOpen ? '收起 AI 聊天面板' : '展开 AI 聊天面板'}
-            tooltip={`${agentOpen ? '收起 AI 聊天面板' : '展开 AI 聊天面板'}（${displayShortcut(shortcuts.agentToggle.combo)}）`}
+            tooltip={agentOpen ? '收起 AI 聊天面板' : '展开 AI 聊天面板'}
             active={Boolean(agentOpen)}
             selectedIcon
             onClick={onToggleAgent}

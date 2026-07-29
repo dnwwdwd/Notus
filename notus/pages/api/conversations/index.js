@@ -12,8 +12,9 @@ export default function handler(req, res) {
     const kind = req.query.kind ? String(req.query.kind) : null;
     const fileId = req.query.file_id !== undefined ? req.query.file_id : undefined;
     const draftKey = req.query.draft_key !== undefined ? req.query.draft_key : undefined;
+    const query = req.query.q !== undefined ? String(req.query.q) : '';
     const limit = req.query.limit !== undefined ? req.query.limit : undefined;
-    const rows = listConversations({ kind, fileId, draftKey, limit });
+    const rows = listConversations({ kind, fileId, draftKey, query, limit });
     return res.status(200).json(rows);
   }
 

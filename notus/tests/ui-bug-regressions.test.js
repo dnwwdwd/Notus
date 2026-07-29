@@ -31,11 +31,18 @@ function runTests() {
   assert.ok(!shell.includes('minWidth: 1360'));
   assert.ok(!globalStyles.includes('min-width: 1360px'));
   assert.ok(globalStyles.includes('@media (max-width: 900px)'));
+  assert.ok(globalStyles.includes('@media (max-width: 960px)'));
+  assert.ok(!globalStyles.includes('.notus-resizable-layout {\n    flex-direction: column;'));
   assert.ok(globalStyles.includes('.notus-resizable-layout'));
   assert.ok(globalStyles.includes('.notus-sidebar.is-mobile'));
   assert.ok(resizableLayout.includes('notus-resizable-layout__panel--left'));
   assert.ok(resizableLayout.includes('notus-resizable-layout__handle'));
-  assert.ok(sidebar.includes('const isSidebarCollapsed = isMobileViewport ? !mobileSidebarOpen : sidebarCollapsed;'));
+  assert.ok(resizableLayout.includes('collapseLeft = false'));
+  assert.ok(resizableLayout.includes("is-left-collapsed"));
+  assert.ok(resizableLayout.includes("className = ''"));
+  assert.ok(sidebar.includes("window.matchMedia('(max-width: 960px)')"));
+  assert.ok(sidebar.includes('const isSidebarCollapsed = autoCollapsed || (isMobileViewport ? !mobileSidebarOpen : sidebarCollapsed);'));
+  assert.ok(sidebar.includes('const [autoCollapsed, setAutoCollapsed] = useState(false);'));
   assert.ok(sidebar.includes('setMobileSidebarOpen((current) => !current);'));
   assert.ok(desktopMain.includes('minWidth: 390'));
   assert.ok(desktopMain.includes('minHeight: 640'));
@@ -77,13 +84,29 @@ function runTests() {
   assert.ok(settings.includes('前往图床设置'));
   assert.ok(settings.includes('options={IMAGE_STORAGE_OPTIONS}'));
   assert.ok(!settings.includes('IMAGE_STORAGE_OPTIONS.map((item) => ({ ...item, icon:'));
-  assert.ok(settings.includes('CLOUD_IMAGE_STORAGE_OPTIONS.map'));
+  assert.ok(settings.includes('const [selectedProvider, setSelectedProvider] = useState(CLOUD_IMAGE_STORAGE_OPTIONS[0].value);'));
+  assert.ok(settings.includes('initializeSelectedProvider: true'));
+  assert.ok(settings.includes("background: '#F9F9F8'"));
+  assert.ok(settings.includes('value: \'oss\', label: \'阿里云 OSS\''));
+  assert.ok(!settings.includes('ariaLabel="图床服务商"'));
   assert.ok(settings.includes('请先在个性化页切换上传位置，再清除密钥'));
   assert.ok(!settings.includes("        设置\n      </div>"));
   assert.ok(settings.includes('height: 42'));
   assert.ok(!settings.includes('>上传位置</div>'));
   assert.ok(settings.includes('className="notus-settings-dialog"'));
   assert.ok(settings.includes('className="notus-settings-nav"'));
+  assert.ok(settings.includes('导入 ZIP'));
+  assert.ok(settings.includes("fetch('/api/skills/install/zip', { method: 'POST', body: form })"));
+  assert.ok(settings.includes('type="file" accept=".zip,application/zip,application/x-zip-compressed"'));
+  assert.ok(settings.includes('拖入 ZIP 文件或点击上传'));
+  assert.ok(settings.includes('最大 100 MiB'));
+  assert.ok(!settings.includes('尚未选择 ZIP 文件'));
+  assert.ok(!settings.includes('>选择 ZIP 文件</Button>'));
+  assert.ok(!settings.includes('导入前会校验压缩包路径'));
+  assert.ok(settings.includes('ZIP 文件不能超过 100 MiB'));
+  assert.ok(!settings.includes("<Badge tone={skill.status === 'valid' ? 'success' : 'warning'}>"));
+  assert.ok(!settings.includes("{skill.source_label || '本机'} · {skill.managed ? 'Notus 管理' : '外部目录'}"));
+  assert.ok(settings.includes('notifySkillsChanged();'));
 
   const settingsApi = read('pages/api/settings/index.js');
   assert.ok(settingsApi.includes('provider_configs: providerConfigs'));
@@ -113,8 +136,43 @@ function runTests() {
   assert.ok(agentWorkspace.includes('mentionOptions={mentionOptions}'));
   assert.ok(agentWorkspace.includes('function isFileSystemOperation(operation = {})'));
   assert.ok(agentWorkspace.includes('const activePath = activeOperation.new_path || activeOperation.file_path || activeOperation.old_path || activeOperation.path || \'全文\''));
+  assert.ok(agentWorkspace.includes('function DiffFileLink'));
+  assert.ok(agentWorkspace.includes('function diffSidebarFileName(path)'));
+  assert.ok(agentWorkspace.includes('{diffSidebarFileName(pathText)}</span>'));
+  assert.ok(!agentWorkspace.includes('本次任务的文件已全部处理'));
+  assert.ok(agentWorkspace.includes("const AGENT_CHAT_CONTENT_WIDTH = '95%'"));
+  assert.ok(agentWorkspace.includes('width: AGENT_CHAT_CONTENT_WIDTH'));
+  assert.ok(agentWorkspace.includes('onOpenFile={onOpenDiffFile}'));
   assert.ok(agentWorkspace.includes("removed.push(`原路径：${operation.old_path || operation.old || ''}`);"));
   assert.ok(!agentWorkspace.includes('function AgentDiffCard'));
+
+  const mentionPreview = read('components/AgentWorkspace/MentionPreviewDialog.js');
+  assert.ok(mentionPreview.includes('function visibleMentionMarkdown(content = \'\')'));
+  assert.ok(mentionPreview.includes("dialogStyle={{ maxHeight: 'calc(100dvh - 32px)'"));
+  assert.ok(mentionPreview.includes('setContent(visibleMentionMarkdown(payload.content));'));
+
+  const fileAgentWorkspace = read('components/AgentWorkspace/FileAgentWorkspace.js');
+  assert.ok(fileAgentWorkspace.includes("window.addEventListener('notus-skills-changed', refreshSkills);"));
+  assert.ok(fileAgentWorkspace.includes("window.removeEventListener('notus-skills-changed', refreshSkills);"));
+  assert.ok(fileAgentWorkspace.includes("const title = String(file?.title || '').trim();"));
+  assert.ok(fileAgentWorkspace.includes("const fileName = String(file?.name || path.split('/').pop() || '').trim();"));
+  assert.ok(fileAgentWorkspace.includes("const name = fileName || title || '未命名文件';"));
+  assert.ok(fileAgentWorkspace.includes("searchText: [fileName, title, path].filter(Boolean).join(' '),"));
+  assert.ok(fileAgentWorkspace.includes('function collectFileMentions(nodes = [])'));
+  assert.ok(fileAgentWorkspace.includes('...collectFileMentions(fileTree),'));
+
+  const filesPage = read('pages/files/index.js');
+  assert.ok(filesPage.includes("const FILES_EDITOR_AUTO_COLLAPSE_QUERY = '(max-width: 640px)'"));
+  assert.ok(filesPage.includes('const FILES_AGENT_FIXED_WIDTH = 456;'));
+  assert.ok(filesPage.includes('const renderedWorkspacePanels = {'));
+  assert.ok(filesPage.includes('const renderedEditorAutoCollapsed = editorAutoCollapsed'));
+  assert.ok(filesPage.includes("toast('该文档已删除或不存在', 'info')"));
+  assert.ok(filesPage.includes("toast('该文档已打开', 'info')"));
+  assert.ok(filesPage.includes('onOpenDiffFile={handleOpenDiffFile}'));
+
+  const topBar = read('components/Layout/TopBar.js');
+  assert.ok(!topBar.includes('displayShortcut('));
+  assert.ok(!topBar.includes('点击保存（'));
 
   const clarifyDrawer = read('components/ChatArea/ClarifyDrawer.js');
   assert.ok(clarifyDrawer.includes('const selectOptionAndAdvance'));

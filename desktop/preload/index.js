@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('notusDesktop', {
   getProfile: () => ipcRenderer.invoke('desktop:get-profile'),
   pickImportSource: () => ipcRenderer.invoke('desktop:pick-import-source'),
   openDataDirectory: () => ipcRenderer.invoke('desktop:open-data-directory'),
+  openAgentDirectory: () => ipcRenderer.invoke('desktop:open-agent-directory'),
   clearLocalDataAndQuit: () => ipcRenderer.invoke('desktop:clear-local-data-and-quit'),
   onOpenGlobalSearch: (listener) => {
     if (typeof listener !== 'function') {

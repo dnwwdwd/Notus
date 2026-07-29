@@ -3,6 +3,23 @@ import { Dialog } from '../ui/Dialog';
 import { Icons } from '../ui/Icons';
 import { MarkdownPreview } from '../Editor/MarkdownPreview';
 
+function visibleMentionMarkdown(content = '') {
+  const source = String(content || '').replace(/\r\n/g, '\n');
+  const match = source.match(/^---\n([\s\S]*?)\n---(?:\n|$)/);
+  if (!match) return source;
+  const fields = {};
+  match[1].split('\n').forEach((line) => {
+    const field = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
+    if (field) fields[field[1]] = field[2].trim().replace(/^['"]|['"]$/g, '');
+  });
+  const keys = Object.keys(fields);
+  const isSystemFrontmatter = String(fields.id || '').startsWith('notus_')
+    && keys.length > 0
+    && keys.every((key) => ['id', 'created_by', 'title'].includes(key))
+    && (keys.length === 1 || fields.created_by === 'notus_agent');
+  return isSystemFrontmatter ? source.slice(match[0].length).replace(/^\n+/, '') : source;
+}
+
 function errorText(response, fallback) {
   return response.json()
     .then((payload) => payload?.error || fallback)
@@ -35,7 +52,9 @@ export function MentionPreviewDialog({ mention, onClose }) {
         throw new Error(response.status === 404 ? '该笔记已不存在' : message);
       }
       const payload = await response.json();
-      setContent(String(payload.content || ''));
+      // Agent 创建的笔记会携带仅供系统识别的 frontmatter；预览和编辑器
+      // 保持同一可见内容口径，不能把它渲染给用户。
+      setContent(visibleMentionMarkdown(payload.content));
     } catch (nextError) {
       setContent('');
       setError(nextError.message || '读取笔记失败');
@@ -102,6 +121,8 @@ export function MentionPreviewDialog({ mention, onClose }) {
       title={title}
       maxWidth={960}
       className="notus-mention-preview-dialog"
+      dialogStyle={{ maxHeight: 'calc(100dvh - 32px)', display: 'flex', flexDirection: 'column' }}
+      bodyStyle={{ minHeight: 0, display: 'flex', flex: 1, overflow: 'hidden' }}
     >
       <div className="notus-mention-preview" aria-busy={loadingList || loadingContent}>
         {mention?.path && !isSkill ? <div className="notus-mention-preview__path">{mention.path}</div> : null}

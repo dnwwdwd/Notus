@@ -18,6 +18,22 @@ const IMAGE_MIME_TYPES = new Map([
   ['.gif', 'image/gif'],
 ]);
 
+function normalizeImageMimeType(value) {
+  return String(value || '').split(';')[0].trim().toLowerCase();
+}
+
+function getImageExtensionFromMimeType(value) {
+  const target = normalizeImageMimeType(value);
+  for (const [extension, mimeType] of IMAGE_MIME_TYPES.entries()) {
+    if (mimeType === target || (target === 'image/jpg' && mimeType === 'image/jpeg')) return extension;
+  }
+  return '';
+}
+
+function isSupportedImageMimeType(value) {
+  return Boolean(getImageExtensionFromMimeType(value));
+}
+
 function normalizePositiveInt(value) {
   const next = Number(value);
   return Number.isFinite(next) && next > 0 ? Math.floor(next) : null;
@@ -28,7 +44,11 @@ function normalizeStoredName(value) {
 }
 
 function getImageExtension(value) {
-  return path.extname(String(value || '')).toLowerCase();
+  const normalized = String(value || '').trim().toLowerCase();
+  // 上传接口已把扩展名单独保存为 `.png` / `.jpg` 等值；`path.extname('.png')`
+  // 会返回空字符串，必须先识别这种元数据形态，不能把已上传图片静默丢弃。
+  if (IMAGE_MIME_TYPES.has(normalized)) return normalized;
+  return path.extname(normalized).toLowerCase();
 }
 
 function isSupportedImageName(value) {
@@ -325,7 +345,9 @@ module.exports = {
   countConversationAttachments,
   countConversationImages,
   getImageInputBlocks,
+  getImageExtensionFromMimeType,
   getImagesDir,
+  isSupportedImageMimeType,
   isSupportedImageName,
   listConversationImages,
   makeConversationImageReference,

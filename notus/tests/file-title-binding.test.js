@@ -41,6 +41,8 @@ function runTests() {
   setSetting('editor_title_filename_binding_enabled', 'true');
 
   const created = createFile('old-name.md', '# 初始标题\n\n正文内容');
+  assert.strictEqual(created.path, '初始标题.md');
+  assert.strictEqual(created.title_binding_applied, true);
   const initial = getFileById(created.id);
   const renamedOnSave = updateFile(created.id, initial.content.replace('# 初始标题', '# 保存后新标题'));
 

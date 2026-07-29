@@ -3,6 +3,7 @@ const path = require('path');
 const crypto = require('crypto');
 const formidable = require('formidable');
 const { ensureRuntime } = require('../../../../lib/runtime');
+const { getEffectiveConfig } = require('../../../../lib/config');
 const { getFileById } = require('../../../../lib/files');
 const { MAX_IMAGE_BYTES } = require('../../../../lib/images');
 const { persistImageBuffer } = require('../../../../lib/imageStorage');

@@ -130,6 +130,8 @@ export function FileOperationDiffDialog({
   onApplyFile,
   onRollbackFile,
   onDiscardFile,
+  allowDiscardPending = false,
+  discardLabel = '废弃预览',
 }) {
   const operations = useMemo(() => operationItems(operationSet), [operationSet]);
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -151,7 +153,7 @@ export function FileOperationDiffDialog({
   const canApply = (isRevision ? activeNormalizedStatus === 'pending' : isPatchPending(activeOperation)) && typeof onApplyFile === 'function';
   const canApplyAll = pendingCount > 0 && typeof onApplyAll === 'function';
   const canRollback = (isRevision ? ['applied', 'rollback_conflict'].includes(activeNormalizedStatus) : !['rolled_back', 'discarded'].includes(activeNormalizedStatus)) && typeof onRollbackFile === 'function';
-  const canDiscard = isRevision && ['pending', 'stale', 'apply_failed', 'rollback_conflict'].includes(activeNormalizedStatus) && typeof onDiscardFile === 'function';
+  const canDiscard = (isRevision && ['pending', 'stale', 'apply_failed', 'rollback_conflict'].includes(activeNormalizedStatus) || allowDiscardPending && ['pending', 'conflict', 'failed'].includes(activeNormalizedStatus)) && typeof onDiscardFile === 'function';
   const moveToNextPending = () => {
     const next = operations.findIndex((item, index) => index !== selectedIndex && isPatchPending(item));
     if (next >= 0) setSelectedIndex(next);
@@ -233,7 +235,7 @@ export function FileOperationDiffDialog({
               <span style={{ flex: 1, minWidth: 0, fontSize: 12, lineHeight: 1.6, color: C.tertiary }}>预览未应用时回滚等同于放弃；已应用后回滚会尽量恢复原路径或删除快照。</span>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
                 {canDiscard ? (
-                  <button type="button" disabled={Boolean(busyKey)} onClick={() => runFileAction('discard')} style={transitionButton({ height: 32, padding: '0 11px', borderRadius: 9, background: C.soft, color: C.secondary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: busyKey ? 'not-allowed' : 'pointer' })}>废弃预览</button>
+                  <button type="button" disabled={Boolean(busyKey)} onClick={() => runFileAction('discard')} style={transitionButton({ height: 32, padding: '0 11px', borderRadius: 9, background: C.soft, color: C.secondary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: busyKey ? 'not-allowed' : 'pointer' })}>{discardLabel}</button>
                 ) : null}
                 <button type="button" disabled={!canRollback || Boolean(busyKey)} onClick={() => runFileAction('rollback')} style={transitionButton({ height: 32, padding: '0 11px', borderRadius: 9, background: canRollback ? 'var(--bg-diff-remove)' : C.soft, color: canRollback ? 'var(--danger)' : C.tertiary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: (!canRollback || busyKey) ? 'not-allowed' : 'pointer' })}>回滚修改</button>
                 <button type="button" disabled={!canApply || Boolean(busyKey)} onClick={() => runFileAction('apply')} style={transitionButton({ height: 32, padding: '0 12px', borderRadius: 9, background: canApply ? 'var(--success)' : C.soft, color: canApply ? '#fff' : C.tertiary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: (!canApply || busyKey) ? 'not-allowed' : 'pointer' })}>应用修改</button>

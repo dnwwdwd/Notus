@@ -2,8 +2,6 @@ export const TOOL_DISPLAY = {
   search_knowledge: '检索知识库',
   web_search: '联网搜索',
   read_file: '读取文件',
-  list_conversation_images: '列出对话图片',
-  read_conversation_images: '读取对话图片',
   create_note: '新建笔记',
   preview_patch_files: '生成修改预览',
   preview_file_revision: '生成全文修订预览',
@@ -11,6 +9,8 @@ export const TOOL_DISPLAY = {
   ask_question_card: '生成提问卡片',
   analyze_folder: '分析目录',
   check_links: '检查链接',
+  install_skill_from_git: '安装 Skill',
+  add_mcp_server: '新增 MCP Server',
 };
 
 export function getAgentToolLabel(name = '') {

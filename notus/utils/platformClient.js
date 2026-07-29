@@ -97,6 +97,14 @@ export const desktop = {
     }
     return bridge.openDataDirectory();
   },
+
+  async openAgentDirectory() {
+    const bridge = getDesktopBridge();
+    if (!bridge?.openAgentDirectory) {
+      return { ok: false, unavailable: true };
+    }
+    return bridge.openAgentDirectory();
+  },
 };
 
 export function isDesktopBridgeAvailable() {

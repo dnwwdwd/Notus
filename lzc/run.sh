@@ -8,6 +8,7 @@ CACHE_DIR="${CACHE_DIR:-/lzcapp/cache/notus}"
 NOTES_DIR="${NOTES_DIR:-/lzcapp/var/notes}"
 ASSETS_DIR="${ASSETS_DIR:-/lzcapp/var/assets}"
 DB_PATH="${DB_PATH:-/lzcapp/var/data/index.db}"
+NOTUS_RUNTIME_TARGET="${NOTUS_RUNTIME_TARGET:-lazycat}"
 PORT="${PORT:-3000}"
 NODE_ENV="${NODE_ENV:-production}"
 
@@ -25,6 +26,7 @@ mkdir -p "$(dirname "$DB_PATH")"
 # Lazycat injects HOSTNAME as the container hostname, which breaks 127.0.0.1 health checks.
 export HOSTNAME=0.0.0.0
 export HOST=0.0.0.0
+export NOTUS_RUNTIME_TARGET
 
 cd "$APP_DIR"
 exec node server.js

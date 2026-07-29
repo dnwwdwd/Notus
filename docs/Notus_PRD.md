@@ -1,6 +1,6 @@
 # Notus 产品需求文档（PRD）
 
-> v3.1 · 更新时间：2026-07-19
+> v3.1 · 更新时间：2026-07-23
 
 ## 1. 技术约束
 
@@ -9,6 +9,7 @@
 - 富文本编辑器为 Tiptap，必须通过 `dynamic(..., { ssr: false })` 加载。
 - 数据层使用 `better-sqlite3 + sqlite-vec + FTS5`；文件监听固定 `chokidar` polling，间隔 3000ms。
 - 运行平台差异经 `lib/platform/` 处理，业务组件不直接判断 Electron、懒猫或系统路径。
+- 发布版本统一维护在根目录 `package.json`、`notus/package.json` 与 `package.yml`；当前为 `0.1.11`，懒猫包按 `cloud.lazycat.app.notus-v<version>.lpk` 命名。
 
 ## 2. 路由与页面
 
@@ -19,7 +20,7 @@
 | `/canvas` | `pages/canvas.js` | `getServerSideProps` 临时跳转 `/files` |
 | `/settings/[section]` | 设置兼容入口 | 显示模型、搜索、个性化、图床等设置弹窗 |
 
-`TopBar` 不再渲染产品页面 tab。文件搜索固定跳转 `/files?fileId=<id>`，搜索 icon 的 tooltip 固定为“搜索文件”。设置由 `SettingsDialogProvider` 在当前工作区上方展示，遮罩不能关闭弹窗，仍可用关闭按钮或 Esc 退出。设置标题栏不重复显示“设置”；各 section 复用仅渲染标题名称的 `SettingsPageHeader`，并由 `SETTINGS_CONTENT_MAX_WIDTH = 860` 统一内容列最大宽度。Skill 与 MCP section 复用暖白资源卡，操作栏在窄宽度可换行；个性化页复用搜索配置的全宽设置区表面样式。
+`TopBar` 不再渲染产品页面 tab。文件搜索固定跳转 `/files?fileId=<id>`，搜索 icon 的 tooltip 固定为“搜索文件”。设置由 `SettingsDialogProvider` 在当前工作区上方展示，遮罩不能关闭弹窗，仍可用关闭按钮或 Esc 退出。标题栏展示当前 section 的名称和语义图标，`SETTINGS_CONTENT_MAX_WIDTH = 860` 统一内容列最大宽度。Skill 与 MCP 内容区使用右上操作栏和暖白紧凑列表，窄宽度允许操作换行；个性化页复用搜索配置的全宽设置区表面样式。
 
 ## 3. 文件工作区实现
 
@@ -39,7 +40,7 @@ Shell
     └── FileAgentWorkspace
 ```
 
-`FilesPage` 同时维护编辑器内容和 AI 工作台。两个面板都展开时使用 `ResizableLayout`；在宽屏中左栏宽度约束为 38%～70%，编辑器至少 560px、AI 面板至少 456px。`1200px` 以下侧栏收缩为 196px、两面板的视觉下限降为 300px；`900px` 以下改为编辑器在上、AI 面板在下的纵向布局并暂停横向拖拽；`700px` 以下侧栏改为临时抽屉，主内容为抽屉预留 40px，不覆盖正文。
+`FilesPage` 同时维护编辑器内容和 AI 工作台。两个面板都展开时使用 `ResizableLayout`；宽屏中左栏宽度约束为 38%～70%，编辑器至少 560px、AI 面板至少 456px。`960px` 以下侧栏自动收起为临时抽屉；双栏的窄宽阶段由 `fixedRightPx` 将 AI 面板锁为 456px，编辑器压缩到剩余空间；`640px` 以下由持久化面板状态和视口状态驱动同一双栏容器，让编辑器宽度、分隔线和透明度过渡至零，AI 面板占满工作区。文件树和编辑器的自动收起是单向状态，视口回宽不自动展开；编辑器与 AI 面板保持横向工作区策略，不切换为上下布局。
 
 ### 3.2 面板状态
 
@@ -51,7 +52,8 @@ Shell
 - 用户手动开关或切换已打开文件不会回读默认值。侧边栏再次点击当前文件会清空 `activeFileId` 和当前文件，并移除 `/files?fileId=...` 路由状态；编辑器显示未选择文件空态，AI 面板保持当前状态。
 - `AppContext` 完成 `notus-workspace-state` 恢复后公开 `workspaceHydrated` 和启动时的 `restoredActiveFileId`。`FilesPage` 识别到该文件后跳过默认面板初始化，避免在窗口重开时把 `notus-files-workspace-panels` 覆盖为设置默认值。
 - `ResizableLayout` 初始化使用本地存储的编辑器宽度，拖动提交时同步保存编辑器与 AI 面板宽度。
-- `TopBar` 的编辑器和 AI 面板开关复用 32px 图标按钮；默认快捷键分别为 `Mod+B` 和 `Mod+U`，命中时调用对应开关并阻止浏览器默认行为。
+- `ResizableLayout.fixedRightPx` 启用时，右栏以固定像素宽度渲染，左栏使用剩余空间且暂停分栏拖动；编辑器已自动收起时右栏恢复占满容器。
+- `TopBar` 的编辑器和 AI 面板开关复用 32px 图标按钮；默认快捷键分别为 `Mod+B` 和 `Mod+U`，命中时调用对应开关并阻止浏览器默认行为。Tooltip 只显示操作文案，不显示快捷键组合。
 - `html`、`body`、`#__next` 与 `Shell` 不再设置固定 1360px 最小宽度。桌面 `BrowserWindow` 的最小窗口调整为 `390 × 640`；共享 CSS 负责在实际视口内收缩页面，不通过外层横向滚动保留旧画布尺寸。
 - 通用 `Dialog`、文档查找栏、Toast、图片预览和设置弹窗均使用视口宽高限制。设置页在 700px 以下把左侧导航改为横向可滚动栏，内容区改为单列可滚动区域；表格、代码块和 diff 保留内容区自身的横向滚动。
 
@@ -64,14 +66,14 @@ Shell
 - `copyEditorContentToClipboard` 仅调用 `navigator.clipboard.writeText` 或 `execCommand('copy')` 写入 Markdown 源文本；不再生成带 data URL 图片的 HTML ClipboardItem。
 - 编辑器粘贴和工具栏选图继续调用 `POST /api/files/:id/images`。本地模式返回相对资源路径；对象存储模式返回公开 URL，前端不感知云厂商 SDK 或密钥。
 - 工具栏提供“插入表格”入口。弹窗接收 1～20 行和 1～20 列，调用 Tiptap `insertTable({ rows, cols, withHeaderRow: true })`，表格继续由 Markdown 双向转换链路读写。
-- AI 输入框默认保持 5 行文字高度，输入容器宽度固定为父容器的 95%；聊天滚动容器使用足以避开输入区的底部 padding，确保 AI 消息的复制和重试操作可见、可点击。
+- AI 输入框默认保持 5 行文字高度。输入容器和消息列表共用父容器 95% 的宽度常量；独占和双栏布局都随 AI 面板宽度响应变化。用户消息气泡保持右对齐与内容宽度上限。聊天滚动容器使用足以避开输入区的底部 padding，确保 AI 消息的复制和重试操作可见、可点击。
 - 回底按钮使用独立于输入框的上方偏移，默认 5 行输入区下不与输入框重叠。完成态 assistant message 不携带或渲染工具步骤；运行态流式消息仍显示工具进度。
 
 ### 3.4 图片对象存储
 
 - `GET /api/settings` 返回 `images.storage_mode`、当前运行时的脱敏 `images.object_storage`，以及按 COS/OSS/R2 分别返回的 `images.provider_configs`；只返回 Access Key、Secret 是否已保存。
 - `PUT /api/settings` 支持 `local | object_storage`、`active_provider` 上传位置切换、各图床的 `provider_config` 连接字段和显式清除密钥字段。切换为对象存储前必须校验目标配置完整。
-- `SettingsScreen` 的 `image-storage` section 分别编辑 COS、OSS、R2 三套服务端参数；个性化 section 使用共享 `SegmentedTabs` 选择本地、COS、OSS 或 R2。未配置的云服务不会禁用，点击后切换至对应 tab 并提示前往图床配置；图床保存不改变上传位置。
+- `SettingsScreen` 的 `image-storage` section 使用与搜索配置相同的服务商 Tab 容器和选中态在 OSS、COS、R2 三套参数间切换；首次读取设置后，云端模式选中当前 provider，本地模式选中首项 OSS。个性化 section 使用共享 `SegmentedTabs` 选择本地、COS、OSS 或 R2。未配置的云服务不会禁用，点击后切换至对应 tab 并提示前往图床配置；图床保存不改变上传位置。
 - 当前上传图床的密钥不能直接清除，避免留下不完整的运行时对象存储配置；需要先在个性化页切换到本地或另一套完整配置。
 - `lib/objectStorage.js` 统一生成对象键、公开 URL 和错误码；COS 用 `cos-nodejs-sdk-v5`，OSS 用 `ali-oss`，R2 用 `@aws-sdk/client-s3`。
 - 云对象键为 `<prefix>/<YYYY>/<MM>/<sha256>.<ext>`，上传携带图片 MIME 类型与 `Cache-Control: public, max-age=31536000, immutable`。
@@ -85,7 +87,7 @@ Shell
 `components/AgentWorkspace/FileAgentWorkspace.js` 复用：
 
 - `AgentWorkspace` 消息、流式输出、工具步骤、附件、diff、消息复制/改写/重试。
-- `ConversationDrawer` 历史读取、删除、导出和日志入口。
+- `ConversationDrawer` 历史读取、删除、导出、日志和服务端模糊搜索入口；`q` 同时匹配对话标题及 `user`、`assistant` 消息内容。
 - `ClarifyDrawer` 提问卡片。
 - `useAgentLoopController` 处理 SSE、session、预览应用和回滚。
 
@@ -93,13 +95,27 @@ Shell
 
 AI 面板顶栏只保留历史和新建对话操作，不显示左侧品牌 icon 或“Notus Agent”标题。无消息空态只显示“你今天在想些什么？”。
 
-`AgentInput` 在通过发送前置校验后立即清空文本；流式任务异常时，`useAgentLoopController` 将现有 session 标记为 `failed` 并结束 loading，`FileAgentWorkspace` 不再因过期的 `running` 状态持续禁用输入。用户消息只在服务端发出 `session_created` SSE 事件后追加到前端，配额校验失败不会留下本地幻影消息。`ClarifyDrawer` 的上一题、下一题使用带 `aria-label` 的箭头 icon；答题阶段且焦点不在文本输入控件时，ArrowLeft/ArrowRight 分别切换前后题，前进仍要求当前题已回答。单选题选中后自动切到下一道可见题；全部可见题已回答时切换到同一 `ClarifyDrawer` 的复核列表，点击任一行可回到该题修改，提交答案不再打开独立页面或组件。
+`AgentInput` 在通过发送前置校验后立即清空文本；流式任务异常时，`useAgentLoopController` 将现有 session 标记为 `failed` 并结束 loading，`FileAgentWorkspace` 不再因过期的 `running` 状态持续禁用输入。用户消息只在服务端发出 `session_created` SSE 事件后追加到前端，配额校验失败不会留下本地幻影消息。服务端在持久化用户消息并创建 session 后立即发送该事件，附件解析与图片识别不得阻塞 prompt 和图片的回显。`ClarifyDrawer` 的上一题、下一题使用带 `aria-label` 的箭头 icon；答题阶段且焦点不在文本输入控件时，ArrowLeft/ArrowRight 分别切换前后题，前进仍要求当前题已回答。单选题选中后自动切到下一道可见题；全部可见题已回答时切换到同一 `ClarifyDrawer` 的复核列表，点击任一行可回到该题修改，提交答案不再打开独立页面或组件。
 
-`AgentInput` 的发送条件接受普通文本、待发送图片、解析附件或 Mention 中的任一有效输入。Mention 仅用于提供显式文件和目录上下文，不能成为普通任务发送的前置条件。`contentEditable` 序列化递归读取文本节点、换行节点和 mention 节点；删除 mention 时恢复有效的文本节点、焦点和选区，确保用户可继续输入。
+`useAgentLoopController.readErrorResponse()` 只读取结构化 JSON 的受控 `error/code`。非 JSON 响应（包括 Next.js 500 页和反向代理 HTML 页）统一转换为“请求失败（HTTP 状态，请求编号）”的短提示，禁止把响应正文渲染到 Agent 消息区。`/api/agent/loop/start` 在建立 SSE 前调用 `ensureRuntime()` 抛错时写入 `agent.loop.start.runtime_failed` 日志，并返回 `{ error, code, request_id }` JSON；SSE 已建立后的异常继续按 `data: JSON\n\n` 发送 `error` 事件。
 
-`AgentInput` 维护统一 `upload_order`。解析附件和图片分别上传，再按这个序号合并到用户消息和历史消息。图片 chip 显示缩略图，附件 chip 保留文件类型图标；图片不进入附件解析链路。待发送图片 chip 可打开 `ImagePreviewOverlay`，预览只包含当前上传队列的图片并按 `upload_order` 切换；移除当前预览图片或清空队列时关闭预览。
+`AgentInput` 的发送条件接受普通文本、待发送图片、解析附件或 Mention 中的任一有效输入。Mention 仅用于提供显式文件和目录上下文，不能成为普通任务发送的前置条件。纯图片发送会生成“请分析我上传的图片，并说明其中能够确认的内容”的默认任务，避免以空 goal 启动 Agent。`contentEditable` 序列化递归读取文本节点、换行节点和 mention 节点；删除 mention 时恢复有效的文本节点、焦点和选区，确保用户可继续输入。
 
-`AgentInput` 使用 `utils/agentComposerDraft.js` 将未发送草稿保存到 IndexedDB。记录包括可见文本、结构化 `segments`、Mention 元数据，以及待发送图片和解析附件的文件元数据、Blob、`media_kind` 和 `upload_order`。初始化时恢复 DOM mention 卡片和浏览器 `File` 对象，图片重新生成本地对象 URL；保存不设置过期时间。服务端发出 `session_created` SSE、确认用户消息已入库后立即清空文本、媒体队列和草稿；在此之前上传或建会失败时恢复发送前输入，后续流式任务失败不恢复已接收的媒体。
+`AgentInput` 的 MCP 是仅含 `off / auto` 的任务级开关：关闭态点击后写入 `{ mode: 'auto' }`、高亮按钮并弹出只含“自动”的菜单；开启态再次点击写入 `{ mode: 'off' }` 并关闭菜单。旧 `server` 本地偏好读取时归一为 `auto`。模型菜单以 `modelLabel(config)`、`providerLabel(config)` 和配置名进行不区分大小写的包含匹配，菜单打开时自动聚焦“搜索模型或 Provider”输入框。
+
+`AgentInput` 维护统一 `upload_order`。解析附件和图片分别上传，再按这个序号合并到用户消息和历史消息；`attachments`、`images` 与完整的 `media_items` 都随任务提交。图片 chip 显示缩略图，附件 chip 保留文件类型图标；图片不进入附件解析链路。粘贴媒体先读取 `clipboardData.files`，为空时回退 `DataTransfer.items`；粘贴和通用附件入口均按 PNG/JPEG/WEBP/GIF 的扩展名和 MIME 类型分流图片。`/api/agent/loop/start` 会合并并去重三组媒体，再复核媒体标记、MIME 和扩展名；图片只进入视觉 block，文本解析器忽略图片；上传接口可按 MIME 类型补齐无扩展名图片。待发送图片 chip 可打开 `ImagePreviewOverlay`，预览只包含当前上传队列的图片并按 `upload_order` 切换；移除当前预览图片或清空队列时关闭预览。
+
+`AgentInput` 使用 `utils/agentComposerDraft.js` 将未发送草稿保存到 IndexedDB。记录包括可见文本、结构化 `segments`、Mention 元数据，以及待发送图片和解析附件的文件元数据、Blob、`media_kind` 和 `upload_order`。初始化时恢复 DOM mention 卡片和浏览器 `File` 对象，图片重新生成本地对象 URL；保存不设置过期时间。服务端持久化用户消息、创建 session 后立即发出 `session_created` SSE，确认用户消息已入库后立即清空文本、媒体队列和草稿；附件解析与图片识别在该事件之后继续执行。在此之前上传或建会失败时恢复发送前输入，后续流式任务失败不恢复已接收的媒体。
+
+`session_created` 还携带已入库的 `user_message_id`；前端以该真实 ID 渲染本轮用户消息，避免后续改写引用临时 ID。改写用户消息时，前端必须先调用 `/api/conversations/:id/truncate` 并成功返回，才更新界面并启动新 Agent session。服务端更新锚点消息的正文、`user_query` 与可识别的 `agent_goal`，删除其后的全部消息，取消后续未完成 session、交互和 operation set；新的 Agent session 只从截断后的数据库历史构建上下文。
+
+`mapConversationMessages()` 将数据库消息的 `created_at` 映射为前端 `createdAt`。实时用户消息使用 `session_created.created_at`，实时 AI 回复在最终消息写入时记录当前创建时间；历史重新加载后以数据库 `created_at` 覆盖临时值。`utils/messageTimestamps.js` 将 SQLite 无时区 UTC 字符串按 UTC 解析，再转换为本地时间，避免时区偏移。距当前时刻不足 7×24 小时显示“周几 HH:mm”，其余显示“YYYY-MM-DD HH:mm”，统一不显示秒。
+
+`FileChip` 对图片支持纯缩略图模式：输入队列显示缩略图和移除按钮，用户历史消息显示缩略图；两处都不渲染文件名和大小。用户历史消息的图片与解析附件一样在文字气泡上方独立成行，图片行不使用气泡背景。`session_created` 回传服务端已落库的图片清单，包含真实用户消息 ID、会话 ID、受控图片引用和预览 URL；前端以这份清单按 ID 回填实时消息，强制图片类型，并始终先使用已校验预览 URL，再回退会话元数据地址，最后才允许使用尚未落库的浏览器对象 URL。队列清理后不再引用已回收的 `blob:` URL。历史消息继续从消息元数据生成同一受控预览地址。历史消息点击图片时，按该消息 `attachments` 中的图片顺序构造 `ImagePreviewOverlay` 图片数组，当前点击项为起始位置；因此左右按键和预览按钮只在该条消息的图片范围内切换。非图片解析附件继续显示原有文件 chip。
+
+`MessageTimestamp` 是只读的次级信息，作为消息操作行的一部分渲染。用户消息操作行左侧为时间、右侧为复制和改写；AI 回复操作行左侧为复制和重试、右侧为时间。没有文字气泡的纯图片用户消息仍在图片行下方显示同一操作行。时间节点不包入复制、改写、重试、图片预览的点击区域，也不影响现有消息排序。
+
+用户消息已落库后，`lib/imageRecognition.js` 使用当前任务的视觉模型对本轮图片执行一次独立识别。识别请求继续使用 OpenAI `image_url` Data URL 或 Anthropic `image/source/base64`；成功结果以 `contentType=image_recognition` 写入 `messages.type=parsed_attachment`，元数据保存所属消息 ID 和 `notus-conversation-image` 受控引用。`formatAttachmentsForPrompt()` 将它与 PDF、Word、Markdown、文本和网页内容共同加载，但使用“图片识别结果”标题并保留分类边界；当前识别结果还会随 `runAgentLoop()` 的首条 user content 显式传入，防止本轮把已上传图片误报为缺失。主 Agent 的首次请求在识别成功后不重复发送图片 Base64；后续同一对话直接读取持久化摘要。识别调用失败或没有文字结果时不写入空摘要，并保留当前轮的原始视觉输入作为兜底。`list_conversation_images` 和 `read_conversation_images` 不再属于 Agent 工具集。
 
 ### 4.2 新任务请求
 
@@ -122,6 +138,8 @@ AI 面板顶栏只保留历史和新建对话操作，不显示左侧品牌 icon
 
 新 session 会额外从同一 `conversation_id` 的最近文件 operation set 推导承接目标：当本轮文本表达重写、改写、润色、修订、更新或续写，且没有明确另建文件时，向模型传入最多 3 个最近创建文件的 `file_path / operation_set_id / status`。首个目标必须先经 `read_file` 读取，并只允许使用 `preview_file_revision` 修订；本轮工具表移除 `create_note`。文件仍为未应用预览时，Agent 只能提示用户先应用，不能新建替代文件。
 
+创建 session 后还会执行写作目标预检。若同一对话有近期创建文章、当前任务属于写作且没有明确新建、明确 Markdown 路径，或“继续修改 + 唯一候选”，服务端使用 `ask_question_card` 生成“修改候选文章 / 新建文章”选择。选择写入 session 的任务状态；选择已有文章会形成唯一承接目标，随后工具表移除 `create_note`，并要求先 `read_file`、再 `preview_file_revision`。
+
 `lib/conversationImages.js` 统一校验和规范化媒体元数据：单条消息最多 30 张图片、10 个解析附件；同一对话分别最多 50 张图片、20 个解析附件。图片可为 PNG、JPG、JPEG、WEBP、GIF，单张临时文件最多 5MB，文件存放于 `<sessionDir>/images`。`/api/agent/images/upload` 负责接收图片，`/api/agent/images/:name` 仅向会话 UI 提供缩略图。
 
 Agent 会话图片采用保留策略：成功上传的文件与会话消息元数据长期关联，当前没有按会话结束、交互过期、应用完成或删除会话自动清理的任务。删除 Markdown 引用、回滚笔记或写入永久图床都不会删除会话临时源文件；上传失败时产生的中间文件会立即清理。
@@ -135,7 +153,7 @@ Anthropic 直接 Messages API 的请求体限制为 32MB。服务端将该协议
 
 会话图片引用格式为 `notus-conversation-image://<message-id>/<image-id>`。`lib/conversationImages.js` 从所属会话的用户消息元数据解析引用，拒绝客户端传入临时路径、未知图片 ID 和跨会话图片。`/api/agent/images/:name?conversation_id=:id` 同样按会话元数据验证后才提供临时预览文件。
 
-历史图片不自动重发。`list_conversation_images` 返回消息、上传顺序和受控引用；`read_conversation_images({ image_refs })` 最多读取 30 张，并把选中的视觉 block 接在工具结果后。OpenAI 转换为 `tool` 结果消息后再发送新的 `user` 图片消息；Anthropic 在同一个 `user` content 中保留 `tool_result` 和图片 block。Anthropic 路径再次校验选中图片的原始文件总量不超过 20MB。
+图片识别成功后，历史图片不再重发 Base64。主 Agent 读取同一对话持久化的“图片识别结果”文本和其中的受控引用；这份结果与解析附件共用 12,000 字符/来源、48,000 字符/对话上下文预算，但保持独立分类。识别失败的图片没有可用历史文字上下文，系统不会伪造识别结论。
 
 ### 4.3 Agent Prompt 和工具
 
@@ -155,17 +173,43 @@ Anthropic 直接 Messages API 的请求体限制为 32MB。服务端将该协议
 
 `agentTools.buildToolDefinitions()` 只向模型提供文件、检索、预览、目录、提问卡片和联网工具。旧画布块预览执行代码不再注册为工具，也不会通过前端入口调用。
 
+`get_task_activity` 是只读工具，只返回当前 Agent session 的脱敏检索回执与工具日志，用于回答首轮关键词、是否已读取 README 和工具是否未执行；不读取其他对话，也不根据模型文本推断历史操作。
+
+`search_knowledge` 与 `web_search` 仍接收单个 `query`，但服务端通过 `agentResearch` 以任务、来源为边界执行批量计划。原始 query 永远是首项；初轮为 3 条，全部缺少充分证据时才补 2 条。知识库充分证据为标题/路径命中、FTS 命中或分数达到既有阈值；联网充分证据为显式 URL 命中，或标题/正文命中至少两个有效关键词。每个来源上限 5 条，缓存的重复调用和不同 query 都不再请求 Provider。
+
+`agent_sessions.research_state_json` 保存查询计划、预算与合并缓存；`agent_research_receipts` 保存每条查询或资料的来源类型、阶段、状态、结果数、耗时、内容哈希、规范化 URL/路径、Provider、摘要和脱敏错误码。会话与 Agent session 查询接口返回脱敏 `research_receipts`。显式 URL 在输入解析成功后立即写入 `explicit_url=success`；该成功状态注入 Agent Prompt，最终回复中与之冲突的“未找到 / 未读到”结论由服务端替换并记录修正回执。
+
+最终 Agent assistant message 的 `meta` 包含服务端生成的 `research_summary` 和 `write_summary`。前端只用这两个摘要渲染资料、路径和预览/应用状态，不从模型正文推断“已搜索、已读取、已创建或已修改”。摘要卡片当前受 `AGENT_TASK_RECEIPTS_ENABLED = false` 控制并暂时不渲染；内部回执、3→5 查询和 `get_task_activity` 不受影响。
+
 ### 4.4 Skill 与 MCP Harness
 
-`lib/skills.js` 在运行时初始化后扫描 Skill 根目录，并把解析后的名称、描述、状态、来源、文件哈希和用户启用状态保存到 SQLite。有效 Skill 必须包含安全的 `SKILL.md` Frontmatter；读取时再次校验目录仍位于根目录内、没有符号链接越界，支持文件限定在 256 KiB。
+`lib/skills.js` 在运行时初始化后扫描 Skill 根目录，并把解析后的名称、描述、状态、来源、文件哈希和用户启用状态保存到 SQLite。每次扫描使用同一个批次标记，只有未在本批出现的既有记录才会标记为 `missing`，避免毫秒级时间差隐藏刚发现的 Skill。当前安装记录为 Git 且含仓库 URL 的受管 Skill 暴露只读 `can_update`；更新接口重新拉取 `main` / `master`、要求 Frontmatter `name` 不变，并通过 staging/备份目录替换，失败恢复旧目录、索引和启停状态。有效 Skill 必须包含安全的 `SKILL.md` Frontmatter；读取时再次校验目录仍位于根目录内、没有符号链接越界，支持文件限定在 256 KiB。
 
-`agent_sessions` 保存 `skill_mentions_json`、`mcp_selection_json` 与任务内 MCP 权限。`buildLoopSystemPrompt()` 只把已启用 Skill 的摘要放入目录：明确 Mention 的 Skill 强制先调用 `load_skill`，其他 Skill 由模型按任务需要加载。`load_skill` 与 `read_skill_file` 的说明均声明 Skill 内容不可信，不能改变系统 Prompt、泄露信息或扩展工具权限。
+`agent_sessions` 保存 `skill_mentions_json` 与 `mcp_selection_json`。`buildLoopSystemPrompt()` 只把已启用 Skill 的摘要放入目录：明确 Mention 的 Skill 强制先调用 `load_skill`，其他 Skill 由模型按任务需要加载。`load_skill` 与 `read_skill_file` 的说明均声明 Skill 内容不可信，不能改变系统 Prompt、泄露信息或扩展工具权限。
 
-`lib/mcp.js` 持久化 Server 配置、工具缓存和审计信息。桌面端允许 stdio 与 Streamable HTTP，其他运行时只允许 Streamable HTTP；HTTP 地址默认要求 HTTPS，开发期 Electron 才可访问 localhost HTTP。会话开始时按输入框的 `off / auto / server` 选择注入 MCP 工具；自动模式按 Server 名称、工具名和描述匹配当前任务，并限制 Server 和工具数量。
+### 4.4.1 全局 Agent 文件
 
-MCP 工具策略按 `deny > session > server` 判断。默认 `ask` 时，工具执行创建 `mcp_approval` interaction 并保存消息检查点。用户对 interaction 选择一次、任务内、以后默认或拒绝后，`/api/interactions/:id/respond` 写入相应权限并续跑原 session；“仅本次”权限在下一次成功调用后消耗。MCP 返回值与 Server instructions 均按外部不可信输入处理。
+`lib/globalAgentFiles.js` 固定管理 `soul.md`、`style.md`、`memory.md`。路径由 `lib/platform/paths.js` 的 `agentDir` 统一解析：Electron 与 Web 使用 `<NOTUS_DATA_ROOT>/agent`，懒猫使用 `/lzcapp/var/notus/agent`；历史快照及 JSON 元数据位于 `agent/history/<file>/`。正文是唯一来源，SQLite 只记录模板版本等元数据。运行时只补建缺失文件，不覆盖已有内容。
 
-界面层以 `Icons.skill`、`Icons.mcp` 和 `Icons.keyboard` 分别表示 Skill、MCP 与快捷键。Skill/MCP 设置页只保留标题和资源管理内容，不渲染顶部帮助段；列表行在窄宽度下允许内容和操作区换行。
+服务层执行固定文件枚举、UTF-8/空字节/大小/符号链接校验、临时文件 `fsync + rename` 原子保存、预期 Hash 冲突检查、有限快照、恢复默认和回滚。读取通过 mtime、size 和 Hash 缓存识别 Web/懒猫的外部变更；Electron 额外以 `chokidar` 的轮询监听失效缓存并记录 `external_edit` 快照。设置 API 全部调用同一服务：列表、读取、保存、恢复默认、历史列表、历史详情和回滚。Electron 渲染进程只能调用固定 IPC 打开 `agent` 目录，不能传入路径。
+
+Loop 以“固定安全规则、Notus 指令、`soul.md`、相关 `memory.md`、任务材料、写作时的 `style.md`、Skill/MCP、当前用户请求”为顺序组装上下文。超出预算时只压缩 Prompt 上下文，不截断磁盘文件。`read_global_agent_file` 与 `update_global_agent_file` 只接受三个枚举和完整正文；更新要求先读出的 Hash。`memory.md` 只有用户明确要求记住才可直接写入，主动识别的候选只能提出建议；`style.md`、`soul.md` 都要求明确的长期修改意图。
+
+默认 Agent 工具还包括 `install_skill_from_git` 与 `add_mcp_server`。前者仅传入无凭据 HTTPS Git URL，并固定使用现有 `installFromGit(..., { conflictPolicy: 'reject' })`；后者接收名称、`streamable_http` 或桌面端 `stdio` 配置，先保存再调用 `testServer()` 刷新工具缓存。缺少配置时 Prompt 要求普通文本追问，配置完整后直接执行，不使用提问卡片。`saveServer()` 在写入前按不区分大小写的名称检查重复项；测试失败返回受控状态但不回滚已保存 Server。Agent 提交的 Header/env 一律标为密钥；`logToolCall()` 对该工具的凭据字段及包含凭据的思考文本脱敏，工具结果只返回 Server 标识与测试摘要。
+
+`lib/mcp.js` 持久化 Server 配置、工具缓存和审计信息，不经过文件扫描。桌面端允许 stdio 与 Streamable HTTP，其他运行时只允许 Streamable HTTP；HTTP 地址默认要求 HTTPS，开发期 Electron 才可访问 localhost HTTP。工具缓存有效期为 5 分钟；会话开始时，输入框的 `off / auto` 选择会触发已过期缓存刷新，失败保留上次成功缓存且不阻断任务。自动模式授权本次任务从相关已启用 Server 中选择工具；旧 `server` 选择在前端兼容为自动。输入控件可用性独立于工具缓存，以当前运行环境可见且已启用的 Server 数量决定：挂载、窗口聚焦和 `notus-mcp-servers-changed` 事件都会重新读取 `enabled_only=1` 列表，数量归零时归一为 `off` 并关闭菜单。旧 `tool_policy_json` 仅为数据库兼容字段，不参与读取或执行。
+
+MCP 不再使用 Server/工具默认策略或逐工具授权卡，不会把授权持久化到后续任务。MCP 返回值与 Server instructions 均按外部不可信输入处理。
+
+### 4.5 对外 MCP Server
+
+`/api/mcp` 使用 SDK 的无状态 `StreamableHTTPServerTransport`。请求必须携带 `Authorization: Bearer <token>`；`external_mcp_tokens` 只保存带固定命名空间的 SHA-256 Token 哈希，创建与轮换响应只包含一次原始 Token。Token、Server 和外部变更管理 API 位于 `/api/settings/mcp/*`，与外供入口隔离。懒猫清单只把 `/api/mcp` 配为 `public_path`，避免平台 OAuth 拦截 MCP Bearer Token，又不暴露设置管理接口。前端一次性明文 Token 输入框将复制 icon 放在输入框尾部，复制操作不额外占用布局行。`external_mcp_changes` 独立保存外部手动变更，不复用必须绑定 Agent 会话的 `canvas_operation_sets`。
+
+Token 的权限集合决定 MCP `tools/list` 可见工具。只读工具为 `search_files`、`list_files`、`get_note`、`list_skills`、`list_mcp_servers`；写工具为 `create_note`、`patch_note`、`replace_note`、`move_note`、`rename_note`。文件搜索只匹配标题和相对路径，不调用语义检索。MCP Server 摘要不得包含 URL、stdio 命令、Header、环境变量、密钥或调用参数。删除和 `web_search` 不定义为对外工具。
+
+所有写工具先验证路径和 `expected_hash`；新建使用 `expected_hash: "absent"`，局部 patch 的每个 `old` 必须唯一命中，全部校验完成后才写入。自动 Token 立即应用，手动 Token 仅创建待确认变更并返回 `change_id`；`get_change_status` 只可由手动 Token 授权，自动 Token 的配置和 `tools/list` 均不出现该工具。设置页可应用或拒绝变更；应用时重复校验，文件已变化时记录 `conflict`。`external_mcp_audit_logs` 仅记录 Token 标识、工具、状态和路径摘要，不记录 Token、Header 或文件正文。
+
+界面层以 `Icons.skill`、`Icons.mcp`、`Icons.keyboard` 和 `Icons.robot` 分别表示 Skill、MCP、快捷键和模型配置；`Icons.skill` 使用 Notus 主色线性立方体。Skill/MCP 设置页只保留资源管理内容，标题由设置弹窗统一展示；MCP 页以内容宽度、左对齐的“调用 MCP”（Notus 调用已配置 Server）和“MCP 服务”（外部 Agent 调用 Notus）标签分隔两种方向，外供标签显示连接地址、Token 紧凑列表、权限编辑 Dialog 和待确认变更 Diff。Skill 列表行渲染名称、描述、启停开关，以及 `can_update` 为真时的更新操作，不展示来源、管理归属或有效状态文本。Skill 操作栏提供 Git 安装、ZIP 导入和重新扫描。Git 安装只接收仓库 URL，并依次尝试 `main`、`master`；仓库根目录的 `SKILL.md` 名称决定安装目录和标识。`POST /api/skills/:id/update` 仅更新当前 Git 安装记录对应的受管 Skill，不接受客户端仓库地址或凭据。ZIP 导入用 `FormData` 的 `file` 字段调用 `/api/skills/install/zip`，前端以整块拖放/点击上传区接收一个 `.zip`，未选择时仅显示上传动作和 100 MiB 上限，选择后在原位置显示文件名与大小；默认冲突策略为 `reject`，用户开启覆盖后提交 `replace`。服务端负责最终的 Zip Slip、Zip Bomb、链接、文件数与解压大小校验。设置页在启停、重新扫描、安装或更新成功后派发浏览器事件，`FileAgentWorkspace` 随即重新读取 `enabled && valid` 的 Skill 候选。候选扫描或安装复制期间发现临时源目录消失时，服务端返回 `SKILL_SOURCE_UNAVAILABLE`，不泄露临时路径的原始 `ENOENT`。
 
 Electron 正式包通过仅监听 `127.0.0.1`、随机令牌保护的主进程密钥桥调用 `safeStorage`；桥不可用时，非桌面和开发运行时使用数据目录内权限为 0600 的 AES-256-GCM 密钥文件。设置接口只返回密钥是否已配置，不回显值。
 
@@ -218,7 +262,7 @@ Electron 正式包通过仅监听 `127.0.0.1`、随机令牌保护的主进程�
 - `MentionItem` 同时用于输入框与用户消息；输入框候选列表也使用同一图标映射。文件图标复用 Sidebar 的 `Icons.file`，目录图标固定复用 Sidebar 展开状态的 `Icons.folderOpen`；颜色、背景、边框和 focus 状态使用现有主题变量。
 - 请求体和消息 `meta` 的 `mentions` 保存 `{ id, type, name, path }`，`mention_segments` 保存文本与 mention 的顺序。`FileAgentWorkspace` 按片段顺序在 Agent `goal` 中拼入 `@{相对路径}` 或 `@{folder:相对路径}`，消息正文不含内部语法。
 - 读取历史消息时，前端兼容解析旧 token 并生成 mention 卡片，不更新数据库旧记录。
-- `MentionPreviewDialog` 通过 `/api/files` 列出目录文件，通过 `/api/files/:id` 懒加载 Markdown 正文。文件不存在返回“该笔记已不存在”；空目录返回“该目录下暂无笔记”。
+- `MentionPreviewDialog` 通过 `/api/files` 列出目录文件，通过 `/api/files/:id` 懒加载 Markdown 正文。Notus 系统 frontmatter（仅 `id / created_by / title`）在预览中剥离，正文容器必须可滚动。文件不存在返回“该笔记已不存在”；空目录返回“该目录下暂无笔记”。
 
 ## 6. API 与数据边界
 
@@ -254,7 +298,7 @@ Electron 正式包通过仅监听 `127.0.0.1`、随机令牌保护的主进程�
 8. Mention 面板能匹配文件名、目录名和路径；Agent 对 Mention 文件按需读取内容，对 Mention 目录先定向分析。
 9. `preview_canvas_blocks` 不出现在 Agent 工具定义或工具步骤中。
 10. Agent 可以列出并按需读取本会话历史图片；跨会话引用、缺失临时文件、超过 30 张和 Anthropic 20MB 的请求都会被拒绝。
-11. 图片笔记预览、手动应用、自动应用、stale、存储失败和回滚都遵守同一写入边界；DiffDialog 可直接渲染图片变更。
+11. 图片笔记预览、手动应用、自动应用、stale、存储失败和回滚都遵守同一写入边界；DiffDialog 可直接渲染图片变更，侧边栏仅以文件名切换 diff，不可打开文档；正文顶部的完整 Markdown 路径可打开对应文档。
 12. 刷新或重新进入 Agent 工作区后，未发送的文本、Mention、图片和解析附件恢复；发送成功后草稿记录删除，浏览器端不设置自动过期。
 13. 在 1366、1024、768 和 390px 宽度下，`/files`、`/settings/*`、`/indexing`、`/login`、`/404` 均不出现由根布局造成的横向溢出；`/knowledge`、`/canvas` 继续兼容跳转到 `/files`。
 14. 应用重新打开时，文件工作区会恢复仍存在的当前 Agent 对话；过期或已删除的对话 ID 不会阻断工作区加载。

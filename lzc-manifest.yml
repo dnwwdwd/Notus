@@ -1,5 +1,7 @@
 application:
   subdomain: notus
+  public_path:
+    - /api/mcp
   image: registry.lazycat.cloud/u30387910/library/node:549f023f95a10c59
   background_task: false
   upstreams:
@@ -10,6 +12,7 @@ application:
   environment:
     - NODE_ENV=production
     - PORT=3000
+    - NOTUS_RUNTIME_TARGET=lazycat
     - NOTES_DIR=/lzcapp/var/notes
     - ASSETS_DIR=/lzcapp/var/assets
     - DB_PATH=/lzcapp/var/data/index.db

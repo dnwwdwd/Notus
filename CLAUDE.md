@@ -129,6 +129,8 @@ Notus 是一款支持 Web 与 Electron 桌面端的私人知识库 + AI 写作�
 
 当前状态：前端 UI 已完成，核心后端链路已接入真实数据库、文件系统、检索和 SSE；批量导入导出、图片代理和实机打包验证已基本补齐，仍需真实环境持续回归。
 
+Agent 资料与文件回执的临时开关：当前由 `notus/lib/agentResearch.js` 与 `notus/components/AgentWorkspace/AgentWorkspace.js` 中的 `AGENT_TASK_RECEIPTS_ENABLED = false` 硬编码关闭，不放入个性化设置。关闭时，Agent 最终回复不展示“已使用资料 / 文件变更”卡片；知识库与联网搜索的 3→5 查询、检索缓存、脱敏回执和 `get_task_activity` 仍继续运行。除非需求明确要求恢复，否则不要把该常量改为 `true`。
+
 ---
 
 ## 技术栈约束

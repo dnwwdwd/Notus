@@ -18,6 +18,7 @@
 - Electron 环境自动扫描并监测 Codex、Claude Code、OpenCode 等工具的 Skill 目录。
 - 懒猫环境只创建和管理 Notus 自己的 Skill 目录，不扫描宿主机或其他 Agent 的目录。
 - 支持通过 GitHub、GitLab、Gitee 等 HTTPS Git 仓库地址安装 Skill。
+- 已通过 Git 安装的受管 Skill 支持用户手动拉取 `main` / `master` 更新；不做后台检查或自动同步。
 - 支持导入 ZIP 压缩包安装 Skill。
 - 支持 Notus 内置 Agent 创建 Skill 草稿，并在用户确认后安装。
 - MCP 支持 stdio 和 Streamable HTTP 两种传输。
@@ -154,7 +155,7 @@ packages/
 Electron main 启动同一份 `apps/server`：
 
 - 绑定 `127.0.0.1` 的随机端口。
-- 启动时设置 `NOTUS_RUNTIME=electron`。
+- 启动时设置 `NOTUS_RUNTIME_TARGET=electron`。
 - 生成一次性的 256 位本地 API Token，通过 preload 暴露给渲染进程。
 - Web 页面请求本地 API 时携带该 Token。
 - `BrowserWindow` 设置 `nodeIntegration: false`、`contextIsolation: true`、`sandbox: true`。
@@ -166,7 +167,7 @@ Electron main 启动同一份 `apps/server`：
 
 LPK 容器直接启动 `apps/server`：
 
-- 设置 `NOTUS_RUNTIME=lazycat`。
+- 设置 `NOTUS_RUNTIME_TARGET=lazycat`。
 - Web 页面与 API 保持同源。
 - 数据、数据库、安装记录和 Skill 都保存在 `/lzcapp/var/notus`。
 - 不注册 stdio transport adapter。
@@ -182,7 +183,7 @@ LPK 容器直接启动 `apps/server`：
 export type RuntimeKind = 'electron' | 'lazycat';
 
 export function detectRuntime(): RuntimeKind {
-  const value = process.env.NOTUS_RUNTIME;
+  const value = process.env.NOTUS_RUNTIME_TARGET;
 
   if (value === 'electron' || value === 'lazycat') {
     return value;
@@ -192,13 +193,13 @@ export function detectRuntime(): RuntimeKind {
     return 'electron';
   }
 
-  throw new Error('NOTUS_RUNTIME is missing or invalid');
+  throw new Error('NOTUS_RUNTIME_TARGET is missing or invalid');
 }
 ```
 
-Electron 如果把 API 服务放进普通 Node.js child process，`process.versions.electron` 可能不存在，因此 Electron main 必须给子进程传入 `NOTUS_RUNTIME=electron`。
+Electron 如果把 API 服务放进普通 Node.js child process，`process.versions.electron` 可能不存在，因此 Electron main 必须给子进程传入 `NOTUS_RUNTIME_TARGET=electron`。
 
-懒猫镜像必须在 `lzc-manifest.yml` 中设置 `NOTUS_RUNTIME=lazycat`。代码不依赖域名、文件路径是否存在或浏览器特征判断环境。
+懒猫镜像必须在 `lzc-manifest.yml` 中设置 `NOTUS_RUNTIME_TARGET=lazycat`。代码不依赖域名、文件路径是否存在或浏览器特征判断环境。
 
 ### 5.2 能力对象
 
@@ -567,7 +568,7 @@ node_modules
 隐藏的临时编辑文件
 ```
 
-Git 仓库或 ZIP 包内部的 Skill 候选发现可以放宽到四级目录，外部目录日常监测仍使用一级子目录，避免把支持文件中的示例 `SKILL.md` 当成独立 Skill。
+ZIP 包内部可继续发现多个 Skill；Git 安装固定为一仓库一个 Skill：只接受仓库根目录的 `SKILL.md`，不递归把支持目录中的 `SKILL.md` 当成独立 Skill。
 
 ### 8.3 真实路径去重
 
@@ -618,6 +619,8 @@ addDir / unlinkDir
   → 重新扫描对应 Root 的一级目录
 ```
 
+每次全量扫描使用同一个批次标记。只有未写入当前批次标记的旧记录才能转为 `missing`，不能用逐条采样时间与扫描结束时间比较。
+
 如果某个 Root 启动时不存在，扫描器监测它的父目录。目录创建后自动注册新的 watcher，不要求重启 Notus。
 
 ### 8.5 周期性校正
@@ -654,6 +657,8 @@ release-note · Notus Managed
 release-note · Claude Code
 release-note · Workspace: project-a
 ```
+
+来源和受管归属属于后端管理信息，不在当前紧凑列表行显示；列表只展示 Skill 名称、描述与启停开关。该信息仍可用于冲突处理和服务端审计。
 
 Agent 初始列表中附带 `sourceLabel`。自动选择时按以下顺序排序：
 
@@ -842,7 +847,7 @@ Electron 和懒猫使用相同的 Git HTTPS 实现。推荐使用纯 Node.js Git
 }
 ```
 
-第一版的“更新”使用重新安装：重新拉取同一来源，展示新旧 Hash 和文件 Diff，用户确认后替换。自动定时更新留到后续版本。
+第一版的“更新”由用户在设置页手动触发：重新拉取同一来源的 `main` / `master`，要求 Frontmatter `name` 不变，staging 校验后以备份目录交换。失败恢复旧目录、旧索引和启停状态；不做后台检查、Hash/Diff 预览或自动定时更新。
 
 ### 10.4 ZIP 安装
 
@@ -875,6 +880,8 @@ ZIP 安全检查：
 - MIME、扩展名和文件头三者至少两项匹配。
 
 解压后使用和 Git 相同的 Skill 候选发现与安装事务。
+
+设置页 ZIP 弹窗使用单一的拖放/点击上传区。未选文件时仅保留上传动作和 `100 MiB` 上限，选中后在同一区域展示文件名与大小；默认拒绝同名 Skill，用户显式开启覆盖后才提交 `replace`；路径、链接、文件数和解压限制继续由服务端执行，不在弹窗展示说明文字。
 
 ### 10.5 冲突处理
 
@@ -1377,30 +1384,11 @@ interface McpToolCache {
 }
 ```
 
-收到 `tools/list_changed` 后重新拉取。连接失败时可以在设置页显示上次成功缓存，Agent 不调用离线工具。
+收到 `tools/list_changed` 后重新拉取。工具缓存超过 5 分钟时，Agent 在选择已启用 Server 前也会尝试刷新；连接失败时保留上次成功缓存，不阻断当前任务。
 
-### 17.3 调用审批
+### 17.3 当前任务授权
 
-MCP Tool 默认策略为 `ask`。审批卡片显示：
-
-```text
-MCP Server
-Tool 名称
-Tool 描述
-输入参数
-目标网络或本地进程
-```
-
-用户可以：
-
-```text
-仅本次允许
-本会话允许该 Tool
-始终允许该 Tool
-拒绝
-```
-
-Server 的 Tool 描述按不可信文本处理，不能覆盖 Notus 的系统权限规则。
+MCP 不配置 Server 或 Tool 的默认权限。用户在 AI 输入框选择指定 Server 或自动模式后，系统仅为当前任务注册并允许对应的已启用 Server；下一条任务需要重新选择。输入菜单不展示已停用 Server，历史策略字段仅保留数据库兼容，不参与调用。Server 的 Tool 描述按不可信文本处理，不能覆盖 Notus 的系统权限规则。
 
 ### 17.4 结果处理
 
@@ -1466,7 +1454,6 @@ stdio 字段：
 工作目录
 环境变量
 连接超时
-默认工具权限
 ```
 
 Streamable HTTP 字段：
@@ -1478,7 +1465,6 @@ Headers
 连接超时
 调用超时
 私有网络策略，仅管理员可见
-默认工具权限
 ```
 
 ### 18.3 测试连接
@@ -1552,12 +1538,19 @@ POST /api/v1/skills/install/git
 
 ```json
 {
-  "repositoryUrl": "https://github.com/example/agent-skills.git",
-  "ref": "main",
-  "subdirectory": "skills/release-note",
-  "conflictPolicy": "reject"
+  "repositoryUrl": "https://github.com/example/release-note.git"
 }
 ```
+
+安装服务依次尝试 `main` 和 `master`，仓库根目录必须包含有效 `SKILL.md`。安装目录由 Frontmatter 的 `name` 决定，可与仓库名不同；同名目标仍拒绝覆盖。
+
+### 19.5 Git 更新
+
+```http
+POST /api/skills/:id/update
+```
+
+服务端只接受当前安装记录为 Git 且包含仓库 URL 的受管 Skill；请求不接收仓库地址或凭据。更新按既有来源拉取 `main` / `master`，要求 `SKILL.md` 的 `name` 不变，并通过 staging/备份目录可回滚替换。
 
 返回：
 
@@ -1567,7 +1560,7 @@ POST /api/v1/skills/install/git
 }
 ```
 
-### 19.5 ZIP 安装
+### 19.6 ZIP 安装
 
 ```http
 POST /api/v1/skills/install/zip
@@ -1634,6 +1627,7 @@ SKILL_ROOT_UNAVAILABLE
 SKILL_INVALID
 SKILL_ALREADY_EXISTS
 SKILL_SOURCE_UNREACHABLE
+SKILL_SOURCE_UNAVAILABLE
 SKILL_ARCHIVE_UNSAFE
 SKILL_PATH_OUTSIDE_ROOT
 SKILL_NOT_MANAGED
@@ -1828,7 +1822,7 @@ Linux → Secret Service；不可用时提示用户当前保护级别
 ```text
 Electron main 启动
   → 生成本地 API Token
-  → 启动 Node API 服务，传 NOTUS_RUNTIME=electron
+  → 启动 Node API 服务，传 NOTUS_RUNTIME_TARGET=electron
   → API 初始化数据库
   → 创建 Root Registry
   → 扫描并启动 SkillWatcher
@@ -1901,13 +1895,13 @@ main 根据 `skillId` 从数据库取路径并校验，渲染进程不能传任�
 application:
   subdomain: notus
   environment:
-    NOTUS_RUNTIME: lazycat
+    NOTUS_RUNTIME_TARGET: lazycat
     NOTUS_DATA_DIR: /lzcapp/var/notus
     NOTUS_SKILLS_DIR: /lzcapp/var/notus/skills
     NOTUS_MCP_STDIO_ENABLED: "false"
 ```
 
-`NOTUS_MCP_STDIO_ENABLED` 只作为额外保险，能力矩阵仍以 `NOTUS_RUNTIME=lazycat` 为准。
+`NOTUS_MCP_STDIO_ENABLED` 只作为额外保险，能力矩阵仍以 `NOTUS_RUNTIME_TARGET=lazycat` 为准。
 
 镜像使用非 root 用户时，优先在 manifest 中配置合适的 `run_as`，让 `/lzcapp` 持久目录映射到同一 UID/GID。启动脚本只负责 `mkdir -p`，不在每次启动执行递归 `chown`。
 
@@ -2178,7 +2172,7 @@ sequenceDiagram
 - Electron 启动后自动发现 `$HOME/.agents/skills`、Claude Code 和 OpenCode 全局目录中的合法 Skill。
 - 外部目录发生新增、修改和删除后，设置页无需重启即可更新。
 - 懒猫只扫描 `/lzcapp/var/notus/skills`。
-- Git HTTPS 和 ZIP 都能安装一个或多个 Skill。
+- Git HTTPS 安装一个根目录 Skill，按 `main`、`master` 回退；ZIP 可安装多个 Skill。
 - 安装失败不留下半成品目标目录。
 - Agent 创建的 Skill 经审批后安装到当前环境的受管目录。
 - 无效 Skill 不进入 Agent 工具列表。
@@ -2191,7 +2185,7 @@ sequenceDiagram
 - 懒猫页面不出现 stdio 入口。
 - 懒猫 API 拒绝 stdio 创建、修改和导入。
 - MCP Tool 名称冲突不会互相覆盖。
-- Tool 调用按权限策略审批。
+- Tool 调用只允许当前输入框选择的已启用 Server，不使用持久化策略或逐工具审批。
 - 密钥不会出现在 API 返回和日志中。
 - 应用退出时 stdio 子进程全部停止。
 

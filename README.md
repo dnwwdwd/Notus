@@ -61,9 +61,9 @@ Typora 拥有的功能 Notus 基本都有，可以彻底告别 Typora。
 
 - `notus/`：Next.js 15 Pages Router 应用与全部业务 API
 - `desktop/`：Electron 主进程、预加载桥接与桌面打包脚本
-- `docs/Notus_PRD.md`：技术实现规范
-- `docs/Notus_PDD.md`：产品设计文档
-- `docs/PROGRESS.md`：当前实现进度
+- `docs/产品技术实现说明.md`：技术实现规范
+- `docs/产品设计说明.md`：产品设计文档
+- `docs/项目进度.md`：当前实现进度
 - `CLAUDE.md` / `AGENTS.md`：仓库协作说明
 
 ## 开发

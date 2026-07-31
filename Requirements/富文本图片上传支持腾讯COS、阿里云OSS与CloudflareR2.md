@@ -1,0 +1,23 @@
+# 富文本图片上传支持腾讯COS、阿里云OSS与CloudflareR2
+
+## 分类与目标
+
+- 分类：功能需求。
+- 状态：代码实现完成，待三家真实 Bucket 回归。
+- 目标：用户粘贴图片或通过编辑器工具栏选图时，可按图床设置保存到本地资源目录，或上传至腾讯云 COS、阿里云 OSS、Cloudflare R2。
+
+## 已实现规则
+
+1. 图片存储模式为 `local` 或 `object_storage`。切换模式只影响后续新图片，不迁移旧 Markdown 或本地资源。
+2. 云端模式使用 COS、OSS、R2 的官方 Node.js SDK。Notus 统一生成对象键，再由 provider 适配层完成上传。
+3. Markdown 写入用户配置的公开访问基础 URL。用户需要在对象存储或 CDN 中配置只读公开访问；Notus 不写入会过期的预签名 URL。
+4. Access Key 与 Secret 保存于服务端 SQLite settings。设置读取接口只返回密钥是否已保存，不返回原值。
+5. 上传失败时不插入图片，不自动回退本地；粘贴和工具栏均提示失败原因。上传临时文件始终清理。
+6. 云端对象按 `<prefix>/<year>/<month>/<sha256>.<ext>` 保存，附带原始图片 MIME 类型与一年 immutable 缓存头。删除 Markdown 图片不会自动删除云对象。
+
+## 影响范围与验证
+
+- 图床设置页新增图片存储位置和对象存储参数。
+- `/api/settings` 新增脱敏的 `images` 设置模型。
+- `/api/files/:id/images` 按设置选择本地或对象存储上传，编辑器 API 保持返回 `src` 的兼容格式。
+- 已通过对象键/配置单测、平台测试、Web lint 与生产构建。

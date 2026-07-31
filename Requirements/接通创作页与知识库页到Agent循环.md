@@ -1,0 +1,20 @@
+# 接通创作页与知识库页到Agent循环
+
+## 分类
+
+功能优化
+
+## 背景
+
+BUG-20260621-002 核查确认后端 Agentic Loop、工具、Session、数据库与 API 路由已存在并可用，但创作页和知识库页前端入口仍没有请求新流程。
+
+## 实现摘要
+
+- 创作页主输入直接请求 `/api/agent/loop/start`，不再生成前置 `pendingAgentTask` 或任务确认卡。
+- 知识库页增加保守关键词分流：普通问答继续 `/api/chat`，写作类任务直接进入 Agentic Loop 流程。
+- 前端新增共享 `useAgentLoopController`，统一管理 session、SSE 事件、工具过程、预览确认、逐文件应用/回滚/废弃、取消和继续。
+- 文件级预览应用、回滚和废弃改为 `/api/agent/loop/apply`，成功后只更新文件内容、索引和 operation set 状态，不重新请求 `/api/agent/loop/start` 续跑。
+
+## 状态
+
+已完成

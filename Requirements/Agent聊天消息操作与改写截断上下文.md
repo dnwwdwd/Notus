@@ -1,0 +1,38 @@
+# Agent聊天消息操作与改写截断上下文
+
+## 分类
+
+功能优化
+
+## 需求描述
+
+知识库页和创作页共用的 Agent 聊天区需要继续保留用户消息的复制、改写入口，以及 AI 回复的复制、重试入口；消息操作 icon 不画外边框。回到底部按钮不再显示文字，只保留 icon。用户改写旧消息后，旧消息之后的所有消息都应删除，并同步清理 Agent 后续上下文，避免按旧对话继续执行。
+
+## 实现要求
+
+1. 聊天区离开底部时显示仅 icon 的回底按钮，保留可访问性标签。
+2. 用户消息和 AI 回复的复制 tooltip 均为“复制”；AI 回复重试 tooltip 为“重试”。
+3. 用户消息改写编辑态的确认按钮显示“发送”；Enter 发送，Shift+Enter 换行，Esc 取消。
+4. 改写旧用户消息时，前端先让该消息之后的所有消息做短暂淡出，再从可见列表移除。
+5. 服务端需要更新目标用户消息正文，删除其后的消息，并清理后续 Agent session checkpoint、待处理 interaction 与未完成的 operation set。
+6. 改写后重新发送时，知识库问答和 Agent Loop 都不得再追加一条重复用户消息，应复用已更新的目标用户消息作为新上下文起点。
+
+## 落地记录
+
+1. `AgentWorkspace` 调整消息操作区、回底按钮、改写编辑态键盘行为和淡出隐藏状态。
+2. 新增 `/api/conversations/:id/truncate`，调用 `rewriteConversationFromMessage()` 统一截断会话。
+3. `/api/chat`、`/api/agent/loop/start`、`useAgentLoopController`、知识库页和创作页发送链路新增 `skip_user_message_append` 透传，支持改写后不重复追加用户消息。
+4. `notus/tests/agent-workspace-chat-actions.test.js` 增加 icon-only 回底、tooltip、改写发送、截断 API 和跳过重复追加的静态回归断言。
+
+## 验证
+
+1. `node --check notus/components/AgentWorkspace/AgentWorkspace.js`
+2. `node --check notus/lib/conversations.js`
+3. `node --check notus/pages/api/conversations/[id]/truncate.js`
+4. `node --check notus/pages/api/chat.js`
+5. `node --check notus/pages/api/agent/loop/start.js`
+6. `node --check notus/hooks/useAgentLoopController.js`
+7. `node --check notus/pages/knowledge.js`
+8. `node --check notus/pages/canvas.js`
+9. `node notus/tests/agent-workspace-chat-actions.test.js`
+10. `node notus/tests/ui-bug-regressions.test.js`

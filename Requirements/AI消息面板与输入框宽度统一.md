@@ -1,0 +1,22 @@
+# AI消息面板与输入框宽度统一
+
+## 分类与状态
+
+- 分类：用户体验优化
+- 状态：已完成
+
+## 目标
+
+让 AI 消息面板与输入框使用同一宽度，并在 AI 面板宽度变化时同步调整；用户消息气泡继续按内容宽度右对齐。
+
+## 实现
+
+1. 输入框和消息列表复用父容器 95% 的共享宽度常量，不再按 AI 独占或双栏布局分别设定消息面板宽度。
+2. 用户消息气泡和改写输入区继续使用原有的右对齐与内容宽度上限。
+
+## 验证
+
+- `node notus/tests/ui-bug-regressions.test.js`
+- `node notus/tests/workspace-layout-and-topbar.test.js`
+- `npm run lint:web`
+- `npm run build:web`

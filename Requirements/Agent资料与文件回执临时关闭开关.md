@@ -1,0 +1,32 @@
+# Agent资料与文件回执临时关闭开关
+
+## 分类与状态
+
+- 分类：功能优化 / 用户体验优化
+- 状态：已完成
+
+## 背景
+
+2026-07-20 的 Agent 检索扩展增加了知识库与联网搜索的 3→5 查询计划、任务级脱敏回执，以及最终回复下方的“已使用资料 / 文件变更”摘要卡。当前阶段暂时不希望在聊天消息中展示这组回执信息，但仍需要保留检索扩展和内部记录，方便后续继续验证检索质量与 Agent 追问能力。
+
+## 需求
+
+1. 增加一个可快速恢复的代码开关，当前值固定为关闭。
+2. 关闭时不在 Agent 最终回复下方渲染“已使用资料 / 文件变更”卡片。
+3. 暂时不把开关放入个性化设置，避免形成面向用户的正式配置项。
+4. 关闭回执展示不影响 3→5 查询、任务缓存、脱敏回执和 `get_task_activity`。
+
+## 实现结果
+
+- `notus/lib/agentResearch.js` 和 `notus/components/AgentWorkspace/AgentWorkspace.js` 均保留 `AGENT_TASK_RECEIPTS_ENABLED = false`，分别约束服务端摘要状态和前端卡片展示。
+- 未新增数据库设置键、设置 API 字段或个性化设置入口。
+- `research_summary`、`write_summary` 仍由服务端生成，内部回执仍可供 Agent 活动查询使用；前端当前不渲染摘要卡片。
+
+## 验证
+
+- `node --check notus/lib/agentResearch.js`
+- `node --check notus/pages/api/settings/index.js`
+- `node --check notus/components/Settings/SettingsScreen.js`
+- `node --check notus/components/AgentWorkspace/AgentWorkspace.js`
+- `node notus/tests/agent-research.test.js`
+- `node notus/tests/ui-bug-regressions.test.js`

@@ -16,13 +16,15 @@ export const ResizableLayout = ({
   onLeftPercentChange,
   onLeftPercentCommit,
   collapseLeft = false,
+  collapseRight = false,
   className = '',
   style,
 }) => {
   const containerRef = useRef(null);
   const handleRef = useRef(null);
   const [containerWidth, setContainerWidth] = useState(0);
-  const hasFixedRight = Number(fixedRightPx) > 0 && !collapseLeft;
+  const hasFixedRight = Number(fixedRightPx) > 0 && !collapseLeft && !collapseRight;
+  const isHandleCollapsed = collapseLeft || collapseRight || hasFixedRight;
 
   const clampPercent = useCallback((value) => {
     const parsed = Number.parseFloat(value);
@@ -107,25 +109,25 @@ export const ResizableLayout = ({
   }, [hasFixedRight, onLeftPercentCommit, updateLeftPercent]);
 
   return (
-    <div ref={containerRef} className={`notus-resizable-layout${collapseLeft ? ' is-left-collapsed' : ''}${className ? ` ${className}` : ''}`} style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0, ...style }}>
+    <div ref={containerRef} className={`notus-resizable-layout${collapseLeft ? ' is-left-collapsed' : ''}${collapseRight ? ' is-right-collapsed' : ''}${className ? ` ${className}` : ''}`} style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0, ...style }}>
       {/* Left panel */}
-      <div className="notus-resizable-layout__panel notus-resizable-layout__panel--left" style={{ width: collapseLeft ? 0 : (hasFixedRight ? 'auto' : `${resolvedLeftPercent}%`), display: 'flex', flexDirection: 'column', overflow: 'hidden', flex: hasFixedRight && !collapseLeft ? '1 1 auto' : undefined, flexShrink: hasFixedRight ? 1 : 0, minWidth: collapseLeft ? 0 : (hasFixedRight ? 0 : (minLeftPx || 0)), minHeight: 0, opacity: collapseLeft ? 0 : 1, pointerEvents: collapseLeft ? 'none' : 'auto', transition: 'width 240ms cubic-bezier(0.16, 1, 0.3, 1), min-width 240ms cubic-bezier(0.16, 1, 0.3, 1), opacity 160ms ease' }}>
+      <div className="notus-resizable-layout__panel notus-resizable-layout__panel--left" style={{ width: collapseLeft ? 0 : (hasFixedRight || collapseRight ? 'auto' : `${resolvedLeftPercent}%`), display: 'flex', flexDirection: 'column', overflow: 'hidden', flex: !collapseLeft && (hasFixedRight || collapseRight) ? '1 1 auto' : undefined, flexShrink: hasFixedRight || collapseRight ? 1 : 0, minWidth: collapseLeft ? 0 : (hasFixedRight || collapseRight ? 0 : (minLeftPx || 0)), minHeight: 0, opacity: collapseLeft ? 0 : 1, pointerEvents: collapseLeft ? 'none' : 'auto', transition: 'width 240ms cubic-bezier(0.16, 1, 0.3, 1), min-width 240ms cubic-bezier(0.16, 1, 0.3, 1), opacity 160ms ease' }}>
         {left}
       </div>
 
       {/* Drag handle */}
       <div
         ref={handleRef}
-        onMouseDown={collapseLeft || hasFixedRight ? undefined : onMouseDown}
+        onMouseDown={isHandleCollapsed ? undefined : onMouseDown}
         onMouseEnter={() => { if (!dragging.current && handleRef.current) handleRef.current.style.background = 'var(--accent-muted)'; }}
         onMouseLeave={() => { if (!dragging.current && handleRef.current) handleRef.current.style.background = 'var(--border-subtle)'; }}
         className="notus-resizable-layout__handle"
         style={{
-          width: collapseLeft ? 0 : (hasFixedRight ? 4 : 4),
+          width: isHandleCollapsed ? 0 : 4,
           flexShrink: 0,
           background: 'var(--border-subtle)',
-          cursor: collapseLeft || hasFixedRight ? 'default' : 'col-resize',
-          pointerEvents: collapseLeft || hasFixedRight ? 'none' : 'auto',
+          cursor: isHandleCollapsed ? 'default' : 'col-resize',
+          pointerEvents: isHandleCollapsed ? 'none' : 'auto',
           transition: 'width 240ms cubic-bezier(0.16, 1, 0.3, 1), background var(--transition-fast)',
           position: 'relative',
           zIndex: 1,
@@ -133,7 +135,7 @@ export const ResizableLayout = ({
       />
 
       {/* Right panel */}
-      <div className="notus-resizable-layout__panel notus-resizable-layout__panel--right" style={{ flex: hasFixedRight ? `0 0 ${fixedRightPx}px` : 1, width: hasFixedRight ? fixedRightPx : undefined, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: hasFixedRight ? fixedRightPx : (minRightPx || 0), minHeight: 0 }}>
+      <div className="notus-resizable-layout__panel notus-resizable-layout__panel--right" style={{ flex: collapseRight ? '0 0 0px' : (hasFixedRight ? `0 0 ${fixedRightPx}px` : 1), width: collapseRight ? 0 : (hasFixedRight ? fixedRightPx : undefined), display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: collapseRight ? 0 : (hasFixedRight ? fixedRightPx : (minRightPx || 0)), minHeight: 0, opacity: collapseRight ? 0 : 1, pointerEvents: collapseRight ? 'none' : 'auto', transition: 'width 240ms cubic-bezier(0.16, 1, 0.3, 1), min-width 240ms cubic-bezier(0.16, 1, 0.3, 1), opacity 160ms ease' }}>
         {right}
       </div>
     </div>

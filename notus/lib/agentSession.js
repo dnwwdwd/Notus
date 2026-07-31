@@ -494,11 +494,27 @@ function summarizeToolResult(toolName, result) {
     case 'analyze_folder': return { file_count: result?.file_count || 0, total_count: result?.total_count || 0, truncated: Boolean(result?.truncated) };
     case 'check_links': return { orphan_count: result?.orphan_count || 0, broken_count: result?.broken_count || 0 };
     case 'get_task_activity': return { receipt_count: result?.research_receipts?.length || 0, tool_count: result?.tool_records?.length || 0 };
+    case 'load_skill': return { id: result?.id || '', name: result?.name || '', source_label: result?.source_label || '' };
+    case 'get_skill_details': return {
+      id: result?.id || '', name: result?.name || '', enabled: Boolean(result?.enabled), managed: Boolean(result?.managed), status: result?.status || '',
+    };
+    case 'create_skill_draft': return { draft_id: result?.draft_id || '', valid: Boolean(result?.valid), validation_count: result?.validation?.length || 0 };
+    case 'validate_skill_draft': return { draft_id: result?.draft_id || '', valid: Boolean(result?.valid), status: result?.status || '', validation_count: result?.validation?.length || 0 };
+    case 'install_skill_draft': return { approval_required: Boolean(result?.approval_required), interaction_id: result?.interaction_id || null };
+    case 'update_skill_draft': return { draft_id: result?.draft_id || '', valid: Boolean(result?.valid), pending_confirmation: Boolean(result?.pending_confirmation) };
+    case 'set_skill_enabled': return { skill: result?.skill ? { id: result.skill.id, name: result.skill.name, enabled: Boolean(result.skill.enabled), managed: Boolean(result.skill.managed) } : null };
+    case 'update_skill_from_git': return { job_id: result?.job_id || '', skill: result?.skill ? { id: result.skill.id, name: result.skill.name, enabled: Boolean(result.skill.enabled) } : null };
+    case 'uninstall_skill': return { approval_required: Boolean(result?.approval_required), interaction_id: result?.interaction_id || null };
     case 'install_skill_from_git': return { installed: (result?.installed || []).map((item) => ({ id: item.id, name: item.name, enabled: Boolean(item.enabled) })) };
     case 'add_mcp_server': return {
       server: result?.server ? { id: result.server.id, name: result.server.name, transport: result.server.transport, enabled: Boolean(result.server.enabled) } : null,
       test: result?.test ? { ok: Boolean(result.test.ok), tool_count: Number(result.test.tool_count || 0), error_code: result.test.error_code || '', message: result.test.message || '' } : null,
     };
+    case 'get_mcp_server_details': return { server: result?.server ? { id: result.server.id, name: result.server.name, transport: result.server.transport, enabled: Boolean(result.server.enabled) } : null };
+    case 'update_mcp_server': return { server: result?.server ? { id: result.server.id, name: result.server.name, transport: result.server.transport, enabled: Boolean(result.server.enabled) } : null };
+    case 'test_mcp_server': return { test: result?.test ? { ok: Boolean(result.test.ok), tool_count: Number(result.test.tool_count || 0), duration_ms: Number(result.test.duration_ms || 0) } : null };
+    case 'set_mcp_server_enabled': return { server: result?.server ? { id: result.server.id, name: result.server.name, transport: result.server.transport, enabled: Boolean(result.server.enabled) } : null };
+    case 'remove_mcp_server': return { approval_required: Boolean(result?.approval_required), interaction_id: result?.interaction_id || null };
     default: return { ok: true };
   }
 }

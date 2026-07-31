@@ -78,6 +78,16 @@ function clampFilesLayout(value) {
   return Math.min(Math.max(parsed, FILES_LAYOUT_MIN), FILES_LAYOUT_MAX);
 }
 
+function findFileInTree(nodes = [], path = '') {
+  const normalizedPath = String(path || '').replace(/\\/g, '/').trim();
+  for (const node of Array.isArray(nodes) ? nodes : []) {
+    if (node?.type === 'file' && String(node.path || '').replace(/\\/g, '/') === normalizedPath) return node;
+    const nested = findFileInTree(node?.children || [], normalizedPath);
+    if (nested) return nested;
+  }
+  return null;
+}
+
 function readFilesWorkspaceLayout() {
   if (typeof window === 'undefined') return { editorWidthPercent: FILES_LAYOUT_DEFAULT, agentWidthPercent: 100 - FILES_LAYOUT_DEFAULT };
   try {
@@ -167,9 +177,11 @@ export default function FilesPage() {
   const [agentFileChangeVersion, setAgentFileChangeVersion] = useState(0);
   const [agentFixedWidthViewport, setAgentFixedWidthViewport] = useState(false);
   const [editorAutoCollapsed, setEditorAutoCollapsed] = useState(false);
+  const [agentPanelLock, setAgentPanelLock] = useState({ locked: false, message: '' });
   const workspacePanelsRef = useRef(workspacePanels);
   const hasOpenedFileRef = useRef(false);
   const hasRestoredStartupFileRef = useRef(false);
+  const lastSelectedFileIdRef = useRef(null);
 
   const loadFile = useCallback(async (fileId) => {
     // Check in-memory cache first for instant navigation
@@ -265,7 +277,11 @@ export default function FilesPage() {
     }
     if (hasOpenedFileRef.current || !workspaceDefaults) return;
     hasOpenedFileRef.current = true;
-    updateWorkspacePanels(workspaceDefaults);
+    // 启动恢复沿用上次关窗时的组合；用户主动打开的首个文件始终需要可见编辑器。
+    updateWorkspacePanels({
+      ...workspaceDefaults,
+      editorOpen: hasRestoredStartupFileRef.current ? workspaceDefaults.editorOpen : true,
+    });
   }, [activeFile?.id, restoredActiveFileId, updateWorkspacePanels, workspaceActiveFileId, workspaceDefaults, workspaceHydrated]);
 
   const handleFilesLayoutChange = useCallback((nextPercent) => {
@@ -285,13 +301,37 @@ export default function FilesPage() {
     setAgentFileChangeVersion((previous) => previous + 1);
   }, [activeFileId, clearCachedContent]);
 
-  const handleOpenDiffFile = useCallback((filePath) => {
+  const expandEditorForFile = useCallback(() => {
+    setEditorAutoCollapsed(false);
+    if (!workspacePanelsRef.current.editorOpen) updateWorkspacePanels({ editorOpen: true });
+  }, [updateWorkspacePanels]);
+
+  useEffect(() => {
+    const nextFileId = Number(activeFile?.id || 0);
+    if (!nextFileId) {
+      lastSelectedFileIdRef.current = null;
+      return;
+    }
+    const isRestoredStartupFile = hasRestoredStartupFileRef.current && lastSelectedFileIdRef.current === null;
+    if (!isRestoredStartupFile && Number(lastSelectedFileIdRef.current) !== nextFileId) {
+      expandEditorForFile();
+    }
+    lastSelectedFileIdRef.current = nextFileId;
+  }, [activeFile?.id, expandEditorForFile]);
+
+  const handleOpenDiffFile = useCallback(async (filePath) => {
     const normalizedPath = String(filePath || '').replace(/\\/g, '/').trim();
-    const targetFile = allFiles.find((file) => String(file?.path || '').replace(/\\/g, '/') === normalizedPath);
+    let targetFile = allFiles.find((file) => String(file?.path || '').replace(/\\/g, '/') === normalizedPath);
+    if (!targetFile) {
+      try {
+        targetFile = findFileInTree(await refreshFiles({ background: true }), normalizedPath);
+      } catch {}
+    }
     if (!targetFile) {
       toast('该文档已删除或不存在', 'info');
       return;
     }
+    expandEditorForFile();
     if (Number(activeFileId) === Number(targetFile.id)) {
       toast('该文档已打开', 'info');
       return;
@@ -299,7 +339,7 @@ export default function FilesPage() {
     selectFile(targetFile);
     const href = `/files?fileId=${encodeURIComponent(targetFile.id)}`;
     if (router.asPath !== href) router.push(href).catch(() => {});
-  }, [activeFileId, allFiles, router, selectFile, toast]);
+  }, [activeFileId, allFiles, expandEditorForFile, refreshFiles, router, selectFile, toast]);
 
   useEffect(() => {
     if (!router.isReady) return;
@@ -308,8 +348,9 @@ export default function FilesPage() {
     if (activeFileId === requestedFileId) return;
     const targetFile = allFiles.find((file) => file.id === requestedFileId);
     if (!targetFile) return;
+    expandEditorForFile();
     selectFile(targetFile);
-  }, [activeFileId, allFiles, router.isReady, router.query.fileId, selectFile]);
+  }, [activeFileId, allFiles, expandEditorForFile, router.isReady, router.query.fileId, selectFile]);
 
   useEffect(() => {
     if (!activeFileId) {
@@ -530,7 +571,7 @@ export default function FilesPage() {
       const response = await fetch(`/api/files/${activeFileId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: contentToSave }),
+        body: JSON.stringify({ content: contentToSave, title: nextTitle }),
       });
       const payload = await response.json();
 
@@ -702,15 +743,18 @@ export default function FilesPage() {
       fileTree={files}
       refreshFiles={refreshFiles}
       onFilesChanged={handleAgentFilesChanged}
+      onAgentPanelLockChange={setAgentPanelLock}
       beforeAgentRun={() => (saveState === 'dirty' ? handleSave() : true)}
       fullWidth={!renderedWorkspacePanels.editorOpen}
       onOpenDiffFile={handleOpenDiffFile}
     />
   );
 
-  const workspaceContent = workspacePanels.editorOpen && workspacePanels.agentOpen ? (
+  const hasVisibleWorkspacePanel = renderedWorkspacePanels.editorOpen || renderedWorkspacePanels.agentOpen;
+  const workspaceContent = hasVisibleWorkspacePanel ? (
     <ResizableLayout
-      collapseLeft={renderedEditorAutoCollapsed}
+      collapseLeft={!renderedWorkspacePanels.editorOpen}
+      collapseRight={!renderedWorkspacePanels.agentOpen}
       left={editorPanel}
       right={agentPanel}
       leftPercent={workspaceLayout.editorWidthPercent}
@@ -722,9 +766,17 @@ export default function FilesPage() {
       minRightPx={FILES_AGENT_MIN_WIDTH}
       fixedRightPx={agentFixedWidthViewport ? FILES_AGENT_FIXED_WIDTH : 0}
     />
-  ) : renderedWorkspacePanels.editorOpen ? editorPanel : renderedWorkspacePanels.agentOpen ? agentPanel : (
+  ) : (
     <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)', fontSize: 'var(--text-sm)' }}>使用顶部按钮展开富文本编辑器或 AI 聊天面板。</div>
   );
+
+  const handleToggleAgentPanel = () => {
+    if (workspacePanelsRef.current.agentOpen && agentPanelLock.locked) {
+      toast(agentPanelLock.message || 'AI 正在处理当前任务，请完成后再收起面板。', 'info');
+      return;
+    }
+    updateWorkspacePanels({ agentOpen: !workspacePanelsRef.current.agentOpen });
+  };
 
   return (
     <Shell
@@ -746,7 +798,7 @@ export default function FilesPage() {
         }
         updateWorkspacePanels({ editorOpen: !workspacePanels.editorOpen });
       }}
-      onToggleAgent={() => updateWorkspacePanels({ agentOpen: !workspacePanels.agentOpen })}
+      onToggleAgent={handleToggleAgentPanel}
     >
       {workspaceContent}
       {unsavedGuard.dialog}

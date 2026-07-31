@@ -53,6 +53,7 @@ const {
 const {
   attachMediaFileId,
   buildMediaChanges,
+  ensureConversationImagesInMarkdown,
   materializeConversationImages,
 } = require('./conversationImageAssets');
 
@@ -111,8 +112,30 @@ function agentMcpServerToolDefinition() {
   return tool('add_mcp_server', '新增并测试 MCP Server。用户明确提供全部配置后直接执行，不需要二次确认。Streamable HTTP 需要 HTTPS 地址；stdio 仅桌面端可用。HTTP Header 和 stdio 环境变量的值会保存为密钥，绝不在工具结果中回显。', properties, ['name', 'transport']);
 }
 
+function managementToolDefinitions() {
+  const draft = { name: { type: 'string' }, description: { type: 'string' }, instructions: { type: 'string' }, files: { type: 'array', items: { type: 'object' } } };
+  return [
+    tool('list_skills', '列出 Skill 的来源、受管、启用和校验状态。', {}),
+    tool('get_skill_details', '查看 Skill 的受限正文、文件清单和校验结果。', { skill_id: { type: 'string' } }, ['skill_id']),
+    tool('create_skill_draft', '创建并校验受管 Skill 草稿，不会写入工作区或安装目录；必须单独调用。', draft, ['name', 'description', 'instructions']),
+    tool('validate_skill_draft', '返回 Skill 草稿校验结果。', { draft_id: { type: 'string' } }, ['draft_id']),
+    tool('install_skill_draft', '请求安装 Skill 草稿，必须等待资源确认卡；必须单独调用。', { draft_id: { type: 'string' } }, ['draft_id']),
+    tool('update_skill_draft', '为受管 Skill 创建完整修订草稿，确认后才覆盖；必须单独调用。', { skill_id: { type: 'string' }, ...draft }, ['skill_id', 'description', 'instructions']),
+    tool('set_skill_enabled', '启用或停用 Skill；外部扫描 Skill 只能停用。', { skill_id: { type: 'string' }, enabled: { type: 'boolean' } }, ['skill_id', 'enabled']),
+    tool('update_skill_from_git', '拉取受管 Git Skill 的 main/master 更新。', { skill_id: { type: 'string' } }, ['skill_id']),
+    tool('uninstall_skill', '请求卸载受管 Skill；外部 Skill 将请求停用；必须等待资源确认卡。', { skill_id: { type: 'string' } }, ['skill_id']),
+    tool('list_mcp_servers', '列出 MCP Server 脱敏配置、状态、最近测试与缓存工具摘要。', {}),
+    tool('get_mcp_server_details', '查看 MCP Server 脱敏配置；密钥只显示字段名和已配置状态。', { server_id: { type: 'string' } }, ['server_id']),
+    tool('update_mcp_server', '直接修改 MCP Server；遗漏密钥保持原值。', { server_id: { type: 'string' }, name: { type: 'string' }, enabled: { type: 'boolean' }, transport: { type: 'string' }, http: { type: 'object' }, stdio: { type: 'object' } }, ['server_id']),
+    tool('test_mcp_server', '测试 MCP Server 并刷新工具缓存。', { server_id: { type: 'string' } }, ['server_id']),
+    tool('set_mcp_server_enabled', '启用或停用 MCP Server。', { server_id: { type: 'string' }, enabled: { type: 'boolean' } }, ['server_id', 'enabled']),
+    tool('remove_mcp_server', '请求删除 MCP Server，必须等待资源确认卡；必须单独调用。', { server_id: { type: 'string' } }, ['server_id']),
+  ];
+}
+
 function buildToolDefinitions(session = {}, options = {}) {
   const definitions = [
+    ...managementToolDefinitions(),
     tool('search_knowledge', '在用户的笔记知识库中检索 Markdown 正文、事实材料和写作参考。首次调用由服务端以原始词为首项自动执行 3 个查询，证据不足时最多补到 5 个；重复调用会复用缓存。不要用它判断目录是否存在、目标目录位置或空目录；文件系统结构请用 analyze_folder。', {
       query: { type: 'string', description: '检索关键词或问题' },
       scope_paths: { type: 'array', items: { type: 'string' }, description: '可选，限定检索目录或文件路径' },
@@ -498,7 +521,10 @@ async function executeCreateNote({ path: filePath, content = '', title = '' } = 
   if (!check.valid) return { error: 'PERMISSION_DENIED', reason: check.reason, path: normalized };
   const target = resolveInsideNotes(notesDir, normalized);
   if (fs.existsSync(target.absolutePath)) return { error: 'FILE_ALREADY_EXISTS', path: normalized };
-  const finalContent = buildAgentFrontmatterContent(title, content);
+  const finalContent = buildAgentFrontmatterContent(title, ensureConversationImagesInMarkdown(content, {
+    conversationId: session.conversation_id,
+    taskText: session.goal,
+  }));
   const operationSet = createOperationSet({
     conversationId: session.conversation_id,
     agentSessionId: session.id,
@@ -922,6 +948,10 @@ async function executePreviewPatchFiles({ patches = [] } = {}, sessionId) {
       };
     }
     patch.old = aligned.old;
+    patch.new = ensureConversationImagesInMarkdown(patch.new, {
+      conversationId: session.conversation_id,
+      taskText: session.goal,
+    });
   }
   const operationSet = createOperationSet({
     conversationId: session.conversation_id,
@@ -1381,7 +1411,7 @@ function executeUpdateGlobalAgentFile({ file = '', content = '', expected_hash: 
 
 function validateToolUseBlock(toolUseBlocks = []) {
   const blocks = Array.isArray(toolUseBlocks) ? toolUseBlocks : [];
-  const preview = blocks.find((block) => ['create_note', 'preview_patch_files', 'preview_file_revision', 'preview_file_operations', 'ask_question_card', 'install_skill_from_git', 'add_mcp_server', 'update_global_agent_file'].includes(block.name));
+  const preview = blocks.find((block) => ['create_note', 'preview_patch_files', 'preview_file_revision', 'preview_file_operations', 'ask_question_card', 'install_skill_from_git', 'add_mcp_server', 'update_global_agent_file', 'create_skill_draft', 'install_skill_draft', 'update_skill_draft', 'uninstall_skill', 'remove_mcp_server'].includes(block.name));
   if (preview && blocks.length > 1) {
     return { error: true, errorToolUseId: preview.id, message: `${preview.name} 必须是该轮的唯一工具调用，请在下一轮单独调用它。` };
   }
@@ -1422,6 +1452,9 @@ function summarizeInput(toolUse = {}) {
   if (toolUse.name === 'read_skill_file') return input.path || '';
   if (toolUse.name === 'install_skill_from_git') return input.repository_url || '';
   if (toolUse.name === 'add_mcp_server') return input.name || 'MCP Server';
+  if (toolUse.name === 'install_skill_draft' || toolUse.name === 'validate_skill_draft') return input.draft_id || 'Skill 草稿';
+  if (toolUse.name === 'update_skill_draft' || toolUse.name === 'get_skill_details' || toolUse.name === 'set_skill_enabled' || toolUse.name === 'update_skill_from_git' || toolUse.name === 'uninstall_skill') return input.skill_id || 'Skill';
+  if (toolUse.name.includes('mcp_server')) return input.server_id || input.name || 'MCP Server';
   return toolUse.name || '';
 }
 
@@ -1474,6 +1507,37 @@ async function executeAddMcpServer(input = {}) {
     };
   }
 }
+
+function safeMcp(server, details = false) {
+  const { cachedTools } = require('./mcp');
+  const config = server?.config || {};
+  const hide = (rows) => (Array.isArray(rows) ? rows : []).map((item) => ({ name: item.name, configured: Boolean(item.secret || item.secretId || item.value) }));
+  const result = { id: server.id, name: server.name, transport: server.transport, enabled: Boolean(server.enabled), updated_at: server.updated_at, last_test: { status: server.last_test_status || null, at: server.last_test_at || null, error_code: server.last_error_code || null }, tools: cachedTools(server.id).map((item) => ({ name: item.tool_name, description: item.description || '' })).slice(0, 50) };
+  if (details && server.transport === 'streamable_http') result.http = { url: config.http?.url || '', headers: hide(config.http?.headers) };
+  if (details && server.transport === 'stdio') result.stdio = { command: config.stdio?.command || '', args: config.stdio?.args || [], cwd: config.stdio?.cwd || '', env: hide(config.stdio?.env) };
+  return result;
+}
+function resourceApproval(sessionId, action, target, payload = {}) {
+  const session = getSession(sessionId);
+  if (!session?.conversation_id) return { error: 'CONVERSATION_REQUIRED', message: '资源操作需要当前对话' };
+  const interaction = createInteraction({ conversationId: session.conversation_id, kind: 'resource_approval', source: 'agent_loop', reasonCode: action, expireDays: 1, payload: { ...payload, action, target, agent_session_id: session.id, title: '确认资源操作', submit_label: '确认执行' } });
+  return { approval_required: true, interaction_id: interaction.id, interaction };
+}
+function executeListSkills() { const { listSkills } = require('./skills'); return { skills: listSkills().map((skill) => ({ id: skill.id, name: skill.name, description: skill.description, source_label: skill.source_label, managed: skill.managed, enabled: skill.enabled, status: skill.status, validation_errors: skill.validation_errors, can_update: skill.can_update })) }; }
+function executeGetSkillDetails({ skill_id } = {}) { return require('./skills').getSkillManagementDetails(skill_id); }
+function executeCreateSkillDraft(input = {}) { const { createSkillDraft } = require('./skills'); const draft = createSkillDraft(input); return { draft_id: draft.id, validation: draft.validation, valid: draft.validation.length === 0, files: draft.files.map((item) => item.path) }; }
+function executeValidateSkillDraft({ draft_id } = {}) { const draft = require('./skills').getSkillDraft(draft_id); if (!draft) return { error: 'SKILL_DRAFT_NOT_FOUND' }; return { draft_id: draft.id, validation: draft.validation, valid: draft.validation.length === 0, status: draft.status }; }
+function executeInstallSkillDraft({ draft_id } = {}, sessionId) { const draft = require('./skills').getSkillDraft(draft_id); if (!draft) return { error: 'SKILL_DRAFT_NOT_FOUND' }; if (draft.validation.length) return { error: 'SKILL_INVALID', validation: draft.validation }; return resourceApproval(sessionId, draft.metadata?.operation === 'update' ? 'skill_update' : 'skill_install', draft.name, { draft_id: draft.id, files: draft.files.map((item) => item.path), validation: draft.validation }); }
+function executeUpdateSkillDraft(input = {}, sessionId) { const draft = require('./skills').createSkillRevisionDraft(input.skill_id, input); return { draft_id: draft.id, validation: draft.validation, valid: draft.validation.length === 0, pending_confirmation: true }; }
+function executeSetSkillEnabled({ skill_id, enabled } = {}) { const skill = require('./skills').setSkillEnabled(skill_id, enabled); return { skill: { id: skill.id, name: skill.name, enabled: skill.enabled, managed: skill.managed } }; }
+async function executeUpdateSkillFromGit({ skill_id } = {}) { const result = await require('./skills').updateSkillFromGit(skill_id); return { job_id: result.jobId, skill: { id: result.skill.id, name: result.skill.name, enabled: result.skill.enabled } }; }
+function executeUninstallSkill({ skill_id } = {}, sessionId) { const skill = require('./skills').getSkill(skill_id); if (!skill) return { error: 'SKILL_NOT_FOUND' }; return resourceApproval(sessionId, skill.managed ? 'skill_uninstall' : 'skill_disable', skill.name, { skill_id: skill.id, managed: skill.managed }); }
+function executeListMcpServers() { const { listServers } = require('./mcp'); return { servers: listServers({ includeDisabled: true }).map((item) => safeMcp(item)) }; }
+function executeGetMcpServerDetails({ server_id } = {}) { const server = require('./mcp').getServer(server_id); if (!server) return { error: 'MCP_SERVER_NOT_FOUND' }; return { server: safeMcp(server, true) }; }
+async function executeUpdateMcpServer(input = {}) { const { getServer, saveServer } = require('./mcp'); const existing = getServer(input.server_id); if (!existing) return { error: 'MCP_SERVER_NOT_FOUND' }; const payload = { ...input, name: input.name || existing.name, transport: input.transport || existing.transport, http: input.http ? { ...input.http, headers: agentSecretEntries(input.http.headers) } : undefined, stdio: input.stdio ? { ...input.stdio, env: agentSecretEntries(input.stdio.env) } : undefined }; const server = await saveServer(payload, existing.id); return { server: safeMcp(server) }; }
+async function executeTestMcpServer({ server_id } = {}) { const test = await require('./mcp').testServer(server_id); return { test: { ok: true, tool_count: test.tool_count, duration_ms: test.duration_ms } }; }
+async function executeSetMcpServerEnabled({ server_id, enabled } = {}) { const { getServer, saveServer } = require('./mcp'); const existing = getServer(server_id); if (!existing) return { error: 'MCP_SERVER_NOT_FOUND' }; const server = await saveServer({ name: existing.name, transport: existing.transport, enabled: Boolean(enabled), http: existing.config?.http, stdio: existing.config?.stdio }, existing.id); return { server: safeMcp(server) }; }
+function executeRemoveMcpServer({ server_id } = {}, sessionId) { const server = require('./mcp').getServer(server_id); if (!server) return { error: 'MCP_SERVER_NOT_FOUND' }; return resourceApproval(sessionId, 'mcp_remove', server.name, { server_id: server.id }); }
 
 async function executeToolSafely(toolUse = {}, session, notesDir = getEffectiveConfig().notesDir, context = {}) {
   try {
@@ -1534,6 +1598,21 @@ const TOOL_EXECUTORS = {
   update_global_agent_file: executeUpdateGlobalAgentFile,
   install_skill_from_git: executeInstallSkillFromGit,
   add_mcp_server: executeAddMcpServer,
+  list_skills: executeListSkills,
+  get_skill_details: executeGetSkillDetails,
+  create_skill_draft: executeCreateSkillDraft,
+  validate_skill_draft: executeValidateSkillDraft,
+  install_skill_draft: executeInstallSkillDraft,
+  update_skill_draft: executeUpdateSkillDraft,
+  set_skill_enabled: executeSetSkillEnabled,
+  update_skill_from_git: executeUpdateSkillFromGit,
+  uninstall_skill: executeUninstallSkill,
+  list_mcp_servers: executeListMcpServers,
+  get_mcp_server_details: executeGetMcpServerDetails,
+  update_mcp_server: executeUpdateMcpServer,
+  test_mcp_server: executeTestMcpServer,
+  set_mcp_server_enabled: executeSetMcpServerEnabled,
+  remove_mcp_server: executeRemoveMcpServer,
 };
 
 module.exports = {

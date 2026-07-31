@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getAgentLoopReasonLabel, getAgentToolLabel } from '../utils/agentDisplay';
+import { dispatchAgentResourceChange } from '../utils/agentResourceEvents';
 
 function toPositiveInt(value) {
   const next = Number(value);
@@ -314,6 +315,7 @@ export function useAgentLoopController({
   const [error, setError] = useState('');
   const controllerRef = useRef(null);
   const sessionRef = useRef(null);
+  const runSequenceRef = useRef(0);
   const stepsRef = useRef([]);
   const assistantTextRef = useRef('');
   const filesMayHaveChangedRef = useRef(false);
@@ -323,12 +325,13 @@ export function useAgentLoopController({
   }, []);
 
   const setActiveAgentSession = useCallback((patchOrUpdater) => {
-    setActiveAgentSessionState((prev) => {
-      const patch = typeof patchOrUpdater === 'function' ? patchOrUpdater(prev) : patchOrUpdater;
-      const next = patch === null ? null : { ...(prev || {}), ...(patch || {}) };
-      sessionRef.current = next;
-      return next;
-    });
+    // SSE 的 session_created、interaction_request 与 loop_done 可能在同一批次到达。
+    // 不能等 React state updater 执行后才写 ref，否则后续事件会取到空 token。
+    const previous = sessionRef.current;
+    const patch = typeof patchOrUpdater === 'function' ? patchOrUpdater(previous) : patchOrUpdater;
+    const next = patch === null ? null : { ...(previous || {}), ...(patch || {}) };
+    sessionRef.current = next;
+    setActiveAgentSessionState(next);
   }, []);
 
   const setSteps = useCallback((updater) => {
@@ -438,6 +441,8 @@ export function useAgentLoopController({
         skip_user_message_append: Boolean(input?.skip_user_message_append || input?.skipUserMessageAppend),
       };
 
+    const runSequence = runSequenceRef.current + 1;
+    runSequenceRef.current = runSequence;
     controllerRef.current?.abort();
     const controller = new AbortController();
     controllerRef.current = controller;
@@ -500,11 +505,11 @@ export function useAgentLoopController({
       }
 
       await readSse(response, async (event) => {
+        // 上一次 SSE 可能在取消后仍吐出收尾事件；不能让旧的 waiting_confirm 覆盖恢复任务的终态。
+        if (runSequence !== runSequenceRef.current) return;
         const step = buildEventStep(event);
         if (step) appendStep(step);
-        if (event.type === 'tool_done' && event.tool_name === 'install_skill_from_git' && !event.failed && typeof window !== 'undefined') {
-          window.dispatchEvent(new Event('notus-skills-changed'));
-        }
+        if (event.type === 'tool_done' && !event.failed) dispatchAgentResourceChange(event.tool_name);
         if (event.conversation_id) {
           onConversationId?.(Number(event.conversation_id));
         }
@@ -598,6 +603,7 @@ export function useAgentLoopController({
           const current = sessionRef.current || {};
           const hardLimit = event.reason === 'hard_limit_reached';
           const waitingQuestionCard = event.reason === 'question_card_requested';
+          const waitingResourceApproval = event.reason === 'resource_approval_requested';
           const failed = ['consecutive_tool_failure', 'deadloop_detected', 'no_progress', 'preview_auto_apply_failed'].includes(event.reason);
           let operationSet = null;
           if (event.operation_set_id) {
@@ -612,13 +618,13 @@ export function useAgentLoopController({
             id: event.session_id || current.id,
             token: current.token || resumeToken,
             conversation_id: event.conversation_id || current.conversation_id || null,
-            status: hardLimit || waitingQuestionCard ? 'waiting_confirm' : failed ? 'failed' : 'completed',
+            status: hardLimit || waitingQuestionCard || waitingResourceApproval ? 'waiting_confirm' : failed ? 'failed' : 'completed',
             loop_count: Number(event.loop_index || current.loop_count || 0),
             reason: event.reason || '',
             interaction_id: event.interaction_id || current.interaction_id || null,
           });
           setSteps((prev) => completeSteps(upsertStep(prev, buildEventStep(event))));
-          appendAssistant({
+          if (!waitingResourceApproval) appendAssistant({
             content: assistantTextRef.current || reasonLabel(event.reason),
             meta: {
               agent_loop: true,
@@ -649,6 +655,7 @@ export function useAgentLoopController({
         }
       });
     } catch (nextError) {
+      if (runSequence !== runSequenceRef.current) return;
       if (nextError.name === 'AbortError') {
         appendStep(buildEventStep({ type: 'cancelled' }));
       } else {

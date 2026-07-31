@@ -31,8 +31,6 @@ async function runTests() {
 
   const { createConversation } = require('../lib/conversations');
   const { createSession, getSession } = require('../lib/agentSession');
-  const { createOperationSet } = require('../lib/canvasOperationSets');
-  const { buildWriteTargetPreflight } = require('../lib/agentLoop');
   const {
     buildResearchSummary,
     correctConflictingSourceClaims,
@@ -130,44 +128,6 @@ async function runTests() {
   const webQueryReceipts = activity.research_receipts.filter((item) => item.source_type === 'web' && item.query);
   assert.strictEqual(webQueryReceipts.length, 5, '追问必须能读取真实的五条查询回执');
   assert.strictEqual(activity.tool_status.find((item) => item.tool_name === 'read_file').status, 'not_executed');
-
-  createOperationSet({
-    conversationId: conversation.id,
-    agentSessionId: knowledgeSession.sessionId,
-    articleHash: 'article-a',
-    mode: 'create_file',
-    status: 'applied',
-    patches: [{ file_path: 'drafts/first.md', old: '', new: '# First', change_type: 'create', status: 'applied' }],
-  });
-  createOperationSet({
-    conversationId: conversation.id,
-    agentSessionId: knowledgeSession.sessionId,
-    articleHash: 'article-b',
-    mode: 'create_file',
-    status: 'applied',
-    patches: [{ file_path: 'drafts/second.md', old: '', new: '# Second', change_type: 'create', status: 'applied' }],
-  });
-  const ambiguousWriteSession = createSession({
-    goal: '用户任务：帮我写一篇文章',
-    conversationId: conversation.id,
-  });
-  const preflight = buildWriteTargetPreflight(getSession(ambiguousWriteSession.sessionId));
-  assert.strictEqual(preflight.candidates.length, 2, '多个候选文章时必须先请求选择');
-  const directConversation = createConversation({ kind: 'canvas', title: '唯一承接目标' });
-  const directSourceSession = createSession({ goal: '用户任务：写初稿', conversationId: directConversation.id });
-  createOperationSet({
-    conversationId: directConversation.id,
-    agentSessionId: directSourceSession.sessionId,
-    articleHash: 'article-only',
-    mode: 'create_file',
-    status: 'applied',
-    patches: [{ file_path: 'drafts/only.md', old: '', new: '# Only', change_type: 'create', status: 'applied' }],
-  });
-  const directRewriteSession = createSession({
-    goal: '用户任务：继续修改这篇文章',
-    conversationId: directConversation.id,
-  });
-  assert.strictEqual(buildWriteTargetPreflight(getSession(directRewriteSession.sessionId)), null, '唯一且明确承接改写不应再次打断');
 
   console.log('agent research tests passed');
 }

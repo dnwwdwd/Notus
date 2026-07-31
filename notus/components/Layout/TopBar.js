@@ -191,6 +191,7 @@ export const TopBar = ({
   const handlePickFile = useCallback((file) => {
     closeSearch();
     const action = () => {
+      if (typeof onToggleEditor === 'function' && !editorOpen) onToggleEditor();
       selectFile(file);
       const href = `/files?fileId=${encodeURIComponent(file.id)}`;
       if (router.pathname !== '/files') {
@@ -206,7 +207,7 @@ export const TopBar = ({
       return;
     }
     runAction(action);
-  }, [closeSearch, requestAction, router, runAction, selectFile]);
+  }, [closeSearch, editorOpen, onToggleEditor, requestAction, router, runAction, selectFile]);
 
   useEffect(() => {
     const handleKeydown = (event) => {

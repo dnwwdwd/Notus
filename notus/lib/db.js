@@ -286,6 +286,7 @@ function ensureSkillMcpSchema(database) {
     CREATE INDEX IF NOT EXISTS idx_external_mcp_audit_token
       ON external_mcp_audit_logs(token_id, created_at DESC);
   `);
+  try { db.exec("ALTER TABLE skill_drafts ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'"); } catch (error) { if (!/duplicate column name/i.test(error.message)) throw error; }
   [
     ['skill_mentions_json', "TEXT NOT NULL DEFAULT '[]'"],
     ['mcp_selection_json', "TEXT NOT NULL DEFAULT '{\"mode\":\"off\"}'"],

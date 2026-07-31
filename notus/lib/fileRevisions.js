@@ -16,6 +16,7 @@ const {
 } = require('./canvasOperationSets');
 const {
   buildMediaChanges,
+  ensureConversationImagesInMarkdown,
   materializeConversationImages,
 } = require('./conversationImageAssets');
 const {
@@ -324,7 +325,10 @@ async function previewFileRevision({
   if (!file) return { error: 'FILE_NOT_FOUND', path: normalizedPath };
 
   const baseContent = normalizeRevisionContent(file.content || '');
-  const draft = normalizeRevisionContent(draftContent || snakeDraftContent);
+  const draft = normalizeRevisionContent(ensureConversationImagesInMarkdown(draftContent || snakeDraftContent, {
+    conversationId: session.conversation_id,
+    taskText: session.goal,
+  }));
   const baseHash = hashRevisionContent(baseContent);
   const draftHash = hashRevisionContent(draft);
   const safety = analyzeRevisionSafety({

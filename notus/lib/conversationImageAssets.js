@@ -2,6 +2,7 @@ const fs = require('fs');
 const { buildImageProxyUrl, isLocalImageSource } = require('./images');
 const { persistImageBuffer } = require('./imageStorage');
 const {
+  listConversationImages,
   parseConversationImageReference,
   resolveConversationImages,
   resolveStoredImagePath,
@@ -27,6 +28,32 @@ function extractMarkdownImages(content = '') {
 
 function isConversationImageSource(src = '') {
   return Boolean(parseConversationImageReference(src));
+}
+
+function isConversationImageInsertionRequest(taskText = '') {
+  const text = String(taskText || '').replace(/\s+/g, ' ').trim();
+  if (!text) return false;
+  const image = '(?:图片|截图|反馈图|照片)';
+  const insert = '(?:贴入|贴到|插入|加入|写入|放进|放到|整理进|整理为|整理成|补进|补充到)';
+  return new RegExp(`${image}.{0,18}${insert}|${insert}.{0,18}${image}`).test(text);
+}
+
+// 图片写入任务不能只依赖模型是否记得把受控引用放进 Markdown。
+// 当用户明确要求把当前会话图片贴入文档而草稿遗漏引用时，补齐尚未出现的图片。
+// 真正持久化仍发生在应用预览时，统一由 persistImageBuffer() 按当前本地/图床设置处理。
+function ensureConversationImagesInMarkdown(content = '', { conversationId = null, taskText = '' } = {}) {
+  const source = String(content || '');
+  if (!conversationId || !isConversationImageInsertionRequest(taskText)) return source;
+  const existingSources = new Set(extractMarkdownImages(source).map((image) => image.src));
+  const missing = listConversationImages(conversationId).filter((image) => (
+    image?.image_ref && !existingSources.has(image.image_ref)
+  ));
+  if (missing.length === 0) return source;
+  const markdown = missing.map((image) => {
+    const alt = String(image.name || '用户提供的图片').replace(/[\[\]]/g, '').trim() || '用户提供的图片';
+    return `![${alt}](${image.image_ref})`;
+  }).join('\n\n');
+  return `${source.replace(/\s+$/, '')}\n\n## 用户提供的图片\n\n${markdown}\n`;
 }
 
 function resolveConversationPreview(src = '', conversationId = null) {
@@ -221,6 +248,7 @@ async function materializeConversationImages({
 module.exports = {
   attachMediaFileId,
   buildMediaChanges,
+  ensureConversationImagesInMarkdown,
   extractMarkdownImages,
   isConversationImageSource,
   materializeConversationImages,

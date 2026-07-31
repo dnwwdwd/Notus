@@ -24,15 +24,18 @@ async function runTests() {
     '改写',
     "event.key === 'Enter' && !event.shiftKey",
     "event.key === 'Escape'",
-    "sending ? '发送中...' : '发送'",
+    '}>发送</button>',
     'label="重试"',
     'label="复制"',
     'CopyMessageButton',
     'handleResendMessage',
     'const [removingMessageIds, setRemovingMessageIds] = useState(() => new Set());',
     'const [hiddenMessageIds, setHiddenMessageIds] = useState(() => new Set());',
+    'const [submittedContent, setSubmittedContent] = useState(null);',
+    'setSubmittedContent(nextContent);',
+    'setEditing(false);',
     'await fetch(`/api/conversations/${conversationId}/truncate`',
-    'if (futureIds.length > 0) await wait(220);',
+    'window.setTimeout(() => {',
     'skipUserMessageAppend: options.reason === \'rewrite\'',
     'attachments: Array.isArray(sourceMessage?.attachments) ? sourceMessage.attachments : []',
   ].forEach((snippet) => {
@@ -41,6 +44,7 @@ async function runTests() {
       `AgentWorkspace.js should include ${snippet}`
     );
   });
+  assert.ok(!workspaceSource.includes("kind === 'remove' ? '移除图片' : kind === 'replace' ? '替换图片' : '新增图片'"), '图片新增缩略图已足够表达变更，不应重复显示新增文字');
 
   const assistantContentIndex = workspaceSource.indexOf('{message.content ? <StreamingText className="notus-agent-markdown"');
   const assistantActionsIndex = workspaceSource.indexOf('aria-label="AI 回复操作"');

@@ -241,6 +241,8 @@ function ReviewRow({
 
 export function ClarifyDrawer({
   interaction,
+  answerDraft,
+  onAnswerDraftChange,
   onSubmit,
   onRetry,
   onCancel,
@@ -260,21 +262,32 @@ export function ClarifyDrawer({
   const isPending = interaction?.status === 'pending';
   const isRetryable = interaction?.status === 'failed';
   const isStale = interaction?.status === 'stale';
-  const [answers, setAnswers] = useState(() => buildInitialAnswers(interaction));
-  const [activeIndex, setActiveIndex] = useState(() => findFirstUnansweredIndex(questions, buildInitialAnswers(interaction)));
+  const [answers, setAnswers] = useState(() => answerDraft || buildInitialAnswers(interaction));
+  const [activeIndex, setActiveIndex] = useState(() => findFirstUnansweredIndex(questions, answerDraft || buildInitialAnswers(interaction)));
   const [phase, setPhase] = useState(() => (isRetryable ? 'failed' : isStale ? 'stale' : 'expanded-question'));
   const [swipeStartY, setSwipeStartY] = useState(null);
   const optionRefs = useRef([]);
   const customInputRef = useRef(null);
   const reviewRowRefs = useRef([]);
+  const answerDraftRef = useRef(answerDraft);
   const activeQuestions = useMemo(() => visibleQuestions(questions, answers), [answers, questions]);
 
   useEffect(() => {
-    const nextAnswers = buildInitialAnswers(interaction);
+    answerDraftRef.current = answerDraft;
+  }, [answerDraft]);
+
+  useEffect(() => {
+    const nextAnswers = answerDraftRef.current || buildInitialAnswers(interaction);
+    const nextQuestions = visibleQuestions(questions, nextAnswers);
+    const restoredAllAnswered = nextQuestions.length > 0
+      && nextQuestions.every((question) => isQuestionAnswered(question, nextAnswers[question.id] || {}));
     setAnswers(nextAnswers);
-    setActiveIndex(findFirstUnansweredIndex(visibleQuestions(questions, nextAnswers), nextAnswers));
-    setPhase(isRetryable ? 'failed' : isStale ? 'stale' : 'expanded-question');
-  }, [interaction, isRetryable, isStale, questions]);
+    setActiveIndex(findFirstUnansweredIndex(nextQuestions, nextAnswers));
+    setPhase(isRetryable ? 'failed' : isStale ? 'stale' : restoredAllAnswered ? 'expanded-review' : 'expanded-question');
+    // 同一张卡片的父级重渲染（切换文件、布局收起）不能清空用户尚未提交的回答。
+    // 卡片 schema 更新会带来新的 interaction id；同一 id 只恢复一次内存草稿。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [interaction?.id, isRetryable, isStale]);
 
   useEffect(() => {
     setActiveIndex((current) => Math.min(current, Math.max(activeQuestions.length - 1, 0)));
@@ -316,11 +329,21 @@ export function ClarifyDrawer({
   const footerHint = interaction?.payload?.footer_hint
     || (allAnswered ? '检查无误后再开始' : `${activeQuestions.length} 个问题，约 30 秒`);
 
+  const updateAnswers = (updater) => {
+    setAnswers((previous) => {
+      const current = answerDraftRef.current || previous;
+      const next = typeof updater === 'function' ? updater(current) : updater;
+      answerDraftRef.current = next;
+      onAnswerDraftChange?.(next);
+      return next;
+    });
+  };
+
   const handleAnswerPatch = (questionId, patch = {}) => {
-    setAnswers((prev) => ({
-      ...prev,
+    updateAnswers((previous) => ({
+      ...previous,
       [questionId]: {
-        ...prev[questionId],
+        ...previous[questionId],
         ...patch,
       },
     }));
@@ -339,7 +362,7 @@ export function ClarifyDrawer({
         label: option.label,
       },
     };
-    setAnswers(nextAnswers);
+    updateAnswers(nextAnswers);
     const nextQuestions = visibleQuestions(questions, nextAnswers);
     const currentIndex = nextQuestions.findIndex((item) => item.id === question.id);
     if (currentIndex >= 0 && currentIndex < nextQuestions.length - 1) {

@@ -23,6 +23,7 @@ import { readApiResponse } from '../../utils/http';
 import { useSettingsDialog } from '../../contexts/SettingsDialogContext';
 import { segmentsToAgentInput } from '../../utils/messageMentions';
 import { normalizeConversationId, readActiveConversationId, saveActiveConversationId } from '../../utils/activeConversationPersistence';
+import { dispatchAgentResourceChange } from '../../utils/agentResourceEvents';
 
 const CONFIRM_MODE_STORAGE_KEY = 'notus-files-agent-confirm-mode';
 const AUTO_CONFIRM = 'auto_confirm';
@@ -168,7 +169,26 @@ function McpApprovalDrawer({ interaction, submitting, onDecision }) {
   );
 }
 
-export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles, onFilesChanged, beforeAgentRun, fullWidth = false, onOpenDiffFile }) {
+function ResourceApprovalDrawer({ interaction, submitting, onDecision, onPhaseChange }) {
+  const payload = interaction?.payload || {};
+  const actionLabels = { skill_install: '安装 Skill', skill_update: '覆盖修订 Skill', skill_uninstall: '卸载 Skill', skill_disable: '停用外部 Skill', mcp_remove: '删除 MCP Server' };
+  const detail = [payload.target ? `目标：${payload.target}` : '', Array.isArray(payload.files) && payload.files.length ? `文件：${payload.files.join('、')}` : ''].filter(Boolean).join('；');
+  const cardInteraction = {
+    ...interaction,
+    payload: {
+      ...payload,
+      title: `确认${actionLabels[payload.action] || '资源操作'}？`,
+      kicker: 'Agent 需要你确认',
+      submit_label: '确认执行',
+      footer_hint: detail || '确认后将继续当前 Agent 任务',
+      collapsed_summary: detail || '等待确认',
+      questions: [{ id: 'resource_decision', label: detail || '是否继续执行该操作？', type: 'single_select', required: true, allow_custom: false, options: [{ id: 'confirm', label: '确认执行', description: '执行这项资源操作。', answer_value: 'confirm' }, { id: 'cancel', label: '取消', description: '不执行，保留草稿。', answer_value: 'cancel' }] }],
+    },
+  };
+  return <ClarifyDrawer interaction={cardInteraction} submitting={submitting} submitLabel="确认执行" onPhaseChange={onPhaseChange} onSubmit={(_, answers) => onDecision?.(answers?.resource_decision?.option_id === 'confirm' ? 'confirm' : 'cancel')} onRetry={() => {}} onCancel={() => onDecision?.('cancel')} />;
+}
+
+export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles, onFilesChanged, onAgentPanelLockChange, beforeAgentRun, fullWidth = false, onOpenDiffFile }) {
   const { openSettings } = useSettingsDialog();
   const toast = useToast();
   const { status: appStatus, loading: appStatusLoading } = useAppStatus();
@@ -183,6 +203,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
   const [exportingConversationId, setExportingConversationId] = useState(null);
   const [pendingOperationSets, setPendingOperationSets] = useState([]);
   const [pendingInteractions, setPendingInteractions] = useState([]);
+  const [interactionAnswerDrafts, setInteractionAnswerDrafts] = useState({});
   const [interactionSubmittingId, setInteractionSubmittingId] = useState(null);
   const [clarifyPhase, setClarifyPhase] = useState('expanded-question');
   const [selectedLlmConfigId, setSelectedLlmConfigId] = useState(null);
@@ -354,6 +375,15 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     onError: (error) => toast(error.message || 'Agent 请求失败', 'error'),
   });
   const sessionLocked = ['running', 'waiting_confirm'].includes(agentLoop.activeAgentSession?.status);
+  const agentPanelLocked = Boolean(agentLoop.loading || sessionLocked || activeInteraction?.status === 'pending' || interactionSubmittingId);
+  const agentPanelLockMessage = activeInteraction?.status === 'pending'
+    ? '还有一张提问卡片等待你的回答，完成后再收起 AI 面板。'
+    : 'AI 正在处理当前任务，请完成或停止任务后再收起面板。';
+
+  useEffect(() => {
+    onAgentPanelLockChange?.({ locked: agentPanelLocked, message: agentPanelLockMessage });
+    return () => onAgentPanelLockChange?.({ locked: false, message: '' });
+  }, [agentPanelLockMessage, agentPanelLocked, onAgentPanelLockChange]);
 
   const updateConfirmMode = useCallback((value) => {
     const next = value === MANUAL_CONFIRM ? MANUAL_CONFIRM : AUTO_CONFIRM;
@@ -501,6 +531,13 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     setInteractionSubmittingId(interaction.id);
     try {
       const payload = await respondToInteraction(interaction, { response: { answers } });
+      if (payload.should_continue) {
+        setInteractionAnswerDrafts((previous) => {
+          const next = { ...previous };
+          delete next[String(interaction.id)];
+          return next;
+        });
+      }
       if (payload.should_continue) await resumeInteraction(payload.interaction || interaction);
     } catch (error) {
       toast(error.message || '回答提问卡片失败', 'error');
@@ -508,6 +545,11 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
       setInteractionSubmittingId(null);
     }
   }, [respondToInteraction, resumeInteraction, toast]);
+
+  const handleInteractionAnswerDraftChange = useCallback((interactionId, answers) => {
+    if (!interactionId) return;
+    setInteractionAnswerDrafts((previous) => ({ ...previous, [String(interactionId)]: answers }));
+  }, []);
 
   const handleMcpApproval = useCallback(async (interaction, decision) => {
     setInteractionSubmittingId(interaction.id);
@@ -519,6 +561,15 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     } finally {
       setInteractionSubmittingId(null);
     }
+  }, [respondToInteraction, resumeInteraction, toast]);
+
+  const handleResourceApproval = useCallback(async (interaction, decision) => {
+    setInteractionSubmittingId(interaction.id);
+    try {
+      const payload = await respondToInteraction(interaction, { action: decision });
+      if (payload.resolution_status === 'resolved') dispatchAgentResourceChange(interaction?.payload?.action);
+      if (payload.should_continue) await resumeInteraction(payload.interaction || interaction);
+    } catch (error) { toast(error.message || '资源操作失败', 'error'); } finally { setInteractionSubmittingId(null); }
   }, [respondToInteraction, resumeInteraction, toast]);
 
   const displayedMessages = useMemo(() => messages.map((message) => {
@@ -566,7 +617,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
       </div>
       {activeInteraction ? (
         <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, zIndex: 8, padding: '44px 12px 0', background: 'linear-gradient(180deg, transparent, var(--bg-primary) 28%)' }}>
-          {activeInteraction.kind === 'mcp_approval' ? <McpApprovalDrawer interaction={activeInteraction} submitting={interactionSubmittingId === activeInteraction.id} onDecision={(decision) => handleMcpApproval(activeInteraction, decision)} /> : <ClarifyDrawer interaction={activeInteraction} submitting={interactionSubmittingId === activeInteraction.id} submitLabel="继续执行" onPhaseChange={setClarifyPhase} onSubmit={handleInteractionSubmit} onRetry={resumeInteraction} onCancel={(interaction) => respondToInteraction(interaction, { action: 'cancel' }).catch(() => {})} />}
+          {activeInteraction.kind === 'mcp_approval' ? <McpApprovalDrawer interaction={activeInteraction} submitting={interactionSubmittingId === activeInteraction.id} onDecision={(decision) => handleMcpApproval(activeInteraction, decision)} /> : activeInteraction.kind === 'resource_approval' ? <ResourceApprovalDrawer interaction={activeInteraction} submitting={interactionSubmittingId === activeInteraction.id} onPhaseChange={setClarifyPhase} onDecision={(decision) => handleResourceApproval(activeInteraction, decision)} /> : <ClarifyDrawer interaction={activeInteraction} answerDraft={interactionAnswerDrafts[String(activeInteraction.id)]} onAnswerDraftChange={(answers) => handleInteractionAnswerDraftChange(activeInteraction.id, answers)} submitting={interactionSubmittingId === activeInteraction.id} submitLabel="继续执行" onPhaseChange={setClarifyPhase} onSubmit={handleInteractionSubmit} onRetry={resumeInteraction} onCancel={(interaction) => respondToInteraction(interaction, { action: 'cancel' }).catch(() => {})} />}
         </div>
       ) : null}
       <ConversationDrawer

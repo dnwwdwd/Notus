@@ -51,6 +51,24 @@ function runTests() {
   assert.strictEqual(renamedOnSave.title_binding_warning, '');
   assert.ok(fs.existsSync(path.join(tempDir, 'notes', '保存后新标题.md')));
 
+  const frontmatterTitleFile = createFile('frontmatter-source.md', [
+    '---',
+    'id: notus_frontmatter_title',
+    'created_by: notus_agent',
+    'title: "旧标题"',
+    '---',
+    '',
+    '# 旧标题',
+    '',
+    '正文内容',
+  ].join('\n'), { titleFilenameBindingEnabled: false });
+  const renamedFromEditorTitle = updateFile(frontmatterTitleFile.id, frontmatterTitleFile.content, { title: '顶部输入框新标题' });
+
+  assert.strictEqual(renamedFromEditorTitle.path, '顶部输入框新标题.md');
+  assert.strictEqual(renamedFromEditorTitle.title, '顶部输入框新标题');
+  assert.ok(renamedFromEditorTitle.content.includes('title: "顶部输入框新标题"'));
+  assert.ok(renamedFromEditorTitle.content.includes('# 顶部输入框新标题'));
+
   createFile('冲突标题.md', '# 冲突标题\n\n已有文件');
   const beforeConflict = getFileById(created.id);
   const conflictResult = updateFile(created.id, beforeConflict.content.replace('# 保存后新标题', '# 冲突标题'));

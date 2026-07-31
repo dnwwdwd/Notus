@@ -103,7 +103,14 @@ function pathExists(relativePath) {
 function applyVisibleTitleBinding(fileContent = '', nextTitle = '') {
   const { visibleContent, hiddenFrontmatter } = splitEditorVisibleMarkdown(fileContent);
   const updatedVisibleContent = rewriteVisibleMarkdownPrimaryHeading(visibleContent, nextTitle);
-  return mergeEditorVisibleMarkdown(updatedVisibleContent, hiddenFrontmatter);
+  const merged = mergeEditorVisibleMarkdown(updatedVisibleContent, hiddenFrontmatter);
+  const parsed = parseFrontmatter(merged);
+  if (!parsed.raw || !Object.prototype.hasOwnProperty.call(parsed.data || {}, 'title')) return merged;
+
+  const nextLines = parsed.raw.split('\n').map((line) => (
+    /^title:\s*/i.test(line) ? `title: ${JSON.stringify(String(nextTitle || '').trim())}` : line
+  ));
+  return `---\n${nextLines.join('\n')}\n---${parsed.body || ''}`;
 }
 
 function applyImportedTitle(fileContent = '', nextTitle = '') {
@@ -578,7 +585,10 @@ function saveFileByPath(filePath, content = '', options = {}) {
 function updateFile(id, content, options = {}) {
   const existing = getFileById(id);
   if (!existing) throw new Error('file not found');
-  const source = String(content || '');
+  const requestedTitle = options.title === undefined ? '' : String(options.title || '').replace(/^#+\s*/, '').trim();
+  const source = requestedTitle
+    ? applyVisibleTitleBinding(String(content || ''), requestedTitle)
+    : String(content || '');
   const finalPath = writeMarkdownFile(existing.path, source);
   const row = upsertFileRecord(finalPath, source, 0);
   const savedFile = {

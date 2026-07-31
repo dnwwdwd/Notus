@@ -30,8 +30,8 @@ export default async function handler(req, res) {
 
   if (req.method === 'PUT') {
     try {
-      const { content = '' } = req.body || {};
-      const file = updateFile(id, content);
+      const { content = '', title } = req.body || {};
+      const file = updateFile(id, content, { title });
       const indexState = await indexFileWithFallback(file.path, logger, { action: 'save', file_id: Number(id) });
       return res.status(200).json({
         ...file,

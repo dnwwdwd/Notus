@@ -12,8 +12,18 @@ const now = new Date('2026-07-23T14:30:00+08:00');
 
 assert.strictEqual(
   formatMessageTimestamp('2026-07-23 05:15:00', { now }),
-  '周四 13:15',
-  'SQLite UTC 时间应转换为本地周几和分钟。'
+  '13:15',
+  '当天消息只显示本地时间。'
+);
+assert.strictEqual(
+  formatMessageTimestamp('2026-07-22T06:29:59.000Z', { now }),
+  '昨天 14:29',
+  '昨天消息显示相对日期和时间，不显示星期。'
+);
+assert.strictEqual(
+  formatMessageTimestamp('2026-07-21T06:29:59.000Z', { now }),
+  '周二 14:29',
+  '前天到最近 7 个日历日内显示星期和时间。'
 );
 assert.strictEqual(
   formatMessageTimestamp('2026-07-16T06:29:59.000Z', { now }),

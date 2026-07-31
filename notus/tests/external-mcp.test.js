@@ -90,7 +90,7 @@ async function run() {
     assert.ok(settingsRouteSource.includes('listTokens'));
     assert.ok(manifestSource.includes('    - /api/mcp'));
     assert.ok(settingsSource.includes('待确认变更'));
-    assert.ok(iconSource.includes("color: 'var(--accent)'"));
+    assert.ok(iconSource.includes('skill: (p) => <Icon {...p}>'));
     console.log('external mcp tests passed');
   } finally {
     fs.rmSync(dataRoot, { recursive: true, force: true });

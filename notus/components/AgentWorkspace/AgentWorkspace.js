@@ -98,12 +98,6 @@ function scrollContainerToBottom(container, behavior = 'auto') {
   container.scrollTo({ top: container.scrollHeight, behavior });
 }
 
-function wait(ms) {
-  return new Promise((resolve) => {
-    window.setTimeout(resolve, ms);
-  });
-}
-
 async function copyMessageText(text = '') {
   const value = String(text || '');
   if (!value.trim()) throw new Error('当前消息没有可复制内容');
@@ -897,8 +891,9 @@ function isDocumentPath(value) {
   return /\.md$/i.test(String(value || '').trim());
 }
 
-function DiffFileLink({ path, onOpenFile, style }) {
-  if (!isDocumentPath(path)) return <span style={style}>{path}</span>;
+function DiffFileLink({ path, onOpenFile, style, children }) {
+  const label = children || path;
+  if (!isDocumentPath(path)) return <span style={style}>{label}</span>;
   return (
     <button
       type="button"
@@ -916,7 +911,7 @@ function DiffFileLink({ path, onOpenFile, style }) {
         ...style,
       })}
     >
-      {path}
+      {label}
     </button>
   );
 }
@@ -998,7 +993,9 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
                     <span style={{ minWidth: 0, fontSize: 12, fontWeight: 800, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{operationLabel(operation)}</span>
                     <span style={{ flexShrink: 0, width: 7, height: 7, borderRadius: 999, background: statusMeta.color }} />
                   </button>
-                  <span title={pathText} style={{ minWidth: 0, fontSize: 10.5, color: C.tertiary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{diffSidebarFileName(pathText)}</span>
+                  <DiffFileLink path={pathText} onOpenFile={openDiffFile} style={{ minWidth: 0, fontSize: 10.5, color: isDocumentPath(pathText) ? C.accent : C.tertiary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {diffSidebarFileName(pathText)}
+                  </DiffFileLink>
                 </div>
               );
             })}
@@ -1020,14 +1017,14 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
                   <div style={{ display: 'grid', gap: 10 }}>
                     {mediaChanges.map((change, index) => {
                       const kind = String(change?.kind || 'add');
-                      const label = kind === 'remove' ? '移除图片' : kind === 'replace' ? '替换图片' : '新增图片';
+                      const label = kind === 'remove' ? '移除图片' : kind === 'replace' ? '替换图片' : '';
                       const tone = kind === 'remove' ? '#991B1B' : kind === 'replace' ? '#9A6700' : '#166534';
-                      const renderImage = (image, title) => {
+                      const renderImage = (image, title = '') => {
                         const src = String(image?.preview_src || image?.src || '');
                         if (!src) return null;
                         return (
                           <div style={{ minWidth: 0, display: 'grid', gap: 5 }}>
-                            <span style={{ fontSize: 10.5, color: C.tertiary }}>{title}</span>
+                            {title ? <span style={{ fontSize: 10.5, color: C.tertiary }}>{title}</span> : null}
                             {/* eslint-disable-next-line @next/next/no-img-element */}
                             <img src={src} alt={image?.alt || title} style={{ width: 'min(220px, 100%)', maxHeight: 150, objectFit: 'contain', objectPosition: 'left top', borderRadius: 8, background: C.soft, boxShadow: 'inset 0 0 0 1px rgba(229,227,216,0.8)' }} />
                             {image?.alt ? <span style={{ fontSize: 10.5, color: C.tertiary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{image.alt}</span> : null}
@@ -1036,11 +1033,11 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
                       };
                       return (
                         <div key={change.id || index} style={{ padding: 10, borderRadius: 10, background: C.soft, display: 'grid', gap: 8 }}>
-                          <span style={{ fontSize: 11, fontWeight: 800, color: tone }}>{label}</span>
+                          {label ? <span style={{ fontSize: 11, fontWeight: 800, color: tone }}>{label}</span> : null}
                           <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
                             {kind !== 'add' ? renderImage(change.before, kind === 'replace' ? '原图' : '已移除') : null}
                             {kind === 'replace' ? <span style={{ marginTop: 55, color: C.tertiary }}>→</span> : null}
-                            {kind !== 'remove' ? renderImage(change.after, kind === 'replace' ? '新图' : '新增') : null}
+                            {kind !== 'remove' ? renderImage(change.after, kind === 'replace' ? '新图' : '') : null}
                           </div>
                         </div>
                       );
@@ -1084,22 +1081,29 @@ function UserMessageRow({ message, disabled, removing = false, onResendMessage, 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(String(message.content || ''));
   const [sending, setSending] = useState(false);
+  const [submittedContent, setSubmittedContent] = useState(null);
   const canEdit = Boolean(String(message.content || '').trim()) && typeof onResendMessage === 'function';
+  const displayContent = submittedContent === null ? String(message.content || '') : submittedContent;
 
   useEffect(() => {
-    if (!editing) setDraft(String(message.content || ''));
-  }, [editing, message.content]);
+    if (!editing) setDraft(displayContent);
+  }, [displayContent, editing]);
 
   const submitEdit = useCallback(async () => {
     const nextContent = String(draft || '').trim();
     if (!canEdit || !nextContent || sending) return;
     setSending(true);
+    setSubmittedContent(nextContent);
+    setEditing(false);
     try {
       const sent = await onResendMessage(message, {
         reason: 'rewrite',
         content: nextContent,
       });
-      if (sent !== false) setEditing(false);
+      if (sent === false) {
+        setSubmittedContent(null);
+        setEditing(true);
+      }
     } finally {
       setSending(false);
     }
@@ -1154,7 +1158,7 @@ function UserMessageRow({ message, disabled, removing = false, onResendMessage, 
               if (event.key === 'Escape') {
                 event.preventDefault();
                 setEditing(false);
-                setDraft(String(message.content || ''));
+                setDraft(displayContent);
               }
             }}
             autoFocus
@@ -1162,23 +1166,23 @@ function UserMessageRow({ message, disabled, removing = false, onResendMessage, 
           />
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
             <button type="button" disabled={sending} onClick={() => { setEditing(false); setDraft(String(message.content || '')); }} style={transitionButton({ height: 30, padding: '0 10px', borderRadius: 9, background: C.soft, color: C.secondary, fontSize: 12, fontWeight: 800, opacity: sending ? 0.55 : 1, cursor: sending ? 'not-allowed' : 'pointer' })}>取消</button>
-            <button type="button" disabled={disabled || sending || !String(draft || '').trim()} onClick={() => { void submitEdit(); }} style={transitionButton({ height: 30, padding: '0 12px', borderRadius: 9, background: C.accent, color: '#fff', fontSize: 12, fontWeight: 800, opacity: (disabled || sending || !String(draft || '').trim()) ? 0.55 : 1, cursor: (disabled || sending || !String(draft || '').trim()) ? 'not-allowed' : 'pointer' })}>{sending ? '发送中...' : '发送'}</button>
+            <button type="button" disabled={disabled || sending || !String(draft || '').trim()} onClick={() => { void submitEdit(); }} style={transitionButton({ height: 30, padding: '0 12px', borderRadius: 9, background: C.accent, color: '#fff', fontSize: 12, fontWeight: 800, opacity: (disabled || sending || !String(draft || '').trim()) ? 0.55 : 1, cursor: (disabled || sending || !String(draft || '').trim()) ? 'not-allowed' : 'pointer' })}>发送</button>
           </div>
         </div>
       ) : hasTextContent ? (
         <div data-message-bubble="true" style={{ maxWidth: '80%', minWidth: 0, padding: '13px 18px', borderRadius: '20px 20px 6px 20px', background: C.muted, color: C.text, fontSize: 15, lineHeight: 1.7, overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
           <div className="notus-message-mention-flow">
-            {(message.mentionSegments || []).map((segment, index) => segment.type === 'mention' ? (
+            {submittedContent === null ? (message.mentionSegments || []).map((segment, index) => segment.type === 'mention' ? (
               <MentionItem key={`${segment.mention?.id || index}-${index}`} {...segment.mention} inline readonly onPreview={onPreviewMention} />
-            ) : <span key={`text-${index}`} style={{ whiteSpace: 'pre-wrap' }}>{segment.text}</span>)}
+            ) : <span key={`text-${index}`} style={{ whiteSpace: 'pre-wrap' }}>{segment.text}</span>) : <span style={{ whiteSpace: 'pre-wrap' }}>{displayContent}</span>}
           </div>
         </div>
       ) : null}
-      {!editing && (String(message.content || '').trim() || timestamp) ? (
+      {!editing && (displayContent.trim() || timestamp) ? (
         <div aria-label="用户消息操作" style={{ width: hasTextContent ? 'min(80%, 560px)' : undefined, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8, minHeight: 28 }}>
           <MessageTimestamp value={timestamp} align="left" inline />
-          {String(message.content || '').trim() ? <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            <CopyMessageButton text={message.content} disabled={disabled} successMessage="已复制用户消息" />
+          {displayContent.trim() ? <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <CopyMessageButton text={displayContent} disabled={disabled} successMessage="已复制用户消息" />
             <MessageIconButton label="改写" onClick={() => setEditing(true)} disabled={disabled || !canEdit}>
               <Icons.edit size={14} />
             </MessageIconButton>
@@ -2283,7 +2287,11 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
               ) : null}
             </div>
             <div style={{ position: 'relative' }}>
-              <button type="button" aria-label={mcpAvailable ? '切换 MCP 自动工具' : '没有可用 MCP Server'} title={mcpAvailable ? undefined : '请先在设置中添加并启用 MCP Server'} onClick={toggleMcp} disabled={busy || disabled || !mcpAvailable} style={transitionButton({ height: 28, padding: '0 10px', borderRadius: 8, background: mcpEnabled ? 'rgba(251,228,210,0.40)' : 'transparent', color: mcpEnabled ? C.accent : C.tertiary, display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: mcpEnabled ? 800 : 600, opacity: busy || disabled || !mcpAvailable ? 0.5 : 1 })}><Icons.mcp size={15} /><span>{mcpLabel}</span></button>
+              <Tooltip content="暂无 MCP 服务" disabled={mcpAvailable}>
+                <span style={{ display: 'inline-flex' }}>
+                  <button type="button" aria-label={mcpAvailable ? '切换 MCP 自动工具' : '暂无 MCP 服务'} onClick={toggleMcp} disabled={busy || disabled || !mcpAvailable} style={transitionButton({ height: 28, padding: '0 10px', borderRadius: 8, background: mcpEnabled ? 'rgba(251,228,210,0.40)' : 'transparent', color: mcpEnabled ? C.accent : C.tertiary, display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: mcpEnabled ? 800 : 600, opacity: busy || disabled || !mcpAvailable ? 0.5 : 1 })}><Icons.mcp size={15} /><span>{mcpLabel}</span></button>
+                </span>
+              </Tooltip>
               {mcpOpen && mcpAvailable ? (
                 <>
                   <button type="button" aria-label="关闭 MCP 自动下拉" onClick={() => setMcpOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 19, border: 0, background: 'transparent', padding: 0 }} />
@@ -2537,6 +2545,16 @@ export function AgentWorkspace({ messages, streamText, loading, error, activeSte
   const [detailOperationSet, setDetailOperationSet] = useState(null);
   const [attachmentDetail, setAttachmentDetail] = useState(null);
   const [previewMention, setPreviewMention] = useState(null);
+
+  useEffect(() => {
+    setDetailOperationSet((current) => {
+      if (!current?.id) return current;
+      const latest = (Array.isArray(messages) ? messages : [])
+        .map((message) => message?.operationSet)
+        .find((operationSet) => Number(operationSet?.id) === Number(current.id));
+      return latest || current;
+    });
+  }, [messages]);
   const [messageImagePreview, setMessageImagePreview] = useState(null);
   const [mcpSelection, setMcpSelection] = useState(() => readMcpSelectionPreference());
   const [mcpAvailable, setMcpAvailable] = useState(false);
@@ -2755,17 +2773,20 @@ export function AgentWorkspace({ messages, streamText, loading, error, activeSte
           futureIds.forEach((id) => next.add(id));
           return next;
         });
-        if (futureIds.length > 0) await wait(220);
-        setHiddenMessageIds((prev) => {
-          const next = new Set(prev);
-          futureIds.forEach((id) => next.add(id));
-          return next;
-        });
-        setRemovingMessageIds((prev) => {
-          const next = new Set(prev);
-          futureIds.forEach((id) => next.delete(id));
-          return next;
-        });
+        if (futureIds.length > 0) {
+          window.setTimeout(() => {
+            setHiddenMessageIds((prev) => {
+              const next = new Set(prev);
+              futureIds.forEach((id) => next.add(id));
+              return next;
+            });
+            setRemovingMessageIds((prev) => {
+              const next = new Set(prev);
+              futureIds.forEach((id) => next.delete(id));
+              return next;
+            });
+          }, 220);
+        }
       }
 
       await onSend?.(nextContent, {

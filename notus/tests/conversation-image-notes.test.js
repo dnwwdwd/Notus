@@ -29,6 +29,7 @@ const {
   applyPreviewPatchFile,
   executeCreateNote,
 } = require('../lib/agentTools');
+const { getOperationSetById } = require('../lib/canvasOperationSets');
 
 function createConversation(title) {
   const result = getDb().prepare(`
@@ -119,14 +120,18 @@ async function runTests() {
   const createPreview = await executeCreateNote({
     path: 'picture-summary.md',
     title: '图片整理',
-    content: `## 调研图片与整理\n\n![调研截图](${imageRef})\n`,
+    content: '## 调研图片与整理\n\n这里整理用户反馈。\n',
   }, createSessionResult.sessionId);
   assert.ok(createPreview.operation_set_id);
+  const createOperationSet = getOperationSetById(createPreview.operation_set_id);
+  assert.strictEqual(createOperationSet.media_changes.length, 1, '明确要求贴入图片时，即使 Agent 草稿遗漏引用也必须补齐图片 diff');
+  assert.ok(createOperationSet.media_changes[0].after.preview_src.includes('/api/agent/images/'));
   const created = await applyPreviewPatchFile(createPreview.operation_set_id, createSessionResult.sessionId);
   assert.strictEqual(created.success, true);
   const createdFile = getFileByPath('picture-summary.md');
   assert.ok(createdFile);
   assert.ok(!readMarkdownFile('picture-summary.md').includes('notus-conversation-image://'));
+  assert.ok(readMarkdownFile('picture-summary.md').includes('调研截图'));
   assert.ok(created.operation_set.media_changes[0].after.preview_src.includes(`/api/files/${createdFile.id}/content-image?src=`));
 
   const missingStoredName = 'missing-conversation-image.png';

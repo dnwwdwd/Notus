@@ -425,8 +425,9 @@ function createSkillDraft(input = {}) {
   const id = crypto.randomUUID();
   const draft = { id, name: String(input.name || '').trim(), description: String(input.description || '').trim(), instructions: String(input.instructions || '').trim(), files: Array.isArray(input.files) ? input.files : [] };
   const validation = validateDraft(draft);
-  getDb().prepare('INSERT INTO skill_drafts (id,name,description,instructions,files_json,validation_json,status,expires_at) VALUES (?,?,?,?,?,?,?,datetime(\'now\',\'+1 day\'))').run(id, draft.name, draft.description, draft.instructions, JSON.stringify(draft.files), JSON.stringify(validation), validation.length ? 'invalid' : 'draft');
-  return { ...draft, validation };
+  const metadata = input.metadata && typeof input.metadata === 'object' ? input.metadata : {};
+  getDb().prepare('INSERT INTO skill_drafts (id,name,description,instructions,files_json,validation_json,metadata_json,status,expires_at) VALUES (?,?,?,?,?,?,?,?,datetime(\'now\',\'+1 day\'))').run(id, draft.name, draft.description, draft.instructions, JSON.stringify(draft.files), JSON.stringify(validation), JSON.stringify(metadata), validation.length ? 'invalid' : 'draft');
+  return { ...draft, metadata, validation };
 }
 function validateDraft(draft) {
   const errors = [];
@@ -436,7 +437,22 @@ function validateDraft(draft) {
   if ((draft.files || []).some((file) => !file?.path || path.isAbsolute(file.path) || String(file.path).includes('..'))) errors.push({ code: 'SKILL_PATH_OUTSIDE_ROOT', message: '草稿文件路径不安全' });
   return errors;
 }
-function getSkillDraft(id) { const row = getDb().prepare('SELECT * FROM skill_drafts WHERE id = ?').get(id); return row ? { ...row, files: parseJson(row.files_json, []), validation: parseJson(row.validation_json, []) } : null; }
+function getSkillDraft(id) { const row = getDb().prepare('SELECT * FROM skill_drafts WHERE id = ?').get(id); return row ? { ...row, files: parseJson(row.files_json, []), validation: parseJson(row.validation_json, []), metadata: parseJson(row.metadata_json, {}) } : null; }
+function createSkillRevisionDraft(skillId, input = {}) {
+  const skill = getSkill(skillId);
+  if (!skill) throw Object.assign(new Error('Skill 不存在'), { code: 'SKILL_NOT_FOUND' });
+  if (!skill.managed) throw Object.assign(new Error('外部扫描 Skill 只能停用，不能修订'), { code: 'SKILL_NOT_MANAGED' });
+  return createSkillDraft({ ...input, name: skill.name, metadata: { operation: 'update', target_skill_id: skill.id } });
+}
+function getSkillManagementDetails(id, maxBodyBytes = 64 * 1024) {
+  const skill = getSkill(id);
+  if (!skill) throw Object.assign(new Error('Skill 不存在'), { code: 'SKILL_NOT_FOUND' });
+  const root = getDb().prepare('SELECT * FROM skill_roots WHERE id = ?').get(skill.root_id);
+  const directory = path.join(root.path, skill.directory_path);
+  const checked = inspectSkill(root, directory);
+  const files = checked.files.map((file) => path.relative(directory, file).replace(/\\/g, '/')).slice(0, 200);
+  return { id: skill.id, name: skill.name, description: skill.description, source_label: skill.source_label, managed: skill.managed, enabled: skill.enabled, can_update: skill.can_update, status: checked.status, validation_errors: checked.errors, files, instructions: String(checked.body || '').slice(0, maxBodyBytes), instructions_truncated: String(checked.body || '').length > maxBodyBytes };
+}
 function installSkillDraft(id, conflictPolicy = 'reject') {
   const draft = getSkillDraft(id); if (!draft) throw Object.assign(new Error('草稿不存在'), { code: 'SKILL_DRAFT_NOT_FOUND' });
   if (draft.validation.length) throw Object.assign(new Error('草稿未通过校验'), { code: 'SKILL_INVALID' });
@@ -446,7 +462,10 @@ function installSkillDraft(id, conflictPolicy = 'reject') {
     const frontmatter = YAML.stringify({ name: draft.name, description: draft.description });
     fs.writeFileSync(path.join(directory, 'SKILL.md'), `---\n${frontmatter}---\n\n${draft.instructions}\n`);
     draft.files.forEach((file) => { const target = path.join(directory, file.path); fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, String(file.content || '')); });
-    const installed = installCandidate(directory, { method: 'agent_draft', draftId: draft.id, conflictPolicy });
+    const target = draft.metadata?.target_skill_id ? getSkill(draft.metadata.target_skill_id) : null;
+    if (draft.metadata?.operation === 'update' && (!target || !target.managed)) throw Object.assign(new Error('修订目标不可用'), { code: 'SKILL_NOT_MANAGED' });
+    const installed = installCandidate(directory, { method: 'agent_draft', draftId: draft.id, conflictPolicy: target ? 'replace' : conflictPolicy, expectedName: target?.name });
+    if (target) setSkillEnabled(installed.id, target.enabled);
     getDb().prepare(`UPDATE skill_drafts SET status = 'installed', updated_at = datetime('now') WHERE id = ?`).run(id);
     return installed;
   } finally { fs.rmSync(temp, { recursive: true, force: true }); }
@@ -459,4 +478,4 @@ function deleteSkill(id) {
   fs.rmSync(target, { recursive: true, force: true }); scanAllSkills(); return { deleted: true };
 }
 
-module.exports = { getCapabilities, skillRoots, initializeSkills, stopSkillWatchers, scanAllSkills, listSkills, getSkill, setSkillEnabled, eligibleSkillSummaries, loadSkill, readSkillFile, discoverCandidates, cloneGitMainOrMaster, installFromGit, updateSkillFromGit, installFromZip, createSkillDraft, getSkillDraft, installSkillDraft, deleteSkill, getJob, saveSecret };
+module.exports = { getCapabilities, skillRoots, initializeSkills, stopSkillWatchers, scanAllSkills, listSkills, getSkill, getSkillManagementDetails, setSkillEnabled, eligibleSkillSummaries, loadSkill, readSkillFile, discoverCandidates, cloneGitMainOrMaster, installFromGit, updateSkillFromGit, installFromZip, createSkillDraft, createSkillRevisionDraft, getSkillDraft, installSkillDraft, deleteSkill, getJob, saveSecret };

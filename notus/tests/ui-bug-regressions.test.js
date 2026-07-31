@@ -138,7 +138,7 @@ function runTests() {
   assert.ok(agentWorkspace.includes('const activePath = activeOperation.new_path || activeOperation.file_path || activeOperation.old_path || activeOperation.path || \'全文\''));
   assert.ok(agentWorkspace.includes('function DiffFileLink'));
   assert.ok(agentWorkspace.includes('function diffSidebarFileName(path)'));
-  assert.ok(agentWorkspace.includes('{diffSidebarFileName(pathText)}</span>'));
+  assert.ok(agentWorkspace.includes('<DiffFileLink path={pathText} onOpenFile={openDiffFile}'));
   assert.ok(!agentWorkspace.includes('本次任务的文件已全部处理'));
   assert.ok(agentWorkspace.includes("const AGENT_CHAT_CONTENT_WIDTH = '95%'"));
   assert.ok(agentWorkspace.includes('width: AGENT_CHAT_CONTENT_WIDTH'));
@@ -158,10 +158,12 @@ function runTests() {
   assert.ok(fileAgentWorkspace.includes("const fileName = String(file?.name || path.split('/').pop() || '').trim();"));
   assert.ok(fileAgentWorkspace.includes("const name = fileName || title || '未命名文件';"));
   assert.ok(fileAgentWorkspace.includes("searchText: [fileName, title, path].filter(Boolean).join(' '),"));
+
+  const filesPage = read('pages/files/index.js');
+  assert.ok(filesPage.includes('body: JSON.stringify({ content: contentToSave, title: nextTitle })'));
   assert.ok(fileAgentWorkspace.includes('function collectFileMentions(nodes = [])'));
   assert.ok(fileAgentWorkspace.includes('...collectFileMentions(fileTree),'));
 
-  const filesPage = read('pages/files/index.js');
   assert.ok(filesPage.includes("const FILES_EDITOR_AUTO_COLLAPSE_QUERY = '(max-width: 640px)'"));
   assert.ok(filesPage.includes('const FILES_AGENT_FIXED_WIDTH = 456;'));
   assert.ok(filesPage.includes('const renderedWorkspacePanels = {'));
@@ -169,6 +171,8 @@ function runTests() {
   assert.ok(filesPage.includes("toast('该文档已删除或不存在', 'info')"));
   assert.ok(filesPage.includes("toast('该文档已打开', 'info')"));
   assert.ok(filesPage.includes('onOpenDiffFile={handleOpenDiffFile}'));
+  assert.ok(filesPage.includes('function findFileInTree(nodes = [], path = \'\')'));
+  assert.ok(filesPage.includes('findFileInTree(await refreshFiles({ background: true }), normalizedPath)'));
 
   const topBar = read('components/Layout/TopBar.js');
   assert.ok(!topBar.includes('displayShortcut('));

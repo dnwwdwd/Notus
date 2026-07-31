@@ -1,5 +1,5 @@
 const WEEKDAY_LABELS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
-const WEEK_IN_MS = 7 * 24 * 60 * 60 * 1000;
+const DAY_IN_MS = 24 * 60 * 60 * 1000;
 
 function pad(value) {
   return String(value).padStart(2, '0');
@@ -22,9 +22,13 @@ function formatMessageTimestamp(value, { now = new Date() } = {}) {
   const reference = parseMessageTimestamp(now);
   if (!createdAt || !reference) return '';
 
-  const elapsed = reference.getTime() - createdAt.getTime();
   const time = `${pad(createdAt.getHours())}:${pad(createdAt.getMinutes())}`;
-  if (elapsed >= 0 && elapsed < WEEK_IN_MS) return `${WEEKDAY_LABELS[createdAt.getDay()]} ${time}`;
+  const createdDay = new Date(createdAt.getFullYear(), createdAt.getMonth(), createdAt.getDate()).getTime();
+  const referenceDay = new Date(reference.getFullYear(), reference.getMonth(), reference.getDate()).getTime();
+  const dayDistance = Math.floor((referenceDay - createdDay) / DAY_IN_MS);
+  if (dayDistance === 0) return time;
+  if (dayDistance === 1) return `昨天 ${time}`;
+  if (dayDistance > 0 && dayDistance < 7) return `${WEEKDAY_LABELS[createdAt.getDay()]} ${time}`;
   return `${createdAt.getFullYear()}-${pad(createdAt.getMonth() + 1)}-${pad(createdAt.getDate())} ${time}`;
 }
 

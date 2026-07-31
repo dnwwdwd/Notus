@@ -3,7 +3,6 @@ const { getEffectiveConfig } = require('./config');
 const { getStyleContext } = require('./style');
 const { buildInitialUserMessage, buildLoopSystemPrompt } = require('./agentLoopPrompt');
 const { getConversationHistory } = require('./conversations');
-const { listOperationSetsByConversation } = require('./canvasOperationSets');
 const { loadAttachments, formatAttachmentsForPrompt } = require('./parsedAttachmentStore');
 const { formatWebSearchContextsForPrompt } = require('./webSearchContextStore');
 const {
@@ -28,6 +27,7 @@ const {
 } = require('./conversationInteractions');
 const { eligibleSkillSummaries } = require('./skills');
 const { prepareMcpTools } = require('./mcp');
+const { buildConversationResourceContext } = require('./agentResourceContext');
 const { buildGlobalAgentContext } = require('./globalAgentFiles');
 const {
   formatResearchReceiptsForPrompt,
@@ -82,107 +82,6 @@ function buildRecentConversationContext(session) {
     const label = message.role === 'assistant' ? 'AI' : '用户';
     return `${label}：${trimForContext(sanitizeAssistantVisibleText(message.content))}`;
   }).join('\n');
-}
-
-function isExplicitNewFileTask(goal = '') {
-  return /(另(?:外|一)|新建|创建(?:一篇|一个|新的)?|再写一篇|写一篇新的|写(?:一个|一份)新的|单独(?:写|创建))/.test(String(goal || ''));
-}
-
-function isContinuationRewriteTask(goal = '') {
-  const text = String(goal || '').replace(/\s+/g, ' ').trim();
-  if (!text || isExplicitNewFileTask(text)) return false;
-  return /(重写|改写|润色|修订|修改|更新|续写|改一改|按(?:这些|上述|上面|刚才|前面)内容)/.test(text);
-}
-
-function buildContinuationFileContext(session) {
-  const confirmedTarget = session?.research_state?.write_target;
-  if (confirmedTarget?.mode === 'modify' && String(confirmedTarget.file_path || '').trim()) {
-    return {
-      requiresTargetReuse: true,
-      targets: [{
-        filePath: String(confirmedTarget.file_path).trim(),
-        operationSetId: Number(confirmedTarget.operation_set_id || 0) || null,
-        status: 'confirmed',
-      }],
-    };
-  }
-  if (!session?.conversation_id || !isContinuationRewriteTask(session.goal)) return null;
-  const operationSets = listOperationSetsByConversation(session.conversation_id, {
-    statuses: ['pending', 'partial', 'applied'],
-  });
-  const seen = new Set();
-  const targets = [];
-
-  for (const operationSet of operationSets.slice().reverse()) {
-    const patches = Array.isArray(operationSet.patches) ? operationSet.patches.slice().reverse() : [];
-    for (const patch of patches) {
-      const filePath = String(patch?.file_path || '').trim();
-      const isCreatedFile = patch?.change_type === 'create'
-        || (operationSet.mode === 'create_file' && String(patch?.old || '') === '' && Boolean(String(patch?.new || '')));
-      if (!isCreatedFile || !filePath || seen.has(filePath)) continue;
-      seen.add(filePath);
-      targets.push({
-        filePath,
-        operationSetId: operationSet.id,
-        status: String(operationSet.status || 'pending'),
-      });
-    }
-  }
-
-  return targets.length > 0
-    ? { requiresTargetReuse: true, targets: targets.slice(0, 3) }
-    : null;
-}
-
-function hasExplicitFileTarget(goal = '') {
-  const text = String(goal || '');
-  return /@\{(?:folder:)?[^}]+\.md\}/i.test(text)
-    || /(?:^|\s)[^\s，。！？?]+\.md(?:$|\s|，|。|！|？)/i.test(text);
-}
-
-function isExplicitContinueModifyTask(goal = '') {
-  return /(?:继续|接着|承接).{0,8}(?:修改|改写|润色|修订|更新|重写|续写)/.test(String(goal || ''));
-}
-
-function looksLikeWritingTask(goal = '') {
-  return /(写(?:一篇|文章|文档|笔记|报告|稿|内容)|创作|写作|整理成|生成(?:一篇|文章|文档|笔记|报告)|文章|文档|笔记|报告|稿件)/.test(String(goal || ''));
-}
-
-function getRecentArticleCandidates(conversationId) {
-  if (!conversationId) return [];
-  const operationSets = listOperationSetsByConversation(conversationId, {
-    statuses: ['pending', 'partial', 'applied'],
-  });
-  const seen = new Set();
-  const candidates = [];
-  for (const operationSet of operationSets.slice().reverse()) {
-    if (String(operationSet.status || '') !== 'applied') continue;
-    const patches = Array.isArray(operationSet.patches) ? operationSet.patches.slice().reverse() : [];
-    for (const patch of patches) {
-      const path = String(patch?.file_path || '').trim();
-      const created = patch?.change_type === 'create'
-        || (operationSet.mode === 'create_file' && String(patch?.old || '') === '' && Boolean(String(patch?.new || '')));
-      if (!created || !/\.md$/i.test(path) || seen.has(path)) continue;
-      seen.add(path);
-      candidates.push({
-        filePath: path,
-        title: path.split('/').pop().replace(/\.md$/i, ''),
-        operationSetId: Number(operationSet.id),
-        status: String(operationSet.status || 'pending'),
-      });
-      if (candidates.length >= 3) return candidates;
-    }
-  }
-  return candidates;
-}
-
-function buildWriteTargetPreflight(session) {
-  const goal = String(session?.goal || '');
-  const candidates = getRecentArticleCandidates(session?.conversation_id);
-  if (candidates.length === 0 || !looksLikeWritingTask(goal)) return null;
-  if (isExplicitNewFileTask(goal) || hasExplicitFileTarget(goal)) return null;
-  if (candidates.length === 1 && isExplicitContinueModifyTask(goal)) return null;
-  return { candidates };
 }
 
 function compactMessages(messages = [], tokenBudget = 60000) {
@@ -284,7 +183,7 @@ function buildQuestionCardToolResult(interactionId, sessionId) {
   if (!interaction) {
     return {
       isError: true,
-      content: JSON.stringify({ error: 'INTERACTION_NOT_FOUND', message: '提问卡片不存在或已过期' }),
+      content: JSON.stringify({ error: 'INTERACTION_NOT_FOUND', message: '交互不存在或已过期' }),
     };
   }
   if (
@@ -293,13 +192,13 @@ function buildQuestionCardToolResult(interactionId, sessionId) {
   ) {
     return {
       isError: true,
-      content: JSON.stringify({ error: 'INTERACTION_SESSION_MISMATCH', message: '提问卡片不属于当前 Agent 任务' }),
+      content: JSON.stringify({ error: 'INTERACTION_SESSION_MISMATCH', message: '交互不属于当前 Agent 任务' }),
     };
   }
   if (interaction.status !== 'answered') {
     return {
       isError: true,
-      content: JSON.stringify({ error: 'INTERACTION_NOT_ANSWERED', message: '提问卡片尚未完成回答' }),
+      content: JSON.stringify({ error: 'INTERACTION_NOT_ANSWERED', message: '交互尚未完成' }),
     };
   }
   return {
@@ -307,8 +206,7 @@ function buildQuestionCardToolResult(interactionId, sessionId) {
     content: JSON.stringify({
       answered: true,
       interaction_id: interaction.id,
-      answers: interaction.response?.answers || {},
-      summary: buildInteractionAnswerSummary(interaction, interaction.response || {}),
+      ...(interaction.kind === 'resource_approval' ? { resource_result: interaction.response || {} } : { answers: interaction.response?.answers || {}, summary: buildInteractionAnswerSummary(interaction, interaction.response || {}) }),
     }),
   };
 }
@@ -343,12 +241,10 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMo
 
   const styleContext = await loadStyleContext(session);
   const globalAgentContext = buildGlobalAgentContext(session.goal);
-  const continuationFileContext = buildContinuationFileContext(session);
+  const resourceContext = buildConversationResourceContext(session.conversation_id);
   const skillCatalog = eligibleSkillSummaries(session.goal, session.skill_mentions || []);
   const mcpContext = await prepareMcpTools(session.mcp_selection || { mode: 'off' }, session.goal);
-  const tools = buildToolDefinitions(session, { mcpTools: mcpContext.tools }).filter((tool) => (
-    !(continuationFileContext?.requiresTargetReuse && tool?.name === 'create_note')
-  ));
+  const tools = buildToolDefinitions(session, { mcpTools: mcpContext.tools });
   const attachmentContext = session.conversation_id
     ? formatAttachmentsForPrompt(loadAttachments(session.conversation_id))
     : '';
@@ -359,7 +255,7 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMo
   const systemPrompt = buildLoopSystemPrompt(session, {
     styleContext,
     globalAgentContext,
-    continuationFileContext,
+    resourceContext,
     skillCatalog,
     mcpInstructions: mcpContext.instructions,
     taskMaterialContext: [attachmentContext, webSearchContext, researchReceiptContext].filter(Boolean).join('\n\n'),
@@ -394,7 +290,6 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMo
       role: 'user',
       content: buildInitialUserContent(session, {
         recentConversationContext: buildRecentConversationContext(session),
-        continuationFileContext,
         images: initialImages,
         currentImageRecognition,
       }),
@@ -517,24 +412,24 @@ async function runAgentLoop({ sessionId, llmConfig, onStream, signal, approvalMo
         is_error: failed,
       });
 
-      if (toolUse.name === 'ask_question_card' && !failed) {
+      if ((toolUse.name === 'ask_question_card' || result?.approval_required) && !failed) {
         saveMessagesCheckpoint(session.id, messages, content, toolUse.id);
         updateSessionStatus(session.id, 'waiting_confirm');
         emit({
           type: 'interaction_request',
           loop_index: loopIndex,
           interaction: result.interaction,
-          reason: 'question_card_requested',
+          reason: toolUse.name === 'ask_question_card' ? 'question_card_requested' : 'resource_approval_requested',
         });
         emit({
           type: 'loop_done',
-          reason: 'question_card_requested',
+          reason: toolUse.name === 'ask_question_card' ? 'question_card_requested' : 'resource_approval_requested',
           loop_index: loopIndex,
           interaction_id: result.interaction_id,
         });
         return {
           status: 'waiting_confirm',
-          reason: 'question_card_requested',
+          reason: toolUse.name === 'ask_question_card' ? 'question_card_requested' : 'resource_approval_requested',
           interaction: result.interaction,
           interaction_id: result.interaction_id,
         };
@@ -624,6 +519,4 @@ module.exports = {
   parseResponse,
   runAgentLoop,
   sanitizeAssistantVisibleText,
-  buildWriteTargetPreflight,
-  getRecentArticleCandidates,
 };

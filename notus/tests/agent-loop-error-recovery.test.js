@@ -11,6 +11,11 @@ assert.ok(
   '任何请求或 SSE 错误都必须强制解除 running session，不能依赖已有 React state'
 );
 assert.ok(
+  controllerSource.includes('sessionRef.current = next;')
+    && controllerSource.includes('const previous = sessionRef.current;'),
+  'SSE session state must update the token ref synchronously so an immediate question card can resume the correct session'
+);
+assert.ok(
   startRouteSource.includes('let activeSessionId = null;')
     && startRouteSource.includes("if (activeSessionId) updateSessionStatus(activeSessionId, 'failed');"),
   'API 在新建 session 后遇到 LLM 400/404 等异常时必须持久化 failed 状态'

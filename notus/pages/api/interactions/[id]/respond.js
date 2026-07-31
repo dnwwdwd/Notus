@@ -56,7 +56,7 @@ function buildStatusError(status) {
   return { code: 'INTERACTION_NOT_PENDING', message: '这张提问卡片当前不可继续回答' };
 }
 
-export default function handler(req, res) {
+export default async function handler(req, res) {
   const context = createRequestContext(req, res, '/api/interactions/[id]/respond');
   const logger = createLogger(context);
   if (req.method !== 'POST') return res.status(405).end();
@@ -82,6 +82,33 @@ export default function handler(req, res) {
   }
 
   const { action } = req.body || {};
+  if (interaction.kind === 'resource_approval') {
+    if (interaction.status !== 'pending') {
+      const statusError = buildStatusError(interaction.status);
+      return res.status(409).json({ error: statusError.message, code: statusError.code, interaction, request_id: context.request_id });
+    }
+    const payload = interaction.payload || {};
+    let result = { cancelled: true, action: payload.action };
+    if (action === 'confirm') {
+      try {
+        if (payload.action === 'skill_install' || payload.action === 'skill_update') {
+          const skill = require('../../../../lib/skills').installSkillDraft(payload.draft_id, payload.action === 'skill_update' ? 'replace' : 'reject');
+          result = { approved: true, action: payload.action, skill: { id: skill.id, name: skill.name, enabled: skill.enabled } };
+        } else if (payload.action === 'skill_uninstall') {
+          require('../../../../lib/skills').deleteSkill(payload.skill_id); result = { approved: true, action: payload.action, deleted: true };
+        } else if (payload.action === 'skill_disable') {
+          const skill = require('../../../../lib/skills').setSkillEnabled(payload.skill_id, false); result = { approved: true, action: payload.action, skill: { id: skill.id, name: skill.name, enabled: skill.enabled } };
+        } else if (payload.action === 'mcp_remove') {
+          await require('../../../../lib/mcp').removeServer(payload.server_id); result = { approved: true, action: payload.action, deleted: true };
+        } else throw Object.assign(new Error('未知资源操作'), { code: 'RESOURCE_ACTION_UNKNOWN' });
+      } catch (error) {
+        const failed = updateInteraction(interaction.id, { status: 'failed', response: { approved: false, error: error.code || 'RESOURCE_ACTION_FAILED', message: error.message } });
+        return res.status(400).json({ error: error.message, code: error.code || 'RESOURCE_ACTION_FAILED', interaction: failed, request_id: context.request_id });
+      }
+    }
+    const updated = updateInteraction(interaction.id, { status: 'answered', response: result, answeredAt: new Date().toISOString() });
+    return res.status(200).json({ interaction: updated, resolution_status: action === 'confirm' ? 'resolved' : 'cancelled', should_continue: true, resume_payload: result, request_id: context.request_id });
+  }
   if (action === 'cancel') {
     if (['answered', 'cancelled'].includes(interaction.status)) {
       const statusError = buildStatusError(interaction.status);

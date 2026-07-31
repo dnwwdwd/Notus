@@ -6,12 +6,15 @@ const root = path.resolve(__dirname, '..');
 const read = (relativePath) => fs.readFileSync(path.join(root, relativePath), 'utf8');
 
 const workspace = read('components/AgentWorkspace/AgentWorkspace.js');
+const resourceEvents = read('utils/agentResourceEvents.js');
+const controller = read('hooks/useAgentLoopController.js');
 assert.ok(workspace.includes("if (parsed?.mode === 'server') return { mode: 'auto' };"));
 assert.ok(workspace.includes("const mcpLabel = 'MCP';"));
 assert.ok(workspace.includes("/api/settings/mcp/servers?enabled_only=1"));
 assert.ok(workspace.includes("window.addEventListener('notus-mcp-servers-changed', onChanged);"));
 assert.ok(workspace.includes("if (mcpAvailable || mcpMode !== 'auto') return;"));
 assert.ok(workspace.includes('disabled={busy || disabled || !mcpAvailable}'));
+assert.ok(workspace.includes('content="暂无 MCP 服务"'));
 assert.ok(workspace.includes('const toggleMcp = () => {'));
 assert.ok(workspace.includes("onMcpSelectionChange?.({ mode: 'auto' });"));
 assert.ok(workspace.includes("onMcpSelectionChange?.({ mode: 'off' });"));
@@ -59,5 +62,11 @@ assert.ok(sidebar.includes('const isSidebarCollapsed = autoCollapsed ||'));
 const settings = read('components/Settings/SettingsScreen.js');
 assert.ok(settings.includes("new Event('notus-mcp-servers-changed')"));
 assert.ok(settings.includes("{ id: 'global-agent', label: '全局 Agent'"));
+assert.ok(resourceEvents.includes("'install_skill_from_git'"));
+assert.ok(resourceEvents.includes("'skill_uninstall'"));
+assert.ok(resourceEvents.includes("'add_mcp_server'"));
+assert.ok(resourceEvents.includes("'mcp_remove'"));
+assert.ok(controller.includes("dispatchAgentResourceChange(event.tool_name)"));
+assert.ok(fileWorkspace.includes("dispatchAgentResourceChange(interaction?.payload?.action)"));
 
 console.log('agent workspace controls tests passed');

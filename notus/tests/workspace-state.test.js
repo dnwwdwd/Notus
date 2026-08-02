@@ -33,7 +33,7 @@ function runTests() {
   });
 
   assert.strictEqual(normalized.activeFileId, 12);
-  assert.strictEqual(normalized.activePage, 'knowledge');
+  assert.strictEqual(normalized.activePage, 'files');
   assert.deepStrictEqual(normalized.openFolders, ['a', 'b/c']);
   assert.strictEqual(normalized.sidebarCollapsed, true);
   assert.strictEqual(normalized.sidebarActiveTab, 'toc');

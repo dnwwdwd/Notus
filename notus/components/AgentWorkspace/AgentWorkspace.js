@@ -68,9 +68,9 @@ const AGENT_CONFIRM_MODE_OPTIONS = [
     icon: 'hand',
   },
 ];
-const AGENT_INPUT_TEXTAREA_DEFAULT_ROWS = 5;
+const AGENT_INPUT_TEXTAREA_DEFAULT_ROWS = 3;
 const AGENT_INPUT_LINE_HEIGHT = 22;
-const AGENT_CHAT_CONTENT_WIDTH = '95%';
+const AGENT_CHAT_CONTENT_WIDTH = 'min(860px, calc(100% - 32px))';
 const CHAT_STICKY_BOTTOM_THRESHOLD = 56;
 const CHAT_JUMP_BUTTON_OFFSET = 240;
 const MCP_SELECTION_STORAGE_KEY = 'notus-agent-mcp-selection';
@@ -496,7 +496,8 @@ function AttachmentContentDialog({ open, attachment, message, onClose }) {
 }
 
 function ToolStatusIcon({ status, size = 14 }) {
-  if (status === 'failed') return <Icons.warn size={size} style={{ color: C.accent }} />;
+  if (status === 'failed' || status === 'error') return <Icons.warn size={size} style={{ color: C.accent }} />;
+  if (status === 'stopped' || status === 'cancelled') return <Icons.square size={Math.max(10, size - 2)} style={{ color: C.tertiary }} />;
   if (status === 'running') {
     return (
       <span
@@ -606,12 +607,10 @@ function CopyMessageButton({ text, successMessage = '已复制消息', disabled 
   );
 }
 
-function ToolChain({ steps, loading }) {
-  const visibleSteps = useMemo(() => (
-    steps && steps.length ? steps : (loading ? [
-      { id: 'prepare', label: '准备上下文', status: 'running', detail: '正在整理当前请求、模型和工作区上下文。' },
-    ] : [])
-  ), [steps, loading]);
+function ToolChain({ steps, loading, onAction }) {
+  // 只展示服务端已持久化或入队确认过的步骤。不能用 loading 猜一个“准备上下文”，
+  // 否则用户会把连接阶段误当成 Agent 已经执行的操作。
+  const visibleSteps = useMemo(() => (Array.isArray(steps) ? steps : []), [steps]);
   const [expanded, setExpanded] = useState({});
   const stepKey = visibleSteps.map((step, index) => step.id || step.label || index).join('|');
 
@@ -620,84 +619,67 @@ function ToolChain({ steps, loading }) {
       const next = {};
       visibleSteps.forEach((step, index) => {
         const id = String(step.id || step.label || index);
-        if (prev[id] || step.open) next[id] = true;
+        const isActiveTail = index === visibleSteps.length - 1 && ['running', 'failed', 'error', 'stopped', 'cancelled'].includes(step.status);
+        if (prev[id] || step.open || isActiveTail) next[id] = true;
       });
       return next;
     });
   }, [stepKey, visibleSteps]);
 
   if (!visibleSteps.length) return null;
-  const hasRunning = visibleSteps.some((step) => step.status === 'running');
-  const hasFailed = visibleSteps.some((step) => step.status === 'error' || step.status === 'stopped');
+  const tailStatus = visibleSteps[visibleSteps.length - 1]?.status || 'done';
+  const hasRunning = loading || tailStatus === 'running';
+  const hasFailed = ['failed', 'error', 'stopped', 'cancelled'].includes(tailStatus);
   const chainStatus = hasFailed ? 'failed' : hasRunning ? 'running' : 'done';
+  const statusLabel = hasFailed ? '需要处理' : hasRunning ? '正在执行' : '执行记录';
 
   return (
-    <div style={{ width: '100%', minWidth: 0, maxWidth: '100%', margin: '16px 0', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-      <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8, padding: '0 4px', minWidth: 0 }}>
+    <section className="notus-agent-toolchain" aria-label="Agent 执行时间线">
+      <div className="notus-agent-toolchain__header" role="status" aria-live="polite">
         <ToolStatusIcon status={chainStatus} size={14} />
+        <span>{statusLabel}</span>
+        {hasRunning && typeof onAction === 'function' ? <button type="button" className="notus-agent-toolchain__stop notus-agent-pressable" onClick={() => onAction('stop_agent')} aria-label="停止当前任务">停止</button> : null}
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, borderTop: '1px solid ' + C.border, paddingTop: 8 }}>
+      <div className="notus-agent-toolchain__steps">
         {visibleSteps.map((step, index) => {
           const stepId = String(step.id || step.label || index);
           const status = step.status || 'done';
           const running = status === 'running';
-          const failed = status === 'error' || status === 'stopped';
+          const failed = ['failed', 'error', 'stopped', 'cancelled'].includes(status);
           const open = Boolean(expanded[stepId]);
-          const rowStatus = failed ? 'failed' : running ? 'running' : 'done';
+          const rowStatus = failed ? status : running ? 'running' : 'done';
+          const hasDetails = Boolean(step.detail || step.tool || step.input || step.result || step.action);
+          const summary = String(step.result || (running ? step.detail : '') || '').replace(/\s+/g, ' ').trim();
           return (
-        <div key={stepId} style={{ display: 'flex', flexDirection: 'column', minWidth: 0, maxWidth: '100%' }}>
+            <div key={stepId} className="notus-agent-toolchain__step">
               <button
                 type="button"
                 aria-expanded={open}
+                aria-controls={`agent-step-${stepId}`}
+                disabled={!hasDetails}
                 onClick={() => setExpanded((prev) => ({ ...prev, [stepId]: !prev[stepId] }))}
-                className="notus-agent-tool-row"
-                style={{
-                minHeight: 32,
-                display: 'flex',
-                alignItems: 'center',
-                gap: 4,
-                padding: '6px 4px',
-                borderRadius: 8,
-                border: 0,
-                background: 'transparent',
-                cursor: 'pointer',
-                width: '100%',
-                textAlign: 'left',
-                color: failed ? C.accent : C.tertiary,
-                fontSize: 13,
-                fontFamily: 'inherit',
-                transitionProperty: 'transform, background-color, color',
-                transitionDuration: '160ms',
-                transitionTimingFunction: 'cubic-bezier(0.16, 1, 0.3, 1)',
-                touchAction: 'manipulation',
-              }}
+                className={`notus-agent-tool-row notus-agent-toolchain__row${hasDetails ? '' : ' is-static'}`}
               >
-                <span style={{ width: 20, display: 'inline-flex', justifyContent: 'center', color: failed ? C.accent : running ? C.accent : '#BDBBB3' }}>
+                <span className="notus-agent-toolchain__icon">
                   <ToolStatusIcon status={rowStatus} size={13} />
                 </span>
-                <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{step.label}</span>
-                <Icons.chevronRight size={14} className={open ? 'notus-agent-tool-chevron is-open' : 'notus-agent-tool-chevron'} style={{ color: '#BDBBB3' }} />
+                <span className="notus-agent-toolchain__label">{step.label}</span>
+                {summary ? <span className="notus-agent-toolchain__summary" title={summary}>{summary}</span> : null}
+                {hasDetails ? <Icons.chevronRight size={14} className={open ? 'notus-agent-tool-chevron is-open' : 'notus-agent-tool-chevron'} /> : null}
               </button>
               {open ? (
-                <div style={{ marginLeft: 25, padding: '8px 0 10px 16px', borderLeft: '1px solid ' + C.border, display: 'grid', gap: 12, marginBottom: 2, marginTop: 1, minWidth: 0, maxWidth: 'calc(100% - 25px)', overflow: 'hidden' }}>
-                  {step.detail ? <div style={{ minWidth: 0, maxWidth: '100%', fontSize: 13.5, lineHeight: 1.75, color: C.secondary, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', wordBreak: 'break-word' }}>{step.detail}{running ? <span style={{ display: 'inline-block', width: 6, height: 14, background: 'rgba(217,119,87,0.6)', marginLeft: 5, verticalAlign: 'text-bottom', animation: 'notus-agent-pulse 1s ease-in-out infinite' }} /> : null}</div> : null}
-                  {step.tool ? (
-                    <div style={{ minWidth: 0, maxWidth: '100%', overflow: 'hidden', background: C.soft, borderRadius: 8, padding: 12, color: C.secondary, fontSize: 12.5 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 700, color: C.text, marginBottom: 8, minWidth: 0 }}>
-                        <Icons.code size={12} style={{ color: C.tertiary, flexShrink: 0 }} /> <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{step.tool}</span>
-                      </div>
-                      {step.input ? <pre style={{ margin: 0, maxWidth: '100%', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', wordBreak: 'break-word', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{step.input}</pre> : null}
-                      {step.result ? (
-                        <pre style={{ margin: '8px 0 0', paddingTop: 8, maxWidth: '100%', borderTop: '1px solid ' + C.border, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', wordBreak: 'break-word', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{step.result}</pre>
-                      ) : running ? (
-                        <div style={{ display: 'flex', gap: 4, marginTop: 8, paddingTop: 8, borderTop: '1px solid ' + C.border }}>
-                          <span style={{ width: 6, height: 6, borderRadius: 999, background: '#C2C0B6', animation: 'notus-agent-bounce 1s infinite' }} />
-                          <span style={{ width: 6, height: 6, borderRadius: 999, background: '#C2C0B6', animation: 'notus-agent-bounce 1s infinite', animationDelay: '0.15s' }} />
-                          <span style={{ width: 6, height: 6, borderRadius: 999, background: '#C2C0B6', animation: 'notus-agent-bounce 1s infinite', animationDelay: '0.3s' }} />
-                        </div>
-                      ) : failed ? (
-                        <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid ' + C.border, color: C.accent }}>进程被手动中止或执行失败</div>
-                      ) : null}
+                <div id={`agent-step-${stepId}`} className="notus-agent-toolchain__detail">
+                  {step.detail ? <div className="notus-agent-toolchain__description">{step.detail}{running ? <span className="notus-agent-toolchain__cursor" aria-hidden="true" /> : null}</div> : null}
+                  {step.tool ? <div className="notus-agent-toolchain__code"><div><Icons.code size={12} /> {step.tool}</div>{step.input ? <pre>{step.input}</pre> : null}{step.result ? <pre>{step.result}</pre> : null}</div> : null}
+                  {step.action && typeof onAction === 'function' ? (
+                    <div className="notus-agent-toolchain__actions">
+                      <button
+                        type="button"
+                        onClick={() => onAction(step.action, step)}
+                        className="notus-agent-pressable"
+                      >
+                        {step.actionLabel || '继续任务'}
+                      </button>
                     </div>
                   ) : null}
                 </div>
@@ -706,7 +688,7 @@ function ToolChain({ steps, loading }) {
           );
         })}
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -1315,8 +1297,50 @@ function AssistantMessageRow({ message, disabled, removing = false, onRetryMessa
   );
 }
 
-function MessageList({ messages, streamText, loading, activeSteps, removingMessageIds, onOpenOperationSet, onCitationClick, citationSelection, actionDisabled = false, onResendMessage, onRetryMessage, onOpenAttachment, onPreviewMention, onPreviewImages }) {
-  if (messages.length === 0 && !loading) {
+function InteractionHistoryNode({ interaction }) {
+  const [open, setOpen] = useState(false);
+  const questions = Array.isArray(interaction?.payload?.questions) ? interaction.payload.questions : [];
+  const answers = interaction?.response?.answers || {};
+  const summary = questions.map((question) => answers?.[question.id]?.label || answers?.[question.id]?.value || '').filter(Boolean).join('；');
+  const answered = interaction?.status === 'answered';
+  return (
+    <section className="notus-agent-interaction-history" aria-label={answered ? '已回答提问卡片' : '待处理提问卡片'} style={{ border: '1px solid ' + C.border, borderRadius: 12, background: C.soft, padding: '10px 12px', margin: '2px 0' }}>
+      <button type="button" aria-expanded={open} onClick={() => setOpen((value) => !value)} className="notus-agent-tool-row" style={{ width: '100%', border: 0, padding: 0, background: 'transparent', display: 'flex', alignItems: 'center', gap: 8, textAlign: 'left', color: C.text, cursor: 'pointer' }}>
+        <ToolStatusIcon status={answered ? 'done' : interaction?.status === 'failed' ? 'error' : 'running'} size={13} />
+        <span style={{ flex: 1, fontSize: 13, fontWeight: 750 }}>{answered ? '已回答提问卡片' : '提问卡片等待处理'}</span>
+        <span style={{ maxWidth: '48%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: C.tertiary, fontSize: 12 }}>{summary || (answered ? '已保存回答' : '等待回答')}</span>
+        <Icons.chevronRight size={14} className={open ? 'notus-agent-tool-chevron is-open' : 'notus-agent-tool-chevron'} />
+      </button>
+      {open ? <div style={{ marginTop: 9, paddingLeft: 21, color: C.secondary, fontSize: 12.5, lineHeight: 1.7 }}>{questions.map((question) => <div key={question.id} style={{ marginTop: 6 }}><strong>{question.label}</strong><div>{answers?.[question.id]?.label || answers?.[question.id]?.value || '尚未回答'}</div></div>)}<div style={{ marginTop: 7, color: C.tertiary }}>{interaction?.answered_at || interaction?.updated_at || interaction?.created_at || ''}</div></div> : null}
+    </section>
+  );
+}
+
+function AgentTaskTimeline({ activeSteps, loading, streamText, onAction }) {
+  const hasSteps = Array.isArray(activeSteps) && activeSteps.length > 0;
+  const hasActivity = hasSteps || Boolean(streamText);
+  if (!hasActivity) return null;
+  return (
+    <section className="notus-agent-task-timeline" aria-label="Agent 任务进度">
+      <div className="notus-agent-task-timeline__identity">
+        <div className="notus-agent-task-timeline__avatar" aria-hidden="true">N</div>
+        <div className="notus-agent-task-timeline__name">Notus Agent</div>
+      </div>
+      {hasSteps ? <ToolChain steps={activeSteps} loading={loading} onAction={onAction} /> : null}
+      {streamText ? (
+        <div className="notus-agent-task-timeline__draft">
+          {!loading ? <div className="notus-agent-task-timeline__draft-label">中断前已生成的回复</div> : null}
+          <StreamingText className="notus-agent-markdown" text={streamText} streaming={loading} style={{ fontSize: 15, lineHeight: 1.85, color: C.text }} />
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function MessageList({ messages, interactions = [], streamText, loading, activeSteps, removingMessageIds, onOpenOperationSet, onCitationClick, citationSelection, actionDisabled = false, onResendMessage, onRetryMessage, onOpenAttachment, onPreviewMention, onPreviewImages, onAgentStepAction }) {
+  const hasPersistedTimeline = Array.isArray(activeSteps) && activeSteps.length > 0;
+  const hasAgentActivity = hasPersistedTimeline || Boolean(streamText);
+  if (messages.length === 0 && !hasAgentActivity) {
     return (
       <div style={{ minHeight: '42vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', color: C.tertiary }}>
         <div style={{ fontSize: 20, lineHeight: 1.5, fontWeight: 500, color: C.text }}>你今天在想些什么？</div>
@@ -1359,16 +1383,8 @@ function MessageList({ messages, streamText, loading, activeSteps, removingMessa
           />
         );
       })}
-      {loading ? (
-          <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start', minWidth: 0, maxWidth: '100%', overflow: 'hidden' }}>
-            <div style={{ width: 34, height: 34, borderRadius: '50%', background: C.accent, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'Georgia, Songti SC, STSong, serif', fontWeight: 800, flexShrink: 0, marginTop: 3 }}>N</div>
-          <div style={{ flex: 1, minWidth: 0, maxWidth: '100%', overflow: 'hidden' }}>
-            <div style={{ fontSize: 14, fontWeight: 800, color: C.text, margin: '5px 0 2px' }}>Notus Agent</div>
-            <ToolChain steps={activeSteps} loading />
-            {streamText ? <StreamingText className="notus-agent-markdown" text={streamText} streaming style={{ fontSize: 15, lineHeight: 1.85, color: C.text }} /> : null}
-          </div>
-        </div>
-      ) : null}
+      {(Array.isArray(interactions) ? interactions : []).filter((item) => item?.status === 'answered').map((interaction) => <InteractionHistoryNode key={`interaction-history-${interaction.id}`} interaction={interaction} />)}
+      {hasAgentActivity ? <AgentTaskTimeline activeSteps={activeSteps} loading={loading} streamText={streamText} onAction={onAgentStepAction} /> : null}
     </div>
   );
 }
@@ -1388,7 +1404,7 @@ function AgentConfirmModeSelect({ value, onChange, disabled }) {
   );
 }
 
-function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigChange, onSend, onStop, searchConfig, searchPreference, onSearchPreferenceChange, onRequireSearchConfig, mcpSelection = { mode: 'off' }, onMcpSelectionChange, mcpAvailable = false, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [], onPreviewMention }) {
+function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigChange, onSend, searchConfig, searchPreference, onSearchPreferenceChange, onRequireSearchConfig, mcpSelection = { mode: 'off' }, onMcpSelectionChange, mcpAvailable = false, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [], onPreviewMention }) {
   const [composerState, setComposerState] = useState({ content: '', mentions: [], segments: [] });
   const [files, setFiles] = useState([]);
   const [imagePreview, setImagePreview] = useState(null);
@@ -1419,7 +1435,8 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
   const selectedConfig = useMemo(() => llmConfigs.find((item) => String(item.id) === String(selectedConfigId)) || llmConfigs[0] || null, [llmConfigs, selectedConfigId]);
   const toast = useToast();
   const parsedAttachmentMode = attachmentMode === 'parsed';
-  const busy = loading || uploading;
+  // 任务已改为后台队列，运行中仍允许立即输入下一条消息；上传完成前才阻止提交。
+  const busy = uploading;
   const providers = searchConfig.providers || SEARCH_PROVIDER_FALLBACKS;
   const preferredSearchProvider = providers.find((provider) => provider.id === searchConfig.selected_provider)?.id || providers[0]?.id || 'firecrawl';
   const webSearchSelected = Boolean(searchConfig.enabled && webSearchPreferenceEnabled && selectedSearchProvider);
@@ -2177,9 +2194,9 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
   };
 
   return (
-    <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, padding: '40px 8px 24px', background: 'linear-gradient(0deg, ' + C.page + ' 0%, ' + C.page + ' 68%, rgba(253,252,251,0) 100%)', zIndex: 6 }}>
+    <div className="notus-agent-composer-dock" style={{ position: 'absolute', left: 0, right: 0, bottom: 0, background: 'linear-gradient(0deg, ' + C.page + ' 0%, ' + C.page + ' 68%, rgba(253,252,251,0) 100%)', zIndex: 6 }}>
       {imagePreview ? <ImagePreviewOverlay preview={imagePreview} onClose={() => setImagePreview(null)} onMove={moveImagePreview} /> : null}
-      <div style={{ width: AGENT_CHAT_CONTENT_WIDTH, maxWidth: 'none', margin: '0 auto', borderRadius: 22, background: '#fff', boxShadow: focused ? '0 4px 24px rgba(217,119,87,0.08), inset 0 0 0 1px rgba(217,119,87,0.30)' : '0 2px 12px rgba(0,0,0,0.03), inset 0 0 0 1px rgba(229,227,216,0.95)', transitionProperty: 'box-shadow', transitionDuration: '180ms', transitionTimingFunction: 'cubic-bezier(0.16,1,0.3,1)', overflow: 'visible' }}>
+      <div className="notus-agent-composer-shell" aria-busy={loading || undefined} style={{ width: AGENT_CHAT_CONTENT_WIDTH, maxWidth: 'none', margin: '0 auto', background: '#fff', boxShadow: focused ? '0 4px 24px rgba(217,119,87,0.08), inset 0 0 0 1px rgba(217,119,87,0.30)' : '0 2px 12px rgba(0,0,0,0.03), inset 0 0 0 1px rgba(229,227,216,0.95)', transitionProperty: 'box-shadow', transitionDuration: '180ms', transitionTimingFunction: 'cubic-bezier(0.16,1,0.3,1)', overflow: 'visible' }}>
         <input ref={fileInputRef} type="file" multiple accept={parsedAttachmentMode ? `${PARSED_ATTACHMENT_ACCEPT},${IMAGE_ACCEPT}` : undefined} style={{ display: 'none' }} onChange={(event) => { addFiles(event.target.files, { mediaKind: 'attachment' }); event.target.value = ''; }} />
         <input ref={imageInputRef} type="file" multiple accept={IMAGE_ACCEPT} style={{ display: 'none' }} onChange={(event) => { addFiles(event.target.files, { mediaKind: 'image' }); event.target.value = ''; }} />
         {files.length > 0 ? <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', padding: '14px 16px 4px', maxHeight: 150, overflowY: 'auto' }}>{files.map((file) => <FileChip key={file.id} file={file} imageOnly={isImageMedia(file)} onPreview={openImagePreview} onRemove={(id) => {
@@ -2264,8 +2281,8 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
             </div>
           ) : null}
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 12px 12px', gap: 10 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flexWrap: 'wrap' }}>
+        <div className="notus-agent-composer__footer">
+          <div className="notus-agent-composer__tools">
             <button type="button" aria-label="添加附件" onClick={() => fileInputRef.current?.click()} disabled={busy || disabled} style={transitionButton({ width: 30, height: 30, borderRadius: 10, background: 'transparent', color: C.tertiary, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, opacity: busy || disabled ? 0.5 : 1 })}><Icons.paperclip size={18} /></button>
             <button type="button" aria-label="添加图片" onClick={() => imageInputRef.current?.click()} disabled={busy || disabled} style={transitionButton({ width: 30, height: 30, borderRadius: 10, background: 'transparent', color: C.tertiary, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, opacity: busy || disabled ? 0.5 : 1 })}><Icons.image size={18} /></button>
             {showAgentConfirmMode ? <AgentConfirmModeSelect value={agentConfirmMode} onChange={onAgentConfirmModeChange} disabled={busy || disabled} /> : null}
@@ -2302,9 +2319,9 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
               ) : null}
             </div>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div className="notus-agent-composer__actions">
             <div style={{ position: 'relative' }}>
-              <button type="button" onClick={() => { setSearchOpen(false); setMcpOpen(false); setModelOpen((prev) => !prev); }} disabled={busy || disabled || llmConfigs.length === 0} style={transitionButton({ maxWidth: 150, height: 28, padding: '0 8px', borderRadius: 8, background: 'transparent', color: C.secondary, display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 13, fontWeight: 700, opacity: llmConfigs.length === 0 || disabled ? 0.55 : 1 })}><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{modelLabel(selectedConfig)}</span><Icons.chevronDown size={13} /></button>
+              <button type="button" className="notus-agent-composer__model" onClick={() => { setSearchOpen(false); setMcpOpen(false); setModelOpen((prev) => !prev); }} disabled={busy || disabled || llmConfigs.length === 0} style={transitionButton({ height: 28, padding: '0 8px', borderRadius: 8, background: 'transparent', color: C.secondary, display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 13, fontWeight: 700, opacity: llmConfigs.length === 0 || disabled ? 0.55 : 1 })}><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{modelLabel(selectedConfig)}</span><Icons.chevronDown size={13} /></button>
               {modelOpen ? (
                 <>
                   <button type="button" aria-label="关闭模型下拉" onClick={() => setModelOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 19, border: 0, background: 'transparent', padding: 0 }} />
@@ -2325,7 +2342,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
                 </>
               ) : null}
             </div>
-            {loading ? <button type="button" aria-label="停止生成" onClick={() => onStop?.()} style={transitionButton({ width: 34, height: 34, borderRadius: 10, background: C.accent, color: '#fff', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 6px 18px rgba(217,119,87,0.24)' })}><Icons.square size={14} /></button> : <button type="button" aria-label="发送" disabled={!canSend} onClick={() => submit()} style={transitionButton({ width: 34, height: 34, borderRadius: 10, background: canSend ? C.accent : C.muted, color: canSend ? '#fff' : '#BDBBB3', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: canSend ? 'pointer' : 'not-allowed', boxShadow: canSend ? '0 6px 18px rgba(217,119,87,0.22)' : 'none' })}>{uploading ? <span aria-hidden="true" style={{ width: 14, height: 14, borderRadius: 999, display: 'inline-block', boxSizing: 'border-box', border: '2px solid rgba(255,255,255,0.45)', borderTopColor: '#fff', animation: 'spin 0.82s linear infinite' }} /> : <Icons.arrowUp size={18} />}</button>}
+            <button type="button" aria-label="发送" disabled={!canSend} onClick={() => submit()} style={transitionButton({ width: 34, height: 34, borderRadius: 10, background: canSend ? C.accent : C.muted, color: canSend ? '#fff' : '#BDBBB3', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: canSend ? 'pointer' : 'not-allowed', boxShadow: canSend ? '0 6px 18px rgba(217,119,87,0.22)' : 'none' })}>{uploading ? <span aria-hidden="true" style={{ width: 14, height: 14, borderRadius: 999, display: 'inline-block', boxSizing: 'border-box', border: '2px solid rgba(255,255,255,0.45)', borderTopColor: '#fff', animation: 'spin 0.82s linear infinite' }} /> : <Icons.arrowUp size={18} />}</button>
           </div>
         </div>
       </div>
@@ -2534,7 +2551,7 @@ function SearchConfigView({ config, onSaved, onBack, selectProvider }) {
   );
 }
 
-export function AgentWorkspace({ messages, streamText, loading, error, activeSteps, llmConfigs, selectedConfigId, onConfigChange, onSend, onStop, onApplyOperationSet, onApplyOperationFile, onRollbackOperationFile, onDiscardOperationFile, onCitationClick, citationSelection, disabled, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [], fullWidth = false, onOpenDiffFile }) {
+export function AgentWorkspace({ messages, interactions = [], streamText, loading, error, activeSteps, llmConfigs, selectedConfigId, onConfigChange, onSend, onStop, onResumeAgentTask, onApplyOperationSet, onApplyOperationFile, onRollbackOperationFile, onDiscardOperationFile, onCitationClick, citationSelection, disabled, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [], fullWidth = false, onOpenDiffFile }) {
   const { openSettings } = useSettingsDialog();
   const toast = useToast();
   const [searchConfig, setSearchConfig] = useState({ enabled: false, selected_provider: 'firecrawl', modes: {}, counts: {}, api_key_set: {}, providers: SEARCH_PROVIDER_FALLBACKS });
@@ -2821,10 +2838,11 @@ export function AgentWorkspace({ messages, streamText, loading, error, activeSte
   return (
     <div style={{ position: 'relative', height: '100%', minHeight: 0, minWidth: 0, maxWidth: '100%', background: C.page, color: C.text, overflow: 'hidden', WebkitFontSmoothing: 'antialiased', MozOsxFontSmoothing: 'grayscale' }}>
       {messageImagePreview ? <ImagePreviewOverlay preview={messageImagePreview} onClose={() => setMessageImagePreview(null)} onMove={moveMessageImagePreview} /> : null}
-      <main ref={scrollContainerRef} onScroll={handleChatScroll} style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden', padding: '32px 16px 320px' }}>
+      <main ref={scrollContainerRef} onScroll={handleChatScroll} style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden', padding: '24px 16px 224px' }}>
         <div style={{ width: AGENT_CHAT_CONTENT_WIDTH, maxWidth: 'none', minWidth: 0, margin: '0 auto', overflow: 'hidden' }}>
           <MessageList
             messages={visibleMessages}
+            interactions={interactions}
             streamText={streamText || ''}
             loading={Boolean(loading)}
             activeSteps={visibleActiveSteps}
@@ -2838,6 +2856,10 @@ export function AgentWorkspace({ messages, streamText, loading, error, activeSte
             onOpenAttachment={handleOpenAttachment}
             onPreviewMention={setPreviewMention}
             onPreviewImages={openMessageImagePreview}
+            onAgentStepAction={(action) => {
+              if (action === 'stop_agent') void onStop?.();
+              if (action === 'resume_agent') void onResumeAgentTask?.();
+            }}
           />
           {error ? <div style={{ marginTop: 16, padding: '12px 14px', borderRadius: 14, background: 'rgba(217,119,87,0.08)', color: C.accentDark, fontSize: 13, lineHeight: 1.7 }}>{error}</div> : null}
           <div style={{ height: 12 }} />
@@ -2876,7 +2898,7 @@ export function AgentWorkspace({ messages, streamText, loading, error, activeSte
           <Icons.chevronDown size={14} />
         </button>
       ) : null}
-      <AgentInput loading={Boolean(loading)} disabled={Boolean(disabled)} llmConfigs={llmConfigs || []} selectedConfigId={selectedConfigId} onConfigChange={onConfigChange} onSend={onSend} onStop={onStop} searchConfig={searchConfig} searchPreference={searchPreference} onSearchPreferenceChange={handleSearchPreferenceChange} onRequireSearchConfig={requireSearchConfig} mcpSelection={mcpSelection} onMcpSelectionChange={handleMcpSelectionChange} mcpAvailable={mcpAvailable} placeholder={placeholder} agentConfirmMode={agentConfirmMode} onAgentConfirmModeChange={onAgentConfirmModeChange} attachmentMode={attachmentMode} mentionOptions={mentionOptions} onPreviewMention={setPreviewMention} />
+      <AgentInput loading={Boolean(loading)} disabled={Boolean(disabled)} llmConfigs={llmConfigs || []} selectedConfigId={selectedConfigId} onConfigChange={onConfigChange} onSend={onSend} searchConfig={searchConfig} searchPreference={searchPreference} onSearchPreferenceChange={handleSearchPreferenceChange} onRequireSearchConfig={requireSearchConfig} mcpSelection={mcpSelection} onMcpSelectionChange={handleMcpSelectionChange} mcpAvailable={mcpAvailable} placeholder={placeholder} agentConfirmMode={agentConfirmMode} onAgentConfirmModeChange={onAgentConfirmModeChange} attachmentMode={attachmentMode} mentionOptions={mentionOptions} onPreviewMention={setPreviewMention} />
       <MentionPreviewDialog mention={previewMention} onClose={() => setPreviewMention(null)} />
       <Dialog open={searchPromptOpen} onClose={() => setSearchPromptOpen(false)} title={promptTitle} maxWidth={420} footer={<><Button variant="ghost" onClick={() => setSearchPromptOpen(false)}>取消</Button><Button variant="primary" onClick={() => { setSearchPromptOpen(false); openSettings('search', { provider: promptProvider?.id }); }}>前往设置</Button></>}>
         <div style={{ fontSize: 14, color: C.secondary, lineHeight: 1.8 }}>{promptMessage}</div>

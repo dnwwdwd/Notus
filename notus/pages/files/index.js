@@ -48,7 +48,7 @@ const FILES_EDITOR_MIN_WIDTH = 560;
 const FILES_AGENT_MIN_WIDTH = 456;
 const FILES_AGENT_FIXED_WIDTH = 456;
 const FILES_AGENT_FIXED_WIDTH_QUERY = '(max-width: 1280px)';
-const FILES_EDITOR_AUTO_COLLAPSE_QUERY = '(max-width: 640px)';
+const FILES_EDITOR_AUTO_COLLAPSE_QUERY = '(max-width: 760px)';
 
 function splitEditorTitleAndBody(visibleContent = '', fallbackTitle = '') {
   const source = String(visibleContent || '').replace(/\r\n/g, '\n').replace(/^\n+/, '');

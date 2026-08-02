@@ -140,8 +140,10 @@ function runTests() {
   assert.ok(agentWorkspace.includes('function diffSidebarFileName(path)'));
   assert.ok(agentWorkspace.includes('<DiffFileLink path={pathText} onOpenFile={openDiffFile}'));
   assert.ok(!agentWorkspace.includes('本次任务的文件已全部处理'));
-  assert.ok(agentWorkspace.includes("const AGENT_CHAT_CONTENT_WIDTH = '95%'"));
+  assert.ok(agentWorkspace.includes("const AGENT_CHAT_CONTENT_WIDTH = 'min(860px, calc(100% - 32px))'"));
   assert.ok(agentWorkspace.includes('width: AGENT_CHAT_CONTENT_WIDTH'));
+  assert.ok(agentWorkspace.includes('className="notus-agent-composer-dock"'));
+  assert.ok(agentWorkspace.includes('className="notus-agent-composer__model"'));
   assert.ok(agentWorkspace.includes('onOpenFile={onOpenDiffFile}'));
   assert.ok(agentWorkspace.includes("removed.push(`原路径：${operation.old_path || operation.old || ''}`);"));
   assert.ok(!agentWorkspace.includes('function AgentDiffCard'));
@@ -164,7 +166,7 @@ function runTests() {
   assert.ok(fileAgentWorkspace.includes('function collectFileMentions(nodes = [])'));
   assert.ok(fileAgentWorkspace.includes('...collectFileMentions(fileTree),'));
 
-  assert.ok(filesPage.includes("const FILES_EDITOR_AUTO_COLLAPSE_QUERY = '(max-width: 640px)'"));
+  assert.ok(filesPage.includes("const FILES_EDITOR_AUTO_COLLAPSE_QUERY = '(max-width: 760px)'"));
   assert.ok(filesPage.includes('const FILES_AGENT_FIXED_WIDTH = 456;'));
   assert.ok(filesPage.includes('const renderedWorkspacePanels = {'));
   assert.ok(filesPage.includes('const renderedEditorAutoCollapsed = editorAutoCollapsed'));

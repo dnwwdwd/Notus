@@ -24,6 +24,7 @@ import { useSettingsDialog } from '../../contexts/SettingsDialogContext';
 import { segmentsToAgentInput } from '../../utils/messageMentions';
 import { normalizeConversationId, readActiveConversationId, saveActiveConversationId } from '../../utils/activeConversationPersistence';
 import { dispatchAgentResourceChange } from '../../utils/agentResourceEvents';
+import { shouldClearAgentPresentation } from '../../utils/agentSessionRestore';
 
 const CONFIRM_MODE_STORAGE_KEY = 'notus-files-agent-confirm-mode';
 const AUTO_CONFIRM = 'auto_confirm';
@@ -203,6 +204,8 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
   const [exportingConversationId, setExportingConversationId] = useState(null);
   const [pendingOperationSets, setPendingOperationSets] = useState([]);
   const [pendingInteractions, setPendingInteractions] = useState([]);
+  const [agentResumeJobs, setAgentResumeJobs] = useState([]);
+  const [restoredAgentSessions, setRestoredAgentSessions] = useState([]);
   const [interactionAnswerDrafts, setInteractionAnswerDrafts] = useState({});
   const [interactionSubmittingId, setInteractionSubmittingId] = useState(null);
   const [clarifyPhase, setClarifyPhase] = useState('expanded-question');
@@ -210,6 +213,10 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
   const [agentConfirmMode, setAgentConfirmMode] = useState(() => readConfirmMode());
   const [skills, setSkills] = useState([]);
   const restoredConversationRef = useRef(false);
+  const autoResumedJobRef = useRef(new Set());
+  const conversationLoadSequenceRef = useRef(0);
+  const agentLoopRef = useRef(null);
+  const resumeAgentTaskInFlightRef = useRef(false);
 
   const aiState = deriveAiReadiness({
     appStatus,
@@ -285,11 +292,22 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
   }, [fetchConversationList, historySearchQuery, setPersistedActiveConversationId]);
 
   const loadConversation = useCallback(async (conversationId) => {
+    const loadSequence = conversationLoadSequenceRef.current + 1;
+    conversationLoadSequenceRef.current = loadSequence;
+    // 对话切换只解绑本地流，不取消服务端任务。这样目标对话不会继承旧会话的
+    // loading/session 锁，返回原对话时仍能看到并继续可恢复任务。
+    agentLoopRef.current?.clearActiveAgentSession();
+    setPendingInteractions([]);
+    setAgentResumeJobs([]);
+    setRestoredAgentSessions([]);
     const response = await fetch(`/api/conversations/${conversationId}`, { cache: 'no-store' });
     const payload = await readApiResponse(response, '读取对话详情失败');
+    if (loadSequence !== conversationLoadSequenceRef.current) return null;
     setMessages(mapConversationMessages(payload.messages, 'canvas'));
     setPendingOperationSets(Array.isArray(payload.pending_operation_sets) ? payload.pending_operation_sets : []);
     setPendingInteractions(Array.isArray(payload.pending_interactions) ? payload.pending_interactions : []);
+    setAgentResumeJobs(Array.isArray(payload.agent_resume_jobs) ? payload.agent_resume_jobs : []);
+    setRestoredAgentSessions(Array.isArray(payload.agent_sessions) ? payload.agent_sessions : []);
     setPersistedActiveConversationId(conversationId);
     setHistoryDrawerOpen(false);
     return payload;
@@ -374,16 +392,84 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     onFilesMayHaveChanged: notifyFilesChanged,
     onError: (error) => toast(error.message || 'Agent 请求失败', 'error'),
   });
-  const sessionLocked = ['running', 'waiting_confirm'].includes(agentLoop.activeAgentSession?.status);
-  const agentPanelLocked = Boolean(agentLoop.loading || sessionLocked || activeInteraction?.status === 'pending' || interactionSubmittingId);
-  const agentPanelLockMessage = activeInteraction?.status === 'pending'
-    ? '还有一张提问卡片等待你的回答，完成后再收起 AI 面板。'
-    : 'AI 正在处理当前任务，请完成或停止任务后再收起面板。';
+  agentLoopRef.current = agentLoop;
+  const restoreAgentSession = agentLoop.restoreAgentSession;
+  const resumeAgentLoop = agentLoop.startAgentLoop;
+  const sessionLocked = agentLoop.activeAgentSession?.status === 'running';
+  // 只有真实在途请求才锁输入。可恢复错误、断线续跑和额度等待都已经停住，
+  // 应保留工具链续跑入口，同时允许用户发送新消息或切到新对话。
+  // 任务独立于界面可见性；只在正在提交同一张卡片时短暂阻止重复切换。
+  const agentPanelLocked = Boolean(interactionSubmittingId);
+  const agentPanelLockMessage = sessionLocked ? '任务仍在后台执行，正在保存提问卡片回答，请稍候。' : '正在保存提问卡片回答，请稍候。';
 
   useEffect(() => {
     onAgentPanelLockChange?.({ locked: agentPanelLocked, message: agentPanelLockMessage });
     return () => onAgentPanelLockChange?.({ locked: false, message: '' });
   }, [agentPanelLockMessage, agentPanelLocked, onAgentPanelLockChange]);
+
+  useEffect(() => {
+    const reversedSessions = [...restoredAgentSessions].reverse();
+    const session = reversedSessions.find((item) => (
+      ['created', 'running', 'waiting_interaction', 'queued_resume', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery'].includes(item.status)
+    )) || reversedSessions.find((item) => ['failed', 'cancelled'].includes(item.status) && (
+      (Array.isArray(item.run_events) && item.run_events.length > 0)
+      || (Array.isArray(item.run_logs) && item.run_logs.length > 0)
+    ));
+    if (session) {
+      restoreAgentSession(session);
+    } else if (shouldClearAgentPresentation({
+      activeSession: agentLoop.activeAgentSession,
+      activeSteps: agentLoop.activeSteps,
+      streamText: agentLoop.streamText,
+    })) {
+      // 新任务已收到 POST 回执时，历史详情尚未刷新为空数组。此时若清空，会把
+      // 刚回显的用户消息和任务时间线一并移除，后台 Worker 仍会继续执行。
+      restoreAgentSession(null);
+    }
+    // 回到正在执行或已入队的会话时重新建立 SSE 订阅。该调用不会新建任务，
+    // Worker 仍按持久化队列运行；仅 waiting 状态不会被自动继续。
+    if (session && ['created', 'running', 'queued_resume'].includes(session.status)) {
+      resumeAgentLoop({
+        session_id: session.id,
+        control_ticket: session.control_tickets?.resume,
+        llm_config_id: selectedLlmConfigId || undefined,
+      }, { resume: true }).catch(() => {});
+    }
+    const queuedJob = agentResumeJobs.find((job) => job.status === 'queued' && job.resume_ticket);
+    if (!queuedJob || autoResumedJobRef.current.has(queuedJob.id)) return;
+    autoResumedJobRef.current.add(queuedJob.id);
+    resumeAgentLoop({
+      session_id: queuedJob.session_id,
+      resume_job_id: queuedJob.id,
+      resume_ticket: queuedJob.resume_ticket,
+      llm_config_id: selectedLlmConfigId || undefined,
+    }, { resume: true }).catch(() => {
+      autoResumedJobRef.current.delete(queuedJob.id);
+    });
+  }, [agentLoop.activeAgentSession, agentLoop.activeSteps, agentLoop.streamText, agentResumeJobs, restoreAgentSession, restoredAgentSessions, resumeAgentLoop, selectedLlmConfigId]);
+
+  const resumeFailedAgentTask = useCallback(async () => {
+    if (resumeAgentTaskInFlightRef.current) return;
+    const session = agentLoop.activeAgentSession || {};
+    const resumeTicket = session.control_tickets?.resume || session.control_ticket;
+    if (!session.id || (!resumeTicket && !session.token)) {
+      toast('当前 Agent 任务的恢复凭据已失效，请刷新会话后再试', 'warning');
+      return;
+    }
+    resumeAgentTaskInFlightRef.current = true;
+    try {
+      await agentLoop.startAgentLoop({
+        session_id: session.id,
+        session_token: session.token,
+        control_ticket: resumeTicket,
+        llm_config_id: selectedLlmConfigId || undefined,
+      }, { resume: true });
+    } catch (error) {
+      toast(error.message || '继续 Agent 任务失败', 'error');
+    } finally {
+      resumeAgentTaskInFlightRef.current = false;
+    }
+  }, [agentLoop, selectedLlmConfigId, toast]);
 
   const updateConfirmMode = useCallback((value) => {
     const next = value === MANUAL_CONFIRM ? MANUAL_CONFIRM : AUTO_CONFIRM;
@@ -412,9 +498,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     kind: 'canvas',
     conversation_id: activeConversationId || undefined,
     llm_config_id: options.llmConfigId || selectedLlmConfigId || undefined,
-    authorized_paths: [''],
     authorized_ops: ['modify', 'create'],
-    search_knowledge_limit: 5,
     attachments: options.attachments || [],
     images: options.images || [],
     media_items: options.mediaItems || [],
@@ -447,18 +531,17 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
   }, [agentConfirmMode, agentLoop, beforeAgentRun, buildAgentTask, selectedLlmConfigId, toast]);
 
   const handleNewConversation = useCallback(() => {
-    if (agentLoop.loading) {
-      toast('当前 Agent 任务仍在执行，请先停止或等待完成', 'info');
-      return;
-    }
+    conversationLoadSequenceRef.current += 1;
+    agentLoop.clearActiveAgentSession();
     setPersistedActiveConversationId(null);
     setMessages([]);
     setPendingOperationSets([]);
     setPendingInteractions([]);
+    setAgentResumeJobs([]);
+    setRestoredAgentSessions([]);
     setHistorySearchQuery('');
     setHistoryDrawerOpen(false);
-    agentLoop.clearActiveAgentSession();
-  }, [agentLoop, setPersistedActiveConversationId, toast]);
+  }, [agentLoop, setPersistedActiveConversationId]);
 
   const handleDeleteConversation = useCallback(async (conversationId) => {
     setDeletingConversationId(Number(conversationId));
@@ -501,7 +584,11 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     const response = await fetch(`/api/interactions/${interaction.id}/respond`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...body, schema_version: interaction.schema_version }),
+      body: JSON.stringify({
+        ...body,
+        schema_version: interaction.schema_version,
+        resume_ticket: interaction.resume_ticket,
+      }),
     });
     const payload = await readApiResponse(response, '回答提问卡片失败');
     if (payload.interaction) setPendingInteractions((previous) => upsertById(previous, payload.interaction));
@@ -512,20 +599,22 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     return payload;
   }, []);
 
-  const resumeInteraction = useCallback(async (interaction) => {
+  const resumeInteraction = useCallback(async (interaction, resume = {}) => {
     const session = agentLoop.activeAgentSession || {};
     const sessionId = Number(interaction?.payload?.agent_session_id || session.id || 0);
-    if (!sessionId || !session.token) {
+    const resumeJob = resume.resume_job || agentResumeJobs.find((job) => Number(job.interaction_id) === Number(interaction?.id));
+    const resumeTicket = resume.resume_ticket || resumeJob?.resume_ticket;
+    if (!sessionId || !resumeJob?.id || !resumeTicket) {
       toast('当前 Agent 任务状态已失效，请重新发起任务', 'warning');
       return;
     }
     await agentLoop.startAgentLoop({
       session_id: sessionId,
-      session_token: session.token,
-      interaction_id: interaction.id,
+      resume_job_id: resumeJob.id,
+      resume_ticket: resumeTicket,
       llm_config_id: selectedLlmConfigId || undefined,
     }, { resume: true });
-  }, [agentLoop, selectedLlmConfigId, toast]);
+  }, [agentLoop, agentResumeJobs, selectedLlmConfigId, toast]);
 
   const handleInteractionSubmit = useCallback(async (interaction, answers) => {
     setInteractionSubmittingId(interaction.id);
@@ -538,7 +627,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
           return next;
         });
       }
-      if (payload.should_continue) await resumeInteraction(payload.interaction || interaction);
+      if (payload.should_continue) await resumeInteraction(payload.interaction || interaction, payload);
     } catch (error) {
       toast(error.message || '回答提问卡片失败', 'error');
     } finally {
@@ -555,7 +644,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     setInteractionSubmittingId(interaction.id);
     try {
       const payload = await respondToInteraction(interaction, { action: decision });
-      if (payload.should_continue) await resumeInteraction(payload.interaction || interaction);
+      if (payload.should_continue) await resumeInteraction(payload.interaction || interaction, payload);
     } catch (error) {
       toast(error.message || 'MCP 授权失败', 'error');
     } finally {
@@ -568,7 +657,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     try {
       const payload = await respondToInteraction(interaction, { action: decision });
       if (payload.resolution_status === 'resolved') dispatchAgentResourceChange(interaction?.payload?.action);
-      if (payload.should_continue) await resumeInteraction(payload.interaction || interaction);
+      if (payload.should_continue) await resumeInteraction(payload.interaction || interaction, payload);
     } catch (error) { toast(error.message || '资源操作失败', 'error'); } finally { setInteractionSubmittingId(null); }
   }, [respondToInteraction, resumeInteraction, toast]);
 
@@ -578,19 +667,22 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
       ? { ...message, operationSet: operationSetById[operationSetId] }
       : message;
   }), [messages, operationSetById]);
-  const inputDisabled = !aiUiState.ready || agentLoop.loading || sessionLocked || Boolean(activeInteraction && clarifyPhase !== 'collapsed');
+  // 后台运行、暂停、失败和提问卡都不再锁住输入；新消息会以同会话 FIFO 入队。
+  // 仅模型尚未就绪或输入组件自身正在上传时禁用。
+  const inputDisabled = !aiUiState.ready;
 
   return (
     <div className="notus-file-agent-workspace" style={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative', background: 'var(--bg-primary)' }}>
       <div className="notus-file-agent-workspace__header" style={{ height: 48, padding: '0 12px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', flexShrink: 0 }}>
         <div style={{ display: 'flex', gap: 4 }}>
           <Tooltip content="查看历史对话"><span><IconButton label="查看历史对话" size={30} active={historyDrawerOpen} onClick={() => setHistoryDrawerOpen(true)}><Icons.clock size={14} /></IconButton></span></Tooltip>
-          <Tooltip content="新建对话"><span><IconButton label="新建对话" size={30} disabled={agentLoop.loading || sessionLocked} onClick={handleNewConversation}><Icons.plus size={14} /></IconButton></span></Tooltip>
+          <Tooltip content="新建对话"><span><IconButton label="新建对话" size={30} onClick={handleNewConversation}><Icons.plus size={14} /></IconButton></span></Tooltip>
         </div>
       </div>
       <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
         <AgentWorkspace
           messages={displayedMessages}
+          interactions={pendingInteractions}
           streamText={agentLoop.streamText}
           loading={agentLoop.loading}
           error={agentLoop.error}
@@ -600,6 +692,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
           onConfigChange={handleConfigChange}
           onSend={handleSend}
           onStop={agentLoop.stopAgentLoop}
+          onResumeAgentTask={resumeFailedAgentTask}
           onApplyOperationSet={(operationSet) => agentLoop.applyOperationSet(operationSet)}
           onApplyOperationFile={(operationSet, patchIndex) => agentLoop.applyOperationFile(operationSet, patchIndex)}
           onRollbackOperationFile={(operationSet, patchIndex) => agentLoop.rollbackOperationFile(operationSet, patchIndex)}
@@ -616,7 +709,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
         {aiUiState.showLockedState ? <AiLockedState compact variant="panel" onAction={() => openSettings('model')} /> : null}
       </div>
       {activeInteraction ? (
-        <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, zIndex: 8, padding: '44px 12px 0', background: 'linear-gradient(180deg, transparent, var(--bg-primary) 28%)' }}>
+        <div className="notus-agent-interaction-timeline" style={{ position: 'relative', zIndex: 2, padding: '0 12px 12px' }}>
           {activeInteraction.kind === 'mcp_approval' ? <McpApprovalDrawer interaction={activeInteraction} submitting={interactionSubmittingId === activeInteraction.id} onDecision={(decision) => handleMcpApproval(activeInteraction, decision)} /> : activeInteraction.kind === 'resource_approval' ? <ResourceApprovalDrawer interaction={activeInteraction} submitting={interactionSubmittingId === activeInteraction.id} onPhaseChange={setClarifyPhase} onDecision={(decision) => handleResourceApproval(activeInteraction, decision)} /> : <ClarifyDrawer interaction={activeInteraction} answerDraft={interactionAnswerDrafts[String(activeInteraction.id)]} onAnswerDraftChange={(answers) => handleInteractionAnswerDraftChange(activeInteraction.id, answers)} submitting={interactionSubmittingId === activeInteraction.id} submitLabel="继续执行" onPhaseChange={setClarifyPhase} onSubmit={handleInteractionSubmit} onRetry={resumeInteraction} onCancel={(interaction) => respondToInteraction(interaction, { action: 'cancel' }).catch(() => {})} />}
         </div>
       ) : null}

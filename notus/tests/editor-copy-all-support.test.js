@@ -13,14 +13,8 @@ async function runTests() {
   const clipboardHelper = await import('../utils/editorClipboard.js');
 
   [
-    'navigator.clipboard?.write',
-    'window.ClipboardItem',
-    "'text/html'",
-    "'text/plain'",
-    'data-notus-src',
-    'content-image?src=',
-    'cloneNode(true)',
-    'FileReader',
+    'navigator.clipboard?.writeText',
+    'editor?.storage?.markdown?.getMarkdown?.()',
     'document.execCommand(\'copy\')',
   ].forEach((snippet) => {
     assert.ok(
@@ -32,12 +26,11 @@ async function runTests() {
   [
     'copyEditorContentToClipboard',
     '复制全文',
-    '已复制全文，包含文字和图片',
+    '已复制 Markdown 源文本',
     "setCopiedAll(true)",
     "setCopiedAll(false)",
     'window.setTimeout(() => {',
-    '图片未写入剪贴板',
-    "result.mode === 'rich'",
+    "result.mode === 'empty'",
   ].forEach((snippet) => {
     assert.ok(
       toolbarSource.includes(snippet),

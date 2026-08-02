@@ -8,21 +8,28 @@ function read(relativePath) {
 
 async function runTests() {
   const filesPageSource = read('pages/files/index.js');
+  const tocHookSource = read('hooks/useEditorToc.js');
   const editorSource = read('components/Editor/WysiwygEditor.js');
   const exportSource = read('pages/api/files/export.js');
   const tableHelperSource = read('lib/editorMarkdownTable.js');
   const tableHelper = await import('../lib/editorMarkdownTable.js');
 
   [
-    'const syncTocHeadings = useCallback(() => {',
-    'function collectHeadingItemsFromEditor(editorInstance) {',
-    'editorInstance.state.doc.descendants((node) => {',
-    'syncTocHeadings();',
+    "import { useEditorToc } from '../../hooks/useEditorToc';",
+    'const tocItems = useEditorToc({',
   ].forEach((snippet) => {
     assert.ok(
       filesPageSource.includes(snippet),
       `files/index.js should include ${snippet} so TOC can retry after editor DOM settles`
     );
+  });
+  [
+    'function collectHeadingItems(editor) {',
+    'editor.state.doc.descendants((node) => {',
+    'const frameId = window.requestAnimationFrame(syncHeadings);',
+    "const TOC_HEADING_SELECTOR = 'h1,h2,h3,h4,h5,h6';",
+  ].forEach((snippet) => {
+    assert.ok(tocHookSource.includes(snippet), `useEditorToc.js should include ${snippet}`);
   });
 
   [
@@ -41,7 +48,8 @@ async function runTests() {
   [
     'function encodeContentDispositionFilename(filename = \'\') {',
     "filename*=UTF-8''",
-    'encodeContentDispositionFilename(path.basename(file.path))',
+    'encodeContentDispositionFilename(filename)',
+    "res.setHeader('Content-Type', 'application/zip')",
   ].forEach((snippet) => {
     assert.ok(
       exportSource.includes(snippet),

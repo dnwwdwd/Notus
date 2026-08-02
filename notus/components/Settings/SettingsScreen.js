@@ -1900,9 +1900,9 @@ const McpSettings = () => {
 };
 
 const GLOBAL_AGENT_FILE_OPTIONS = [
-  { value: 'soul', label: 'Agent 性格', description: '长期影响 Agent 的沟通方式和风险表达。' },
-  { value: 'style', label: '写作风格', description: '只在创作、改写、润色等写作任务中加载。' },
-  { value: 'memory', label: '全局记忆', description: '保存跨会话仍然有价值的偏好、项目背景和已确认决策。' },
+  { value: 'soul', label: 'Agent 性格' },
+  { value: 'style', label: '写作风格' },
+  { value: 'memory', label: '全局记忆' },
 ];
 
 const GLOBAL_AGENT_HISTORY_SOURCES = {
@@ -1919,6 +1919,7 @@ const GlobalAgentFiles = () => {
   const [activeFile, setActiveFile] = useState('soul');
   const [metadata, setMetadata] = useState([]);
   const [content, setContent] = useState('');
+  const [savedContent, setSavedContent] = useState('');
   const [expectedHash, setExpectedHash] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -1941,6 +1942,7 @@ const GlobalAgentFiles = () => {
       const response = await fetch(`/api/settings/agent-files/${encodeURIComponent(file)}`, { cache: 'no-store' });
       const payload = await readJsonResponse(response, { fallbackMessage: '读取全局 Agent 文件失败' });
       setContent(String(payload.content || ''));
+      setSavedContent(String(payload.content || ''));
       setExpectedHash(String(payload.hash || ''));
       setMetadata((current) => current.map((item) => item.file === file ? { ...item, ...payload } : item));
     } catch (error) {
@@ -1963,6 +1965,7 @@ const GlobalAgentFiles = () => {
       });
       const payload = await readJsonResponse(response, { fallbackMessage: '保存全局 Agent 文件失败' });
       setContent(String(payload.content || content));
+      setSavedContent(String(payload.content || content));
       setExpectedHash(String(payload.hash || ''));
       await loadList();
       toast('全局 Agent 文件已保存', 'success');
@@ -1980,6 +1983,7 @@ const GlobalAgentFiles = () => {
       });
       const payload = await readJsonResponse(response, { fallbackMessage: '恢复默认内容失败' });
       setContent(String(payload.content || ''));
+      setSavedContent(String(payload.content || ''));
       setExpectedHash(String(payload.hash || ''));
       await loadList();
       toast('已恢复默认内容', 'success');
@@ -2012,6 +2016,7 @@ const GlobalAgentFiles = () => {
       });
       const payload = await readJsonResponse(response, { fallbackMessage: '回滚历史版本失败' });
       setContent(String(payload.content || ''));
+      setSavedContent(String(payload.content || ''));
       setExpectedHash(String(payload.hash || ''));
       await loadList();
       setHistoryOpen(false);
@@ -2027,20 +2032,37 @@ const GlobalAgentFiles = () => {
   return (
     <div style={{ width: '100%', color: '#2D2D2D' }}>
       <SettingsPageHeader title="全局 Agent" icon={<Icons.robot size={20} style={{ color: '#D97757' }} />} />
-      <section style={{ ...SETTINGS_SURFACE_STYLE, display: 'grid', gap: 18 }}>
-        <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.65 }}>三份 Markdown 文件会在后续 Agent 请求中生效。它们不能修改系统权限、危险操作确认或 MCP、文件系统和网络访问范围。</div>
-        <SegmentedTabs value={activeFile} onChange={setActiveFile} ariaLabel="全局 Agent 文件" options={GLOBAL_AGENT_FILE_OPTIONS.map((item) => ({ value: item.value, label: item.label }))} />
-        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-          <div><div style={{ fontSize: 14, fontWeight: 700 }}>{activeOption.label}</div><div style={{ marginTop: 4, fontSize: 12, color: 'var(--text-tertiary)' }}>{activeOption.description}</div></div>
-          <div style={{ fontSize: 12, color: activeMeta?.over_recommended ? 'var(--warning)' : 'var(--text-tertiary)' }}>{content.length} 字符 · 建议不超过 {activeMeta?.recommended_chars || 0} 字符</div>
+      <div style={{ display: 'grid', gap: 16 }}>
+        <div style={{ width: 'min(100%, 540px)', display: 'flex', gap: 8, padding: 4, background: '#F9F9F8', border: '1px solid #E5E3D8', borderRadius: 10, overflowX: 'auto' }}>
+          {GLOBAL_AGENT_FILE_OPTIONS.map((option) => {
+            const active = option.value === activeFile;
+            return <button key={option.value} type="button" aria-pressed={active} onClick={() => setActiveFile(option.value)} style={{ flex: '1 0 156px', minWidth: 120, height: 36, border: active ? '1px solid rgba(229,227,216,0.8)' : '1px solid transparent', borderRadius: 8, background: active ? '#fff' : 'transparent', color: active ? '#D97757' : '#6B6963', boxShadow: active ? '0 1px 3px rgba(0,0,0,0.08)' : 'none', fontSize: 13, fontWeight: 650, cursor: 'pointer', transition: 'background 160ms ease, color 160ms ease, box-shadow 160ms ease' }}>{option.label}</button>;
+          })}
         </div>
-        <textarea value={content} onChange={(event) => setContent(event.target.value)} disabled={loading || saving} spellCheck={false} aria-label={`${activeOption.label} Markdown 内容`} style={{ width: '100%', minHeight: 300, resize: 'vertical', boxSizing: 'border-box', border: '1px solid var(--border-primary)', borderRadius: 10, padding: 14, color: 'var(--text-primary)', background: 'var(--bg-secondary)', font: '13px/1.65 var(--font-mono)', outline: 'none' }} />
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'space-between' }}>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><Button size="sm" variant="ghost" disabled={saving || loading} onClick={() => loadFile(activeFile)}>取消修改</Button><Button size="sm" variant="ghost" disabled={saving || loading} onClick={restoreDefault}>恢复默认</Button><Button size="sm" variant="ghost" disabled={saving || loading} onClick={openHistory}>历史版本</Button>{desktopClient.available() ? <Button size="sm" variant="ghost" onClick={openAgentDirectory}>打开所在位置</Button> : null}</div>
-          <Button size="sm" variant="primary" loading={saving} disabled={loading} onClick={save}>保存</Button>
-        </div>
-        <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>最后更新：{activeMeta?.updated_at ? new Date(activeMeta.updated_at).toLocaleString() : '读取中'}</div>
-      </section>
+        <section style={{ ...SETTINGS_SURFACE_STYLE, padding: 0, overflow: 'hidden' }}>
+          <div style={{ minHeight: 62, padding: '13px 18px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', borderBottom: '1px solid #ECE9DF', background: '#FDFCFB' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+              <span style={{ width: 34, height: 34, borderRadius: 10, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: '#F6E8E1', color: '#BE6247', border: '1px solid #EFD9CF', flexShrink: 0 }}><Icons.file size={16} /></span>
+              <div style={{ minWidth: 0 }}><div style={{ fontSize: 14, fontWeight: 750, color: '#2D2D2D' }}>{activeFile}.md</div><div style={{ marginTop: 2, fontSize: 12, color: 'var(--text-tertiary)' }}>{activeMeta?.updated_at ? new Date(activeMeta.updated_at).toLocaleString() : '读取中'}</div></div>
+            </div>
+            <div style={{ fontSize: 12, fontVariantNumeric: 'tabular-nums', color: activeMeta?.over_recommended ? 'var(--warning)' : 'var(--text-tertiary)' }}>{content.length} / {activeMeta?.recommended_chars || 0} 字符</div>
+          </div>
+          <div style={{ padding: 18 }}>
+            <textarea className="notus-global-agent-editor" value={content} onChange={(event) => setContent(event.target.value)} disabled={loading || saving} spellCheck={false} aria-label={`${activeOption.label} Markdown 内容`} style={{ width: '100%', minHeight: 390, resize: 'vertical', boxSizing: 'border-box', border: '1px solid #DEDAD0', borderRadius: 12, padding: '16px 18px', color: 'var(--text-primary)', background: '#FCFBF9', font: '13.5px/1.75 var(--font-mono)', outline: 'none', transition: 'border-color 160ms ease, box-shadow 160ms ease, background 160ms ease' }} />
+          </div>
+          <div style={{ minHeight: 64, padding: '12px 18px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', borderTop: '1px solid #ECE9DF', background: '#FDFCFB' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <Button size="md" variant="secondary" disabled={saving || loading} onClick={openHistory}>历史版本</Button>
+              {desktopClient.available() ? <Button size="md" variant="ghost" disabled={saving} onClick={openAgentDirectory}>打开所在位置</Button> : null}
+              <Button size="md" variant="ghost" disabled={saving || loading} onClick={restoreDefault} style={{ color: '#A6533C' }}>恢复默认</Button>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Button size="md" variant="secondary" disabled={saving || loading || content === savedContent} onClick={() => loadFile(activeFile)}>取消</Button>
+              <Button size="md" variant="primary" loading={saving} disabled={loading || content === savedContent} onClick={save} style={{ minWidth: 88, justifyContent: 'center', boxShadow: '0 6px 14px rgba(217,119,87,0.2)' }}>保存修改</Button>
+            </div>
+          </div>
+        </section>
+      </div>
       <Dialog open={historyOpen} onClose={() => setHistoryOpen(false)} closeOnBackdrop={false} title={`${activeOption.label}历史版本`} maxWidth={760} footer={<Button variant="ghost" onClick={() => setHistoryOpen(false)}>关闭</Button>}>
         <div style={{ display: 'grid', gap: 10, maxHeight: '65vh', overflowY: 'auto' }}>
           {history.map((version) => <div key={version.id} style={{ ...SETTINGS_RESOURCE_ROW_STYLE, alignItems: 'flex-start', flexWrap: 'wrap' }}><div style={{ minWidth: 0, flex: '1 1 240px' }}><div style={{ fontSize: 13, fontWeight: 700 }}>{GLOBAL_AGENT_HISTORY_SOURCES[version.source] || version.source}</div><div style={{ marginTop: 4, fontSize: 12, color: 'var(--text-tertiary)' }}>{new Date(version.created_at).toLocaleString()} · {String(version.hash || '').slice(0, 12)}</div></div><div style={{ display: 'flex', gap: 8 }}><Button size="sm" variant="ghost" onClick={() => readHistory(version)}>查看</Button><Button size="sm" variant="ghost" disabled={saving} onClick={() => rollback(version)}>回滚</Button></div></div>)}

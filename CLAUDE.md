@@ -305,7 +305,8 @@ Notus/
 
 ## 服务端实现约束
 
-- API Route 必须先调用 `lib/runtime.js:ensureRuntime()`
+- API Route 必须先调用 `lib/runtime.js:ensureRuntime()`。
+- `/api/health` 是唯一明确例外：不得调用 `ensureRuntime()`，响应只允许包含状态、版本和能力布尔值，不得暴露绝对目录、底层错误、密钥或运行时配置原文。
 - 数据库连接统一通过 `lib/db.js:getDb()` 获取
 - `lib/` 下 Node.js 模块只能在 API Routes 或 `getServerSideProps` 中调用，不能直接在浏览器组件中 import
 

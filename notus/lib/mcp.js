@@ -195,9 +195,17 @@ async function prepareMcpTools(selection = {}, goal = '') {
   }
   return { tools: tools.slice(0, MAX_AUTO_TOOLS), map, instructions };
 }
-async function callMcpTool(mapping, args) {
+async function callMcpTool(mapping, args, options = {}) {
   const server = getServer(mapping?.serverId); if (!server || !server.enabled) return { error: 'MCP_TOOL_NOT_FOUND', message: 'MCP 工具不可用' };
-  try { const connection = await openConnection(server); const result = await connection.client.callTool({ name: mapping.toolName, arguments: args || {} }); return normalizeToolResult(result); } catch (error) { return { error: error.code || 'MCP_CONNECTION_FAILED', message: error.message }; }
+  try {
+    const connection = await openConnection(server);
+    const result = await connection.client.callTool(
+      { name: mapping.toolName, arguments: args || {} },
+      undefined,
+      { signal: options.signal, timeout: options.timeoutMs }
+    );
+    return normalizeToolResult(result);
+  } catch (error) { return { error: error.code || 'MCP_CONNECTION_FAILED', message: error.message }; }
 }
 function normalizeToolResult(result) {
   const value = result || {}; const serialized = JSON.stringify(value); if (serialized.length > 60000) return { truncated: true, summary: serialized.slice(0, 60000), is_error: Boolean(value.isError) }; return { content: value.content || [], structured_content: value.structuredContent || null, is_error: Boolean(value.isError) };

@@ -4,7 +4,8 @@ const { sha256 } = require('./files');
 const DEFAULT_EXPIRE_DAYS = 7;
 const ACTIVE_STATUSES = ['pending', 'stale', 'failed'];
 const TERMINAL_STATUSES = ['answered', 'cancelled'];
-const DISPLAYABLE_STATUSES = ['pending', 'stale', 'failed'];
+// 已回答卡片也属于对话历史：重新打开会话时需按时间线展示其问题、答案与时间。
+const DISPLAYABLE_STATUSES = ['pending', 'stale', 'failed', 'answered'];
 const STRUCTURED_REASON_CODES = [
   'missing_target_location',
   'ambiguous_content_reference',

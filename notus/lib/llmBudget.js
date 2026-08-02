@@ -80,10 +80,8 @@ function resolveLlmBudget(config = {}, taskType = 'default', options = {}) {
     options.maxOutputTokens,
     resolveTaskOutputTokens(taskType, configuredMaxOutputTokens)
   );
-  const safetyMarginTokens = Math.min(
-    Math.max(Math.round(derived.context_window_tokens * 0.02), 2048),
-    8192
-  );
+  // 安全余量是 context window 的固定 10%，不参与其他区域的借用。
+  const safetyMarginTokens = Math.max(1, Math.floor(derived.context_window_tokens * 0.1));
   const hardInputBudgetTokens = Math.max(
     2048,
     derived.context_window_tokens - maxOutputTokens - safetyMarginTokens
@@ -98,6 +96,12 @@ function resolveLlmBudget(config = {}, taskType = 'default', options = {}) {
     safetyMarginTokens,
     hardInputBudgetTokens,
     compactTriggerTokens: Math.max(1024, Math.floor(hardInputBudgetTokens * 0.85)),
+    areaSoftBudgets: {
+      system_tools: Math.floor(derived.context_window_tokens * 0.20),
+      current_task: Math.floor(derived.context_window_tokens * 0.20),
+      active_toolchain: Math.floor(derived.context_window_tokens * 0.25),
+      dynamic_materials: Math.floor(derived.context_window_tokens * 0.25),
+    },
   };
 }
 

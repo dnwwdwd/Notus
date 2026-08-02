@@ -13,6 +13,36 @@ const {
   updateInteraction,
 } = require('../../../../lib/conversationInteractions');
 const { setSessionWriteTarget } = require('../../../../lib/agentSession');
+const { getDb } = require('../../../../lib/db');
+const {
+  createOrGetResumeJob,
+  issueCapability,
+  validateCapability,
+} = require('../../../../lib/agentControlPlane');
+const { wakeAgentTaskWorker } = require('../../../../lib/agentTaskWorker');
+
+function getAgentSessionId(interaction) {
+  if (interaction?.source !== 'agent_loop') return null;
+  const id = Number(interaction?.payload?.agent_session_id || 0);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+function buildResumeResult(interaction, ownerId = null) {
+  const sessionId = getAgentSessionId(interaction);
+  if (!sessionId || interaction?.status !== 'answered') return null;
+  const resumeJob = createOrGetResumeJob({ sessionId, interactionId: interaction.id, ownerId });
+  wakeAgentTaskWorker();
+  return {
+    resume_job: resumeJob,
+    resume_ticket: issueCapability({
+      sessionId,
+      interactionId: interaction.id,
+      resumeJobId: resumeJob.id,
+      action: 'resume',
+      ownerId,
+    }),
+  };
+}
 
 function buildCorrectionStateFromResponse(interaction, normalizedResponse) {
   const payload = interaction?.payload || {};
@@ -81,6 +111,33 @@ export default async function handler(req, res) {
     });
   }
 
+  const agentSessionId = getAgentSessionId(interaction);
+  const ownerId = null;
+  const resumeTicket = req.body?.resume_ticket || req.headers['x-agent-resume-ticket'];
+  let capability = null;
+  if (agentSessionId) {
+    capability = validateCapability(resumeTicket, {
+      sessionId: agentSessionId,
+      interactionId: interaction.id,
+      action: 'respond',
+      ...(ownerId ? { ownerId } : {}),
+    });
+    if (!capability.valid) {
+      return res.status(403).json({ error: capability.reason, code: capability.reason, request_id: context.request_id });
+    }
+    if (interaction.status === 'answered') {
+      const resume = buildResumeResult(interaction, ownerId);
+      return res.status(200).json({
+        interaction,
+        resolution_status: 'resolved',
+        should_continue: true,
+        idempotent_replay: true,
+        ...resume,
+        request_id: context.request_id,
+      });
+    }
+  }
+
   const { action } = req.body || {};
   if (interaction.kind === 'resource_approval') {
     if (interaction.status !== 'pending') {
@@ -88,6 +145,16 @@ export default async function handler(req, res) {
       return res.status(409).json({ error: statusError.message, code: statusError.code, interaction, request_id: context.request_id });
     }
     const payload = interaction.payload || {};
+    if (agentSessionId) {
+      const consumed = validateCapability(resumeTicket, {
+        sessionId: agentSessionId,
+        interactionId: interaction.id,
+        action: 'respond',
+      }, { consume: true });
+      if (!consumed.valid || consumed.consumed) {
+        return res.status(409).json({ error: '恢复票据已消费，请刷新任务状态', code: 'CAPABILITY_ALREADY_CONSUMED', request_id: context.request_id });
+      }
+    }
     let result = { cancelled: true, action: payload.action };
     if (action === 'confirm') {
       try {
@@ -106,8 +173,11 @@ export default async function handler(req, res) {
         return res.status(400).json({ error: error.message, code: error.code || 'RESOURCE_ACTION_FAILED', interaction: failed, request_id: context.request_id });
       }
     }
-    const updated = updateInteraction(interaction.id, { status: 'answered', response: result, answeredAt: new Date().toISOString() });
-    return res.status(200).json({ interaction: updated, resolution_status: action === 'confirm' ? 'resolved' : 'cancelled', should_continue: true, resume_payload: result, request_id: context.request_id });
+    const finalized = getDb().transaction(() => {
+      const updated = updateInteraction(interaction.id, { status: 'answered', response: result, answeredAt: new Date().toISOString() });
+      return { updated, resume: buildResumeResult(updated, ownerId) };
+    })();
+    return res.status(200).json({ interaction: finalized.updated, resolution_status: action === 'confirm' ? 'resolved' : 'cancelled', should_continue: true, resume_payload: result, ...(finalized.resume || {}), request_id: context.request_id });
   }
   if (action === 'cancel') {
     if (['answered', 'cancelled'].includes(interaction.status)) {
@@ -119,6 +189,11 @@ export default async function handler(req, res) {
         request_id: context.request_id,
       });
     }
+    if (agentSessionId) validateCapability(resumeTicket, {
+      sessionId: agentSessionId,
+      interactionId: interaction.id,
+      action: 'respond',
+    }, { consume: true });
     const cancelledInteraction = updateInteraction(interaction.id, {
       status: 'cancelled',
       answeredAt: null,
@@ -198,6 +273,17 @@ export default async function handler(req, res) {
     });
   }
 
+  if (agentSessionId && normalizedResponse.resolution_status === 'resolved') {
+    const consumed = validateCapability(resumeTicket, {
+      sessionId: agentSessionId,
+      interactionId: interaction.id,
+      action: 'respond',
+    }, { consume: true });
+    if (!consumed.valid || consumed.consumed) {
+      return res.status(409).json({ error: '恢复票据已消费，请刷新任务状态', code: 'CAPABILITY_ALREADY_CONSUMED', request_id: context.request_id });
+    }
+  }
+
   const summaryText = buildInteractionAnswerSummary(interaction, normalizedResponse);
   const nextStatus = normalizedResponse.resolution_status === 'resolved' ? 'answered' : 'pending';
   if (nextStatus === 'answered' && interaction.payload?.write_target_preflight) {
@@ -220,25 +306,32 @@ export default async function handler(req, res) {
       : { mode: 'modify', file_path: candidate.filePath, operation_set_id: candidate.operationSetId });
   }
   const correctionState = buildCorrectionStateFromResponse(interaction, normalizedResponse);
-  const answerMessageId = appendConversationMessage({
-    conversationId: interaction.conversation_id,
-    role: 'user',
-    content: summaryText,
-    meta: {
-      interaction_id: interaction.id,
-      interaction_resolution_status: normalizedResponse.resolution_status,
-      correction_state: correctionState,
-      article_hash: interaction.article_hash || '',
-    },
-  });
-  touchConversation(interaction.conversation_id);
-
-  const updatedInteraction = updateInteraction(interaction.id, {
-    response: normalizedResponse,
-    status: nextStatus,
-    answerMessageId,
-    answeredAt: nextStatus === 'answered' ? new Date().toISOString() : null,
-  });
+  const finalized = getDb().transaction(() => {
+    const answerMessageId = appendConversationMessage({
+      conversationId: interaction.conversation_id,
+      role: 'user',
+      content: summaryText,
+      meta: {
+        interaction_id: interaction.id,
+        interaction_resolution_status: normalizedResponse.resolution_status,
+        correction_state: correctionState,
+        article_hash: interaction.article_hash || '',
+      },
+    });
+    touchConversation(interaction.conversation_id);
+    const updatedInteraction = updateInteraction(interaction.id, {
+      response: normalizedResponse,
+      status: nextStatus,
+      answerMessageId,
+      answeredAt: nextStatus === 'answered' ? new Date().toISOString() : null,
+    });
+    return {
+      answerMessageId,
+      updatedInteraction,
+      resume: nextStatus === 'answered' ? buildResumeResult(updatedInteraction, ownerId) : null,
+    };
+  })();
+  const { answerMessageId, updatedInteraction } = finalized;
   const answerMessage = getConversationMessageById(answerMessageId);
 
   logger.info('canvas.clarify.answered', {
@@ -264,6 +357,7 @@ export default async function handler(req, res) {
         conversation_id: updatedInteraction.conversation_id,
       }
       : null,
+    ...(finalized.resume || {}),
     request_id: context.request_id,
   });
 }

@@ -2,6 +2,8 @@ const { ensureRuntime } = require('../../../../lib/runtime');
 const { getSession, listRunLogs, countSnapshots, sanitizeSessionForRead, validateSessionAccess } = require('../../../../lib/agentSession');
 const { listOperationSetsBySession } = require('../../../../lib/canvasOperationSets');
 const { sanitizeResearchReceipts } = require('../../../../lib/agentResearch');
+const { validateCapability } = require('../../../../lib/agentControlPlane');
+const { getTaskBySession, getQueuePosition } = require('../../../../lib/agentTaskQueue');
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed', code: 'METHOD_NOT_ALLOWED' });
@@ -9,8 +11,12 @@ export default async function handler(req, res) {
   if (!runtime.ok) return res.status(500).json({ error: runtime.error.message, code: 'RUNTIME_ERROR' });
   try {
     const sessionId = Number(req.query.id || 0);
-    const token = req.query.session_token || req.headers['x-agent-session-token'];
-    if (token) {
+    const controlTicket = req.headers['x-agent-control-ticket'];
+    const token = req.headers['x-agent-session-token'];
+    if (controlTicket) {
+      const access = validateCapability(controlTicket, { sessionId, action: 'session_read' });
+      if (!access.valid) return res.status(403).json({ error: access.reason, code: access.reason });
+    } else if (token) {
       const access = validateSessionAccess(sessionId, token);
       if (!access.valid) return res.status(403).json({ error: access.reason, code: access.reason });
     }
@@ -21,6 +27,8 @@ export default async function handler(req, res) {
       research_receipts: sanitizeResearchReceipts(sessionId),
       snapshots_count: countSnapshots(sessionId),
       operation_sets: listOperationSetsBySession(sessionId),
+      task: getTaskBySession(sessionId),
+      queue_position: getQueuePosition(sessionId),
     });
   } catch (error) {
     return res.status(404).json({ error: error.message, code: 'SESSION_NOT_FOUND' });

@@ -132,6 +132,13 @@ function runTests() {
   ['web_search_enabled', 'web_search_provider', 'web_search_mode', 'web_search_count', 'tool_profile'].forEach((column) => {
     assert.ok(agentSessionColumns.includes(column), `missing agent_sessions.${column}`);
   });
+  [
+    'state_version', 'active_run_id', 'lease_expires_at', 'cancel_requested_at',
+    'last_committed_checkpoint_id', 'prompt_version', 'toolset_version', 'token_budget_total',
+  ].forEach((column) => assert.ok(agentSessionColumns.includes(column), `missing agent_sessions.${column}`));
+  ['agent_checkpoints', 'agent_resume_jobs', 'agent_capabilities', 'agent_run_usage', 'agent_run_events'].forEach((table) => {
+    assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table), `missing table ${table}`);
+  });
   const conversationId = db.prepare("INSERT INTO conversations (kind, title) VALUES ('canvas', '系统消息测试')").run().lastInsertRowid;
   assert.doesNotThrow(() => {
     db.prepare(`

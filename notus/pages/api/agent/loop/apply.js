@@ -9,7 +9,8 @@ const {
   rollbackFileRevision,
   rollbackPreviewPatchFile,
 } = require('../../../../lib/agentTools');
-const { extendHardLimit, getSession, updateSessionStatus, validateSessionAccess } = require('../../../../lib/agentSession');
+const { extendHardLimit, extendTokenBudget, getSession, updateSessionStatus, validateSessionAccess } = require('../../../../lib/agentSession');
+const { validateCapability } = require('../../../../lib/agentControlPlane');
 const { getOperationSetById, markOperationSetStatus } = require('../../../../lib/canvasOperationSets');
 
 function normalizePositiveInt(value) {
@@ -60,6 +61,7 @@ export default async function handler(req, res) {
   const {
     session_id: sessionId,
     session_token: sessionToken,
+    control_ticket: controlTicket,
     operation_set_id: operationSetId,
     action = 'apply',
     extra_loops: extraLoops = 10,
@@ -70,12 +72,15 @@ export default async function handler(req, res) {
     current_conversation_id: currentConversationId = null,
   } = req.body || {};
   if (!sessionId) return res.status(400).json({ error: 'session_id is required', code: 'SESSION_ID_REQUIRED' });
-  const access = validateSessionAccess(sessionId, sessionToken);
+  const expectedAction = action === 'extend' ? 'extend' : 'operate';
+  const access = controlTicket
+    ? validateCapability(controlTicket, { sessionId, action: expectedAction }, { consume: action === 'extend' })
+    : validateSessionAccess(sessionId, sessionToken || req.headers['x-agent-session-token']);
   if (!access.valid) return res.status(403).json({ error: access.reason, code: access.reason });
   if (action === 'extend') {
-    const session = extendHardLimit(sessionId, extraLoops);
-    updateSessionStatus(sessionId, 'running');
-    return res.status(200).json({ success: true, new_hard_limit: session.hard_limit });
+    extendHardLimit(sessionId, extraLoops);
+    const session = extendTokenBudget(sessionId, 0.25);
+    return res.status(200).json({ success: true, new_hard_limit: session.hard_limit, new_token_budget_total: session.token_budget_total });
   }
   if (action === 'reject') {
     if (operationSetId) markOperationSetStatus(operationSetId, 'cancelled');

@@ -69,6 +69,9 @@ function ensureRuntime({ startBackground = true } = {}) {
       scheduleRetries();
       startStyleBackgroundWorkers();
       startSessionCleaner();
+      // Agent 任务与 HTTP/SSE 连接解耦：运行时启动后由常驻 Worker 领取持久化队列，
+      // 服务重启会把未释放的 running 任务恢复为 queued 并从 checkpoint 续跑。
+      require('./agentTaskWorker').startAgentTaskWorker();
     }
 
     runtimeStarted = true;

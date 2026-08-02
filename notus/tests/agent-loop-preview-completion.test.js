@@ -59,7 +59,7 @@ async function runTests() {
             },
           ],
           stopReason: 'tool_use',
-          usage: { input_tokens: 10, output_tokens: 20 },
+          usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
         };
       },
     },
@@ -104,10 +104,11 @@ async function runTests() {
     assert.strictEqual(getSession(session.sessionId).status, 'completed');
     assert.ok(result.operation_set_id > 0);
     assert.strictEqual(getOperationSetById(result.operation_set_id).status, 'pending');
-    assert.ok(events.some((event) => (
-      event.type === 'thinking'
-      && String(event.text || '').includes('diff 卡片')
-    )), JSON.stringify(events));
+    const finalEvents = events.filter((event) => event.type === 'final');
+    assert.strictEqual(finalEvents.length, 1, JSON.stringify(events));
+    assert.ok(String(finalEvents[0].text || '').includes('diff 卡片'), JSON.stringify(events));
+    assert.ok(events.some((event) => event.type === 'artifact' && event.artifact_type === 'operation_set'), JSON.stringify(events));
+    assert.deepStrictEqual(finalEvents[0].usage, { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 });
     assert.ok(events.every((event) => !String(event.text || '').includes('内部推理')), JSON.stringify(events));
 
   } finally {

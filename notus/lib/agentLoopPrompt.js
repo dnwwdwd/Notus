@@ -163,7 +163,6 @@ function buildLoopSystemPrompt(session, options = {}) {
 }
 
 function buildInitialUserMessage(goal, session, options = {}) {
-  const limitText = session.search_knowledge_limit === null ? '不限制' : `${session.search_knowledge_limit} 次`;
   const recentConversationContext = String(options.recentConversationContext || '').trim();
   const imageRecognition = options.currentImageRecognition && typeof options.currentImageRecognition === 'object'
     ? options.currentImageRecognition
@@ -198,7 +197,7 @@ function buildInitialUserMessage(goal, session, options = {}) {
     '写入能力：',
     formatTaskWriteCapability(session),
     '',
-    `知识库检索上限：${limitText}` ,
+    '知识库检索采用现行 3→5 查询预算：先用 3 个互补查询获取覆盖，证据不足时最多扩展到 5 个，避免重复相同查询。',
     '',
     '请先说明执行计划，然后开始执行。',
   ].join('\n');

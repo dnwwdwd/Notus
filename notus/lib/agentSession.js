@@ -5,6 +5,7 @@ const { getDb } = require('./db');
 const { getEffectiveConfig } = require('./config');
 const { sha256 } = require('./files');
 const { triggerIncrementalIndex, removeFile: removeFileFromIndex } = require('./indexer');
+const { redactSecrets } = require('./agentToolPolicy');
 const {
   isPathSafe,
   normalizeAgentPath,
@@ -13,8 +14,7 @@ const {
 } = require('./agentPathRules');
 
 const TERMINAL_STATUSES = new Set(['completed', 'cancelled', 'failed', 'rolled_back']);
-const ACTIVE_STATUSES = new Set(['running', 'waiting_confirm']);
-const TOOL_HARD_LIMITS = {};
+const ACTIVE_STATUSES = new Set(['created', 'running', 'waiting_interaction', 'queued_resume', 'waiting_limit_confirmation']);
 
 function safeJsonParse(value, fallback) {
   if (!value) return fallback;
@@ -81,6 +81,8 @@ function createSession({
   toolProfile = 'default',
   skillMentions = [],
   mcpSelection = { mode: 'off' },
+  promptVersion = 'agent-loop-v2',
+  tokenBudgetTotal = null,
 } = {}) {
   const normalizedGoal = String(goal || '').trim();
   if (!normalizedGoal) throw new Error('goal is required');
@@ -89,12 +91,14 @@ function createSession({
   const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
   const result = db.prepare(`
     INSERT INTO agent_sessions (
-      goal, authorized_paths, authorized_ops, session_token, expires_at,
+      status, goal, authorized_paths, authorized_ops, session_token, expires_at,
       soft_limit, hard_limit, search_knowledge_limit, conversation_id,
       web_search_enabled, web_search_provider, web_search_mode, web_search_count, tool_profile,
-      skill_mentions_json, mcp_selection_json, mcp_session_permissions_json, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      skill_mentions_json, mcp_selection_json, mcp_session_permissions_json,
+      prompt_version, token_budget_total, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
   `).run(
+    'created',
     normalizedGoal,
     JSON.stringify(normalizeAuthorizedPaths(authorizedPaths)),
     JSON.stringify(normalizeOps(authorizedOps)),
@@ -111,7 +115,9 @@ function createSession({
     normalizeToolProfile(toolProfile),
     JSON.stringify(Array.isArray(skillMentions) ? skillMentions.map(String).filter(Boolean) : []),
     JSON.stringify(normalizeMcpSelection(mcpSelection)),
-    JSON.stringify({})
+    JSON.stringify({}),
+    String(promptVersion || 'agent-loop-v2'),
+    tokenBudgetTotal === null || tokenBudgetTotal === undefined ? null : Math.max(1, Number(tokenBudgetTotal) || 1)
   );
   return { sessionId: Number(result.lastInsertRowid), token };
 }
@@ -145,6 +151,14 @@ function formatSession(row) {
     consecutive_fails: safeJsonParse(row.consecutive_fails, {}),
     last_tool_results: safeJsonParse(row.last_tool_results, {}),
     research_state: safeJsonParse(row.research_state_json, { version: 1, sources: {} }),
+    state_version: Number(row.state_version || 0),
+    active_run_id: row.active_run_id || null,
+    lease_expires_at: row.lease_expires_at || null,
+    cancel_requested_at: row.cancel_requested_at || null,
+    last_committed_checkpoint_id: normalizePositiveInt(row.last_committed_checkpoint_id),
+    prompt_version: String(row.prompt_version || 'legacy-v1'),
+    toolset_version: String(row.toolset_version || ''),
+    token_budget_total: row.token_budget_total === null || row.token_budget_total === undefined ? null : Number(row.token_budget_total),
   };
 }
 
@@ -188,12 +202,13 @@ function listRecentSessions({ limit = 20, conversationId = null } = {}) {
 }
 
 function updateSessionStatus(sessionId, status) {
-  const normalized = String(status || '').trim();
+  const requested = String(status || '').trim();
+  const normalized = requested === 'waiting_confirm' ? 'waiting_interaction' : requested;
   if (!normalized) throw new Error('status is required');
-  const waitingSinceExpr = normalized === 'waiting_confirm' ? 'datetime(\'now\')' : 'NULL';
+  const waitingSinceExpr = ['waiting_interaction', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery'].includes(normalized) ? 'datetime(\'now\')' : 'NULL';
   getDb().prepare(`
     UPDATE agent_sessions
-    SET status = ?, waiting_since = ${waitingSinceExpr}, updated_at = datetime('now')
+    SET status = ?, waiting_since = ${waitingSinceExpr}, state_version = state_version + 1, updated_at = datetime('now')
     WHERE id = ?
   `).run(normalized, normalizePositiveInt(sessionId));
 }
@@ -246,6 +261,36 @@ function extendHardLimit(sessionId, extraLoops = 10) {
   getDb().prepare('UPDATE agent_sessions SET hard_limit = hard_limit + ?, updated_at = datetime(\'now\') WHERE id = ?')
     .run(increment, normalizePositiveInt(sessionId));
   return getSession(sessionId);
+}
+
+function extendTokenBudget(sessionId, ratio = 0.25) {
+  const id = normalizePositiveInt(sessionId);
+  const row = getDb().prepare('SELECT token_budget_total FROM agent_sessions WHERE id = ?').get(id);
+  const current = Math.max(1, Number(row?.token_budget_total) || 1);
+  const increment = Math.max(1, Math.floor(current * Math.max(0.05, Number(ratio) || 0.25)));
+  getDb().prepare(`
+    UPDATE agent_sessions
+    SET token_budget_total = token_budget_total + ?, status = 'queued_resume',
+        state_version = state_version + 1, updated_at = datetime('now')
+    WHERE id = ?
+  `).run(increment, id);
+  return getSession(id);
+}
+
+function setSessionRuntimeVersions(sessionId, { promptVersion, toolsetVersion, tokenBudgetTotal } = {}) {
+  const id = normalizePositiveInt(sessionId);
+  const sets = [];
+  const values = [];
+  if (promptVersion) { sets.push('prompt_version = ?'); values.push(String(promptVersion)); }
+  if (toolsetVersion) { sets.push('toolset_version = ?'); values.push(String(toolsetVersion)); }
+  if (tokenBudgetTotal !== undefined && tokenBudgetTotal !== null) {
+    sets.push('token_budget_total = COALESCE(token_budget_total, ?)');
+    values.push(Math.max(1, Number(tokenBudgetTotal) || 1));
+  }
+  if (sets.length === 0) return getSession(id);
+  sets.push("updated_at = datetime('now')");
+  getDb().prepare(`UPDATE agent_sessions SET ${sets.join(', ')} WHERE id = ?`).run(...values, id);
+  return getSession(id);
 }
 
 function validateWrite(token, targetPath, operation) {
@@ -416,50 +461,91 @@ function compactMessagesForStorage(messages = []) {
   return compact.concat(keep);
 }
 
-function saveMessagesCheckpoint(sessionId, messages, lastResponseContent, appliedToolUseId) {
+function saveMessagesCheckpoint(sessionId, messages, lastResponseContent, appliedToolUseId, runId = '') {
   const checkpoint = {
     messages: compactMessagesForStorage(messages),
     last_response_content: lastResponseContent,
     saved_at: new Date().toISOString(),
   };
-  getDb().prepare(`
-    UPDATE agent_sessions
-    SET messages_checkpoint = ?, checkpoint_tool_use_id = ?, updated_at = datetime('now')
-    WHERE id = ?
-  `).run(JSON.stringify(checkpoint), String(appliedToolUseId || ''), normalizePositiveInt(sessionId));
+  const db = getDb();
+  return db.transaction(() => {
+    const sid = normalizePositiveInt(sessionId);
+    const result = db.prepare(`
+      INSERT INTO agent_checkpoints (
+        session_id, run_id, messages_json, last_response_content_json, tool_use_id
+      ) VALUES (?, ?, ?, ?, ?)
+    `).run(
+      sid,
+      String(runId || '') || null,
+      JSON.stringify(checkpoint.messages),
+      JSON.stringify(lastResponseContent || []),
+      String(appliedToolUseId || '') || null
+    );
+    const checkpointId = Number(result.lastInsertRowid);
+    db.prepare(`
+      UPDATE agent_checkpoints
+      SET status = 'superseded', superseded_at = datetime('now')
+      WHERE session_id = ? AND status = 'active' AND id <> ?
+    `).run(sid, checkpointId);
+    db.prepare(`
+      UPDATE agent_sessions
+      SET last_committed_checkpoint_id = ?, messages_checkpoint = ?, checkpoint_tool_use_id = ?,
+          updated_at = datetime('now')
+      WHERE id = ?
+    `).run(checkpointId, JSON.stringify(checkpoint), String(appliedToolUseId || ''), sid);
+    return checkpointId;
+  })();
 }
 
 function loadMessagesCheckpoint(sessionId) {
-  const row = getDb().prepare('SELECT messages_checkpoint, checkpoint_tool_use_id FROM agent_sessions WHERE id = ?')
-    .get(normalizePositiveInt(sessionId));
+  const db = getDb();
+  const sid = normalizePositiveInt(sessionId);
+  const current = db.prepare(`
+    SELECT * FROM agent_checkpoints
+    WHERE session_id = ? AND status = 'active'
+    ORDER BY id DESC LIMIT 1
+  `).get(sid);
+  if (current) {
+    return {
+      id: Number(current.id),
+      messages: safeJsonParse(current.messages_json, []),
+      lastResponseContent: safeJsonParse(current.last_response_content_json, []),
+      appliedToolUseId: current.tool_use_id || '',
+    };
+  }
+  const row = db.prepare('SELECT messages_checkpoint, checkpoint_tool_use_id FROM agent_sessions WHERE id = ?').get(sid);
   if (!row?.messages_checkpoint) return null;
   const checkpoint = safeJsonParse(row.messages_checkpoint, null);
   if (!checkpoint) return null;
   return {
+    id: null,
     messages: Array.isArray(checkpoint.messages) ? checkpoint.messages : [],
     lastResponseContent: checkpoint.last_response_content || [],
     appliedToolUseId: row.checkpoint_tool_use_id || '',
   };
 }
 
-function clearMessagesCheckpoint(sessionId) {
-  getDb().prepare('UPDATE agent_sessions SET messages_checkpoint = NULL, checkpoint_tool_use_id = NULL WHERE id = ?')
-    .run(normalizePositiveInt(sessionId));
-}
-
-function checkAndIncrementToolCount(sessionId, toolName) {
+function clearMessagesCheckpoint(sessionId, checkpointId = null) {
   const db = getDb();
-  return db.transaction(() => {
-    const row = db.prepare('SELECT tool_call_counts, search_knowledge_limit FROM agent_sessions WHERE id = ?').get(normalizePositiveInt(sessionId));
-    const counts = safeJsonParse(row?.tool_call_counts, {});
-    const name = String(toolName || 'unknown');
-    const current = Number(counts[name] || 0);
-    const limit = name === 'search_knowledge' ? row.search_knowledge_limit : TOOL_HARD_LIMITS[name];
-    if (limit !== null && limit !== undefined && current >= Number(limit)) return { allowed: false, count: current };
-    counts[name] = current + 1;
-    db.prepare('UPDATE agent_sessions SET tool_call_counts = ?, updated_at = datetime(\'now\') WHERE id = ?')
-      .run(JSON.stringify(counts), normalizePositiveInt(sessionId));
-    return { allowed: true, count: current + 1 };
+  const sid = normalizePositiveInt(sessionId);
+  db.transaction(() => {
+    if (checkpointId) {
+      db.prepare(`
+        UPDATE agent_checkpoints SET status = 'superseded', superseded_at = datetime('now')
+        WHERE id = ? AND session_id = ?
+      `).run(normalizePositiveInt(checkpointId), sid);
+    } else {
+      db.prepare(`
+        UPDATE agent_checkpoints SET status = 'superseded', superseded_at = datetime('now')
+        WHERE session_id = ? AND status = 'active'
+      `).run(sid);
+    }
+    db.prepare(`
+      UPDATE agent_sessions
+      SET messages_checkpoint = NULL, checkpoint_tool_use_id = NULL,
+          last_committed_checkpoint_id = NULL, updated_at = datetime('now')
+      WHERE id = ?
+    `).run(sid);
   })();
 }
 
@@ -559,43 +645,41 @@ function logToolCall({ sessionId, loopIndex, toolName, toolInput, toolResult, th
   );
 }
 
-function detectDeadloop(sessionId, toolName, toolResult) {
+function updateToolGuard(sessionId, toolName, toolResult, failed) {
   const db = getDb();
   return db.transaction(() => {
     const row = db.prepare('SELECT last_tool_results FROM agent_sessions WHERE id = ?').get(normalizePositiveInt(sessionId));
-    const results = safeJsonParse(row?.last_tool_results, {});
+    const stored = safeJsonParse(row?.last_tool_results, {});
+    const previous = stored?.last_event || null;
     const name = String(toolName || 'unknown');
     const hash = sha256(JSON.stringify(toolResult || null));
-    if (!results[name] || results[name].hash !== hash) results[name] = { hash, count: 1 };
-    else results[name].count = Number(results[name].count || 0) + 1;
+    const sameSuccessfulResult = !failed && !previous?.failed && previous?.tool_name === name && previous?.result_hash === hash;
+    const consecutiveFailure = failed && previous?.failed && previous?.tool_name === name;
+    const next = {
+      last_event: {
+        tool_name: name,
+        result_hash: hash,
+        failed: Boolean(failed),
+        consecutive_same_result: sameSuccessfulResult ? Number(previous.consecutive_same_result || 1) + 1 : (failed ? 0 : 1),
+        consecutive_failures: consecutiveFailure ? Number(previous.consecutive_failures || 1) + 1 : (failed ? 1 : 0),
+      },
+    };
     db.prepare('UPDATE agent_sessions SET last_tool_results = ?, updated_at = datetime(\'now\') WHERE id = ?')
-      .run(JSON.stringify(results), normalizePositiveInt(sessionId));
-    return Number(results[name].count || 0) >= 3;
+      .run(JSON.stringify(next), normalizePositiveInt(sessionId));
+    return next.last_event;
   })();
+}
+
+function detectDeadloop(sessionId, toolName, toolResult) {
+  return updateToolGuard(sessionId, toolName, toolResult, false).consecutive_same_result >= 3;
 }
 
 function recordToolFail(sessionId, toolName) {
-  const db = getDb();
-  return db.transaction(() => {
-    const row = db.prepare('SELECT consecutive_fails FROM agent_sessions WHERE id = ?').get(normalizePositiveInt(sessionId));
-    const fails = safeJsonParse(row?.consecutive_fails, {});
-    const name = String(toolName || 'unknown');
-    fails[name] = Number(fails[name] || 0) + 1;
-    db.prepare('UPDATE agent_sessions SET consecutive_fails = ?, updated_at = datetime(\'now\') WHERE id = ?')
-      .run(JSON.stringify(fails), normalizePositiveInt(sessionId));
-    return Number(fails[name] || 0) >= 2;
-  })();
+  return updateToolGuard(sessionId, toolName, { error: true }, true).consecutive_failures >= 2;
 }
 
-function resetToolFail(sessionId, toolName) {
-  const db = getDb();
-  return db.transaction(() => {
-    const row = db.prepare('SELECT consecutive_fails FROM agent_sessions WHERE id = ?').get(normalizePositiveInt(sessionId));
-    const fails = safeJsonParse(row?.consecutive_fails, {});
-    fails[String(toolName || 'unknown')] = 0;
-    db.prepare('UPDATE agent_sessions SET consecutive_fails = ?, updated_at = datetime(\'now\') WHERE id = ?')
-      .run(JSON.stringify(fails), normalizePositiveInt(sessionId));
-  })();
+function resetToolFail() {
+  // 成功工具由 detectDeadloop() 记录，它会同时清空全局连续失败窗口。
 }
 
 function listRunLogs(sessionId) {
@@ -612,6 +696,75 @@ function listRunLogs(sessionId) {
     }));
 }
 
+function truncateTimelineText(value, maxBytes = 16 * 1024) {
+  const text = String(value || '');
+  const buffer = Buffer.from(text, 'utf8');
+  if (buffer.length <= maxBytes) return text;
+  return buffer.subarray(0, maxBytes).toString('utf8') + '\n[内容已截断]';
+}
+
+function sanitizeRunEvent(event = {}) {
+  const type = String(event.type || '').trim();
+  if (!['progress', 'artifact', 'final'].includes(type)) return null;
+  const payload = {
+    type,
+    stage: String(event.stage || '').trim(),
+    text: truncateTimelineText(event.text || event.final_text || '', type === 'final' ? 64 * 1024 : 16 * 1024),
+    loop_index: Math.max(0, Number(event.loop_index || 0)),
+    tool_name: String(event.tool_name || '').trim(),
+    tool_input_summary: truncateTimelineText(event.tool_input_summary || '', 4 * 1024),
+    result_summary: redactSecrets(event.result_summary ?? null),
+    failed: Boolean(event.failed),
+    retry_attempt: Math.max(0, Number(event.retry_attempt || 0)),
+    retry_limit: Math.max(0, Number(event.retry_limit || 0)),
+    retry_after_ms: Math.max(0, Number(event.retry_after_ms || 0)),
+    artifact_type: String(event.artifact_type || '').trim(),
+    status: String(event.status || '').trim(),
+    reason: String(event.reason || '').trim(),
+    error_category: String(event.error_category || '').trim(),
+    error_code: String(event.error_code || '').trim(),
+    message: truncateTimelineText(event.message || '', 8 * 1024),
+    retry_attempts: Math.max(0, Number(event.retry_attempts || 0)),
+    resumable: Boolean(event.resumable),
+    operation_set_id: normalizePositiveInt(event.operation_set_id),
+    interaction_id: normalizePositiveInt(event.interaction?.id || event.interaction_id),
+    usage: type === 'final' ? redactSecrets(event.usage ?? null) : null,
+  };
+  return redactSecrets(payload);
+}
+
+function recordRunEvent({ sessionId, runId = null, event = null } = {}) {
+  const payload = sanitizeRunEvent(event || {});
+  if (!payload) return null;
+  const serialized = JSON.stringify(payload);
+  const result = getDb().prepare(`
+    INSERT INTO agent_run_events (session_id, run_id, event_type, stage, payload_json)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(
+    normalizePositiveInt(sessionId),
+    runId ? String(runId) : null,
+    payload.type,
+    payload.stage || payload.artifact_type || '',
+    serialized
+  );
+  return Number(result.lastInsertRowid);
+}
+
+function listRunEvents(sessionId) {
+  return getDb().prepare(`
+    SELECT id, session_id, run_id, event_type, stage, payload_json, created_at
+    FROM agent_run_events WHERE session_id = ? ORDER BY id ASC
+  `).all(normalizePositiveInt(sessionId)).map((row) => ({
+    id: Number(row.id),
+    session_id: Number(row.session_id),
+    run_id: row.run_id || null,
+    event_type: row.event_type,
+    stage: row.stage || '',
+    payload: safeJsonParse(row.payload_json, {}),
+    created_at: row.created_at,
+  }));
+}
+
 function countSnapshots(sessionId) {
   const row = getDb().prepare('SELECT COUNT(*) AS count FROM agent_snapshots WHERE session_id = ?').get(normalizePositiveInt(sessionId));
   return Number(row?.count || 0);
@@ -622,7 +775,8 @@ function markStaleWaitingSessions(maxAgeMs = 60 * 60 * 1000) {
   const result = getDb().prepare(`
     UPDATE agent_sessions
     SET status = 'cancelled', updated_at = datetime('now')
-    WHERE status = 'waiting_confirm' AND waiting_since IS NOT NULL AND waiting_since < ?
+    WHERE status IN ('waiting_interaction', 'waiting_limit_confirmation', 'waiting_confirm')
+      AND waiting_since IS NOT NULL AND waiting_since < ?
   `).run(cutoff);
   return Number(result.changes || 0);
 }
@@ -645,6 +799,8 @@ module.exports = {
   setSessionMcpPermission,
   consumeSessionMcpPermission,
   extendHardLimit,
+  extendTokenBudget,
+  setSessionRuntimeVersions,
   validateWrite,
   validateSessionAccess,
   isPathSafe,
@@ -656,13 +812,14 @@ module.exports = {
   saveMessagesCheckpoint,
   loadMessagesCheckpoint,
   clearMessagesCheckpoint,
-  checkAndIncrementToolCount,
   logToolCall,
   summarizeToolResult,
   detectDeadloop,
   recordToolFail,
   resetToolFail,
   listRunLogs,
+  listRunEvents,
+  recordRunEvent,
   countSnapshots,
   markStaleWaitingSessions,
   ensureSessionActive,

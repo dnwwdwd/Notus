@@ -16,6 +16,11 @@ const DEFAULTS = {
   llmBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
   llmContextWindowTokens: 800000,
   llmMaxOutputTokens: 32768,
+  llmRequestTimeoutMs: 180000,
+  agentToolTimeoutMs: 30000,
+  agentMcpTimeoutMs: 30000,
+  agentPromptVersion: 'agent-loop-v2',
+  diagnosticsToken: '',
   vecScoreThreshold: 0.5,
   topK: 5,
   knowledgeEnableClarify: true,
@@ -134,6 +139,13 @@ function readEnvConfig() {
       process.env.LLM_MAX_OUTPUT_TOKENS,
       DEFAULTS.llmMaxOutputTokens
     ),
+    llmRequestTimeoutMs: numberFromEnv(process.env.LLM_REQUEST_TIMEOUT_MS, DEFAULTS.llmRequestTimeoutMs),
+    agentToolTimeoutMs: numberFromEnv(process.env.AGENT_TOOL_TIMEOUT_MS, DEFAULTS.agentToolTimeoutMs),
+    agentMcpTimeoutMs: numberFromEnv(process.env.AGENT_MCP_TIMEOUT_MS, DEFAULTS.agentMcpTimeoutMs),
+    agentPromptVersion: ['legacy-v1', 'agent-loop-v2'].includes(String(process.env.NOTUS_AGENT_PROMPT_VERSION || '').trim())
+      ? String(process.env.NOTUS_AGENT_PROMPT_VERSION).trim()
+      : DEFAULTS.agentPromptVersion,
+    diagnosticsToken: String(process.env.NOTUS_DIAGNOSTICS_TOKEN || DEFAULTS.diagnosticsToken).trim(),
 
     vecScoreThreshold: floatFromEnv(process.env.VEC_SCORE_THRESHOLD, DEFAULTS.vecScoreThreshold),
     topK: numberFromEnv(process.env.TOP_K, DEFAULTS.topK),

@@ -2,6 +2,7 @@ const { getEffectiveConfig } = require('../../lib/config');
 const { ensureError } = require('../../lib/errors');
 const { createLogger, createRequestContext } = require('../../lib/logger');
 const { getDiscoveredModels } = require('../../lib/modelDiscovery');
+const { ensureRuntime } = require('../../lib/runtime');
 
 function getInput(req) {
   return req.method === 'POST' ? (req.body || {}) : (req.query || {});
@@ -18,6 +19,9 @@ export default async function handler(req, res) {
       request_id: context.request_id,
     });
   }
+
+  const runtime = ensureRuntime();
+  if (!runtime.ok) return res.status(500).json({ error: '模型服务初始化失败', code: 'RUNTIME_ERROR', request_id: context.request_id });
 
   try {
     const input = getInput(req);

@@ -16,9 +16,10 @@ assert.ok(
   'SSE session state must update the token ref synchronously so an immediate question card can resume the correct session'
 );
 assert.ok(
-  startRouteSource.includes('let activeSessionId = null;')
-    && startRouteSource.includes("if (activeSessionId) updateSessionStatus(activeSessionId, 'failed');"),
-  'API 在新建 session 后遇到 LLM 400/404 等异常时必须持久化 failed 状态'
+  startRouteSource.includes('createTask({')
+    && startRouteSource.includes('return res.status(202).json')
+    && startRouteSource.includes('wakeAgentTaskWorker()'),
+  '启动 API 必须只持久化入队并返回 202，不能把浏览器连接当成任务生命周期'
 );
 assert.ok(
   controllerSource.includes("const requestId = String(response.headers?.get('x-request-id') || '').trim();")
@@ -27,11 +28,10 @@ assert.ok(
   '非 JSON 500 页面必须转换为受控错误提示，不能把 HTML 原文显示在 Agent 区域'
 );
 assert.ok(
-  startRouteSource.includes("logger.error('agent.loop.start.runtime_failed', { error });")
-    && startRouteSource.includes("logger.error('agent.loop.start.runtime_unavailable', { error: runtime.error });")
+  startRouteSource.includes("logger.error('agent.loop.start.enqueue_failed', { error });")
     && startRouteSource.includes("error: 'Agent 服务初始化失败，请稍后重试。'")
     && startRouteSource.includes('request_id: context.request_id'),
-  'SSE 建立前的运行时异常必须记录并以结构化 JSON 返回'
+  '任务入队异常必须记录并以结构化 JSON 返回'
 );
 
 console.log('agent loop error recovery tests passed');

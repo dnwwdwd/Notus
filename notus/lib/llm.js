@@ -40,6 +40,26 @@ function buildBudgetPayload(budget, estimatedPromptTokens, retryCount) {
   };
 }
 
+function requestSignal(userSignal, timeoutMs) {
+  const timeoutController = new AbortController();
+  const timer = setTimeout(() => timeoutController.abort('timeout'), Math.max(1000, Number(timeoutMs) || 180000));
+  const controller = new AbortController();
+  const abort = (reason) => { if (!controller.signal.aborted) controller.abort(reason); };
+  const onUserAbort = () => abort('user');
+  const onTimeout = () => abort('timeout');
+  userSignal?.addEventListener?.('abort', onUserAbort, { once: true });
+  timeoutController.signal.addEventListener('abort', onTimeout, { once: true });
+  return {
+    signal: controller.signal,
+    dispose() {
+      clearTimeout(timer);
+      userSignal?.removeEventListener?.('abort', onUserAbort);
+      timeoutController.signal.removeEventListener('abort', onTimeout);
+    },
+    reason() { return controller.signal.reason; },
+  };
+}
+
 async function applyCompaction({
   compact,
   messages,
@@ -383,56 +403,115 @@ function buildAnthropicToolRequestBody({ system, messages, tools, model, tempera
   return body;
 }
 
-async function completeToolChat({ system = '', messages = [], tools = [], llmConfig = null, model, temperature = 0.2, taskType = 'agent_loop', maxOutputTokens } = {}) {
+async function completeToolChat({
+  system = '',
+  messages = [],
+  tools = [],
+  llmConfig = null,
+  model,
+  temperature = 0.2,
+  taskType = 'agent_loop',
+  maxOutputTokens,
+  compact,
+  signal,
+  requestTimeoutMs,
+  maxRetries = 1,
+} = {}) {
   const config = resolveLlmConfig(llmConfig);
   const apiProtocol = normalizeApiProtocol(config.llmApiProtocol);
   const budget = resolveLlmBudget(config, taskType, { model, maxOutputTokens });
-  const requestMessages = apiProtocol === 'anthropic'
-    ? toAnthropicMessages(messages)
-    : toOpenAiMessages(system, messages);
-  const estimatedPromptTokens = estimateChatRequestTokens({
-    messages: apiProtocol === 'anthropic' ? [{ role: 'system', content: system }, ...messages] : requestMessages,
-    tools,
-  });
+  let currentMessages = Array.isArray(messages) ? messages : [];
+  let currentTools = Array.isArray(tools) ? tools : [];
+  let retryCount = 0;
 
-  const response = apiProtocol === 'anthropic'
-    ? await fetch(buildAnthropicRequestUrl(config.llmBaseUrl, '/messages'), {
-      method: 'POST',
-      headers: buildAnthropicHeaders(config),
-      body: JSON.stringify(buildAnthropicToolRequestBody({ system, messages, tools, model, temperature }, budget, config)),
-    })
-    : await fetch(`${config.llmBaseUrl.replace(/\/+$/, '')}/chat/completions`, {
-      method: 'POST',
-      headers: buildOpenAiHeaders(config),
-      body: JSON.stringify(buildBaseRequestBody(requestMessages, {
-        model,
-        tools: toOpenAiTools(tools),
-        temperature,
-      }, budget, config)),
+  while (true) {
+    let requestMessages = apiProtocol === 'anthropic'
+      ? toAnthropicMessages(currentMessages)
+      : toOpenAiMessages(system, currentMessages);
+    let estimatedPromptTokens = estimateChatRequestTokens({
+      messages: apiProtocol === 'anthropic' ? [{ role: 'system', content: system }, ...currentMessages] : requestMessages,
+      tools: currentTools,
     });
+    // Provider 明确返回 overflow 后必须进入 60% 的 hard compact，不能因为
+    // 上一轮 soft compact 的本地估算刚好低于 85% 而跳过唯一一次恢复机会。
+    if (retryCount > 0 || estimatedPromptTokens >= budget.compactTriggerTokens) {
+      const compactBudget = {
+        ...budget,
+        compactTriggerTokens: Math.floor(budget.hardInputBudgetTokens * (retryCount > 0 ? 0.6 : 0.75)),
+      };
+      const compacted = await applyCompaction({
+        compact,
+        messages: currentMessages,
+        tools: currentTools,
+        responseFormat: null,
+        budget: compactBudget,
+        mode: retryCount > 0 ? 'hard' : 'soft',
+      });
+      if (compacted) {
+        currentMessages = compacted.messages;
+        currentTools = compacted.tools || currentTools;
+        requestMessages = apiProtocol === 'anthropic'
+          ? toAnthropicMessages(currentMessages)
+          : toOpenAiMessages(system, currentMessages);
+        estimatedPromptTokens = estimateChatRequestTokens({
+          messages: apiProtocol === 'anthropic' ? [{ role: 'system', content: system }, ...currentMessages] : requestMessages,
+          tools: currentTools,
+        });
+      }
+    }
+    if (estimatedPromptTokens > budget.hardInputBudgetTokens) {
+      throw createAppError('CONTEXT_BUDGET_EXCEEDED', '当前任务上下文超出模型预算，请缩小处理范围。', {
+        budget: buildBudgetPayload(budget, estimatedPromptTokens, retryCount),
+      });
+    }
 
-  if (!response.ok) {
-    const errorPayload = await readErrorPayload(response);
-    const overflow = isContextOverflowError(response.status, errorPayload.body);
-    throw createAppError('LLM_API_ERROR', errorPayload.message, {
-      status: response.status,
-      response_body: errorPayload.body,
-      overflow,
-      budget: buildBudgetPayload(budget, estimatedPromptTokens, 0),
-    });
+    const scopedSignal = requestSignal(signal, requestTimeoutMs || config.llmRequestTimeoutMs || 180000);
+    let response;
+    try {
+      response = apiProtocol === 'anthropic'
+        ? await fetch(buildAnthropicRequestUrl(config.llmBaseUrl, '/messages'), {
+          method: 'POST', headers: buildAnthropicHeaders(config), signal: scopedSignal.signal,
+          body: JSON.stringify(buildAnthropicToolRequestBody({ system, messages: currentMessages, tools: currentTools, model, temperature }, budget, config)),
+        })
+        : await fetch(`${config.llmBaseUrl.replace(/\/+$/, '')}/chat/completions`, {
+          method: 'POST', headers: buildOpenAiHeaders(config), signal: scopedSignal.signal,
+          body: JSON.stringify(buildBaseRequestBody(requestMessages, {
+            model, tools: toOpenAiTools(currentTools), temperature,
+          }, budget, config)),
+        });
+    } catch (error) {
+      if (scopedSignal.signal.aborted) {
+        throw createAppError(scopedSignal.reason() === 'user' ? 'ABORTED' : 'LLM_REQUEST_TIMEOUT',
+          scopedSignal.reason() === 'user' ? 'LLM 请求已取消' : 'LLM 请求超时');
+      }
+      throw error;
+    } finally {
+      scopedSignal.dispose();
+    }
+
+    if (!response.ok) {
+      const errorPayload = await readErrorPayload(response);
+      const overflow = isContextOverflowError(response.status, errorPayload.body);
+      if (overflow && retryCount < Math.max(0, Number(maxRetries) || 0)) {
+        retryCount += 1;
+        continue;
+      }
+      throw createAppError(overflow ? 'CONTEXT_BUDGET_EXCEEDED' : 'LLM_API_ERROR', errorPayload.message, {
+        status: response.status,
+        response_body: errorPayload.body,
+        overflow,
+        budget: buildBudgetPayload(budget, estimatedPromptTokens, retryCount),
+      });
+    }
+
+    const payload = await response.json();
+    const usage = apiProtocol === 'anthropic' ? normalizeAnthropicUsage(payload.usage) : normalizeUsage(payload.usage);
+    const parsed = apiProtocol === 'anthropic' ? parseAnthropicToolResponse(payload) : parseOpenAiToolResponse(payload);
+    return {
+      role: 'assistant', content: parsed.content, stopReason: parsed.stopReason, usage,
+      budget: buildBudgetPayload(budget, estimatedPromptTokens, retryCount), raw: payload,
+    };
   }
-
-  const payload = await response.json();
-  const usage = apiProtocol === 'anthropic' ? normalizeAnthropicUsage(payload.usage) : normalizeUsage(payload.usage);
-  const parsed = apiProtocol === 'anthropic' ? parseAnthropicToolResponse(payload) : parseOpenAiToolResponse(payload);
-  return {
-    role: 'assistant',
-    content: parsed.content,
-    stopReason: parsed.stopReason,
-    usage,
-    budget: buildBudgetPayload(budget, estimatedPromptTokens, 0),
-    raw: payload,
-  };
 }
 
 async function completeChat(messages, options = {}) {

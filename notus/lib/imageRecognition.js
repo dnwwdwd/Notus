@@ -21,7 +21,7 @@ function buildImageRecognitionSource(messageId, images = []) {
   return `图片识别结果 #${Number(messageId) || 'unknown'} · ${names.join('、') || '未命名图片'}`;
 }
 
-async function recognizeConversationImages({ conversationId, messageId, images = [], llmConfig } = {}) {
+async function recognizeConversationImages({ conversationId, messageId, images = [], llmConfig, signal = null } = {}) {
   const blocks = getImageInputBlocks(images, { messageId });
   if (blocks.length === 0) return null;
   const response = await completeToolChat({
@@ -41,6 +41,7 @@ async function recognizeConversationImages({ conversationId, messageId, images =
     taskType: 'agent_image_recognition',
     temperature: 0,
     maxOutputTokens: IMAGE_RECOGNITION_MAX_OUTPUT_TOKENS,
+    signal,
   });
   const text = readTextContent(response.content);
   if (!text) {

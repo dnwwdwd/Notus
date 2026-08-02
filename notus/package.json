@@ -1,6 +1,6 @@
 {
   "name": "notus",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "private": true,
   "engines": {
     "node": "20.19.x"
@@ -21,6 +21,10 @@
     "test:object-storage": "node tests/object-storage.test.js",
     "test:skill-mcp": "node tests/skill-mcp.test.js && node tests/skill-lazycat-rescan.test.js && node tests/external-mcp.test.js",
     "test:conversation-persistence": "node tests/conversation-persistence.test.js"
+    ,"test:agent-control-plane": "node tests/agent-control-plane.test.js && node tests/llm-context-budget.test.js && node tests/agent-tool-policy.test.js && node tests/agent-loop-preview-completion.test.js",
+    "test:agent-prompt": "node tests/agent-prompt-registry.test.js && node scripts/run-agent-prompt-eval.js",
+    "test:agent-live-eval": "node scripts/run-agent-live-eval.js",
+    "test:all": "node scripts/run-all-tests.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1085.0",
@@ -57,6 +61,7 @@
     "@tiptap/pm": "^3.22.4",
     "@tiptap/react": "^3.22.4",
     "@tiptap/starter-kit": "^3.22.4",
+    "ajv": "^8.20.0",
     "ali-oss": "^6.23.0",
     "archiver": "^7.0.1",
     "better-sqlite3": "^11.6.0",

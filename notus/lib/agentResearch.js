@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const { getDb } = require('./db');
 const { completeChat } = require('./llm');
+const { recordRunUsage } = require('./agentControlPlane');
 const { listOperationSetsBySession } = require('./canvasOperationSets');
 
 const RESEARCH_LIMIT = 5;
@@ -120,7 +121,7 @@ function normalizeQueryPlan(raw, originalQuery, fallback) {
   };
 }
 
-async function buildAgentQueryPlan({ query, llmConfig = null } = {}) {
+async function buildAgentQueryPlan({ query, llmConfig = null, sessionId = null, runId = null } = {}) {
   const original = String(query || '').replace(/\s+/g, ' ').trim();
   const fallback = ruleBasedQueries(original);
   if (!original || !llmConfig?.llmApiKey || !llmConfig?.llmBaseUrl || !llmConfig?.llmModel) return fallback;
@@ -143,6 +144,17 @@ async function buildAgentQueryPlan({ query, llmConfig = null } = {}) {
       config: llmConfig,
     });
     const raw = safeJsonParse(reply?.message?.content, {});
+    if (sessionId && reply?.usage) {
+      recordRunUsage({
+        sessionId,
+        runId,
+        sourceType: 'query_plan',
+        provider: llmConfig?.llmProvider,
+        model: llmConfig?.llmModel,
+        usage: reply.usage,
+        usageSource: 'provider',
+      });
+    }
     return {
       ...normalizeQueryPlan(raw, original, fallback),
       planner: 'llm',
@@ -415,7 +427,7 @@ function recordQueryAndResultReceipts({ session, sourceType, query, phase, resul
   });
 }
 
-async function executePlannedResearch({ session, sourceType, query, llmConfig, executeQuery, evidence } = {}) {
+async function executePlannedResearch({ session, runId = null, sourceType, query, llmConfig, executeQuery, evidence } = {}) {
   const requestedQuery = String(query || '').replace(/\s+/g, ' ').trim();
   if (!requestedQuery) return { error: 'QUERY_REQUIRED', message: '检索需要 query 参数', results: [] };
   const state = getResearchState(session.id);
@@ -439,7 +451,7 @@ async function executePlannedResearch({ session, sourceType, query, llmConfig, e
     };
   }
 
-  const queryPlan = await buildAgentQueryPlan({ query: requestedQuery, llmConfig });
+  const queryPlan = await buildAgentQueryPlan({ query: requestedQuery, llmConfig, sessionId: session.id, runId });
   const sourceState = {
     original_query: requestedQuery,
     query_plan: {

@@ -17,23 +17,13 @@ export default function handler(req, res) {
   return res.status(ok ? 200 : 503).json({
     status: ok ? 'ok' : 'error',
     version: appVersion,
-    runtime_target: config.runtimeTarget,
-    data_root: config.dataRoot,
-    storage_mode: config.storageMode,
-    capabilities: config.capabilities,
-    can_auto_purge_on_uninstall: config.canAutoPurgeOnUninstall,
-    runtime: {
-      ok: runtime.ok,
-      vec_available: runtime.vecAvailable,
-      error: runtime.error,
-    },
-    tokenizer: getTokenizerStatus(),
-    directories: {
-      notes_dir: config.notesDir,
-      assets_dir: config.assetsDir,
-      db_path: config.dbPath,
-      log_dir: config.logDir,
-      ready: directoriesReady,
+    capabilities: {
+      runtime: Boolean(runtime.ok),
+      vector_search: Boolean(runtime.vecAvailable),
+      storage_ready: Boolean(directoriesReady),
+      tokenizer_ready: Boolean(getTokenizerStatus()?.jiebaLoaded),
+      desktop_shell: Boolean(config.capabilities?.supportsDesktopShell),
+      external_notes_binding: Boolean(config.capabilities?.supportsExternalNotesBinding),
     },
   });
 }

@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const net = require('net');
 const path = require('path');
 const { spawn } = require('child_process');
-const { app, BrowserWindow, Menu, dialog, globalShortcut, ipcMain, shell, safeStorage } = require('electron');
+const { app, BrowserWindow, Menu, Tray, nativeImage, Notification, dialog, globalShortcut, ipcMain, shell, safeStorage } = require('electron');
 const { collectMarkdownEntries } = require('../shared/imports');
 const { buildManagedPaths, getManagedDataRoot } = require('../shared/paths');
 
@@ -19,6 +19,8 @@ let serverBaseUrl = process.env.NOTUS_DESKTOP_DEV_URL || 'http://127.0.0.1:3000'
 let secretBridgeServer = null;
 let secretBridgeUrl = '';
 let secretBridgeToken = '';
+let tray = null;
+let explicitQuit = false;
 
 app.setName('Notus');
 app.setPath('userData', managedPaths.dataRoot);
@@ -275,6 +277,14 @@ async function createWindow() {
     mainWindow.show();
   });
 
+  mainWindow.on('close', (event) => {
+    // 关闭窗口等同于“收起到托盘”，本地 Next 服务与 Agent Worker 继续运行。
+    if (!explicitQuit && !cleanupOnQuit) {
+      event.preventDefault();
+      mainWindow.hide();
+    }
+  });
+
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url).catch(() => {});
     return { action: 'deny' };
@@ -289,6 +299,31 @@ async function createWindow() {
   });
 
   await mainWindow.loadURL(baseUrl);
+}
+
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return createWindow();
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+  return Promise.resolve();
+}
+
+function createTray() {
+  if (tray) return;
+  const iconPath = process.platform === 'darwin'
+    ? path.join(__dirname, '..', 'build', 'icon.icns')
+    : path.join(__dirname, '..', 'build', 'icon.ico');
+  const icon = nativeImage.createFromPath(iconPath);
+  tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon);
+  tray.setToolTip('Notus Agent 正在后台运行');
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: '显示 Notus', click: () => showMainWindow().catch(() => {}) },
+    { label: '任务概览', click: () => showMainWindow().then(() => mainWindow?.webContents.send('desktop:open-agent-tasks')).catch(() => {}) },
+    { type: 'separator' },
+    { label: '显式退出（保存后下次自动恢复）', click: () => { explicitQuit = true; app.quit(); } },
+  ]));
+  tray.on('click', () => showMainWindow().catch(() => {}));
 }
 
 function requestGlobalSearchOpen() {
@@ -352,7 +387,7 @@ function buildAppMenu() {
           },
         },
         { type: 'separator' },
-        { label: '退出', accelerator: process.platform === 'darwin' ? 'Command+Q' : 'Ctrl+Q', click: () => app.quit() },
+        { label: '退出', accelerator: process.platform === 'darwin' ? 'Command+Q' : 'Ctrl+Q', click: () => { explicitQuit = true; app.quit(); } },
       ],
     },
     {
@@ -405,7 +440,15 @@ ipcMain.handle('desktop:open-agent-directory', async () => {
 
 ipcMain.handle('desktop:clear-local-data-and-quit', async () => {
   cleanupOnQuit = true;
+  explicitQuit = true;
   setImmediate(() => app.quit());
+  return { ok: true };
+});
+
+ipcMain.handle('desktop:notify-agent', async (_event, payload = {}) => {
+  const title = String(payload.title || 'Notus Agent');
+  const body = String(payload.body || '任务状态已更新');
+  if (Notification.isSupported()) new Notification({ title, body, silent: false }).show();
   return { ok: true };
 });
 
@@ -414,10 +457,13 @@ app.whenReady().then(async () => {
   await startSecretBridge();
   registerGlobalShortcuts();
   buildAppMenu();
+  createTray();
   await createWindow();
 });
 
 app.on('before-quit', async (event) => {
+  // Dock、系统菜单等所有“退出”路径都必须越过窗口隐藏逻辑，真正停止服务。
+  explicitQuit = true;
   if (!cleanupOnQuit || cleanupCompleted) return;
   event.preventDefault();
   cleanupCompleted = true;
@@ -433,18 +479,16 @@ app.on('before-quit', async (event) => {
 });
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
+  // 所有窗口关闭后仍保留托盘和后台 Worker；显式退出才停止服务。
 });
 
 app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
-    createWindow().catch(() => {});
-  }
+  if (BrowserWindow.getAllWindows().length === 0) createWindow().catch(() => {});
+  else showMainWindow().catch(() => {});
 });
 
 app.on('will-quit', () => {
+  explicitQuit = true;
   globalShortcut.unregisterAll();
   stopServer().catch(() => {});
   stopSecretBridge().catch(() => {});

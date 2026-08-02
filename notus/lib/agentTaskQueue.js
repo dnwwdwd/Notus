@@ -76,6 +76,7 @@ function updateTask(sessionId, updates = {}) {
   if (updates.status) add('status = ?', String(updates.status));
   if (Object.prototype.hasOwnProperty.call(updates, 'runId')) add('run_id = ?', updates.runId || null);
   if (Object.prototype.hasOwnProperty.call(updates, 'lastError')) add('last_error_json = ?', updates.lastError ? JSON.stringify(updates.lastError) : null);
+  if (Object.prototype.hasOwnProperty.call(updates, 'llmConfigId')) add('llm_config_id = ?', updates.llmConfigId ? String(updates.llmConfigId) : null);
   if (Object.prototype.hasOwnProperty.call(updates, 'finalMessageId')) add('final_message_id = ?', asId(updates.finalMessageId));
   if (updates.finished) sets.push("finished_at = datetime('now')");
   if (!sets.length) return getTaskBySession(sid);
@@ -84,10 +85,11 @@ function updateTask(sessionId, updates = {}) {
   return getTaskBySession(sid);
 }
 
-function wakeTask(sessionId) {
+function wakeTask(sessionId, { llmConfigId = null } = {}) {
   const sid = asId(sessionId);
   getDb().prepare(`UPDATE agent_task_queue SET status = 'queued', run_id = NULL, last_error_json = NULL,
-    updated_at = datetime('now') WHERE session_id = ? AND status IN ('waiting_interaction','waiting_limit_confirmation','waiting_retry','waiting_model_recovery')`).run(sid);
+    llm_config_id = COALESCE(?, llm_config_id), updated_at = datetime('now')
+    WHERE session_id = ? AND status IN ('waiting_interaction','waiting_limit_confirmation','waiting_retry','waiting_model_recovery')`).run(llmConfigId ? String(llmConfigId) : null, sid);
   return getTaskBySession(sid);
 }
 

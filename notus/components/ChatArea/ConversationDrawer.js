@@ -4,6 +4,33 @@ import { Spinner } from '../ui/Spinner';
 import { ConfirmDialog } from '../ui/Dialog';
 import { getConversationTitle } from '../../utils/conversations';
 
+const AGENT_TASK_STATUS_META = {
+  waiting_interaction: { label: '等待回答', tone: 'var(--accent)' },
+  waiting_limit_confirmation: { label: '等待确认', tone: 'var(--accent)' },
+  waiting_retry: { label: '可继续', tone: 'var(--warning)' },
+  waiting_model_recovery: { label: '可继续', tone: 'var(--warning)' },
+  queued_resume: { label: '可继续', tone: 'var(--warning)' },
+  running: { label: '正在执行', tone: 'var(--accent)' },
+  created: { label: '等待执行', tone: 'var(--text-secondary)' },
+};
+
+function getAgentTaskStatusMeta(conversation = {}) {
+  const meta = AGENT_TASK_STATUS_META[String(conversation.active_agent_status || '')];
+  if (!meta) return null;
+  const count = Number(conversation.active_agent_session_count || 0);
+  return {
+    ...meta,
+    count: count > 1 ? count : 0,
+    ariaLabel: `Agent 任务${meta.label}${count > 1 ? `，共 ${count} 项` : ''}`,
+  };
+}
+
+function getCompactPreview(value, limit = 120) {
+  const preview = String(value || '').replace(/\s+/g, ' ').trim();
+  if (preview.length <= limit) return preview;
+  return `${preview.slice(0, limit).trimEnd()}…`;
+}
+
 export function ConversationDrawer({
   open = false,
   onClose,
@@ -125,9 +152,10 @@ export function ConversationDrawer({
           ) : conversations.map((conversation) => {
             const active = Number(conversation.id) === Number(activeConversationId);
             const title = getConversationTitle(conversation);
-            const preview = String(conversation.preview || '').trim();
+            const preview = getCompactPreview(conversation.preview);
             const deleting = Number(deletingConversationId) === Number(conversation.id);
             const exporting = Number(exportingConversationId) === Number(conversation.id);
+            const agentTaskStatus = getAgentTaskStatusMeta(conversation);
             const canViewAgentLogs = Boolean(onViewAgentLogs) && Number(conversation.agent_session_count || 0) > 0;
             const actionColumns = [canViewAgentLogs, Boolean(onExport), true].filter(Boolean).length;
 
@@ -165,16 +193,44 @@ export function ConversationDrawer({
                     border: 0,
                   }}
                 >
-                  <div
-                    style={{
-                      fontSize: 'var(--text-sm)',
-                      fontWeight: 600,
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {title}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0 }}>
+                    <div
+                      style={{
+                        minWidth: 0,
+                        flex: 1,
+                        fontSize: 'var(--text-sm)',
+                        fontWeight: 600,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {title}
+                    </div>
+                    {agentTaskStatus ? (
+                      <span
+                        aria-label={agentTaskStatus.ariaLabel}
+                        title={agentTaskStatus.ariaLabel}
+                        style={{
+                          flexShrink: 0,
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 4,
+                          maxWidth: '100%',
+                          padding: '3px 6px',
+                          borderRadius: 'var(--radius-sm)',
+                          color: agentTaskStatus.tone,
+                          background: 'color-mix(in srgb, currentColor 10%, transparent)',
+                          fontSize: 10,
+                          fontWeight: 600,
+                          lineHeight: 1.25,
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        <Icons.clock size={11} aria-hidden="true" />
+                        <span>{agentTaskStatus.label}{agentTaskStatus.count ? ` · ${agentTaskStatus.count}` : ''}</span>
+                      </span>
+                    ) : null}
                   </div>
                   {preview && preview !== title && (
                     <div
@@ -298,3 +354,5 @@ export function ConversationDrawer({
     </div>
   );
 }
+
+export { getAgentTaskStatusMeta };

@@ -75,6 +75,10 @@ const { callLLMWithRetry, classifyLLMError } = require('../lib/agentLoop');
   assert.ok(controllerSource.includes('if (!event.resumable) setLoading(false);'), '可恢复按钮必须等 SSE 收尾后才解除 loading');
   assert.ok(workspaceSource.includes('resumeAgentTaskInFlightRef.current'), '继续任务必须同步拦截重复点击');
   assert.ok(!loopSource.includes("type: 'final', text: '\u6a21\u578b\u670d\u52a1\u6682\u65f6\u4e0d\u53ef\u7528"), '可恢复 LLM 错误不应写成最终助手消息');
+  assert.ok(routeSource.includes('getLatestRunEventId'), '继续任务必须记录恢复前的事件游标，不能从头回放历史终态');
+  assert.ok(routeSource.includes('event_cursor: eventCursor'), '继续接口必须把恢复前的事件游标返回给前端订阅');
+  assert.ok(controllerSource.includes('after=${encodeURIComponent(String(accepted.event_cursor || 0))}'), '前端续跑订阅必须从服务端返回的事件游标之后开始');
+  assert.ok(routeSource.includes('wakeTask(resumeSessionId, { llmConfigId: body.llm_config_id || null })'), '继续任务切换模型时必须更新目标队列任务的模型配置');
   console.log('agent llm retry and resume tests passed');
 })().catch((error) => {
   console.error(error);

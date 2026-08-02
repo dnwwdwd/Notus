@@ -16,8 +16,11 @@ const { getDb } = require('./db');
 const { updateResumeJob } = require('./agentControlPlane');
 
 const logger = createLogger({ subsystem: 'agent-task-worker' });
-let timer = null;
-let running = false;
+const WORKER_STATE_KEY = '__notus_agent_task_worker_state__';
+const workerState = globalThis[WORKER_STATE_KEY] || (globalThis[WORKER_STATE_KEY] = {
+  timer: null,
+  running: false,
+});
 
 function isImage(item = {}) {
   const name = String(item?.name || item?.file_name || '').toLowerCase();
@@ -134,21 +137,21 @@ async function execute(task) {
 }
 
 function schedule() {
-  if (running) return;
-  running = true;
+  if (workerState.running) return;
+  workerState.running = true;
   Promise.resolve().then(() => {
     const tasks = claimRunnableTasks();
     tasks.forEach((task) => { execute(task).catch((error) => logger.error('agent.task.unhandled', { error })); });
-  }).finally(() => { running = false; });
+  }).finally(() => { workerState.running = false; });
 }
 
 function startAgentTaskWorker() {
-  if (timer) return;
+  if (workerState.timer) return;
   recoverOrphanedTasks();
   recoverStaleRunLeases();
   schedule();
-  timer = setInterval(schedule, 1_000);
-  if (timer.unref) timer.unref();
+  workerState.timer = setInterval(schedule, 1_000);
+  if (workerState.timer.unref) workerState.timer.unref();
 }
 
 function wakeAgentTaskWorker() { schedule(); }

@@ -70,8 +70,20 @@ async function runTests() {
     'message copy/rewrite/retry icon buttons should not render an outer border'
   );
   assert.ok(
-    !workspaceSource.includes('<ToolChain steps={message.toolSteps || []} />'),
-    'completed assistant messages should not expose tool-chain details'
+    workspaceSource.includes('executionTrace={messageTimeline'),
+    '当前任务的执行记录应优先附着在同一 session 的助手回复之前'
+  );
+  assert.ok(
+    workspaceSource.includes(".filter((timeline) => String(timeline?.userMessageId || '') === String(message.id || ''))"),
+    '尚未生成助手回复时，执行记录应按 user_message_id 紧跟在对应用户消息之后'
+  );
+  assert.ok(
+    workspaceSource.includes('.sort((left, right) => Number(right?.sessionId || 0) - Number(left?.sessionId || 0))[0] || null;'),
+    '同一条用户消息重新发送后，执行记录应优先显示最新 session'
+  );
+  assert.ok(
+    workspaceSource.includes('const messageSessionKey = String(message?.meta?.session_id || \'\');'),
+    '历史多轮助手回复必须按各自 session_id 恢复工具记录'
   );
 
   assert.ok(

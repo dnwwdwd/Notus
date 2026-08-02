@@ -20,7 +20,7 @@ const conversation = ensureConversation({ kind: 'agent', title: '队列测试' }
 const first = createSession({ goal: '第一个任务', authorizedPaths: [''], conversationId: conversation.id });
 const second = createSession({ goal: '第二个任务', authorizedPaths: [''], conversationId: conversation.id });
 createTask({ sessionId: first.sessionId, conversationId: conversation.id, input: { goal: '第一个任务' } });
-createTask({ sessionId: second.sessionId, conversationId: conversation.id, input: { goal: '第二个任务' } });
+createTask({ sessionId: second.sessionId, conversationId: conversation.id, input: { goal: '第二个任务' }, llmConfigId: 'old-model-config' });
 
 assert.equal(getQueuePosition(first.sessionId), 1);
 assert.equal(getQueuePosition(second.sessionId), 2);
@@ -29,7 +29,9 @@ updateTask(first.sessionId, { status: 'completed', finished: true });
 assert.deepEqual(claimRunnableTasks().map((task) => task.session_id), [second.sessionId], '前序任务终态后应领取下一任务');
 updateSessionStatus(second.sessionId, 'waiting_retry');
 updateTask(second.sessionId, { status: 'waiting_retry' });
-assert.equal(wakeTask(second.sessionId).status, 'queued', '显式继续应把等待任务重新排队');
+const resumedTask = wakeTask(second.sessionId, { llmConfigId: 'replacement-model-config' });
+assert.equal(resumedTask.status, 'queued', '显式继续应把等待任务重新排队');
+assert.equal(resumedTask.llm_config_id, 'replacement-model-config', '继续任务切换模型时必须覆盖队列任务的旧模型配置');
 updateTask(second.sessionId, { status: 'running' });
 assert.equal(recoverOrphanedTasks(), 1, '进程重启应恢复 orphaned running 任务');
 

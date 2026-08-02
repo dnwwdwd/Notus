@@ -770,6 +770,12 @@ function listRunEvents(sessionId) {
   }));
 }
 
+function getLatestRunEventId(sessionId) {
+  const row = getDb().prepare('SELECT COALESCE(MAX(id), 0) AS id FROM agent_run_events WHERE session_id = ?')
+    .get(normalizePositiveInt(sessionId));
+  return Number(row?.id || 0);
+}
+
 function countSnapshots(sessionId) {
   const row = getDb().prepare('SELECT COUNT(*) AS count FROM agent_snapshots WHERE session_id = ?').get(normalizePositiveInt(sessionId));
   return Number(row?.count || 0);
@@ -824,6 +830,7 @@ module.exports = {
   resetToolFail,
   listRunLogs,
   listRunEvents,
+  getLatestRunEventId,
   recordRunEvent,
   countSnapshots,
   markStaleWaitingSessions,

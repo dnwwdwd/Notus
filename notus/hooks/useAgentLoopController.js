@@ -72,8 +72,21 @@ function upsertStep(list = [], step = null) {
       : item
   )) : [];
   const index = next.findIndex((item) => item.id === step.id);
-  if (index >= 0) next[index] = { ...next[index], ...step };
-  else next.push(step);
+  const now = new Date().toISOString();
+  if (index >= 0) {
+    next[index] = {
+      ...next[index],
+      ...step,
+      createdAt: next[index].createdAt || step.createdAt || now,
+      updatedAt: step.updatedAt || now,
+    };
+  } else {
+    next.push({
+      ...step,
+      createdAt: step.createdAt || now,
+      updatedAt: step.updatedAt || step.createdAt || now,
+    });
+  }
   return next;
 }
 
@@ -135,14 +148,8 @@ function buildUserMessageMedia(input = {}, conversationId = null) {
 function buildEventStep(event = {}) {
   const loop = Number(event.loop_index || 0) || 0;
   if (event.type === 'task_state') {
-    const queued = event.status === 'queued';
-    return {
-      id: 'task-state',
-      label: queued ? `后台队列${event.queue_position > 1 ? ` · 第 ${event.queue_position} 位` : ''}` : '后台任务状态',
-      status: queued ? 'running' : event.status === 'cancelled' ? 'stopped' : event.status === 'failed' ? 'error' : 'done',
-      detail: queued ? '可继续输入新任务；本任务会在前序任务完成后自动启动。' : `当前状态：${event.status || '未知'}`,
-      open: queued,
-    };
+    // 队列状态和轮次属于实现细节，不作为用户的工具调用记录。
+    return null;
   }
   if (event.type === 'progress') return buildEventStep({ ...event, type: event.stage || 'thinking' });
   if (event.type === 'artifact' && event.artifact_type === 'interaction') {
@@ -166,38 +173,16 @@ function buildEventStep(event = {}) {
     };
   }
   if (event.type === 'final') {
-    return {
-      id: `final-${event.reason || event.status || 'done'}`,
-      label: reasonLabel(event.reason || event.status),
-      status: event.status === 'completed' ? 'done' : event.status === 'cancelled' ? 'stopped' : 'error',
-      detail: event.text || reasonLabel(event.reason || event.status),
-    };
+    return null;
   }
   if (event.type === 'session_created') {
-    return {
-      id: 'session',
-      label: '创建 Agent 任务',
-      status: 'done',
-      detail: `已创建 Agentic Loop #${event.session_id}。`,
-    };
+    return null;
   }
   if (event.type === 'session_resumed') {
-    return {
-      id: 'session',
-      label: '恢复 Agent 任务',
-      status: 'done',
-      detail: `已恢复 Agentic Loop #${event.session_id}。`,
-    };
+    return null;
   }
   if (event.type === 'snapshot_done') {
-    return {
-      id: 'snapshot',
-      label: '生成文件快照',
-      status: 'done',
-      detail: `已记录 ${event.snapshot_count || 0} 个文件快照，用于冲突校验和回滚。`,
-      tool: 'snapshotFiles',
-      result: `${event.snapshot_count || 0} 个文件`,
-    };
+    return null;
   }
   if (event.type === 'attachment_parse_start') {
     const source = String(event.source || '附件');
@@ -228,12 +213,7 @@ function buildEventStep(event = {}) {
     };
   }
   if (event.type === 'loop_start') {
-    return {
-      id: `loop-${loop}`,
-      label: `执行第 ${loop || '?'} 轮`,
-      status: 'running',
-      detail: '正在让模型判断下一步需要调用的工具。',
-    };
+    return null;
   }
   if (event.type === 'llm_retry') {
     return {
@@ -247,20 +227,10 @@ function buildEventStep(event = {}) {
     };
   }
   if (event.type === 'soft_limit_notice') {
-    return {
-      id: `soft-limit-${loop}`,
-      label: '接近执行轮次提醒',
-      status: 'done',
-      detail: `当前已执行到第 ${loop || '?'} 轮，如任务仍未完成，后续可能需要确认是否继续。`,
-    };
+    return null;
   }
   if (event.type === 'thinking') {
-    return {
-      id: `thinking-${loop || 'current'}`,
-      label: '分析下一步',
-      status: 'running',
-      detail: event.text || '正在分析任务状态。',
-    };
+    return null;
   }
   if (event.type === 'tool_start') {
     const id = `tool-${loop || 'x'}-${event.tool_name || 'unknown'}`;
@@ -290,7 +260,7 @@ function buildEventStep(event = {}) {
     return {
       id: 'waiting-preview',
       label: '等待确认修改预览',
-      status: 'done',
+      status: 'waiting',
       detail: '已生成文件修改预览，请确认后继续执行。',
       tool: 'preview_patch_files',
       result: event.operation_set_id ? `预览 #${event.operation_set_id}` : '预览已生成',
@@ -300,13 +270,14 @@ function buildEventStep(event = {}) {
     return {
       id: `question-card-${event.interaction?.id || loop || 'current'}`,
       label: '等待回答提问卡片',
-      status: 'done',
+      status: 'waiting',
       detail: '已生成提问卡片，请回答后继续执行。',
       tool: 'ask_question_card',
       result: event.interaction?.id ? `提问卡片 #${event.interaction.id}` : '提问卡片已生成',
     };
   }
   if (event.type === 'loop_done') {
+    if (['goal_achieved', 'question_card_requested', 'resource_approval_requested', 'waiting_preview_confirm'].includes(event.reason)) return null;
     return {
       id: `loop-done-${event.reason || 'done'}`,
       label: reasonLabel(event.reason),
@@ -337,9 +308,13 @@ function normalizeOperationSets(rows = []) {
   return (Array.isArray(rows) ? rows : []).filter((item) => item?.id);
 }
 
-function buildRestoredAgentTimeline(session = {}) {
+export function buildRestoredAgentTimeline(session = {}) {
   const persistedEvents = (Array.isArray(session.run_events) ? session.run_events : [])
-    .map((row) => row?.payload)
+    .map((row) => {
+      const payload = row?.payload;
+      if (!payload || typeof payload !== 'object' || !String(payload.type || '').trim()) return null;
+      return { ...payload, created_at: row?.created_at || '' };
+    })
     .filter(Boolean);
   const legacyLogs = Array.isArray(session.run_logs) ? session.run_logs : [];
   const sourceEvents = persistedEvents.length > 0
@@ -349,11 +324,16 @@ function buildRestoredAgentTimeline(session = {}) {
       stage: 'tool_done',
       loop_index: row.loop_index,
       tool_name: row.tool_name,
-      tool_input_summary: row.tool_input ? JSON.stringify(row.tool_input) : '',
-      result_summary: row.tool_result,
+      // 早期 run_logs 没有按当前事件协议进行字段筛选和脱敏。为避免历史 MCP
+      // 参数或结果中的凭据重现到页面，只保留工具名称和完成状态。
+      tool_input_summary: '',
+      result_summary: '历史工具调用已完成（原始参数和结果未显示）',
       failed: row.status === 'failed',
     }));
-  let steps = sourceEvents.reduce((current, event) => upsertStep(current, buildEventStep(event)), []);
+  let steps = sourceEvents.reduce((current, event) => {
+    const step = buildEventStep(event);
+    return upsertStep(current, step ? { ...step, createdAt: event.created_at || undefined, updatedAt: event.created_at || undefined } : null);
+  }, []);
   steps = steps.map((step) => step.status === 'running'
     ? { ...step, status: 'stopped', detail: `${step.detail || '该步骤尚未完成。'}\n连接中断后已暂停。` }
     : step);
@@ -362,12 +342,7 @@ function buildRestoredAgentTimeline(session = {}) {
     .filter((event) => event.type === 'progress' && ['model_progress', 'thinking'].includes(event.stage))
     .map((event) => String(event.text || '').trim())
     .filter((text, index, rows) => Boolean(text) && text !== rows[index - 1]);
-  if (draftParts.length === 0) {
-    legacyLogs.forEach((row) => {
-      const text = String(row?.thinking || '').trim();
-      if (text && !draftParts.includes(text)) draftParts.push(text);
-    });
-  }
+  // 旧 run_logs 的 thinking 没有统一脱敏协议，不能作为“中断前回复”展示。
 
   if (['created', 'queued_resume'].includes(session.status)) {
     steps = upsertStep(steps, {
@@ -384,6 +359,72 @@ function buildRestoredAgentTimeline(session = {}) {
     steps,
     draft: draftParts.slice(-16).join('\n\n').slice(-64 * 1024),
   };
+}
+
+export function applyAgentTimelineEvent(timeline = {}, event = {}) {
+  const step = buildEventStep(event);
+  let activeSteps = Array.isArray(timeline.activeSteps) ? timeline.activeSteps : [];
+  let streamText = String(timeline.streamText || '');
+  let sessionStatus = String(timeline.sessionStatus || '');
+  let loading = Boolean(timeline.loading);
+  if (step) activeSteps = upsertStep(activeSteps, step);
+
+  if (event.type === 'task_state') {
+    sessionStatus = event.status || sessionStatus || 'queued';
+    if (event.status === 'queued') loading = false;
+  } else if (event.type === 'session_created' || event.type === 'session_resumed' || event.type === 'loop_start') {
+    sessionStatus = 'running';
+    loading = true;
+  } else if (event.type === 'progress') {
+    sessionStatus = 'running';
+    loading = true;
+    if (['model_progress', 'thinking'].includes(event.stage)) {
+      const text = String(event.text || '').trim();
+      if (text && text !== streamText.split('\n\n').pop()) streamText = streamText ? `${streamText}\n\n${text}` : text;
+    }
+  } else if (event.type === 'thinking') {
+    const text = String(event.text || '').trim();
+    if (text) streamText = streamText ? `${streamText}\n${text}` : text;
+  } else if (event.type === 'assistant_text_replace') {
+    streamText = String(event.text || '').trim();
+  } else if (event.type === 'waiting_preview_confirm' || event.type === 'interaction_request') {
+    sessionStatus = 'waiting_confirm';
+    loading = false;
+    streamText = '';
+  } else if (event.type === 'artifact' && event.artifact_type === 'interaction') {
+    sessionStatus = 'waiting_interaction';
+    loading = false;
+    streamText = '';
+  } else if (event.type === 'artifact' && event.artifact_type === 'limit_confirmation') {
+    sessionStatus = 'waiting_limit_confirmation';
+    loading = false;
+    streamText = '';
+  } else if (event.type === 'artifact' && event.artifact_type === 'run_error') {
+    sessionStatus = event.status || (event.resumable ? 'waiting_retry' : 'failed');
+    if (!event.resumable) loading = false;
+  } else if (event.type === 'final') {
+    sessionStatus = event.status || 'completed';
+    activeSteps = completeSteps(activeSteps);
+    loading = false;
+    streamText = '';
+  } else if (event.type === 'loop_done') {
+    const waiting = ['hard_limit_reached', 'question_card_requested', 'resource_approval_requested', 'waiting_preview_confirm'].includes(event.reason);
+    const failed = ['consecutive_tool_failure', 'deadloop_detected', 'no_progress', 'preview_auto_apply_failed'].includes(event.reason);
+    sessionStatus = waiting ? 'waiting_confirm' : failed ? 'failed' : 'completed';
+    activeSteps = completeSteps(activeSteps);
+    loading = false;
+    streamText = '';
+  } else if (event.type === 'cancelled') {
+    sessionStatus = 'cancelled';
+    activeSteps = completeSteps(activeSteps);
+    loading = false;
+    streamText = '';
+  } else if (event.type === 'error') {
+    sessionStatus = 'failed';
+    loading = false;
+  }
+
+  return { ...timeline, activeSteps, streamText, sessionStatus, loading };
 }
 
 const FILE_MUTATION_TOOL_NAMES = new Set([
@@ -405,6 +446,7 @@ export function useAgentLoopController({
   onRollbackSuccess,
   onFilesMayHaveChanged,
   onError,
+  onSessionTimeline,
 } = {}) {
   const [pendingAgentTask, setPendingAgentTask] = useState(null);
   const [activeAgentSession, setActiveAgentSessionState] = useState(null);
@@ -413,8 +455,11 @@ export function useAgentLoopController({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const controllerRef = useRef(null);
+  const controllersRef = useRef(new Set());
   const sessionRef = useRef(null);
+  const knownSessionsRef = useRef(new Map());
   const runSequenceRef = useRef(0);
+  const subscriptionEpochRef = useRef(0);
   const stepsRef = useRef([]);
   const assistantTextRef = useRef('');
   const filesMayHaveChangedRef = useRef(false);
@@ -423,7 +468,10 @@ export function useAgentLoopController({
     // 组件卸载或切换工作区时，先让当前 run 的后续事件失效，再断开本地 SSE。
     // 服务端会把断线任务保留为可恢复状态，旧事件不能继续污染下一段会话 UI。
     runSequenceRef.current += 1;
-    controllerRef.current?.abort();
+    subscriptionEpochRef.current += 1;
+    controllersRef.current.forEach((controller) => controller.abort());
+    controllersRef.current.clear();
+    knownSessionsRef.current.clear();
     controllerRef.current = null;
   }, []);
 
@@ -434,6 +482,7 @@ export function useAgentLoopController({
     const patch = typeof patchOrUpdater === 'function' ? patchOrUpdater(previous) : patchOrUpdater;
     const next = patch === null ? null : { ...(previous || {}), ...(patch || {}) };
     sessionRef.current = next;
+    if (next?.id) knownSessionsRef.current.set(String(next.id), next);
     setActiveAgentSessionState(next);
   }, []);
 
@@ -467,7 +516,10 @@ export function useAgentLoopController({
     // 这里只解除当前页面与任务流的绑定，不调用取消 API。切换对话、新建对话
     // 或页面卸载时，服务端任务仍按控制面规则进入可恢复状态。
     runSequenceRef.current += 1;
-    controllerRef.current?.abort();
+    subscriptionEpochRef.current += 1;
+    controllersRef.current.forEach((controller) => controller.abort());
+    controllersRef.current.clear();
+    knownSessionsRef.current.clear();
     controllerRef.current = null;
     setPendingAgentTask(null);
     setActiveAgentSession(null);
@@ -477,7 +529,7 @@ export function useAgentLoopController({
     setError('');
   }, [setActiveAgentSession, setSteps]);
 
-  const fetchSessionDetails = useCallback(async (sessionId, access = null) => {
+  const fetchSessionDetails = useCallback(async (sessionId, access = null, options = {}) => {
     const id = toPositiveInt(sessionId);
     if (!id) return null;
     const token = typeof access === 'string' ? access : access?.token;
@@ -498,7 +550,7 @@ export function useAgentLoopController({
       ...(token ? { token } : {}),
       ...(controlTicket ? { control_ticket: controlTicket } : {}),
     } : null;
-    if (session) setActiveAgentSession(session);
+    if (session && options.activate !== false) setActiveAgentSession(session);
     const operationSets = normalizeOperationSets(payload.operation_sets);
     if (operationSets.length > 0) onOperationSets?.(operationSets);
     return { ...payload, session, operation_sets: operationSets };
@@ -523,6 +575,7 @@ export function useAgentLoopController({
   const startAgentLoop = useCallback(async (input, options = {}) => {
     const resumeSessionId = toPositiveInt(input?.session_id || input?.id);
     const resumeToken = input?.session_token || input?.token || sessionRef.current?.token || '';
+    const resumeReadTicket = input?.read_ticket || input?.readTicket || input?.control_tickets?.read || '';
     const isResume = Boolean(options.resume || resumeSessionId);
     const resumeJobId = input?.resume_job_id || input?.resumeJobId || '';
     const resumeTicket = input?.resume_ticket || input?.resumeTicket || '';
@@ -559,12 +612,18 @@ export function useAgentLoopController({
         mcp_selection: input?.mcp_selection ?? input?.mcpSelection ?? { mode: 'off' },
         tool_profile: input?.tool_profile || input?.toolProfile || undefined,
         skip_user_message_append: Boolean(input?.skip_user_message_append || input?.skipUserMessageAppend),
+        existing_user_message_id: input?.rewriteUserMessageId || undefined,
       };
+
+    const optimisticUserMessageId = !isResume && options.appendUserMessage && input?.goal && !body.skip_user_message_append
+      ? makeMessageId('agent-loop-user')
+      : '';
 
     const runSequence = runSequenceRef.current + 1;
     runSequenceRef.current = runSequence;
-    controllerRef.current?.abort();
+    const subscriptionEpoch = subscriptionEpochRef.current;
     const controller = new AbortController();
+    controllersRef.current.add(controller);
     controllerRef.current = controller;
     assistantTextRef.current = '';
     filesMayHaveChangedRef.current = false;
@@ -574,6 +633,26 @@ export function useAgentLoopController({
     setSteps((steps) => (Array.isArray(steps) && steps.length === 0 ? steps : []));
     if (!isResume) setPendingAgentTask(null);
     let taskAccepted = false;
+    let timeline = {
+      sessionId: String(resumeSessionId || ''),
+      userMessageId: null,
+      activeSteps: [],
+      streamText: '',
+      loading: true,
+      sessionStatus: isResume ? 'running' : 'queued',
+    };
+    let sessionAccess = {
+      token: resumeToken,
+      controlTicket: resumeReadTicket,
+    };
+    const isSubscriptionActive = () => subscriptionEpoch === subscriptionEpochRef.current && !controller.signal.aborted;
+    const isCurrentPresentation = () => isSubscriptionActive() && runSequence === runSequenceRef.current;
+    const publishTimeline = (event = null, patch = {}) => {
+      const baseTimeline = { ...timeline, ...patch };
+      timeline = event ? applyAgentTimelineEvent(baseTimeline, event) : baseTimeline;
+      if (timeline.sessionId) onSessionTimeline?.(timeline);
+      return timeline;
+    };
 
     const notifyTaskAccepted = (event = {}) => {
       if (taskAccepted || isResume || typeof input?.onTaskAccepted !== 'function') return;
@@ -587,7 +666,8 @@ export function useAgentLoopController({
     const appendUserMessage = (event = {}) => {
       if (!options.appendUserMessage || !input?.goal || body.skip_user_message_append) return;
       onAppendUserMessage?.({
-        id: Number(event.user_message_id || event.userMessageId || 0) || makeMessageId('agent-loop-user'),
+        id: Number(event.user_message_id || event.userMessageId || 0) || optimisticUserMessageId || makeMessageId('agent-loop-user'),
+        clientMessageId: event.client_message_id || optimisticUserMessageId || '',
         role: 'user',
         content: input.display_query || input.user_query || input.goal,
         createdAt: event.created_at || event.createdAt || new Date().toISOString(),
@@ -614,6 +694,9 @@ export function useAgentLoopController({
     };
 
     try {
+      if (optimisticUserMessageId) {
+        appendUserMessage({ user_message_id: optimisticUserMessageId, client_message_id: optimisticUserMessageId });
+      }
       // POST 只创建或唤醒持久化任务；真实执行由服务端 Worker 完成，之后再订阅
       // session 事件。这样断开订阅、切换会话或关闭窗口均不会取消任务。
       const endpoint = '/api/agent/loop/start';
@@ -628,21 +711,30 @@ export function useAgentLoopController({
       }
 
       const accepted = await response.json();
+      if (!isSubscriptionActive()) return;
       const acceptedSessionId = Number(accepted.session_id || resumeSessionId || 0);
       if (!acceptedSessionId) throw new Error('服务未返回 Agent 任务 ID');
+      controller.agentSessionId = String(acceptedSessionId);
       const acceptedConversationId = Number(accepted.conversation_id || input?.conversation_id || 0) || null;
       const acceptedToken = accepted.session_token || resumeToken;
-      const acceptedTickets = accepted.control_tickets || sessionRef.current?.control_tickets || {};
+      const suppliedTickets = input?.control_tickets || input?.controlTickets || {};
+      const acceptedTickets = accepted.control_tickets || (isResume ? {
+        ...suppliedTickets,
+        read: resumeReadTicket || suppliedTickets.read || '',
+        resume: input?.control_ticket || input?.controlTicket || suppliedTickets.resume || '',
+      } : (sessionRef.current?.control_tickets || {}));
+      sessionAccess = { token: acceptedToken, controlTicket: acceptedTickets.read || '' };
       if (!isResume) {
         appendUserMessage({
           user_message_id: accepted.user_message_id,
           conversation_id: acceptedConversationId,
           created_at: accepted.created_at,
           images: accepted.images,
+          client_message_id: optimisticUserMessageId,
         });
         notifyTaskAccepted({ session_id: acceptedSessionId, conversation_id: acceptedConversationId });
       }
-      setActiveAgentSession({
+      const acceptedSession = {
         id: acceptedSessionId,
         token: acceptedToken,
         control_ticket: acceptedTickets.read || input?.control_ticket || input?.controlTicket || null,
@@ -651,17 +743,22 @@ export function useAgentLoopController({
         conversation_id: acceptedConversationId,
         status: accepted.status || 'queued',
         queue_position: accepted.queue_position || null,
+        user_message_id: accepted.user_message_id || null,
         loop_count: 0,
         reason: '',
-      });
-      appendStep({
-        id: `task-${acceptedSessionId}`,
-        label: accepted.queue_position > 1 ? `任务已加入队列（第 ${accepted.queue_position} 位）` : '任务已加入后台执行',
-        status: accepted.status === 'queued' ? 'running' : 'done',
-        detail: accepted.queue_position > 1 ? '当前对话中的前序任务完成后自动开始。' : '可切换对话或关闭窗口，任务会继续执行。',
+      };
+      // 多个 session 并行订阅时，较晚返回的后台回执只能登记凭据和时间线，
+      // 不能覆盖用户当前正在查看的 session。
+      knownSessionsRef.current.set(String(acceptedSessionId), acceptedSession);
+      if (isCurrentPresentation()) setActiveAgentSession(acceptedSession);
+      publishTimeline(null, {
+        sessionId: String(acceptedSessionId),
+        userMessageId: Number(accepted.user_message_id || 0) || null,
+        loading: accepted.status !== 'queued',
+        sessionStatus: accepted.status || 'queued',
       });
       if (acceptedConversationId) onConversationId?.(acceptedConversationId);
-      const eventsResponse = await fetch(`/api/agent/sessions/${acceptedSessionId}/events?after=0`, {
+      const eventsResponse = await fetch(`/api/agent/sessions/${acceptedSessionId}/events?after=${encodeURIComponent(String(accepted.event_cursor || 0))}`, {
         headers: {
           ...(acceptedTickets.read ? { 'x-agent-control-ticket': acceptedTickets.read } : {}),
           ...(!acceptedTickets.read && acceptedToken ? { 'x-agent-session-token': acceptedToken } : {}),
@@ -670,8 +767,78 @@ export function useAgentLoopController({
       });
       if (!eventsResponse.ok) throw new Error(await readErrorResponse(eventsResponse, '订阅 Agent 任务进度失败'));
       await readSse(eventsResponse, async (event) => {
-        // 上一次 SSE 可能在取消后仍吐出收尾事件；不能让旧的 waiting_confirm 覆盖恢复任务的终态。
-        if (runSequence !== runSequenceRef.current) return;
+        // 任务以会话为单位订阅。同一对话中后发任务入队时，早先任务仍须继续
+        // 更新它自己的执行记录；只有切换对话、卸载或显式解绑才使订阅失效。
+        if (!isSubscriptionActive()) return;
+        const eventSessionId = String(event.session_id || acceptedSessionId || timeline.sessionId || '');
+        const streamTextBeforeEvent = timeline.streamText;
+        const eventTimeline = publishTimeline(event, {
+          sessionId: eventSessionId,
+          userMessageId: Number(event.user_message_id || timeline.userMessageId || accepted.user_message_id || 0) || null,
+        });
+        if (!isCurrentPresentation()) {
+          if (event.type === 'tool_done' && !event.failed) dispatchAgentResourceChange(event.tool_name);
+          if (
+            FILE_MUTATION_TOOL_NAMES.has(event.tool_name)
+            || (Array.isArray(event.changed_files) && event.changed_files.length > 0)
+          ) {
+            await onFilesMayHaveChanged?.({ reason: 'background_session_event', event });
+          }
+          if (event.type === 'artifact' && event.artifact_type === 'interaction' && event.interaction) {
+            onInteractionRequest?.({ ...event.interaction, resume_ticket: event.resume_ticket });
+          }
+          if (event.type === 'waiting_preview_confirm') {
+            let operationSet = null;
+            try {
+              const detail = await fetchSessionDetails(eventSessionId, sessionAccess, { activate: false });
+              operationSet = normalizeOperationSets(detail?.operation_sets).find((item) => (
+                Number(item.id) === Number(event.operation_set_id)
+              )) || normalizeOperationSets(detail?.operation_sets)[0] || null;
+            } catch {}
+            if (!isSubscriptionActive()) return;
+            appendAssistant({
+              content: '已生成批量修改预览，请确认后继续。',
+              meta: {
+                agent_loop: true,
+                session_id: eventSessionId,
+                operation_set_id: event.operation_set_id || operationSet?.id || null,
+              },
+              operationSet,
+            });
+          }
+          if (event.type === 'final' || event.type === 'loop_done') {
+            const waiting = event.type === 'loop_done' && ['hard_limit_reached', 'question_card_requested', 'resource_approval_requested', 'waiting_preview_confirm'].includes(event.reason);
+            let operationSet = null;
+            if (!waiting && event.operation_set_id) {
+              try {
+                const detail = await fetchSessionDetails(eventSessionId, sessionAccess, { activate: false });
+                operationSet = normalizeOperationSets(detail?.operation_sets).find((item) => (
+                  Number(item.id) === Number(event.operation_set_id)
+                )) || null;
+              } catch {}
+            }
+            if (!isSubscriptionActive()) return;
+            if (!waiting) appendAssistant({
+              content: String(event.text || event.final_text || '').trim() || streamTextBeforeEvent || eventTimeline.streamText || reasonLabel(event.reason),
+              meta: {
+                agent_loop: true,
+                session_id: eventSessionId,
+                status: eventTimeline.sessionStatus || event.status || 'completed',
+                reason: event.reason || '',
+                interaction_id: event.interaction_id || null,
+                operation_set_id: event.operation_set_id || operationSet?.id || null,
+                research_summary: event.research_summary || null,
+                write_summary: event.write_summary || null,
+                usage: event.usage || null,
+              },
+              operationSet,
+            });
+            onConversationSettled?.(event.conversation_id || acceptedConversationId || null);
+            if (!waiting) controller.abort();
+          }
+          if (event.type === 'cancelled') controller.abort();
+          return;
+        }
         const step = buildEventStep(event);
         if (step) appendStep(step);
         if (event.type === 'tool_done' && !event.failed) dispatchAgentResourceChange(event.tool_name);
@@ -700,6 +867,7 @@ export function useAgentLoopController({
             status: 'running',
             loop_count: 0,
             reason: '',
+            user_message_id: event.user_message_id || event.userMessageId || null,
           });
         } else if (event.type === 'session_resumed') {
           setActiveAgentSession((prev) => ({
@@ -767,9 +935,29 @@ export function useAgentLoopController({
               const detail = await fetchSessionDetails(event.session_id || current.id, {
                 token: current.token || resumeToken,
                 controlTicket: current.control_tickets?.read || current.control_ticket,
-              });
+              }, { activate: false });
               operationSet = normalizeOperationSets(detail?.operation_sets).find((item) => Number(item.id) === Number(event.operation_set_id)) || null;
             } catch {}
+          }
+          if (!isSubscriptionActive()) return;
+          if (!isCurrentPresentation()) {
+            appendAssistant({
+              content: finalText,
+              meta: {
+                agent_loop: true,
+                session_id: event.session_id || current.id,
+                status: event.status || 'completed',
+                reason: event.reason || '',
+                operation_set_id: event.operation_set_id || operationSet?.id || null,
+                research_summary: event.research_summary || null,
+                write_summary: event.write_summary || null,
+                usage: event.usage || null,
+              },
+              operationSet,
+            });
+            onConversationSettled?.(event.conversation_id || current.conversation_id || null);
+            controller.abort();
+            return;
           }
           setActiveAgentSession({
             status: event.status || 'completed',
@@ -796,6 +984,7 @@ export function useAgentLoopController({
           onConversationSettled?.(event.conversation_id || current.conversation_id || null);
           window.notusDesktop?.notifyAgent?.({ title: event.status === 'completed' ? 'Notus Agent 已完成' : 'Notus Agent 任务已结束', body: finalText.slice(0, 120) }).catch?.(() => {});
           await notifyFilesMayHaveChanged({ reason: event.reason || 'final', event });
+          controller.abort();
         } else if (event.type === 'loop_start') {
           setActiveAgentSession((prev) => ({
             status: 'running',
@@ -826,11 +1015,24 @@ export function useAgentLoopController({
           });
           let operationSet = null;
           try {
-            const detail = await fetchSessionDetails(event.session_id || current.id, token);
+            const detail = await fetchSessionDetails(event.session_id || current.id, token, { activate: false });
             operationSet = normalizeOperationSets(detail?.operation_sets).find((item) => (
               Number(item.id) === Number(event.operation_set_id)
             )) || normalizeOperationSets(detail?.operation_sets)[0] || null;
           } catch {}
+          if (!isSubscriptionActive()) return;
+          if (!isCurrentPresentation()) {
+            appendAssistant({
+              content: '已生成批量修改预览，请确认后继续。',
+              meta: {
+                agent_loop: true,
+                session_id: event.session_id || current.id,
+                operation_set_id: event.operation_set_id || operationSet?.id || null,
+              },
+              operationSet,
+            });
+            return;
+          }
           appendAssistant({
             content: '已生成批量修改预览，请确认后继续。',
             meta: {
@@ -861,21 +1063,42 @@ export function useAgentLoopController({
           const hardLimit = event.reason === 'hard_limit_reached';
           const waitingQuestionCard = event.reason === 'question_card_requested';
           const waitingResourceApproval = event.reason === 'resource_approval_requested';
+          const waitingPreview = event.reason === 'waiting_preview_confirm';
           const failed = ['consecutive_tool_failure', 'deadloop_detected', 'no_progress', 'preview_auto_apply_failed'].includes(event.reason);
           let operationSet = null;
           if (event.operation_set_id) {
             try {
-              const detail = await fetchSessionDetails(event.session_id || current.id, current.token || resumeToken);
+              const detail = await fetchSessionDetails(event.session_id || current.id, current.token || resumeToken, { activate: false });
               operationSet = normalizeOperationSets(detail?.operation_sets).find((item) => (
                 Number(item.id) === Number(event.operation_set_id)
               )) || null;
             } catch {}
           }
+          if (!isSubscriptionActive()) return;
+          if (!isCurrentPresentation()) {
+            if (!waitingResourceApproval) appendAssistant({
+              content: streamTextBeforeEvent || reasonLabel(event.reason),
+              meta: {
+                agent_loop: true,
+                session_id: event.session_id || current.id,
+                status: hardLimit || waitingQuestionCard || waitingPreview ? 'waiting_confirm' : failed ? 'failed' : 'completed',
+                reason: event.reason || '',
+                interaction_id: event.interaction_id || current.interaction_id || null,
+                operation_set_id: event.operation_set_id || operationSet?.id || null,
+                research_summary: event.research_summary || null,
+                write_summary: event.write_summary || null,
+              },
+              operationSet,
+            });
+            onConversationSettled?.(event.conversation_id || current.conversation_id || null);
+            if (!hardLimit && !waitingQuestionCard && !waitingResourceApproval && !waitingPreview) controller.abort();
+            return;
+          }
           setActiveAgentSession({
             id: event.session_id || current.id,
             token: current.token || resumeToken,
             conversation_id: event.conversation_id || current.conversation_id || null,
-            status: hardLimit || waitingQuestionCard || waitingResourceApproval ? 'waiting_confirm' : failed ? 'failed' : 'completed',
+            status: hardLimit || waitingQuestionCard || waitingResourceApproval || waitingPreview ? 'waiting_confirm' : failed ? 'failed' : 'completed',
             loop_count: Number(event.loop_index || current.loop_count || 0),
             reason: event.reason || '',
             interaction_id: event.interaction_id || current.interaction_id || null,
@@ -886,7 +1109,7 @@ export function useAgentLoopController({
             meta: {
               agent_loop: true,
               session_id: event.session_id || current.id,
-              status: hardLimit || waitingQuestionCard ? 'waiting_confirm' : failed ? 'failed' : 'completed',
+              status: hardLimit || waitingQuestionCard || waitingPreview ? 'waiting_confirm' : failed ? 'failed' : 'completed',
               reason: event.reason || '',
               interaction_id: event.interaction_id || current.interaction_id || null,
               operation_set_id: event.operation_set_id || operationSet?.id || null,
@@ -899,12 +1122,14 @@ export function useAgentLoopController({
           setLoading(false);
           onConversationSettled?.(event.conversation_id || current.conversation_id || null);
           await notifyFilesMayHaveChanged({ reason: event.reason || 'loop_done', event });
+          if (!hardLimit && !waitingQuestionCard && !waitingResourceApproval && !waitingPreview) controller.abort();
         } else if (event.type === 'cancelled') {
           setActiveAgentSession((prev) => ({ status: 'cancelled', reason: 'cancelled' }));
           setSteps((prev) => completeSteps(upsertStep(prev, buildEventStep(event))));
           setStreamText('');
           setLoading(false);
           await notifyFilesMayHaveChanged({ reason: 'cancelled', event });
+          controller.abort();
         } else if (event.type === 'error') {
           const message = event.code === 'SESSION_RUN_CONFLICT'
             ? '当前任务正在另一条连接中执行，请稍候查看进度。'
@@ -914,9 +1139,14 @@ export function useAgentLoopController({
           throw nextError;
         }
       });
-      if (runSequence === runSequenceRef.current) setLoading(false);
+      if (isCurrentPresentation()) setLoading(false);
     } catch (nextError) {
-      if (runSequence !== runSequenceRef.current) return;
+      if (!isSubscriptionActive()) return;
+      const failureEvent = nextError.name === 'AbortError'
+        ? { type: 'cancelled' }
+        : { type: 'error', error: nextError.message || 'Agent Loop 请求失败' };
+      publishTimeline(failureEvent);
+      if (!isCurrentPresentation()) return;
       if (nextError.name === 'AbortError') {
         appendStep(buildEventStep({ type: 'cancelled' }));
       } else {
@@ -935,6 +1165,7 @@ export function useAgentLoopController({
       if (nextError.name === 'AbortError') return;
       throw nextError;
     } finally {
+      controllersRef.current.delete(controller);
       if (controllerRef.current === controller) {
         controllerRef.current = null;
       }
@@ -949,6 +1180,7 @@ export function useAgentLoopController({
     onConversationSettled,
     onError,
     onInteractionRequest,
+    onSessionTimeline,
     setActiveAgentSession,
     setSteps,
   ]);
@@ -1097,15 +1329,18 @@ export function useAgentLoopController({
     }
   }, [onError, onRollbackSuccess, setActiveAgentSession]);
 
-  const stopAgentLoop = useCallback(async () => {
-    controllerRef.current?.abort();
-    const session = sessionRef.current;
-    setLoading(false);
-    setStreamText('');
-    setSteps((prev) => upsertStep(completeSteps(prev), buildEventStep({ type: 'cancelled' })));
+  const stopAgentLoop = useCallback(async (targetSessionId = null) => {
+    const sessionId = String(targetSessionId || '');
+    const session = sessionId ? knownSessionsRef.current.get(sessionId) : sessionRef.current;
+    const isCurrentSession = !sessionId || String(sessionRef.current?.id || '') === sessionId;
+    if (isCurrentSession) {
+      setLoading(false);
+      setStreamText('');
+      setSteps((prev) => upsertStep(completeSteps(prev), buildEventStep({ type: 'cancelled' })));
+    }
     const cancelTicket = session?.control_tickets?.cancel;
     if (!session?.id || (!session?.token && !cancelTicket)) {
-      setActiveAgentSession((prev) => (prev ? { status: 'cancelled', reason: 'cancelled' } : prev));
+      if (isCurrentSession) setActiveAgentSession((prev) => (prev ? { status: 'cancelled', reason: 'cancelled' } : prev));
       return;
     }
     try {
@@ -1115,7 +1350,29 @@ export function useAgentLoopController({
         body: JSON.stringify({ session_id: session.id, session_token: session.token, control_ticket: cancelTicket || undefined }),
       });
     } catch {}
-    setActiveAgentSession({ status: 'cancelled', reason: 'cancelled' });
+    if (isCurrentSession) setActiveAgentSession({ status: 'cancelled', reason: 'cancelled' });
+  }, [setActiveAgentSession, setSteps]);
+
+  const getAgentSession = useCallback((sessionId) => (
+    knownSessionsRef.current.get(String(sessionId || '')) || null
+  ), []);
+
+  const discardAgentSessions = useCallback((sessionIds = []) => {
+    const targets = new Set((Array.isArray(sessionIds) ? sessionIds : [])
+      .map((sessionId) => String(sessionId || ''))
+      .filter(Boolean));
+    if (targets.size === 0) return;
+    controllersRef.current.forEach((controller) => {
+      if (targets.has(String(controller.agentSessionId || ''))) controller.abort('discarded');
+    });
+    targets.forEach((sessionId) => knownSessionsRef.current.delete(sessionId));
+    if (targets.has(String(sessionRef.current?.id || ''))) {
+      setActiveAgentSession(null);
+      setSteps((steps) => (Array.isArray(steps) && steps.length === 0 ? steps : []));
+      setStreamText('');
+      setLoading(false);
+      setError('');
+    }
   }, [setActiveAgentSession, setSteps]);
 
   const restoreAgentSession = useCallback((session) => {
@@ -1140,7 +1397,8 @@ export function useAgentLoopController({
       }));
     }
     setSteps(restoredSteps);
-    setStreamText(restored.draft);
+    // 已完成会话的最终回复已作为正式助手消息持久化；不能把过程草稿再次标成“中断前”。
+    setStreamText(session.status === 'completed' ? '' : restored.draft);
     setLoading(false);
   }, [clearActiveAgentSession, setActiveAgentSession, setSteps]);
 
@@ -1157,6 +1415,8 @@ export function useAgentLoopController({
     confirmAgentTask,
     startAgentLoop,
     stopAgentLoop,
+    getAgentSession,
+    discardAgentSessions,
     applyOperationSet,
     applyOperationFile,
     rollbackOperationFile,

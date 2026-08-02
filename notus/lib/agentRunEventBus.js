@@ -1,8 +1,16 @@
 const { EventEmitter } = require('events');
 const { recordRunEvent } = require('./agentSession');
 
-const emitter = new EventEmitter();
-emitter.setMaxListeners(0);
+// Next.js 在开发模式和部分 server bundle 中可能多次加载此模块。Worker 与
+// SSE Route 必须订阅同一个进程内事件源，否则持久化事件写入成功后，页面仍会
+// 收不到实时通知并最终显示网络错误。
+const EVENT_BUS_KEY = '__notus_agent_run_event_bus__';
+const emitter = globalThis[EVENT_BUS_KEY] || (() => {
+  const next = new EventEmitter();
+  next.setMaxListeners(0);
+  globalThis[EVENT_BUS_KEY] = next;
+  return next;
+})();
 
 function publish({ sessionId, runId = null, event = {} } = {}) {
   const id = recordRunEvent({ sessionId, runId, event });

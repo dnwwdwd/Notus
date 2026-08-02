@@ -114,14 +114,14 @@ expires_at / nonce
 4. 将 session 置为 `queued_resume`。
 5. 返回绑定 job 的短期 `resume_interaction` ticket。
 
-同一回答重复提交只返回同一 resume job。前端随后调用：
+同一回答重复提交只返回同一 resume job。持久化队列模式下，前端随后调用：
 
 ```text
-POST /api/agent/sessions/:id/resume-interaction
-body: resume_job_id + resume_ticket
+POST /api/agent/loop/start
+body: session_id + resume_job_id + control_ticket(resume_session) + llm_config_id
 ```
 
-接口获取 run lease 后恢复 checkpoint，并通过 SSE 继续执行。会话详情 `GET /api/conversations/:id` 返回 pending interaction、未完成 resume job 和短期控制票据，所以刷新、重开或隔天进入对话时不依赖浏览器内存中的 session token。
+接口先记录该 session 的最新持久化事件 ID，再以当次 `llm_config_id` 更新原队列任务并唤醒原任务；回执把该 ID 作为 `event_cursor` 返回。Worker 获取 run lease、读取唯一 resume job 后按新模型配置恢复 checkpoint，并通过 session SSE 继续执行；前端仅订阅该游标之后的事件，避免重放旧 final。`resume_ticket` 仍绑定 resume job 用于兼容恢复，但不能作为 `/api/agent/loop/start` 的控制票据；该入口必须使用 session 的 `resume_session` 票据。会话详情 `GET /api/conversations/:id` 返回 pending interaction、未完成 resume job 和短期控制票据，所以刷新、重开或隔天进入对话时不依赖浏览器内存中的 session token。
 
 ## 6. Run lease、取消与超时
 
@@ -258,7 +258,7 @@ Ajv 8 是直接依赖。所有 tool input 在执行前按工具的 JSON Schema �
 - `artifact`：interaction、operation set、资料状态、文件状态和限制确认。
 - `final`：只出现一次，保存为最终 assistant message，并携带累计 usage。
 
-工具内部日志与 SSE 用户事件分离。前端在 0.1.13 同时解析旧事件，服务端现行 Loop 只输出 v2 语义事件。现行 v2 事件会先写入 `agent_run_events` 再发送；会话恢复优先用该时间线重建工具链和中断前回复，旧 session 从 `agent_run_logs` 降级恢复。最终消息以事件 ID 和运行序号去重；连接重放或 React 重渲染不能写入第二条 assistant 消息，中断前回复草稿也不能写成 final 消息。
+工具内部日志与 SSE 用户事件分离。前端在 0.1.13 同时解析旧事件，服务端现行 Loop 只输出 v2 语义事件。现行 v2 事件会先写入 `agent_run_events` 再发送；会话恢复优先用该时间线重建工具链和中断前回复，旧 session 从 `agent_run_logs` 降级恢复。实时广播的 EventEmitter 也挂在 Node 进程级单例上，使 Worker 与不同 API 模块中的 SSE Route 使用同一事件源。最终消息以事件 ID 和运行序号去重；连接重放或 React 重渲染不能写入第二条 assistant 消息，中断前回复草稿也不能写成 final 消息。
 
 ## 13. 安全 API 边界
 
@@ -303,7 +303,7 @@ action_required → waiting_model_recovery
 fatal           → failed
 ```
 
-`waiting_retry / waiting_model_recovery` 不是终态。会话详情继续签发 resume ticket，`acquireRunLease()` 允许两种状态接管。SSE 先以 `progress:llm_retry` 更新工具链；耗尽或需要用户处理时输出 `artifact:run_error`，不输出 `final`。Route 在发送可恢复错误前释放旧 lease，前端等 SSE 收尾后才开放继续按钮，并以同步 in-flight 锁拦截重复点击。前端的“继续任务”使用原 session 和 checkpoint，已保存的 tool result 作为 messages 恢复，不重新执行已完成工具。Provider 原始响应正文不进入 SSE 或最终消息。
+`waiting_retry / waiting_model_recovery` 不是终态。会话详情继续签发 resume ticket，`acquireRunLease()` 允许两种状态接管。SSE 先以 `progress:llm_retry` 更新工具链；耗尽或需要用户处理时输出 `artifact:run_error`，不输出 `final`。Route 在发送可恢复错误前释放旧 lease，前端等 SSE 收尾后才开放继续按钮，并以同步 in-flight 锁拦截重复点击。前端的“继续任务”使用原 session 和 checkpoint，已保存的 tool result 作为 messages 恢复，不重新执行已完成工具；当次模型选择写回任务表，后续 SSE 从恢复前的事件游标继续。Provider 原始响应正文不进入 SSE 或最终消息。
 # 持久化队列执行层（2026-08-01）
 
-Agent Loop 由 `agentTaskWorker` 而非 API 请求执行。Worker 在 runtime 初始化时扫描任务表，按会话 FIFO claim，并用已有 lease/checkpoint 保护执行。SSE 只是可随时断开的观察通道，事件游标用于补发。Worker 对最终助手消息使用 task 的 `final_message_id` 幂等保护；交互回答创建 resume job 后唤醒原 task。
+Agent Loop 由 `agentTaskWorker` 而非 API 请求执行。Worker 在 runtime 初始化时扫描任务表，按会话 FIFO claim，并用已有 lease/checkpoint 保护执行。Worker 的定时器与调度锁存于 Node 进程级单例：不同 API Route 的模块加载只能复用同一 Worker，不能再次执行启动恢复并把仍在运行的 task 重置为队列任务。SSE 只是可随时断开的观察通道，事件游标用于补发；其 EventEmitter 也在进程内共享，Worker 发布后当前订阅会即时收到，未连接或断线的页面则按游标回补。Worker 对最终助手消息使用 task 的 `final_message_id` 幂等保护；交互回答创建 resume job 后唤醒原 task。

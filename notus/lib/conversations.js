@@ -7,6 +7,27 @@ const {
 } = require('./workspaceScope');
 
 const DEFAULT_TITLE = '新对话';
+const ACTIVE_AGENT_SESSION_STATUSES = [
+  'waiting_interaction',
+  'waiting_limit_confirmation',
+  'waiting_retry',
+  'waiting_model_recovery',
+  'queued_resume',
+  'running',
+  'created',
+];
+const AGENT_SESSION_STATUS_PRIORITY_SQL = `
+  CASE s.status
+    WHEN 'waiting_interaction' THEN 0
+    WHEN 'waiting_limit_confirmation' THEN 1
+    WHEN 'waiting_retry' THEN 2
+    WHEN 'waiting_model_recovery' THEN 2
+    WHEN 'queued_resume' THEN 3
+    WHEN 'running' THEN 4
+    WHEN 'created' THEN 5
+    ELSE 99
+  END
+`;
 
 function normalizeKind(kind) {
   return kind === 'canvas' ? 'canvas' : 'knowledge';
@@ -44,6 +65,8 @@ function toConversationRow(row) {
     ...scopes,
     message_count: Number(row.message_count || 0),
     agent_session_count: Number(row.agent_session_count || 0),
+    active_agent_session_count: Number(row.active_agent_session_count || 0),
+    active_agent_status: String(row.active_agent_status || ''),
     preview: String(row.preview || ''),
     preview_role: row.preview_role || '',
   };
@@ -124,18 +147,33 @@ function listConversations({ kind = null, fileId, draftKey, query = '', limit = 
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const activeStatusPlaceholders = ACTIVE_AGENT_SESSION_STATUSES.map(() => '?').join(', ');
   const rows = db.prepare(`
     SELECT
       c.*,
       COALESCE((SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id AND m.role IN ('user','assistant')), 0) AS message_count,
       COALESCE((SELECT COUNT(*) FROM agent_sessions s WHERE s.conversation_id = c.id), 0) AS agent_session_count,
+      COALESCE((
+        SELECT s.status
+        FROM agent_sessions s
+        WHERE s.conversation_id = c.id
+          AND s.status IN (${activeStatusPlaceholders})
+        ORDER BY ${AGENT_SESSION_STATUS_PRIORITY_SQL}, s.id ASC
+        LIMIT 1
+      ), '') AS active_agent_status,
+      COALESCE((
+        SELECT COUNT(*)
+        FROM agent_sessions s
+        WHERE s.conversation_id = c.id
+          AND s.status IN (${activeStatusPlaceholders})
+      ), 0) AS active_agent_session_count,
       COALESCE((SELECT m.content FROM messages m WHERE m.conversation_id = c.id AND m.role IN ('user','assistant') ORDER BY m.id DESC LIMIT 1), '') AS preview,
       COALESCE((SELECT m.role FROM messages m WHERE m.conversation_id = c.id AND m.role IN ('user','assistant') ORDER BY m.id DESC LIMIT 1), '') AS preview_role
     FROM conversations c
     ${where}
     ORDER BY c.updated_at DESC, c.id DESC
     LIMIT ?
-  `).all(...params, normalizedLimit);
+  `).all(...ACTIVE_AGENT_SESSION_STATUSES, ...ACTIVE_AGENT_SESSION_STATUSES, ...params, normalizedLimit);
 
   return rows.map(toConversationRow);
 }
@@ -376,6 +414,12 @@ function rewriteConversationFromMessage({ conversationId, messageId, content } =
     `).run(normalizedConversationId, normalizedMessageId);
 
     const cutoff = String(anchor.created_at || '');
+    const cancelledSessionIds = db.prepare(`
+      SELECT id
+      FROM agent_sessions
+      WHERE conversation_id = ?
+        AND (created_at >= ? OR updated_at >= ?)
+    `).all(normalizedConversationId, cutoff, cutoff).map((row) => Number(row.id));
     db.prepare(`
       UPDATE agent_sessions
       SET status = CASE
@@ -422,6 +466,7 @@ function rewriteConversationFromMessage({ conversationId, messageId, content } =
       message: getConversationMessageById(normalizedMessageId),
       deleted_message_ids: deletedMessageIds,
       deleted_count: deletedMessageIds.length,
+      cancelled_session_ids: cancelledSessionIds,
     };
   })();
 }

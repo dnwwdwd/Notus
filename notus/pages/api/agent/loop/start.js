@@ -1,7 +1,7 @@
 const { ensureRuntime } = require('../../../../lib/runtime');
 const { createLogger, createRequestContext } = require('../../../../lib/logger');
-const { createSession, getSession, validateSessionAccess } = require('../../../../lib/agentSession');
-const { appendConversationMessage, ensureConversation, touchConversation } = require('../../../../lib/conversations');
+const { createSession, getSession, getLatestRunEventId, validateSessionAccess } = require('../../../../lib/agentSession');
+const { appendConversationMessage, ensureConversation, getConversationMessageById, touchConversation } = require('../../../../lib/conversations');
 const { issueCapability, validateCapability } = require('../../../../lib/agentControlPlane');
 const { createTask, getQueuePosition, wakeTask } = require('../../../../lib/agentTaskQueue');
 const { wakeAgentTaskWorker } = require('../../../../lib/agentTaskWorker');
@@ -47,9 +47,10 @@ export default async function handler(req, res) {
       if (['completed', 'cancelled', 'failed'].includes(session.status)) return res.status(409).json({ error: 'SESSION_NOT_RESUMABLE', code: 'SESSION_NOT_RESUMABLE', request_id: context.request_id });
       // releaseLeaseBeforeResumeEvent(event, sessionId) 在 Worker 发布事件前完成；
       // if (event.type === 'final') 任务已由 Worker 以幂等方式落库。
-      const task = wakeTask(resumeSessionId);
+      const eventCursor = getLatestRunEventId(resumeSessionId);
+      const task = wakeTask(resumeSessionId, { llmConfigId: body.llm_config_id || null });
       wakeAgentTaskWorker();
-      return res.status(202).json({ protocol_version: 3, session_id: resumeSessionId, conversation_id: session.conversation_id, status: task?.status || session.status, queue_position: getQueuePosition(resumeSessionId), request_id: context.request_id });
+      return res.status(202).json({ protocol_version: 3, session_id: resumeSessionId, conversation_id: session.conversation_id, status: task?.status || session.status, queue_position: getQueuePosition(resumeSessionId), event_cursor: eventCursor, request_id: context.request_id });
     }
     const goal = String(body.goal || '').trim();
     if (!goal) return res.status(400).json({ error: 'goal is required', code: 'GOAL_REQUIRED', request_id: context.request_id });
@@ -58,13 +59,27 @@ export default async function handler(req, res) {
     const conversation = ensureConversation({ conversationId: Number(body.conversation_id || 0) || null, kind: body.kind || 'agent', title: displayQuery || goal, fileId: body.active_file_id || null });
     const media = splitMediaInputs(body);
     const appendUserMessage = !Boolean(body.skip_user_message_append || body.skipUserMessageAppend);
+    const existingUserMessageId = Number(body.existing_user_message_id || body.existingUserMessageId || 0) || null;
+    const existingUserMessage = existingUserMessageId ? getConversationMessageById(existingUserMessageId) : null;
+    const reusableUserMessageId = existingUserMessage
+      && Number(existingUserMessage.conversation_id) === Number(conversation.id)
+      && existingUserMessage.role === 'user'
+      ? existingUserMessage.id
+      : null;
     const userMessageId = appendUserMessage ? appendConversationMessage({
       conversationId: conversation.id, role: 'user', content: displayQuery || goal,
       meta: { agent_loop: true, agent_goal: goal, user_query: userQuery, attachments: media.attachments, images: media.images, mentions: Array.isArray(body.mentions) ? body.mentions : [], mention_segments: Array.isArray(body.mention_segments ?? body.mentionSegments) ? (body.mention_segments ?? body.mentionSegments) : [], web_search_enabled: Boolean(body.web_search_enabled ?? body.webSearchEnabled), search_provider: body.search_provider || body.searchProvider || null },
-    }) : null;
+    }) : reusableUserMessageId;
     const requestedMcpSelection = body.mcp_selection ?? body.mcpSelection ?? { mode: 'off' };
     const created = createSession({ goal, authorizedPaths: [''], authorizedOps: body.authorized_ops || ['modify', 'create'], conversationId: conversation.id, softLimit: body.soft_limit || 15, hardLimit: body.hard_limit || 30, searchKnowledgeLimit: body.search_knowledge_limit === undefined ? 5 : body.search_knowledge_limit, webSearchEnabled: Boolean(body.web_search_enabled ?? body.webSearchEnabled), webSearchProvider: String(body.search_provider || body.searchProvider || ''), toolProfile: String(body.tool_profile || body.toolProfile || '') === 'read_only' ? 'read_only' : 'default', skillMentions: Array.isArray(body.skill_mentions ?? body.skillMentions) ? (body.skill_mentions ?? body.skillMentions) : [], mcpSelection: requestedMcpSelection, mcpSessionPermissions: { allow_local_http: allowsLocalHttpMcp(req) } });
-    const task = createTask({ sessionId: created.sessionId, conversationId: conversation.id, userMessageId, llmConfigId: body.llm_config_id || null, approvalMode: body.approval_mode || body.approvalMode || 'auto_confirm', input: { ...body, goal, user_query: userQuery, display_query: displayQuery, attachments: media.attachments, images: media.images, media_items: [] } });
+    const task = createTask({
+      sessionId: created.sessionId,
+      conversationId: conversation.id,
+      userMessageId: userMessageId,
+      llmConfigId: body.llm_config_id || null,
+      approvalMode: body.approval_mode || body.approvalMode || 'auto_confirm',
+      input: { ...body, goal, user_query: userQuery, display_query: displayQuery, attachments: media.attachments, images: media.images, media_items: [] },
+    });
     touchConversation(conversation.id);
     wakeAgentTaskWorker();
     return res.status(202).json({ protocol_version: 3, session_id: created.sessionId, session_token: created.token, conversation_id: conversation.id, user_message_id: userMessageId, created_at: new Date().toISOString(), status: task.status, queue_position: getQueuePosition(created.sessionId), images: persistedImages(media.images, conversation.id, userMessageId), control_tickets: { read: issueCapability({ sessionId: created.sessionId, action: 'session_read' }), resume: issueCapability({ sessionId: created.sessionId, action: 'resume_session' }), cancel: issueCapability({ sessionId: created.sessionId, action: 'cancel' }) }, request_id: context.request_id });

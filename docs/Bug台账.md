@@ -14,6 +14,159 @@
 
 ## 当前记录
 
+### BUG-20260802-026｜已保存历史会话首屏恢复触发 hydration 警告
+
+- 状态：已修复（2026-08-02 Browser 回归）
+- 现象：有已保存历史会话时，刷新文件工作区会出现 React hydration mismatch；服务端首屏显示空态，客户端立即替换为“正在恢复上次对话…”。
+- 影响范围：浏览器存有当前 Agent 会话 ID 的文件工作区首屏；可能造成额外重绘和开发环境错误提示。
+- 根因：`FileAgentWorkspace` 的 `restoringConversation` state 初始化函数直接读取浏览器存储；服务端读取结果恒为空，客户端读取结果可能为有效 ID，导致首屏 DOM 不一致。
+- 修复：恢复 state 首屏固定为 `false`，仅在客户端 effect 读取到已保存 ID 后进入恢复状态；请求完成或失败后统一退出恢复状态。
+- 验证：Browser 打开全新 `/files` 页面，控制台 hydration 错误为 0；`agent-workspace-controls.test.js` 覆盖固定首屏值与客户端启用条件，`npm run test:all`、`npm run lint:web`、`git diff --check` 通过。
+
+### BUG-20260802-025｜工具链工具名称被结果摘要挤压为单字
+
+- 状态：已修复（2026-08-02 Browser 回归）
+- 现象：`search_knowledge` 的工具行在结果摘要较长时显示为“检…”，用户无法辨认实际执行的工具；其他工具也有同样风险。
+- 影响范围：文件工作区 Agent 工具链的所有工具行，尤其是带长 JSON 摘要的检索、目录分析和文件操作。
+- 根因：工具名称容器允许收缩并使用省略号，而同一 flex 行中的结果摘要可以占满可用宽度。
+- 修复：工具名称改为不可收缩的完整文本；结果摘要仍单行截断。继续任务操作区同时统一右对齐，避免和工具名称争抢空间。
+- 验证：Browser 打开含两条 `search_knowledge`、`read_file` 与 `create_note` 的历史记录，8 个工具名称均完整显示，DOM 的 `scrollWidth` 与 `clientWidth` 一致；`agent-workspace-controls.test.js` 覆盖样式约束。
+
+### BUG-20260802-024｜恢复任务忽略新选模型并重放旧终态消息
+
+- 状态：已修复，真实 Provider 故障续跑待实机回归（2026-08-02）
+- 现象：模型请求超时或报错后选择其他模型继续任务，Worker 仍使用原配置；继续后旧 SSE 从起点补发，前端可能再次插入旧的 AI 角色消息。
+- 影响范围：`waiting_retry / waiting_model_recovery / queued_resume` 的继续任务；会影响模型切换、生效的工具记录和最终回复去重。
+- 根因：恢复入口只唤醒任务而未更新队列表的 `llm_config_id`；前端恢复 SSE 固定从 `after=0` 订阅，导致历史终态事件被重放。
+- 修复：恢复前记录当前 session 的最新持久化事件游标，并从该游标后订阅；唤醒队列任务时写入用户本次选择的模型配置。Worker 继续从原 checkpoint 恢复，不重复执行已完成工具。
+- 验证：`agent-llm-retry-resume.test.js`、`agent-task-queue.test.js` 通过，覆盖模型配置更新与事件游标；真实超时、额度、错误 Key 及跨模型续跑需要在独立测试配置中继续验证，避免修改当前用户模型配置。
+
+### BUG-20260802-023｜编辑已发送用户消息后重新发送没有任何反馈
+
+- 状态：已修复（2026-08-02 Browser 回归）
+- 现象：在文件工作区对已发送的用户消息点击“改写”，修改文本并点击“发送”后，界面没有出现新的 Agent 执行记录或回复，用户感知为提交无效。
+- 影响范围：文件工作区 Agent 对话的用户消息改写与重新发送链路；可能涉及历史截断、会话状态、请求参数、前端 loading 和 SSE 订阅。
+- 根因：服务端会取消截断点之后的 session，但前端仍保留这些 session 的 SSE 控制器、工具时间线和恢复映射；旧事件可继续写回，掩盖新请求的反馈。用户消息又只等 `session_created` 才出现，提交到首个 SSE 事件之间没有可见反馈。
+- 修复：截断 API 返回实际取消的 session ID；前端仅终止并清除这些 session 的订阅、时间线、交互和操作状态，不影响截断点之前的记录。新请求先乐观回显用户气泡，`session_created` 到达后按客户端消息 ID 原位校正，不重复添加；同时显示“任务已提交，正在准备执行”这一提交状态，直到真实流事件到达。
+- 验证：Browser 连续发送两条安全测试消息后改写第一条，已确认原第二条消息和回复不再可见，改写消息与新回复正常出现，截断点之前的 `search_knowledge` 等工具记录仍保留；`agent-message-rewrite-context.test.js`、`agent-workspace-chat-actions.test.js` 通过。
+
+### BUG-20260802-022｜SSE 订阅端收不到 Worker 的实时 Agent 事件
+
+- 状态：已修复（2026-08-02 Browser 真实回归）
+- 现象：Worker 已成功生成 pending 提问卡片，页面却没有即时显示卡片，工具链最后显示 `network error`；刷新后才能从持久化事件中恢复卡片。
+- 影响范围：Next.js 开发模式及可能将 Worker、SSE Route 编译进不同模块实例的运行环境；会影响提问卡片、工具链和最终回复的实时展示。
+- 根因：`agentRunEventBus` 的 `EventEmitter` 为模块局部实例。Worker 发布事件与 `/api/agent/sessions/:id/events` 的订阅可能落在两份 EventEmitter 上；订阅建立后产生的事件未被转发，直到连接中断。
+- 修复：将 EventEmitter 挂到 `globalThis.__notus_agent_run_event_bus__`，使同一 Node 进程的 Worker 与所有 SSE Route 共享一个事件源。事件仍先写入 `agent_run_events`，刷新和断线后的游标回补逻辑不变。
+- 验证：重启本地服务后，Browser 在全新对话中发送“先提问、再新建笔记”任务，提问卡片即时展示；提交“后端开发工程师”后任务完成且新建 `最终单卡验证-20260802-2036.md`。session `25` 只有一个 interaction（ID `5`），无 `CAPABILITY_ACTION_MISMATCH` 或 `network error`。
+
+### BUG-20260802-020｜Worker 重复初始化会让同一任务生成多张提问卡片
+
+- 状态：已修复（2026-08-02 Browser 真实回归）
+- 现象：真实 Browser 回归中，一条要求先提问再新建笔记的任务生成两张相同的提问卡片；用户只回答其中一张，另一张被标记为 stale，工具链也重复显示“生成提问卡片 / 等待回答提问卡片”。
+- 影响范围：Web 开发服务或其他可能使多个 API Route 分别加载 Worker 模块的运行环境；同一 Agent session 可能被并发执行，造成重复工具调用、重复交互或重复消耗模型额度。
+- 根因：`agentTaskWorker` 的 `timer` 与 `running` 只存在于模块局部。不同 API 模块各自执行 `startAgentTaskWorker()` 时，后加载的 Worker 会再次调用 `recoverOrphanedTasks()`，将仍在运行的队列任务重置为 `queued`，继而第二次领取并执行。
+- 修复：Worker 的定时器与调度锁改为 Node 进程级单例，避免重复初始化和重复启动恢复。
+- 验证：重启本地服务后，Browser 真实执行“生成提问卡片 → 回答 → 续跑”，session `25` 只生成一个 interaction（ID `5`），工具链只记录一次提问卡片和一次新建笔记；任务完成。
+
+### BUG-20260802-021｜新建对话会被初始化恢复的旧会话覆盖
+
+- 状态：已修复（2026-08-02 Browser 真实回归）
+- 现象：应用重启后立即点击“新建对话”，界面短暂清空，但旧会话详情的异步恢复仍可能晚到；下一条用户消息被写入旧会话，旧的 stale 提问卡片也重新遮住输入区。
+- 影响范围：文件工作区刚加载完成且用户迅速新建对话的场景，可能误把新任务追加到旧历史。
+- 根因：`handleNewConversation()` 只增加读取序号和清空 state，没有阻止初始化 effect 在之后才发起的“恢复保存会话”请求。
+- 修复：用户主动新建对话时立即标记初始恢复已处理，旧会话恢复流程不再启动或写回。
+- 验证：重启后在 Browser 中点击“新建对话”，等待旧会话初始化恢复完成后界面仍为空白；随后发送提问任务，任务创建为新 conversation `9`、session `25`，未写入旧 conversation `8`。
+
+### BUG-20260802-019｜窄 AI 面板的输入工具栏强制单行滚动
+
+- 状态：已修复（2026-08-02 Browser 回归）
+- 现象：固定宽度或较窄的 AI 面板中，附件、确认方式、联网和 MCP 仍被强制放在同一条横向滚动工具栏，控件视觉上拥挤，无法一眼看清可用选项。
+- 影响范围：文件工作区中宽度不超过 560px 的 AI 面板，尤其是固定 456px 面板与较窄窗口。
+- 根因：容器查询虽已生效，但其规则把 `.notus-agent-composer__tools` 设为 `nowrap + overflow-x: auto`，只避免溢出，没有重新组织控件。
+- 修复：将附件操作和任务控制拆成两组；窄面板使用两列网格承载两组，确认方式、联网与 MCP 在剩余空间内自然换行，模型和发送按钮保留独立下一行。
+- 验证：Browser 在固定 456px 面板、390px 与 320px 视口中确认：工具区无横向滚动和溢出；390px 时 MCP 自然换到下一行，模型和发送按钮独立成行；三处容器的 `scrollWidth` 均等于自身宽度。`agent-workspace-controls.test.js`、Web lint、生产构建与 `git diff --check` 通过。
+
+### BUG-20260802-018｜工具链处理时长概览箭头朝向错误
+
+- 状态：已修复（2026-08-02）
+- 现象：已展开的“已处理 X 秒”或“正在处理 X 秒”概览右侧显示向左箭头，与用户要求的朝右指向不一致。
+- 影响范围：文件工作区 AI 面板中的全部 Agent 工具链执行记录。
+- 根因：概览使用 `chevronDown`，并复用详情节点的 `is-open` 旋转样式；向下箭头顺时针旋转 90° 后变成向左箭头。
+- 修复：概览改为直接渲染固定的 `chevronRight`；展开与收起状态继续由按钮的 `aria-expanded` 提供给辅助技术，不再依赖会改变方向的视觉旋转。
+- 验证：`agent-workspace-controls.test.js` 新增朝右箭头与禁止向下箭头旋转的断言；随后执行 Web lint、生产构建与 `git diff --check`。
+
+### BUG-20260802-017｜多 session 的终态 SSE 订阅没有释放
+
+- 状态：已修复（2026-08-02 架构复核）
+- 现象：SSE 事件端点会持续发送心跳，任务收到 `final`、终态 `loop_done` 或 `cancelled` 后，前端没有断开对应订阅。改为多 session 订阅后，连续任务会累积心跳连接和事件监听。
+- 影响范围：在同一对话连续运行较多 Agent 任务的用户；时间越长，浏览器连接与内存占用越多。
+- 根因：旧的单订阅实现会在下一任务开始时中断上一连接；多订阅实现移除了这一步，但没有在各 session 终态主动释放 `AbortController`。
+- 修复：在已持久化并渲染终态消息后，释放对应 controller；等待修改确认、提问卡和额度确认仍保持订阅，确保后续恢复事件可见。控制器的清理逻辑随后从订阅集合移除该连接。
+- 验证：`workspace-continuity.test.js` 覆盖终态只释放所属订阅的实现约束；全量测试、Web lint、生产构建和 `git diff --check` 通过。
+
+### BUG-20260802-016｜本地 Agent 运行数据和能力密钥没有被 Git 忽略
+
+- 状态：已修复（2026-08-02 安全复核）
+- 现象：本机运行后会产生 `.notus-desktop-data/`、根目录 `agent/`、`logs/`、`notus/secrets/`、会话目录和 SQLite WAL 文件；其中可能包含 Agent 能力密钥与任务状态，但仓库 `.gitignore` 未覆盖这些路径。
+- 影响范围：开发者后续使用宽泛暂存命令时，可能把本地会话、日志或密钥一并提交到远程仓库。
+- 根因：忽略规则只覆盖了一部分旧运行目录，没有跟随当前桌面数据目录和 Agent 运行目录更新。
+- 修复：在根 `.gitignore` 明确加入上述本地运行、会话、日志、SQLite WAL 与密钥路径；已跟踪的两份历史日志已用 `git rm --cached` 移出版本控制，工作区文件保留、未删除。
+- 验证：`git check-ignore -v` 已逐项命中 `notus/secrets/`、桌面数据、任务目录、日志、WAL 与会话目录；`git status` 不再列出新的本机运行数据，历史日志仅显示为待提交的索引删除。
+
+### BUG-20260802-015｜旧 Agent 运行日志可能在历史工具详情中重新显示敏感参数
+
+- 状态：已修复（2026-08-02 安全复核）
+- 现象：没有 `run_events` 的旧 session 会回退读取 `run_logs`，并把原始工具输入序列化后展示在可展开详情中。早期动态 MCP 等工具参数可能含密钥。
+- 影响范围：升级前遗留的 Agent session；本轮改为显示同一对话全部 session 后，潜在展示范围扩大。
+- 根因：旧 `run_logs` 形成时未使用当前运行事件的字段白名单与脱敏协议，前端兼容逻辑误把原始输入和结果当作安全摘要。
+- 修复：旧日志恢复只保留工具名称、成功/失败状态和固定隐私摘要，完全不向页面提供原始参数、结果或 `thinking` 草稿；新 `run_events` 继续使用服务端已脱敏的摘要字段。
+- 验证：`agent-workspace-controls.test.js` 断言兼容恢复不再引用 `row.tool_input` 或旧 `thinking`；全量测试、lint 和构建通过。
+
+### BUG-20260802-014｜多 session 工具链的继续或停止操作可能作用到错误任务
+
+- 状态：已修复（2026-08-02 架构与安全复核）
+- 现象：同一对话显示多条历史时间线后，点击旧 session 的“继续任务”或停止入口时，页面只调用当前 `activeAgentSession`，可能恢复或停止另一个任务。
+- 影响范围：同一对话同时包含等待恢复、运行或排队任务的用户。
+- 根因：`ToolChain → AgentTaskTimeline → MessageList → AgentWorkspace` 的事件回调只传递 action 字符串，丢失所属 session ID。
+- 修复：工具记录操作沿组件层级携带 session ID；文件工作区按该 ID 从实时或已恢复 session 中解析 scoped ticket，再恢复对应任务。停止操作也收到目标 ID，不再默认指向当前任务。
+- 验证：`agent-workspace-controls.test.js` 覆盖 action 携带 session ID 与目标 session 恢复入口；`workspace-continuity.test.js`、Web lint 和 `git diff --check` 通过。
+
+### BUG-20260802-013｜同一对话后发 FIFO 任务中断先发任务的实时工具记录订阅
+
+- 状态：已修复（2026-08-02 架构复核）
+- 现象：任务 A 运行时发送任务 B，服务端会正确让 B 排队，但前端启动 B 时中止 A 的 SSE，并用单一状态容器接管界面。A 后续工具调用和完成结果只能等刷新后恢复，页面还会长期显示旧的“正在处理”。
+- 影响范围：允许在运行中继续发送消息的同一对话 FIFO 场景。
+- 根因：`useAgentLoopController.startAgentLoop()` 使用单一 `AbortController` 与全局 `runSequence` 丢弃旧订阅事件；`FileAgentWorkspace` 只有从当前 session 快照派生的本地时间线。
+- 修复：按订阅 session 保留控制器和时间线回调。新任务只切换主输入/当前展示，不中止同一对话的旧订阅；旧 session 事件持续写入自己的时间线，终态仍追加到对应 session 的助手消息。切换对话、创建新对话或卸载时才统一断开全部本地订阅。
+- 验证：`agent-workspace-controls.test.js`、`workspace-continuity.test.js` 新增独立 session 时间线与订阅隔离断言；Web lint、语法检查和 `git diff --check` 通过。
+
+### BUG-20260802-012｜等待用户操作的 Agent 记录误显示为“已处理”
+
+- 状态：已修复（2026-08-02 自动化回归）
+- 现象：Agent 已生成修改预览或提问卡片、正在等待用户确认或回答时，工具步骤被标记为完成，记录头部显示“已处理”。
+- 影响范围：手动确认修改、提问卡片和需要用户处理的 Agent session。用户无法从执行记录判断任务仍在等待操作。
+- 根因：`waiting_preview_confirm` 和 `interaction_request` 在 `buildEventStep()` 中使用 `done` 状态；`ToolChain` 只依据尾部步骤判断头部文案。
+- 修复：等待预览和等待回答步骤改用 `waiting` 状态；工具链同时检查步骤状态与 session 等待状态，统一显示“需要处理”，并用提示图标而非加载转圈或完成对勾表达。
+- 验证：`agent-workspace-controls.test.js` 覆盖两类等待事件和“需要处理”头部判断；Web lint 通过。真实工具链的完成、刷新和多轮回归见 BUG-20260802-011。
+
+### BUG-20260802-011｜同一对话多轮 Agent 工具记录被覆盖或恢复到错误回复
+
+- 状态：已修复（2026-08-02 Browser 真实回归）
+- 现象：同一对话先后运行多个 Agent 任务时，界面只保留最后一轮的 `activeSteps`；刷新后也只恢复最近一个 session。新一轮启动时，旧 completed session 的恢复副作用还会覆盖新任务的实时工具记录。
+- 影响范围：连续多轮使用同一文件工作区对话的用户。旧回复会失去工具链，或临时显示上一轮的工具名称和结果。
+- 根因：`MessageList` 仅把单一 `activeSteps` 插入最后一条消息，`FileAgentWorkspace` 只选择一条 session 恢复；恢复副作用未避开已有本地 session。
+- 修复：按 session 建立工具记录映射。已完成回复按 `assistant.meta.session_id` 读取对应记录，尚未形成回复的任务按队列的 `user_message_id` 附着到原始用户消息；本地记录保留跨轮步骤，历史恢复只在当前没有本地 session 时执行，不能覆盖新任务。
+- 验证：`agent-workspace-controls.test.js` 和 `agent-workspace-chat-actions.test.js` 增加多 session 关联、原始用户消息关联及恢复保护断言。Browser 在同一对话连续执行两条只读 `read_file` 任务，连同原有新建笔记任务共三轮；三段记录即时分别显示在各自回复前，刷新后仍全部恢复。456px AI 面板中三个记录区宽度均为 392px、`scrollWidth` 同为 392px，工作区宽度和 `scrollWidth` 均为 456px。
+
+### BUG-20260802-010｜已完成 Agent 会话刷新后丢失执行记录
+
+- 状态：已修复（2026-08-02 Browser 真实回归）
+- 现象：在 Browser 中完成一次真实 `analyze_folder → read_file` 调用后，当前页面能显示执行记录；刷新文件工作区并恢复同一对话后，历史用户与助手消息会恢复，但工具链不再显示。
+- 影响范围：已完成的文件工作区 Agent 会话。用户无法在重新打开页面、切回历史对话后查看本轮真实工具调用，与“历史对话保留工具链”的产品行为不一致。
+- 根因：`FileAgentWorkspace` 的恢复逻辑只选择运行中、可继续、失败或取消的 session；`completed` session 即使带有已持久化的 `run_events` 也不会交给 `buildRestoredAgentTimeline()`，前端没有可渲染的 `activeSteps`。补回这条选择后，控制器又会把已完成会话的模型过程草稿误标为“中断前已生成的回复”。
+- 修复：恢复当前对话时仍优先选择需要继续的 session；没有这类 session 时，`FileAgentWorkspace` 选择最近一条带持久化事件的 `completed` session，并交给 `buildRestoredAgentTimeline()` 重建只读工具记录。控制器对 `completed` session 清空过程草稿，只保留历史中的正式助手回复；恢复事件仅接受有效持久化 payload，避免空载荷阻断旧 `run_logs` 兼容回退。
+- 验证：`agent-workspace-controls.test.js` 增加 `completed` session 选择及不显示过程草稿的回归断言；`agent-workspace-chat-actions.test.js`、`workspace-continuity.test.js`、`ui-bug-regressions.test.js`、Web lint、生产构建和 `git diff --check` 通过。Browser 使用真实 `analyze_folder → read_file` 任务：刷新后工具记录、展开详情和正式回复均保留；切换到另一条已完成的“新建笔记”历史对话后也能恢复其工具记录。
+
 ### BUG-20260802-009｜本机 HTTP MCP 的许可边界可被远程或反向代理请求伪造
 
 - 状态：已修复（2026-08-02 安全复核）
@@ -116,14 +269,14 @@
 | BUG-20260731-004 | 已修复 | 三个测试分别锁定已废弃的富剪贴板、旧 TOC 内联实现和已归档 knowledge 页面；根目录也缺少统一全量测试入口。 | 三项断言已按 Markdown-only、`useEditorToc` 和旧页面归一到 files 的现行口径改写；新增根级 `npm run test:all`，纳入全部 Node 回归与离线 Prompt Eval。 | `npm run test:all` 全部通过，lint 与 Web build 通过。 |
 | BUG-20260731-003 | 已修复 | 守卫按工具名累计而不是按 session 最近相邻事件累计，新 run 和其他成功事件没有重置窗口。 | 改为 session 级单一最近事件窗口；只有相邻同工具同结果或相邻同工具失败才累计，不同工具、不同结果、成功事件和新 run 均重置。 | 控制面测试覆盖非连续重复、非连续失败、连续三次相同结果和新 run 重置，全部通过。 |
 | BUG-20260731-002 | 已修复，待真实 Provider 回归 | LLM 请求缺少统一硬预算、overflow 恢复、Abort/timeout 和累计 usage；checkpoint 在续跑成功前被清理。 | 接入 10% 固定安全余量、85%→75% 软压缩、overflow→60% 单次硬压缩、累计 70/85/100% 阶段策略、LLM/MCP 超时与取消、SSE 心跳及 checkpoint 两阶段提交。 | 长消息/工具 Schema、overflow、超时、取消、checkpoint 数据库故障与进程重载测试通过；真实多 Provider 超时仍待实机。 |
-| BUG-20260731-001 | 已修复，待实机回归 | 刷新后内存 session token 丢失，interaction 回答与续跑没有唯一任务和并发接管保护。 | 新增 HMAC scoped ticket、`agent_resume_jobs` 唯一约束、回答事务、resume-interaction SSE、run lease 和会话详情恢复；前端刷新后恢复 interaction/session/job，不把票据放入 URL、日志或消息。 | 票据过期、重复消费、跨 interaction、owner 预留、唯一 job、lease 冲突和全量构建通过；待 Web/Electron/懒猫真实对话回归。 |
+| BUG-20260731-001 | 已修复，待 Electron/懒猫实机回归 | 刷新后内存 session token 丢失，interaction 回答与续跑没有唯一任务和并发接管保护。 | 新增 HMAC scoped ticket、`agent_resume_jobs` 唯一约束、回答事务、run lease 和会话详情恢复。持久化队列模式中，前端以 `resume_job_id + resume_ticket` 唤醒 `/api/agent/loop/start`，控制票据必须是 session 的 `control_tickets.resume`（`resume_session`），不能误传仅绑定 job 的 `resume_ticket` 或只读票据；前端刷新后恢复 interaction/session/job，不把票据放入 URL、日志或消息。 | 票据过期、重复消费、跨 interaction、owner 预留、唯一 job、lease 冲突和全量构建通过；2026-08-02 Browser 真实回归已完成“提问卡片 → 回答 → 原 session 续跑 → 创建笔记”，未再出现 `CAPABILITY_ACTION_MISMATCH`。待 Electron、懒猫实机回归。 |
 
 | ID | 状态 | 问题 | 根因 / 发现 | 修复情况 | 验证 |
 |----|------|------|-------------|----------|------|
 | BUG-20260731-004 | 待修复方案确认 | 当前 66 个 Node 回归脚本有 3 个失败，无法形成稳定的全量回归基线。 | `editor-copy-all-support.test.js` 仍要求已经废弃的富剪贴板 `ClipboardItem` 与图片 Base64 内嵌；`editor-toc-export-runtime-support.test.js` 锁定了已经迁移到 `useEditorToc` 的旧函数源码形态；`workspace-state.test.js` 仍期待已归档的 `knowledge` 页面。三项均属于需求演进后测试未同步，且大量测试依赖源码字符串断言，重构后容易出现误报或漏报。 | 本轮未改测试。建议先按当前 PDD、PRD 和最新 Requirements 重写三项断言，再建立统一的 `test:all` 入口并区分行为测试、源码守卫和实机测试。 | 本轮逐个运行 `notus/tests/*.test.js`：63 通过、3 失败；`npm run lint:web` 与 `npm run build:web` 通过。 |
 | BUG-20260731-003 | 待修复方案确认 | Agent Loop 可能把被其他工具或成功调用隔开的相同结果、同类失败误判为连续死循环或连续失败，提前终止仍在推进的任务。 | `detectDeadloop()` 按工具名累计同一结果 Hash 次数，不保存全局连续调用窗口；`recordToolFail()` 也按工具名累计失败，只在该工具成功时清零。工具 A 失败、工具 B 成功、工具 A 再失败仍会触发 `consecutive_tool_failure`；工具 A 返回同一结果三次，即使中间穿插不同工具，也会触发 `deadloop_detected`。 | 本轮未改代码。建议改为 session 级最近事件窗口，只有相邻且同工具、同结果的调用才累计；任何其他成功工具、不同结果或新用户续跑都重置对应连续计数。 | 已在隔离数据库复现：`read_file(X) → search_knowledge(Y) → read_file(X) → search_knowledge(Z) → read_file(X)` 的第三次非连续 `read_file(X)` 返回死循环；两次 `read_file` 失败中间插入成功的 `search_knowledge` 后仍返回连续失败。 |
 | BUG-20260731-002 | 待修复方案确认 | Agent Loop 的上下文预算、取消与恢复机制没有形成闭环；长任务可能直接命中模型上下文错误，用户取消不能中断正在等待的 LLM 请求，恢复请求失败后 checkpoint 也可能丢失。 | `compactMessages()` 只压缩最后 8 条之外的成功 `tool_result`，普通长消息和最近工具结果不会缩减；`completeToolChat()` 只估算预算，没有调用通用压缩器，也没有对 context overflow 做压缩重试。Loop 的 `AbortSignal` 没有传入 LLM `fetch` 或工具执行；加载 checkpoint 后又在下一次 LLM 成功前立即清空。影响 Web、Electron、懒猫共用的 Agent Loop、SSE 取消、提问卡续跑和长会话。 | 本轮未改代码。建议统一接入 `resolveLlmBudget()`、硬/软 compact、可中止超时、SSE 心跳和失败可重试 checkpoint；checkpoint 只在新状态持久化成功后提交清理。 | 已构造估算 331452 token 的 12 条普通长消息，`compactMessages(messages, 60000)` 前后 token 与消息数均不变；源码确认 `completeToolChat()` 的两个 `fetch` 未接收 signal，且恢复路径在发起下一次 LLM 调用前执行 `clearMessagesCheckpoint()`。 |
-| BUG-20260731-001 | 部分修复，待实机回归 | 同一 canvas 对话先创建或修改过 Markdown 文件后，用户请求“再写一个技术实现文档”时会错误弹出“修改哪篇文章 / 新建一篇”的候选卡；隔天或刷新后回答该卡，回答虽已记录，却不能续跑原任务，界面最终出现通用欢迎语，用户感知为上下文丢失。 | 已核对导出的对话（ID 73）、现有代码和 0.1.12 LPK。`isExplicitNewFileTask()` 仅识别“再写一篇”，不识别“再写一个技术实现文档”，所以错误进入近期文章候选预检。确认卡的回答接口会将答案和写入目标持久化，Loop checkpoint 也保存在 `agent_sessions`；但前端 `resumeInteraction()` 只从内存 `activeAgentSession` 获取 session token，刷新、重开或隔天恢复历史对话后 token 已不存在，而读取历史会话的 API 又会刻意脱敏该 token，导致无法恢复同一 Agent session。已检查会话消息、确认卡、session checkpoint、SSE 续跑和 LPK 构建产物；它们均处于同一影响链路。 | 已移除服务端近期文章候选、`isExplicitNewFileTask()` 和正则分流；写作目标现在由 LLM 结合当前输入、最近对话和工作区状态判断，只有它无法定位目标时才调用 `ask_question_card`。因此错误自动候选卡已消除。刷新或隔天回答 Agent 主动提问卡的 session token 恢复机制仍未修改，作为本条未完成部分继续跟进。未重新打包 LPK。 | 已通过写作意图路由、Agent Loop 预览、错误恢复、会话交互、工作区连续性测试和 lint；待在 Web、Electron、懒猫实机验证：创建文件后输入“再写一个技术实现文档”不出现服务端候选卡；LLM 的主动澄清卡仍可用。刷新或隔天回答确认卡后恢复原任务仍待修复和回归。 |
+| BUG-20260731-001 | 已修复，待 Electron/懒猫实机回归 | 同一 canvas 对话先创建或修改过 Markdown 文件后，用户请求“再写一个技术实现文档”时会错误弹出“修改哪篇文章 / 新建一篇”的候选卡；隔天或刷新后回答该卡，回答虽已记录，却不能续跑原任务，界面最终出现通用欢迎语，用户感知为上下文丢失。 | 已核对导出的对话（ID 73）、现有代码和 0.1.12 LPK。`isExplicitNewFileTask()` 仅识别“再写一篇”，不识别“再写一个技术实现文档”，所以错误进入近期文章候选预检。确认卡回答与 Loop checkpoint 已持久化；2026-08-02 Browser 又确认同会话断点：`respond.js` 为 job 签发 `action: 'resume'` 的 `resume_ticket`，而 `/api/agent/loop/start` 要求 session 的 `action: 'resume_session'` 控制票据。此前前端没有传入 session resume ticket，默认票据不匹配而报 `CAPABILITY_ACTION_MISMATCH`。已检查会话消息、确认卡、session checkpoint、SSE 续跑和队列任务。 | 已移除服务端近期文章候选、`isExplicitNewFileTask()` 和正则分流；写作目标现在由 LLM 结合当前输入、最近对话和工作区状态判断，只有它无法定位目标时才调用 `ask_question_card`。提问卡回答后，前端以 `resume_job_id + resume_ticket` 调用 `/api/agent/loop/start`，同时传入该 session 的 `control_tickets.resume` 与 read ticket；Worker 从 checkpoint 续跑原 task。未重新打包 LPK。 | 已通过写作意图路由、Agent Loop 预览、错误恢复、会话交互、工作区连续性测试和 lint。2026-08-02 Browser 真实回归：同一对话先新建需求文档，随后请求独立技术实现文档；Agent 仅读取需求作为资料后新建技术文档，未弹出候选卡、未修改需求文档。随后在全新对话显式请求一张提问卡，提交“后端开发工程师”后原 session 完成并创建 `最终单卡验证-20260802-2036.md`；无 `CAPABILITY_ACTION_MISMATCH`。待 Electron、懒猫实机回归。 |
 | BUG-20260730-001 | 已修复，待实机回归 | 文件树选择或 Diff 路径打开文件时，已收起的富文本编辑器不会稳定恢复；切换布局会卸载 AI 工作区，导致提问卡已填写的答案和当前 Loop session 丢失，用户被要求重新回答；有效回答提交后，部分任务仍停在 `waiting_confirm`。 | 文件页用互斥 JSX 分支在双栏、编辑器独占和 AI 独占间移动 `FileAgentWorkspace`，React 因祖先节点变化卸载其本地状态；Diff 打开函数没有恢复编辑器且对“当前已打开文件”过早返回。session token 仅保存在被卸载的 controller 内存，续跑没有可靠调用同一 session。影响文件树、全局搜索、Diff、提问卡、SSE checkpoint 和会话恢复链路。已检查编辑器保存、Diff 应用/回滚、MCP/Skill 设置 API 和文件索引，它们不写入这条状态。 | 双栏、编辑器独占和 AI 独占改为同一 `ResizableLayout` 组件树内的折叠状态，提问回答上移到工作区内存；所有文件打开入口均先展开编辑器。Agent 运行、等待回答或提交回答时禁止收起 AI 面板并给出提示。旧 SSE 流用运行序号隔离，恢复任务完成后服务端以 Loop 真实终态校正 session，避免残留 `waiting_confirm`。Diff 顶部路径与侧边文件名都可打开 Markdown 文件。 | 已通过 `npm run build:web`、`npm --prefix notus run lint`、`workspace-continuity`、`workspace-layout-and-topbar`、`ui-bug-regressions`、`agent-workspace-controls`、`agent-loop-error-recovery`、`agent-workspace-chat-actions`、`conversation-interactions` 与 `test:skill-mcp`。待在 Web/Electron 实机确认文件树、Diff、快捷键提示与真实 LLM 提问卡续跑。 |
 | BUG-20260729-005 | 已修复，待实机回归 | 个性化已开启“标题与文件名双向绑定”时，在富文本编辑器顶部标题输入框改名后保存，文件名、文件树、`@` Mention 和全局文件搜索可能仍保留旧名称；导入标题规则不得受此回归影响。 | 保存接口只接收 Markdown 字符串，顶部标题依赖前端自行拼接一级标题；含 `title` Frontmatter 的笔记还会让元数据继续优先读取旧 Frontmatter 标题，缺少“顶部标题输入 → 服务端标题同步 → 文件名重命名”的明确契约和回归测试。 | 保存接口新增 `title` 字段，服务端以该值同步可见一级标题及已有 `title` Frontmatter，再执行既有标题→文件名重命名；保存成功后前端刷新文件树，`allFiles` 派生的文件树、Mention 和全局搜索随同更新。导入仍明确使用文件名覆盖一级标题和 Frontmatter，不触发重命名。 | 已通过 `node notus/tests/file-title-binding.test.js`、`node notus/tests/ui-bug-regressions.test.js`；待在 Web 与 Electron 实机验证：改顶部标题并保存后文件名、文件树、`@` 和全局搜索同步更新；导入文件标题仍采用文件名。 |
 | BUG-20260729-004 | 已修复，待实机回归 | Agent 在前序轮次已查询或操作某个受管 Skill/MCP 后，用户用“这个”“它”“改个名字”等承接指代时，下一轮可能跳到文章、工作区文件或其他话题，丢失资源对象。 | 新建 Agent session 只把最近对话文本拼进 Prompt；资源 Tool 的稳定 ID、类型、来源和当前状态没有作为跨轮上下文保存并重新解析。模型只能从自然语言猜测对象，容易被较早的文章/文件话题带偏。 | 新增 `agentResourceContext`：复用同一对话的 `agent_run_logs` 与已完成的 `resource_approval`，抽取最近 Skill/MCP ID 后每轮通过领域服务重新读取权威状态；失效、缺失和已删除对象不注入。结构化资源上下文在系统 Prompt 中优先于最近聊天文本；唯一当前对象要求先按 ID 操作，同一次最近操作内多个同类对象则要求澄清。资源工具日志摘要补齐 ID、名称、启停、传输、确认和测试字段，仍不记录密钥或正文。未新增表，也未把资源副本写进笔记工作区。 | 已通过 `node notus/tests/agent-resource-context.test.js`（Skill/MCP ID 跨 session 承接、Prompt 注入、删除后过滤）、`node notus/tests/skill-mcp.test.js`、`node notus/tests/agent-workspace-controls.test.js`。待真实 LLM 会话验证：查询 Skill → “改个名字”先锁定该 Skill；Skill 与文章连续出现不跳转文章；同一最近操作的多个同类候选先澄清。 |

@@ -313,7 +313,7 @@ async function runAgentLoop({ sessionId, runId = null, llmConfig, onStream, sign
   const globalAgentContext = buildGlobalAgentContext(session.goal);
   const resourceContext = buildConversationResourceContext(session.conversation_id);
   const skillCatalog = eligibleSkillSummaries(session.goal, session.skill_mentions || []);
-  const mcpContext = await prepareMcpTools(session.mcp_selection || { mode: 'off' }, session.goal);
+  const mcpContext = await prepareMcpTools(session.mcp_selection || { mode: 'off' }, session.goal, session.mcp_session_permissions || {});
   const tools = buildToolDefinitions(session, { mcpTools: mcpContext.tools });
   session = setSessionRuntimeVersions(session.id, {
     promptVersion: config.agentPromptVersion || 'agent-loop-v2',
@@ -713,8 +713,6 @@ async function runAgentLoop({ sessionId, runId = null, llmConfig, onStream, sign
           content: JSON.stringify(mergedPreviewResult),
           is_error: false,
         };
-        messages.push({ role: 'assistant', content });
-        messages.push({ role: 'user', content: toolResults });
         const finalThinking = buildPreviewCompletionText(toolUse.name, {
           approvalMode: normalizedApprovalMode,
           applied: actualApplied,
@@ -731,8 +729,6 @@ async function runAgentLoop({ sessionId, runId = null, llmConfig, onStream, sign
           status: 'success',
           durationMs: 0,
         });
-        updateSessionStatus(session.id, 'completed');
-        const usage = getSessionUsage(session.id);
         emit({
           type: 'artifact',
           artifact_type: 'operation_set',
@@ -740,16 +736,20 @@ async function runAgentLoop({ sessionId, runId = null, llmConfig, onStream, sign
           status: actualApplied ? 'applied' : 'pending',
           loop_index: loopIndex,
         });
-        emit({
-          type: 'final',
-          text: finalThinking,
-          status: 'completed',
-          reason: 'goal_achieved',
-          loop_index: loopIndex,
-          operation_set_id: result.operation_set_id,
-          usage,
-        });
-        return { status: 'completed', reason: 'goal_achieved', operation_set_id: result.operation_set_id, final_text: finalThinking, usage };
+        if (!actualApplied) {
+          updateSessionStatus(session.id, 'completed');
+          const usage = getSessionUsage(session.id);
+          emit({
+            type: 'final',
+            text: finalThinking,
+            status: 'completed',
+            reason: 'goal_achieved',
+            loop_index: loopIndex,
+            operation_set_id: result.operation_set_id,
+            usage,
+          });
+          return { status: 'completed', reason: 'goal_achieved', operation_set_id: result.operation_set_id, final_text: finalThinking, usage };
+        }
       }
     }
 

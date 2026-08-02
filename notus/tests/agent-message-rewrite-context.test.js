@@ -15,7 +15,7 @@ assert.ok(workspace.includes('function getClipboardFiles(clipboard)'), '剪贴�
 assert.ok(workspace.includes("IMAGE_MIME_TYPES.has(String(file?.type || '').trim().toLowerCase())"), '图片分类应兼容 MIME 类型');
 assert.ok(workspace.includes('const pastedFiles = getClipboardFiles(clipboard);'), '粘贴流程必须使用兼容后的文件列表');
 
-assert.ok(startRoute.includes('let userMessageId = null;'), '新建 Agent 消息必须保存真实数据库 ID');
+assert.ok(startRoute.includes('const userMessageId = appendUserMessage ? appendConversationMessage({'), '新建 Agent 消息必须保存真实数据库 ID');
 assert.ok(startRoute.includes('user_message_id: userMessageId,'), 'session_created 必须回传真实用户消息 ID');
 assert.ok(controller.includes("id: Number(event.user_message_id || event.userMessageId || 0) || makeMessageId('agent-loop-user')"), '前端应优先使用服务端用户消息 ID');
 assert.ok(controller.includes('conversationId: Number(event.conversation_id || event.conversationId || 0) || null,'), '前端消息必须带会话归属');

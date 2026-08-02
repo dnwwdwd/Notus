@@ -401,11 +401,24 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
   // 任务独立于界面可见性；只在正在提交同一张卡片时短暂阻止重复切换。
   const agentPanelLocked = Boolean(interactionSubmittingId);
   const agentPanelLockMessage = sessionLocked ? '任务仍在后台执行，正在保存提问卡片回答，请稍候。' : '正在保存提问卡片回答，请稍候。';
+  const agentPresentationRef = useRef({
+    activeSession: agentLoop.activeAgentSession,
+    activeSteps: agentLoop.activeSteps,
+    streamText: agentLoop.streamText,
+  });
 
   useEffect(() => {
     onAgentPanelLockChange?.({ locked: agentPanelLocked, message: agentPanelLockMessage });
     return () => onAgentPanelLockChange?.({ locked: false, message: '' });
   }, [agentPanelLockMessage, agentPanelLocked, onAgentPanelLockChange]);
+
+  useEffect(() => {
+    agentPresentationRef.current = {
+      activeSession: agentLoop.activeAgentSession,
+      activeSteps: agentLoop.activeSteps,
+      streamText: agentLoop.streamText,
+    };
+  }, [agentLoop.activeAgentSession, agentLoop.activeSteps, agentLoop.streamText]);
 
   useEffect(() => {
     const reversedSessions = [...restoredAgentSessions].reverse();
@@ -417,13 +430,13 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     ));
     if (session) {
       restoreAgentSession(session);
-    } else if (shouldClearAgentPresentation({
-      activeSession: agentLoop.activeAgentSession,
-      activeSteps: agentLoop.activeSteps,
-      streamText: agentLoop.streamText,
+    } else if (!agentLoop.loading && shouldClearAgentPresentation({
+      activeSession: agentPresentationRef.current.activeSession,
+      activeSteps: agentPresentationRef.current.activeSteps,
+      streamText: agentPresentationRef.current.streamText,
     })) {
-      // 新任务已收到 POST 回执时，历史详情尚未刷新为空数组。此时若清空，会把
-      // 刚回显的用户消息和任务时间线一并移除，后台 Worker 仍会继续执行。
+      // 新任务处于 loading 时，历史详情仍可能是空数组；此时不能清空展示状态，
+      // 否则会把刚回显的用户消息和任务时间线移除，后台 Worker 却仍会继续执行。
       restoreAgentSession(null);
     }
     // 回到正在执行或已入队的会话时重新建立 SSE 订阅。该调用不会新建任务，
@@ -446,7 +459,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     }, { resume: true }).catch(() => {
       autoResumedJobRef.current.delete(queuedJob.id);
     });
-  }, [agentLoop.activeAgentSession, agentLoop.activeSteps, agentLoop.streamText, agentResumeJobs, restoreAgentSession, restoredAgentSessions, resumeAgentLoop, selectedLlmConfigId]);
+  }, [agentLoop.loading, agentResumeJobs, restoreAgentSession, restoredAgentSessions, resumeAgentLoop, selectedLlmConfigId]);
 
   const resumeFailedAgentTask = useCallback(async () => {
     if (resumeAgentTaskInFlightRef.current) return;
@@ -725,7 +738,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
         onSelect={(id) => loadConversation(id).catch((error) => toast(error.message || '读取对话失败', 'error'))}
         onDelete={handleDeleteConversation}
         onExport={handleExportConversation}
-        onViewAgentLogs={() => openSettings('logs')}
+        onViewAgentLogs={(conversationId) => openSettings('logs', { conversationId })}
         deletingConversationId={deletingConversationId}
         exportingConversationId={exportingConversationId}
       />

@@ -7,17 +7,19 @@ function read(relativePath) {
 }
 
 const startRoute = read('pages/api/agent/loop/start.js');
+const taskWorker = read('lib/agentTaskWorker.js');
 const inputSources = read('lib/agentInputSources.js');
 const controller = read('hooks/useAgentLoopController.js');
 
 assert.ok(startRoute.includes('function splitMediaInputs(body = {})'));
-assert.ok(startRoute.includes('const rawMediaItems = Array.isArray(body.media_items)'));
-assert.ok(startRoute.includes('const mediaInputs = splitMediaInputs(body);'));
-assert.ok(startRoute.includes('const attachments = assertAttachmentLimits(conversationId, mediaInputs.attachments);'));
-assert.ok(startRoute.includes('const images = assertImageLimits(conversationId, mediaInputs.images);'));
-assert.ok(startRoute.includes('initialImages = getImageInputBlocks(images, { messageId });'));
-assert.ok(startRoute.includes('function buildPersistedImages(images = [], conversationId, messageId)'));
-assert.ok(startRoute.includes('images: buildPersistedImages(images, conversationId, userMessageId),'));
+assert.ok(startRoute.includes('const mediaItems = Array.isArray(body.media_items)'));
+assert.ok(startRoute.includes('const media = splitMediaInputs(body);'));
+assert.ok(startRoute.includes('attachments: media.attachments, images: media.images,'));
+assert.ok(startRoute.includes('function persistedImages(images, conversationId, messageId)'));
+assert.ok(startRoute.includes('images: persistedImages(media.images, conversation.id, userMessageId),'));
+assert.ok(taskWorker.includes('const attachments = assertAttachmentLimits(conversationId, media.attachments);'));
+assert.ok(taskWorker.includes('const images = assertImageLimits(conversationId, media.images);'));
+assert.ok(taskWorker.includes('initialImages = getImageInputBlocks(images, { messageId: task.user_message_id });'));
 assert.ok(inputSources.includes('function isImageAttachment(attachment = {})'));
 assert.ok(inputSources.includes('filter((attachment) => !isImageAttachment(attachment))'));
 assert.ok(controller.includes('function buildUserMessageMedia(input = {}, conversationId = null)'));

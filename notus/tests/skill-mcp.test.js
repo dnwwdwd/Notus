@@ -47,10 +47,12 @@ async function run() {
       authorizedPaths: [''],
       skillMentions: ['skill-a'],
       mcpSelection: { mode: 'auto' },
+      mcpSessionPermissions: { allow_local_http: true },
     });
     const session = getSession(created.sessionId);
     assert.deepEqual(session.skill_mentions, ['skill-a']);
     assert.deepEqual(session.mcp_selection, { mode: 'auto' });
+    assert.deepEqual(session.mcp_session_permissions, { allow_local_http: true });
 
     const prompt = buildLoopSystemPrompt(session, {
       skillCatalog: [{ id: 'skill-a', name: 'skill-a', description: '测试 Skill', sourceLabel: 'test', explicit: true }],
@@ -69,14 +71,14 @@ async function run() {
     const server = await saveServer({
       name: 'test MCP',
       transport: 'streamable_http',
-      http: { url: 'http://127.0.0.1:39001/mcp' },
+      http: { url: 'http://127.0.0.1:39001/mcp', allowLocalHttp: true },
       toolPolicy: { default: 'deny', deny: ['legacy-tool'] },
     });
     const disabledServer = await saveServer({
       name: 'disabled MCP',
       transport: 'streamable_http',
       enabled: false,
-      http: { url: 'http://127.0.0.1:39002/mcp' },
+      http: { url: 'http://127.0.0.1:39002/mcp', allowLocalHttp: true },
     });
     assert.equal(server.tool_policy, undefined);
     assert.equal(listServers().length, 2);
@@ -88,14 +90,16 @@ async function run() {
     getDb().prepare('UPDATE mcp_tool_cache SET discovered_at = ? WHERE server_id = ?').run('2000-01-01T00:00:00.000Z', server.id);
     assert.equal(isToolCacheStale(server.id), true);
     getDb().prepare('UPDATE mcp_tool_cache SET discovered_at = ? WHERE server_id = ?').run(new Date().toISOString(), server.id);
-    const specified = await prepareMcpTools({ mode: 'server', serverId: server.id }, '测试 MCP');
+    const specified = await prepareMcpTools({ mode: 'server', serverId: server.id }, '测试 MCP', { allow_local_http: true });
     assert.equal(specified.tools.length, 1);
     assert.equal(Object.values(specified.map)[0].serverId, server.id);
-    const automatic = await prepareMcpTools({ mode: 'auto' }, '测试 MCP');
+    const automatic = await prepareMcpTools({ mode: 'auto' }, '测试 MCP', { allow_local_http: true });
     assert.ok(automatic.tools.every((tool) => tool.mcp.serverId === server.id));
+    const remoteAutomatic = await prepareMcpTools({ mode: 'auto' }, '测试 MCP');
+    assert.equal(remoteAutomatic.tools.length, 0, '未获本机许可的 session 不得注入本机 HTTP MCP 工具');
 
     await assert.rejects(
-      () => saveServer({ name: 'test MCP', transport: 'streamable_http', http: { url: 'http://127.0.0.1:39003/mcp' } }),
+      () => saveServer({ name: 'test MCP', transport: 'streamable_http', http: { url: 'http://127.0.0.1:39003/mcp', allowLocalHttp: true } }),
       (error) => error.code === 'MCP_SERVER_ALREADY_EXISTS'
     );
 
@@ -106,7 +110,7 @@ async function run() {
     const agentMcp = await executeAddMcpServer({
       name: 'agent MCP',
       transport: 'streamable_http',
-      http: { url: 'http://127.0.0.1:39004/mcp', headers: [{ name: 'Authorization', value: 'Bearer top-secret' }] },
+      http: { url: 'https://example.com/mcp', headers: [{ name: 'Authorization', value: 'Bearer top-secret' }] },
     });
     assert.equal(agentMcp.server.name, 'agent MCP');
     assert.equal(agentMcp.test.ok, false);
@@ -124,6 +128,46 @@ async function run() {
     assert.deepEqual(webMcpDefinition.input_schema.properties.transport.enum, ['streamable_http']);
     assert.equal(webMcpDefinition.input_schema.properties.stdio, undefined);
     const webServer = await saveServer({ name: 'web MCP', transport: 'streamable_http', http: { url: 'https://example.com/mcp' } });
+    const localWebServer = await saveServer({
+      name: 'web local MCP',
+      transport: 'streamable_http',
+      http: {
+        url: 'http://127.0.0.1:39005/mcp',
+        allowLocalHttp: true,
+        headers: [{ name: 'Authorization', value: 'Bearer local-test-secret', secret: true }],
+      },
+    });
+    assert.equal(localWebServer.config.http.allow_local_http, true);
+    assert.equal(localWebServer.config.http.headers[0].configured, true);
+    assert.equal(JSON.stringify(localWebServer).includes('local-test-secret'), false);
+    const localStoredConfig = getDb().prepare('SELECT config_json FROM mcp_servers WHERE id = ?').get(localWebServer.id).config_json;
+    assert.equal(localStoredConfig.includes('local-test-secret'), false);
+    const replacedSecretId = JSON.parse(localStoredConfig).http.headers[0].secretId;
+    await saveServer({
+      name: 'web local MCP',
+      transport: 'streamable_http',
+      http: {
+        url: 'http://127.0.0.1:39005/mcp',
+        allowLocalHttp: true,
+        headers: [{ name: 'Authorization', value: 'Bearer local-test-secret-rotated', secret: true }],
+      },
+    }, localWebServer.id);
+    const rotatedSecretId = JSON.parse(getDb().prepare('SELECT config_json FROM mcp_servers WHERE id = ?').get(localWebServer.id).config_json).http.headers[0].secretId;
+    assert.notEqual(rotatedSecretId, replacedSecretId);
+    await assert.rejects(() => require('../lib/secretStore').readSecret(replacedSecretId));
+    const sharedSecretServer = await saveServer({
+      name: 'web local MCP shared secret',
+      transport: 'streamable_http',
+      http: { url: 'https://example.org/mcp', headers: [{ name: 'Authorization', secretId: rotatedSecretId, secret: true }] },
+    });
+    await removeServer(localWebServer.id);
+    assert.equal(await require('../lib/secretStore').readSecret(rotatedSecretId), 'Bearer local-test-secret-rotated');
+    await removeServer(sharedSecretServer.id);
+    await assert.rejects(() => require('../lib/secretStore').readSecret(rotatedSecretId));
+    await assert.rejects(
+      () => saveServer({ name: 'web local MCP without consent', transport: 'streamable_http', http: { url: 'http://127.0.0.1:39006/mcp' } }),
+      (error) => error.code === 'MCP_HTTP_URL_BLOCKED'
+    );
     await removeServer(webServer.id);
     await assert.rejects(
       () => saveServer({ name: 'web stdio MCP', transport: 'stdio', stdio: { command: 'node' } }),

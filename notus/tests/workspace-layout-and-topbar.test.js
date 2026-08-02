@@ -42,10 +42,17 @@ const appContext = read('contexts/AppContext.js');
 assert.ok(appContext.includes('workspaceHydrated'), 'app context should expose when persisted workspace state has hydrated');
 assert.ok(appContext.includes('restoredActiveFileId'), 'app context should retain the file selected when the workspace was restored');
 
-assert.ok(agentWorkspace.includes('AGENT_INPUT_TEXTAREA_DEFAULT_ROWS = 5'), 'agent input should default to five rows');
-assert.ok(agentWorkspace.includes("const AGENT_CHAT_CONTENT_WIDTH = '95%'"), 'agent input and messages should share the agreed 95% panel width');
+assert.ok(agentWorkspace.includes('AGENT_INPUT_TEXTAREA_DEFAULT_ROWS = 3'), 'agent input should default to three rows');
+assert.ok(agentWorkspace.includes("const AGENT_CHAT_CONTENT_WIDTH = 'min(860px, calc(100% - 32px))'"), 'agent input and messages should share the agreed responsive content width');
 assert.ok(agentWorkspace.includes('width: AGENT_CHAT_CONTENT_WIDTH'), 'agent input and messages should use the shared content width');
 assert.ok(agentWorkspace.includes("maxWidth: '80%'"), 'user message bubbles should retain their right-aligned content width');
 assert.ok(agentWorkspace.includes('const CHAT_JUMP_BUTTON_OFFSET = 240'), 'jump-to-bottom button should clear the taller agent input');
+assert.ok(agentWorkspace.includes('className="notus-agent-workspace"'), 'Agent 面板应建立独立的容器查询边界');
+assert.ok(agentWorkspace.includes('className="notus-agent-workspace__scroll"'), 'Agent 消息区应使用可按面板宽度调整的间距');
+
+const globalStyles = read('styles/globals.css');
+assert.ok(globalStyles.includes('container-name: notus-agent-workspace;'), '窄 AI 面板必须按自身宽度而非整个窗口切换布局');
+assert.ok(globalStyles.includes('@container notus-agent-workspace (max-width: 560px)'), '窄 AI 面板应在容器宽度不足时切换工具条布局');
+assert.ok(globalStyles.includes('max-width: min(220px, calc(100% - 42px));'), '模型选择宽度不能使用窗口宽度导致面板内溢出');
 
 console.log('workspace layout and top bar tests passed');

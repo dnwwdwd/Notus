@@ -6,13 +6,14 @@ const { getEffectiveConfig } = require('./config');
 const { ensureError } = require('./errors');
 const { createLogger } = require('./logger');
 const { buildSearchText } = require('./tokenizer');
-const { processImagesForFile, deleteImageVectorsByFileId } = require('./images');
+const { processImagesForFile } = require('./images');
 const {
   ensureMarkdownPath,
   extractTitle,
   buildFileRecordPayload,
   getFileStat,
   getFileUpdatedAt,
+  deleteFileVectors,
   syncFilesFromDisk,
   readMarkdownFile,
   sha256,
@@ -173,14 +174,6 @@ async function splitIntoChunks(content, options = {}) {
   return chunks;
 }
 
-function deleteOldVectors(db, fileId) {
-  if (!isVecAvailable()) return;
-  const oldChunkIds = db.prepare('SELECT id FROM chunks WHERE file_id = ?').all(fileId);
-  const deleteVec = db.prepare('DELETE FROM chunks_vec WHERE chunk_id = ?');
-  oldChunkIds.forEach((row) => deleteVec.run(BigInt(row.id)));
-  deleteImageVectorsByFileId(fileId);
-}
-
 function resolveIndexPath(inputPath) {
   const config = getEffectiveConfig();
   if (path.isAbsolute(String(inputPath || ''))) {
@@ -325,7 +318,7 @@ async function indexFile(inputPath) {
     : null;
 
   db.transaction(() => {
-    deleteOldVectors(db, fileId);
+    deleteFileVectors(db, fileId);
     db.prepare('DELETE FROM chunks WHERE file_id = ?').run(fileId);
 
     chunks.forEach((chunk, index) => {
@@ -496,7 +489,7 @@ function removeFile(relativePath) {
   const db = getDb();
   const normalized = ensureMarkdownPath(relativePath);
   const row = db.prepare('SELECT id FROM files WHERE path = ?').get(normalized);
-  if (row) deleteOldVectors(db, row.id);
+  if (row) deleteFileVectors(db, row.id);
   db.prepare('DELETE FROM files WHERE path = ?').run(normalized);
 }
 

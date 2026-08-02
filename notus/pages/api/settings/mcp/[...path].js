@@ -1,6 +1,10 @@
 const { ensureRuntime } = require('../../../../lib/runtime');
 const { listServers, getServer, saveServer, removeServer, testServer, cachedTools, disconnectServer } = require('../../../../lib/mcp');
 const { listTokens, getToken, createToken, updateToken, rotateToken, removeToken, listChanges, getChange, applyChange, rejectChange } = require('../../../../lib/externalMcp');
+const { allowsLocalHttpMcp } = require('../../../../lib/directLoopbackRequest');
+function requestsLocalHttpServer(body = {}) { return body?.http?.allowLocalHttp === true; }
+function isLocalHttpServer(server = null) { return Boolean(server?.config?.http?.allow_local_http); }
+function localHttpForbidden(req, server, body) { return !allowsLocalHttpMcp(req) && (isLocalHttpServer(server) || requestsLocalHttpServer(body)); }
 
 export default async function handler(req, res) {
   if (!ensureRuntime().ok) return res.status(500).json({ error: '运行时初始化失败' });
@@ -28,14 +32,24 @@ export default async function handler(req, res) {
     }
     if (parts[0] !== 'servers') return res.status(404).end();
     if (parts.length === 1 && req.method === 'GET') return res.status(200).json({ servers: listServers({ includeDisabled: req.query.enabled_only !== '1' }) });
-    if (parts.length === 1 && req.method === 'POST') return res.status(201).json({ server: await saveServer(req.body || {}) });
+    if (parts.length === 1 && req.method === 'POST') {
+      if (localHttpForbidden(req, null, req.body || {})) return res.status(403).json({ error: '远程请求不能配置本机 HTTP MCP', code: 'MCP_LOCAL_HTTP_FORBIDDEN' });
+      return res.status(201).json({ server: await saveServer(req.body || {}) });
+    }
     const id = parts[1];
     if (!id) return res.status(404).end();
-    if (parts[2] === 'test' && req.method === 'POST') return res.status(200).json(await testServer(id));
+    const server = getServer(id);
+    if (parts[2] === 'test' && req.method === 'POST') {
+      if (localHttpForbidden(req, server)) return res.status(403).json({ error: '远程请求不能测试本机 HTTP MCP', code: 'MCP_LOCAL_HTTP_FORBIDDEN' });
+      return res.status(200).json(await testServer(id));
+    }
     if (parts[2] === 'disconnect' && req.method === 'POST') { await disconnectServer(id); return res.status(200).json({ ok: true }); }
     if (parts[2] === 'tools' && req.method === 'GET') return res.status(200).json({ tools: cachedTools(id) });
-    if (req.method === 'GET') { const server = getServer(id); return server ? res.status(200).json({ server }) : res.status(404).json({ error: 'MCP Server 不存在' }); }
-    if (req.method === 'PATCH') return res.status(200).json({ server: await saveServer(req.body || {}, id) });
+    if (req.method === 'GET') return server ? res.status(200).json({ server }) : res.status(404).json({ error: 'MCP Server 不存在' });
+    if (req.method === 'PATCH') {
+      if (localHttpForbidden(req, server, req.body || {})) return res.status(403).json({ error: '远程请求不能修改本机 HTTP MCP', code: 'MCP_LOCAL_HTTP_FORBIDDEN' });
+      return res.status(200).json({ server: await saveServer(req.body || {}, id) });
+    }
     if (req.method === 'DELETE') return res.status(200).json(await removeServer(id));
     return res.status(405).end();
   } catch (error) { return res.status(error.code === 'MCP_TRANSPORT_UNAVAILABLE' ? 422 : 400).json({ error: error.message, code: error.code || 'MCP_API_ERROR' }); }

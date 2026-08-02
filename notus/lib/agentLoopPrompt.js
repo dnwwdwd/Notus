@@ -130,7 +130,7 @@ function buildLoopSystemPrompt(session, options = {}) {
     '- 使用 preview_patch_files 时，patch 使用 { file_path, old, new }；old 必须来自 read_file 或 search_knowledge，不要编造。',
     '',
     '## 新建文件后的读取方式',
-    '如果刚刚用 create_note 生成了新建文件预览，当前任务应停止并等待预览应用；不要假设手动确认模式下文件已经存在。',
+    '如果刚刚用 create_note 生成了新建文件预览，手动确认模式下当前任务应停止并等待预览应用；不要假设文件已经存在。自动应用模式下，只能以真实的“已应用”工具回执判断文件已创建；用户明确列出多个独立目标时，一次创建回执只代表其中一项完成，应继续处理其余目标，再结束任务。',
     '',
     formatResourceContext(options.resourceContext),
     '',

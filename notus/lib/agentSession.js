@@ -51,6 +51,10 @@ function normalizeMcpSelection(value) {
   return { mode: 'off' };
 }
 
+function normalizeMcpSessionPermissions(value) {
+  return value?.allow_local_http === true ? { allow_local_http: true } : {};
+}
+
 function normalizeCreatedFiles(value) {
   const parsed = Array.isArray(value) ? value : safeJsonParse(value, []);
   return (Array.isArray(parsed) ? parsed : []).map((item) => {
@@ -81,6 +85,7 @@ function createSession({
   toolProfile = 'default',
   skillMentions = [],
   mcpSelection = { mode: 'off' },
+  mcpSessionPermissions = {},
   promptVersion = 'agent-loop-v2',
   tokenBudgetTotal = null,
 } = {}) {
@@ -115,7 +120,7 @@ function createSession({
     normalizeToolProfile(toolProfile),
     JSON.stringify(Array.isArray(skillMentions) ? skillMentions.map(String).filter(Boolean) : []),
     JSON.stringify(normalizeMcpSelection(mcpSelection)),
-    JSON.stringify({}),
+    JSON.stringify(normalizeMcpSessionPermissions(mcpSessionPermissions)),
     String(promptVersion || 'agent-loop-v2'),
     tokenBudgetTotal === null || tokenBudgetTotal === undefined ? null : Math.max(1, Number(tokenBudgetTotal) || 1)
   );
@@ -146,7 +151,7 @@ function formatSession(row) {
     tool_profile: normalizeToolProfile(row.tool_profile),
     skill_mentions: safeJsonParse(row.skill_mentions_json, []),
     mcp_selection: normalizeMcpSelection(safeJsonParse(row.mcp_selection_json, { mode: 'off' })),
-    mcp_session_permissions: safeJsonParse(row.mcp_session_permissions_json, {}),
+    mcp_session_permissions: normalizeMcpSessionPermissions(safeJsonParse(row.mcp_session_permissions_json, {})),
     tool_call_counts: safeJsonParse(row.tool_call_counts, {}),
     consecutive_fails: safeJsonParse(row.consecutive_fails, {}),
     last_tool_results: safeJsonParse(row.last_tool_results, {}),

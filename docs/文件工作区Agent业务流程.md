@@ -65,12 +65,12 @@ Agent 输入区的未发送草稿写入浏览器 IndexedDB，长期保留文本�
 - `search_knowledge` 与 `web_search`：模型仍传单个 query，服务端以原词为首项执行 3 个去重查询；全部缺少充分证据时再补 2 个。每个 task、每个来源最多 5 项，重复或换词调用复用缓存。查询回执保存阶段、状态、结果数、耗时、摘要和脱敏错误码。
 - `get_task_activity`：只读当前 session 的查询、来源和工具记录，供 Agent 如实回答“第一轮用了什么关键词”“是否读到 README”“什么未执行”。
 - `load_skill`、`read_skill_file`：只面向有效且启用的 Skill，受根目录与大小限制保护。
-- `add_mcp_server`：用户提供名称、传输和连接参数后直接保存并测试。HTTP 在所有运行环境可用；stdio 仅 Electron 桌面端注册。Header/env 以密钥保存，结果与回执只返回脱敏配置状态；测试失败保留 Server，供用户随后在设置页修正。
-- 受 MCP 选择与权限约束的动态 MCP 工具：工具名使用 Server ID 哈希别名，避免和内置工具冲突。
+- `add_mcp_server`：用户提供名称、传输和连接参数后直接保存并测试。Streamable HTTP 默认要求 HTTPS；本机 HTTP 只接受 `localhost`、`127.0.0.1` 或 `::1`，并要求当前 session 由服务端判定为直接本机访问。stdio 仅 Electron 桌面端注册。Header/env 以密钥保存，结果与回执只返回脱敏配置状态；测试失败保留 Server，供用户随后在设置页修正。
+- 受 MCP 选择与权限约束的动态 MCP 工具：工具名使用 Server ID 哈希别名，避免和内置工具冲突；参数校验按工具声明支持默认 JSON Schema 和 Draft 2020-12，仍拒绝不符合 Schema 的输入。
 
 ### 4.1 MCP 选择与授权
 
-1. 用户点击输入框右侧 MCP 图标，在当前运行环境至少有一个可见且已启用 Server 时开启或关闭自动模式；选择随本地输入偏好保存，并作为本次发送参数传给 Loop。Agent 新增、修改、启停或确认删除 MCP 后会立即重新读取可用 Server。无可用 Server 时按钮禁用，旧自动偏好归一为关闭；悬停按钮显示“暂无 MCP 服务”。
+1. 用户点击输入框右侧 MCP 图标，在当前运行环境至少有一个可见且已启用 Server 时开启或关闭自动模式；选择随本地输入偏好保存，并作为本次发送参数传给 Loop。选择只保存 `off / auto / server`；服务端把本机 HTTP 权限独立写入 session。只有直接回环 socket、精确回环 Host 且没有代理转发头的请求可获得权限；生产 Web 还需部署者显式设置 `NOTUS_ALLOW_LOOPBACK_HTTP_MCP=true`，且只能用于未经过反向代理暴露的本机部署。Agent 新增、修改、启停或确认删除 MCP 后会立即重新读取可用 Server。无可用 Server 时按钮禁用，旧自动偏好归一为关闭；悬停按钮显示“暂无 MCP 服务”。
 2. 自动模式根据任务与已缓存工具的名称、描述选择少量相关 Server。未匹配或连接失败的 Server 不阻塞内置 Agent 工具。
 3. MCP 不再有逐工具授权。当前任务打开 MCP 后，Agent 可调用自动选择出的已启用 Server 工具。
 4. 选择后恢复同一个 session；工具缓存超过 5 分钟时，服务端会先尝试刷新已选 Server 的工具列表；刷新失败不阻断任务并继续使用上次成功缓存。

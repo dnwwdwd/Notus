@@ -14,14 +14,84 @@
 
 ## 当前记录
 
+### BUG-20260802-009｜本机 HTTP MCP 的许可边界可被远程或反向代理请求伪造
+
+- 状态：已修复（2026-08-02 安全复核）
+- 现象：初版修复允许调用方传入 `allowLocalHttp=true`。即使改为读取 socket 回环地址，同机反向代理也会让远程请求表现为回环来源；远程请求可能配置、测试或通过 Agent 调用服务端回环地址，形成服务端请求伪造风险。
+- 影响范围：部署在非本机网络入口后的 Web 运行环境，以及所有本机 HTTP MCP 配置。
+- 根因：本机 HTTP 的开关只在配置值上校验，许可和 MCP 选择状态混在同一个客户端可提交的对象中；来源判断也没有区分直接本机访问与经过代理转发的请求。
+- 修复：`mcp_selection_json` 只保存 `off / auto / server` 选择；服务端在新建 session 时把本机 HTTP 许可写入独立的 `mcp_session_permissions_json`。只有 socket 为回环、`Host` 是 `localhost` / `127.0.0.1` / `::1`、且不含 `Forwarded`、`X-Forwarded-*`、`X-Real-IP` 任一转发头的直接请求可获得许可；生产 Web 默认拒绝，只有部署者显式设置 `NOTUS_ALLOW_LOOPBACK_HTTP_MCP=true` 时才允许直接本机访问。该变量只能用于未通过反向代理暴露的本机部署；反向代理部署必须保持默认关闭。动态工具装配、Agent 侧新增/修改/测试/启停和设置页新增/修改/测试均读取这项独立许可。远程 session 自动排除本机 HTTP MCP，远程设置请求不能创建、修改或测试这类 Server。MCP 密钥轮换或删除后会扫描同一用户的全部 Server 配置，只清理不再被引用的密钥。
+- 验证：`direct-loopback-request.test.js` 覆盖回环 Host、外部 Host、远程 socket、全部代理头和生产 Web 显式许可；`skill-mcp.test.js` 覆盖独立 session 权限、无本机权限时不注入工具、密钥轮换和跨 Server 共享密钥的保留/最终清理；`agent-workspace-controls.test.js` 覆盖服务端而非前端生成许可。真实 Browser 本机会话此前已成功添加、测试并调用只读 DBHub 工具。本轮 `npm run test:all`、`npm run lint:web`、`npm run build:web` 和 `git diff --check` 全部通过；安全与架构复核均无遗留高置信度问题。
+
+### BUG-20260802-008｜MCP 工具的 Draft 2020-12 Schema 无法通过参数校验
+
+- 状态：已修复（2026-08-02 Browser 真实 MCP 实测）
+- 现象：本机 DBHub 的 `execute_sql` 工具已被发现并注入 Agent 会话，但 Agent 调用时在 Notus 内部报出“no schema with key or ref … draft/2020-12/schema”，SQL 没有真正发送。
+- 影响范围：所有声明 JSON Schema Draft 2020-12 的外部 MCP 工具。工具看似可用，实际会在参数校验阶段失败。
+- 根因：`agentToolPolicy` 只使用默认 Ajv 实例编译所有工具 Schema；默认实例不包含 Draft 2020-12 元 Schema。当前本地依赖目录也没有与 `package.json` 声明的 Ajv 8 保持一致，使该兼容问题在真实调用中暴露。
+- 修复：依照工具 Schema 的 `$schema` 选择默认 Ajv 或 `Ajv2020` 校验器，并重新安装依赖以恢复声明的 Ajv 8 版本；保留原有必填项和额外字段校验。
+- 验证：`agent-tool-policy.test.js` 新增 Draft 2020-12 的 `execute_sql` 参数校验；Browser 用真实 DBHub 执行只读 `SELECT 1 AS mcp_ok`，返回一行值 `1`，时间线记录动态 MCP 工具成功，未修改数据或笔记。
+
+### BUG-20260802-007｜MCP 自动开关没有传入新建 Agent 任务
+
+- 状态：已修复（2026-08-02 Browser 真实 MCP 实测）
+- 现象：输入框的 MCP 开关显示已开启，设置页测试也能发现工具，但新建 Agent session 的 `mcp_selection_json` 仍为 `off`，模型只能调用 MCP 管理工具，不能调用动态 MCP 工具。
+- 影响范围：所有从 AI 面板发起的新任务。用户无法实际使用已启用的 MCP 服务。
+- 根因：`useAgentLoopController.startAgentLoop()` 组装新任务 POST 请求时遗漏了 `mcp_selection`，导致 `/api/agent/loop/start` 回退到默认关闭状态。
+- 修复：新任务请求同时兼容 `mcp_selection` 与 `mcpSelection`，始终将输入框的 `off / auto` 选择传给服务端 session。
+- 验证：`agent-workspace-controls.test.js` 先复现遗漏后覆盖传参；Browser 新 session 持久化为 `{"mode":"auto"}`，动态 MCP 工具出现在时间线并完成真实只读调用。
+
+### BUG-20260802-006｜窄 AI 面板仍按视口而非面板宽度布局
+
+- 状态：已修复（2026-08-02 Browser 生产构建实测）
+- 现象：窗口较宽但右侧 AI 面板被拖拽到约 456px 时，原有仅按视口宽度生效的移动端样式不会触发，模型选择、发送按钮和输入区工具栏会挤压变形。
+- 根因：`globals.css` 使用 `@media (max-width: 560px)` 判断整个浏览器宽度，无法感知可独立缩窄的 AI 面板。
+- 修复：为工作区增加 CSS container，输入区、工具栏和模型选择器改用面板容器查询；模型选择宽度相对于自身容器限制，工具栏可换行。
+- 验证：Browser 在生产构建的窄右栏中确认历史消息、两份创建结果、输入区、模型选择和发送控件均保持可见，没有横向溢出或畸形；`workspace-layout-and-topbar.test.js`、`npm run lint:web`、`npm run build:web` 通过。
+
+### BUG-20260802-005｜历史对话的 Agent 日志入口未携带会话范围
+
+- 状态：已修复（2026-08-02 Browser 生产构建实测）
+- 现象：从历史对话抽屉点击“查看 Agent Loop 日志”时，界面打开了全局日志。用户无法只查看当前对话的工具链，容易把其他任务的记录误认为当前任务。
+- 根因：`FileAgentWorkspace` 忽略了 `ConversationDrawer` 回调提供的 `conversationId`，直接调用 `openSettings('logs')`；设置弹窗上下文也没有传递该参数。
+- 修复：设置弹窗上下文、日志面板和历史抽屉入口都传递 `conversationId`，日志面板优先使用该值请求 `/api/agent/sessions?conversation_id=...`。
+- 验证：真实双文件任务切换回原会话后，Browser 中日志页明确显示“当前仅显示会话 #4”，并展示 Agent Loop #7 的第 1、2 轮两次“新建笔记”及第 3 轮最终回复；`settings-agent-log-routing.test.js`、`workspace-continuity.test.js` 通过。
+
+### BUG-20260802-004｜自动确认模式在首个写入后提前结束多步骤任务
+
+- 状态：已修复（2026-08-02 真实 Provider 与 Browser 实测）
+- 现象：用户要求一次创建两份笔记时，Agent 在自动确认模式下仅创建第一份就将整个任务标记完成，第二份被遗漏。
+- 根因：`agentLoop.js` 对所有 `create_note` / 文件预览工具共用“生成 operation set 后立即 completed”的分支，没有区分自动确认后的真实写入和手动确认等待。提示词也要求 `create_note` 后无条件停止。
+- 修复：自动确认且操作已真实应用时，保留工具回执并继续下一轮；手动确认或未应用的预览仍结束并等待确认。提示词改为要求自动确认模式核对未完成的明确目标后再结束。
+- 验证：新增 `agent-loop-auto-write-continuation.test.js`，模拟两次 `create_note` 后第三轮生成最终回复。Browser 使用真实 DeepSeek 完成 3 轮任务，在切换到新对话期间连续创建 `AI回归-连续一.md`、`AI回归-连续二.md`，两个文件均写入并由最终回复逐项确认；任务日志记录两次成功 `create_note`。
+
+### BUG-20260802-003｜macOS 临时路径别名导致安装后的 Skill 未被索引
+
+- 状态：已修复（自动化回归）
+- 现象：在 macOS 临时目录下安装 Skill 后，安装流程报告“安装后的 Skill 未被索引”。
+- 根因：安装目标使用 `/var/...`，文件系统索引返回规范化后的 `/private/var/...`；字符串直接比较路径时误判不同目录。
+- 修复：安装完成后的路径比较统一通过 `realpathSync()` 规范化，无法解析时再回退绝对路径。
+- 验证：`skill-mcp.test.js` 通过；未改动用户已有 Skill。
+
+### BUG-20260802-002｜删除笔记后遗留孤立文本向量
+
+- 状态：已修复（2026-08-02 自动化回归）
+- 现象：按用户授权通过应用的删除接口清空 4 篇既有笔记后，以真实千问 Embedding 创建 3 篇短测试笔记。当前 `files` 有 3 条、`chunks` 有 12 条，但 `chunks_vec` 仍有 23 条；按 `chunk_id` 比对，发现 11 条向量没有对应的文本 chunk，ID 为 `3424` 至 `3434`。
+- 影响范围：所有通过文件删除接口删除的已索引笔记。数据库会长期保留用户已删除笔记的文本向量，造成存储残留；当前检索会关联 `chunks`，本次尚未观察到已删除内容重新出现在结果中，但删除后的数据不完整清理仍不符合预期。
+- 根因：`notus/lib/files.js` 的 `deleteFile()` 只删除磁盘文件并执行 `DELETE FROM files`。数据库级联会清除 `chunks`，但不会同步删除 sqlite-vec 虚拟表中的 `chunks_vec` 记录。`notus/lib/indexer.js` 的 `deleteOldVectors()` 仅在重建单篇文件索引前调用，文件删除路径没有复用它。
+- 修复：新增统一的 `deleteFileVectors()`，在单文件删除、文件夹删除、磁盘同步删除和索引器删除/重建前清除文本与图片向量；新增迁移 `009_cleanup_orphan_vectors` 清理旧库中的孤立记录。
+- 验证：`file-vector-cleanup.test.js` 覆盖单文件、文件夹、同步删除、索引器删除和迁移清理；`npm run test:all`、`npm run build:web` 通过。真实千问 `tongyi-embedding-vision-flash-2026-03-06` 连通测试成功并返回 768 维向量；密钥未写入文档或版本库。
+
 ### BUG-20260802-001｜新建 Agent 任务的前端回显被恢复副作用清空
 
-- 状态：已修复，待浏览器实机回归
-- 现象：用户发送 Agent 消息后，前端没有显示用户消息气泡和 Notus Agent 工具链；日志页可见已创建并运行的 Loop 任务。
-- 影响范围：`FileAgentWorkspace`、`useAgentLoopController`、Web/Electron/懒猫共用的 Agent 新建任务与任务订阅。
-- 根因：任务创建接口返回后，前端已追加用户消息、会话状态和“已加入后台执行”步骤。组件因该状态更新重渲染时，历史会话恢复副作用再次运行；新对话的 `restoredAgentSessions` 仍为空，于是调用 `restoreAgentSession(null)` 清空实时任务 UI。Worker 与数据库队列不受影响，所以日志仍会记录 Loop。
-- 修复：历史会话恢复逻辑仅在没有已恢复会话、实时 session、工具步骤和流式草稿时清空 Agent UI。新任务收到 POST 回执后，即使当前 `restoredAgentSessions` 尚未刷新，也会保留已回显的用户消息与工具链；后续持久化事件继续通过同一订阅更新。
-- 验证：新增 `agent-session-restore.test.js`，执行模拟新任务已回显、历史会话仍为空的状态；同时执行 `agent-workspace-controls.test.js`、`workspace-state.test.js`、`npm run lint`、生产构建和 diff 检查，均通过。完整 `npm run test:all` 在此前已通过的控制面、输入草稿和图片消息预览测试后，被 `agent-image-recognition-context.test.js` 的旧源码断言阻断：该断言仍要求 `start.js` 直接导入已迁移的 `recognizeConversationImages`，与本条无关。浏览器实际发送、已有对话续发、切换后返回原对话待回归。
+- 状态：已修复（2026-08-02 真实 Provider 与 Browser 生产构建实测）
+- 现象：在 LLM 与 Embedding 前置条件满足后，新建 Agent 任务点击发送，输入内容立即消失，用户消息、任务时间线和错误提示均未出现；浏览器开发日志持续报出 `Maximum update depth exceeded`。本轮未观察到 `/api/agent/loop/start` 的 POST，测试数据库的 `agent_sessions`、`agent_task_queue`、`agent_run_events`、`agent_run_logs` 与 `conversations` 也均没有新增记录。
+- 影响范围：`FileAgentWorkspace`、`useAgentLoopController`、Web/Electron/懒猫共用的新建 Agent 任务。该问题会使 AI 面板在首条消息时无法完成发送。
+- 根因：`FileAgentWorkspace` 的会话恢复副作用把 `agentLoop.activeSteps` 作为依赖。新对话没有历史会话时，`shouldClearAgentPresentation()` 返回 `true`，副作用调用 `restoreAgentSession(null)`；它进入 `clearActiveAgentSession()` 并无条件执行 `setSteps([])`。每次都会生成新的空数组，触发同一副作用再次运行，形成 React 更新循环。`startAgentLoop()` 发送前也会执行 `setSteps([])`，因此首条消息会稳定触发该循环。该逻辑由 `024a50f fix(agent): 稳定任务回显与工作台状态` 引入。
+- 修复：会话恢复副作用改为从 ref 读取展示状态，依赖项只保留历史会话、配置与加载状态；创建请求处于 loading 时不再清空新任务。`clearActiveAgentSession()` 与 `startAgentLoop()` 对已空步骤数组保持引用不变，避免无意义的重复渲染。页面保存守卫也只在确有打开且未保存的文件时阻止发送。
+- 验证：使用 Browser 插件在本地 Web 服务实际操作。未配置模型时，面板按产品设计禁用发送；仅配置 LLM 时仍因缺少 Embedding 禁用；在临时本地测试配置满足两项前置条件后，发送首条消息稳定复现上述异常。为验证连续发送，另启用了零笔记的隔离数据目录，连续输入并点击发送三条不同消息；每一条都会从输入框消失，页面始终没有会话或任务记录，隔离数据库的 `conversations`、`agent_sessions`、`agent_task_queue`、`agent_run_events`、`agent_run_logs` 均为 0，浏览器错误日志至少记录 100 条更新深度异常。补充使用本地 OpenAI 兼容协议模拟服务：后端直接创建任务可完成并持久化用户/助手消息；创建 Markdown 文件可索引为 4 个 chunk 与 4 条向量，说明该阻断点发生在浏览器提交层。再从历史对话加载一条已完成会话后，分别用发送按钮、回车键和助手回复的“重试”发送后续任务，三种操作均未新增消息、会话或任务。`node notus/tests/agent-session-restore.test.js` 与 `node notus/tests/agent-workspace-controls.test.js` 均通过，说明现有测试没有覆盖副作用与空数组引用变化组合导致的渲染循环。此前“已修复，待浏览器实机回归”的结论已被本次实测更新。
+- 真实 Provider 补充验证：按用户授权配置 DeepSeek `deepseek-v4-flash` 与千问 `tongyi-embedding-vision-flash-2026-03-06` 后，两项连通测试均成功。3 篇真实索引笔记可被语义搜索命中。在浏览器中以选中的 DeepSeek 配置发送一条仅要求回复“已收到”的短消息，输入仍立即消失，数据库的 `conversations`、`messages`、`agent_sessions`、`agent_task_queue`、`agent_run_events` 与 `agent_run_usage` 均为 0；开发日志再次记录 100 条更新深度异常。因此阻断发生在 DeepSeek 请求之前，未为重复复现继续发送消息。
+- 修复后验证：Browser 使用生产构建与真实 DeepSeek 连续发送“甲”“乙”及一次 `read_file` 任务，用户消息、助手回复和工具步骤均正确保留。随后在同一对话创建双文件任务，任务运行中切换到新对话，再返回原会话；后台任务未被中断，历史消息和 Agent 日志均可恢复。`agent-workspace-controls.test.js`、`workspace-continuity.test.js`、`npm run test:all`、`npm run lint:web`、`npm run build:web` 与 `git diff --check` 通过。
 
 ### BUG-20260801-006｜工具链首屏伪状态
 

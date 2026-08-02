@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { getDb, getSetting } = require('./db');
+const { getDb, getSetting, isVecAvailable } = require('./db');
 const { getEffectiveConfig } = require('./config');
 const {
   buildMarkdownMetadata,
@@ -327,6 +327,16 @@ function upsertFileRecord(relativePath, content = null, indexed = 0) {
   return { ...row, inserted: result.changes > 0 };
 }
 
+function deleteFileVectors(db, fileId) {
+  const normalizedFileId = Number(fileId || 0);
+  if (!normalizedFileId || !isVecAvailable()) return;
+  const oldChunkIds = db.prepare('SELECT id FROM chunks WHERE file_id = ?').all(normalizedFileId);
+  const deleteTextVector = db.prepare('DELETE FROM chunks_vec WHERE chunk_id = ?');
+  oldChunkIds.forEach((row) => deleteTextVector.run(BigInt(row.id)));
+  // images.js 会读取当前文件模块；在删除时再加载可避免初始化阶段形成循环依赖。
+  require('./images').deleteImageVectorsByFileId(normalizedFileId);
+}
+
 function syncFilesFromDisk() {
   const db = getDb();
   const paths = listMarkdownFiles();
@@ -390,12 +400,17 @@ function syncFilesFromDisk() {
     );
   });
 
-  const rows = db.prepare('SELECT path FROM files').all();
-  rows.forEach((row) => {
-    if (!seen.has(row.path)) {
-      db.prepare('DELETE FROM files WHERE path = ?').run(row.path);
-    }
-  });
+  const rows = db.prepare('SELECT id, path FROM files').all();
+  const missingRows = rows.filter((row) => !seen.has(row.path));
+  if (missingRows.length > 0) {
+    const deleteFileRecord = db.prepare('DELETE FROM files WHERE id = ?');
+    db.transaction(() => {
+      missingRows.forEach((row) => {
+        deleteFileVectors(db, row.id);
+        deleteFileRecord.run(row.id);
+      });
+    })();
+  }
 }
 
 function getFileById(id) {
@@ -645,7 +660,11 @@ function deleteFile(id) {
   const config = getEffectiveConfig();
   const target = resolveInside(config.notesDir, existing.path);
   if (fs.existsSync(target.absolutePath)) fs.unlinkSync(target.absolutePath);
-  getDb().prepare('DELETE FROM files WHERE id = ?').run(Number(id));
+  const db = getDb();
+  db.transaction(() => {
+    deleteFileVectors(db, existing.id);
+    db.prepare('DELETE FROM files WHERE id = ?').run(Number(id));
+  })();
   return true;
 }
 
@@ -738,7 +757,12 @@ function deleteFolder(folderPath) {
   const snapshot = snapshotFolder(target.relativePath);
   fs.rmSync(target.absolutePath, { recursive: true, force: true });
   const prefix = `${target.relativePath}/`;
-  getDb().prepare('DELETE FROM files WHERE path = ? OR path LIKE ?').run(target.relativePath, `${prefix}%`);
+  const db = getDb();
+  const rows = db.prepare('SELECT id FROM files WHERE path = ? OR path LIKE ?').all(target.relativePath, `${prefix}%`);
+  db.transaction(() => {
+    rows.forEach((row) => deleteFileVectors(db, row.id));
+    db.prepare('DELETE FROM files WHERE path = ? OR path LIKE ?').run(target.relativePath, `${prefix}%`);
+  })();
   return snapshot;
 }
 
@@ -866,6 +890,7 @@ module.exports = {
   buildRenamedPath,
   buildRenamedFolderPath,
   buildFileRecordPayload,
+  deleteFileVectors,
   extractTitle,
   sha256,
   formatSqliteDate,

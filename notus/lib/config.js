@@ -19,6 +19,7 @@ const DEFAULTS = {
   llmRequestTimeoutMs: 180000,
   agentToolTimeoutMs: 30000,
   agentMcpTimeoutMs: 30000,
+  allowLoopbackHttpMcp: false,
   agentPromptVersion: 'agent-loop-v2',
   diagnosticsToken: '',
   vecScoreThreshold: 0.5,
@@ -142,6 +143,7 @@ function readEnvConfig() {
     llmRequestTimeoutMs: numberFromEnv(process.env.LLM_REQUEST_TIMEOUT_MS, DEFAULTS.llmRequestTimeoutMs),
     agentToolTimeoutMs: numberFromEnv(process.env.AGENT_TOOL_TIMEOUT_MS, DEFAULTS.agentToolTimeoutMs),
     agentMcpTimeoutMs: numberFromEnv(process.env.AGENT_MCP_TIMEOUT_MS, DEFAULTS.agentMcpTimeoutMs),
+    allowLoopbackHttpMcp: booleanFromEnv(process.env.NOTUS_ALLOW_LOOPBACK_HTTP_MCP, DEFAULTS.allowLoopbackHttpMcp),
     agentPromptVersion: ['legacy-v1', 'agent-loop-v2'].includes(String(process.env.NOTUS_AGENT_PROMPT_VERSION || '').trim())
       ? String(process.env.NOTUS_AGENT_PROMPT_VERSION).trim()
       : DEFAULTS.agentPromptVersion,

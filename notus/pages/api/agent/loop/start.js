@@ -6,12 +6,12 @@ const { issueCapability, validateCapability } = require('../../../../lib/agentCo
 const { createTask, getQueuePosition, wakeTask } = require('../../../../lib/agentTaskQueue');
 const { wakeAgentTaskWorker } = require('../../../../lib/agentTaskWorker');
 const { makeConversationImageReference } = require('../../../../lib/conversationImages');
+const { allowsLocalHttpMcp } = require('../../../../lib/directLoopbackRequest');
 
 // 与既有恢复协议保持兼容：waiting_retry、waiting_model_recovery 均可由“继续任务”
 // 唤醒，但实际 lease 的接管已经移到后台 Worker，HTTP Route 不再持有运行 lease。
 const RESUMABLE_WAITING_STATUSES = ['waiting_retry', 'waiting_model_recovery'];
 function releaseLeaseBeforeResumeEvent(event, sessionId) { return { event, sessionId }; }
-
 function isImageInput(item = {}) {
   const name = String(item?.name || item?.file_name || item?.filename || '').toLowerCase();
   const type = String(item?.type || item?.contentType || '').split(';')[0].trim().toLowerCase();
@@ -62,7 +62,8 @@ export default async function handler(req, res) {
       conversationId: conversation.id, role: 'user', content: displayQuery || goal,
       meta: { agent_loop: true, agent_goal: goal, user_query: userQuery, attachments: media.attachments, images: media.images, mentions: Array.isArray(body.mentions) ? body.mentions : [], mention_segments: Array.isArray(body.mention_segments ?? body.mentionSegments) ? (body.mention_segments ?? body.mentionSegments) : [], web_search_enabled: Boolean(body.web_search_enabled ?? body.webSearchEnabled), search_provider: body.search_provider || body.searchProvider || null },
     }) : null;
-    const created = createSession({ goal, authorizedPaths: [''], authorizedOps: body.authorized_ops || ['modify', 'create'], conversationId: conversation.id, softLimit: body.soft_limit || 15, hardLimit: body.hard_limit || 30, searchKnowledgeLimit: body.search_knowledge_limit === undefined ? 5 : body.search_knowledge_limit, webSearchEnabled: Boolean(body.web_search_enabled ?? body.webSearchEnabled), webSearchProvider: String(body.search_provider || body.searchProvider || ''), toolProfile: String(body.tool_profile || body.toolProfile || '') === 'read_only' ? 'read_only' : 'default', skillMentions: Array.isArray(body.skill_mentions ?? body.skillMentions) ? (body.skill_mentions ?? body.skillMentions) : [], mcpSelection: body.mcp_selection ?? body.mcpSelection ?? { mode: 'off' } });
+    const requestedMcpSelection = body.mcp_selection ?? body.mcpSelection ?? { mode: 'off' };
+    const created = createSession({ goal, authorizedPaths: [''], authorizedOps: body.authorized_ops || ['modify', 'create'], conversationId: conversation.id, softLimit: body.soft_limit || 15, hardLimit: body.hard_limit || 30, searchKnowledgeLimit: body.search_knowledge_limit === undefined ? 5 : body.search_knowledge_limit, webSearchEnabled: Boolean(body.web_search_enabled ?? body.webSearchEnabled), webSearchProvider: String(body.search_provider || body.searchProvider || ''), toolProfile: String(body.tool_profile || body.toolProfile || '') === 'read_only' ? 'read_only' : 'default', skillMentions: Array.isArray(body.skill_mentions ?? body.skillMentions) ? (body.skill_mentions ?? body.skillMentions) : [], mcpSelection: requestedMcpSelection, mcpSessionPermissions: { allow_local_http: allowsLocalHttpMcp(req) } });
     const task = createTask({ sessionId: created.sessionId, conversationId: conversation.id, userMessageId, llmConfigId: body.llm_config_id || null, approvalMode: body.approval_mode || body.approvalMode || 'auto_confirm', input: { ...body, goal, user_query: userQuery, display_query: displayQuery, attachments: media.attachments, images: media.images, media_items: [] } });
     touchConversation(conversation.id);
     wakeAgentTaskWorker();

@@ -471,8 +471,8 @@ export function useAgentLoopController({
     controllerRef.current = null;
     setPendingAgentTask(null);
     setActiveAgentSession(null);
-    setSteps([]);
-    setStreamText('');
+    setSteps((steps) => (Array.isArray(steps) && steps.length === 0 ? steps : []));
+    setStreamText((text) => (String(text || '') ? '' : text));
     setLoading(false);
     setError('');
   }, [setActiveAgentSession, setSteps]);
@@ -556,6 +556,7 @@ export function useAgentLoopController({
         mention_segments: Array.isArray(input?.mention_segments) ? input.mention_segments : (Array.isArray(input?.mentionSegments) ? input.mentionSegments : []),
         web_search_enabled: Boolean(input?.web_search_enabled ?? input?.webSearchEnabled),
         search_provider: input?.search_provider || input?.searchProvider || undefined,
+        mcp_selection: input?.mcp_selection ?? input?.mcpSelection ?? { mode: 'off' },
         tool_profile: input?.tool_profile || input?.toolProfile || undefined,
         skip_user_message_append: Boolean(input?.skip_user_message_append || input?.skipUserMessageAppend),
       };
@@ -570,7 +571,7 @@ export function useAgentLoopController({
     setLoading(true);
     setError('');
     setStreamText('');
-    setSteps([]);
+    setSteps((steps) => (Array.isArray(steps) && steps.length === 0 ? steps : []));
     if (!isResume) setPendingAgentTask(null);
     let taskAccepted = false;
 

@@ -13,6 +13,7 @@ const agentLoopMigration = require('./migrations/005_agent_loop');
 const agentControlPlaneMigration = require('./migrations/006_agent_control_plane');
 const agentRunTimelineMigration = require('./migrations/007_agent_run_timeline');
 const agentTaskQueueMigration = require('./migrations/008_agent_task_queue');
+const orphanVectorCleanupMigration = require('./migrations/009_cleanup_orphan_vectors');
 
 let db = null;
 let vecAvailable = false;
@@ -64,7 +65,7 @@ function runMigrations(database) {
     );
   `);
 
-  [agentLoopMigration, agentControlPlaneMigration, agentRunTimelineMigration, agentTaskQueueMigration].forEach((migration) => {
+  [agentLoopMigration, agentControlPlaneMigration, agentRunTimelineMigration, agentTaskQueueMigration, orphanVectorCleanupMigration].forEach((migration) => {
     const version = Number(migration.version);
     if (!Number.isFinite(version) || version <= 0 || typeof migration.up !== 'function') return;
     const applied = database.prepare('SELECT version FROM schema_version WHERE version = ?').get(version);

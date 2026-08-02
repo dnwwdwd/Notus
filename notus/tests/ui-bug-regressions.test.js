@@ -107,6 +107,12 @@ function runTests() {
   assert.ok(!settings.includes("<Badge tone={skill.status === 'valid' ? 'success' : 'warning'}>"));
   assert.ok(!settings.includes("{skill.source_label || '本机'} · {skill.managed ? 'Notus 管理' : '外部目录'}"));
   assert.ok(settings.includes('notifySkillsChanged();'));
+  assert.ok(settings.includes('allowLocalHttp: false'));
+  assert.ok(settings.includes('本机 HTTP 地址'));
+  assert.ok(settings.includes('允许连接本机回环地址'));
+  assert.ok(settings.includes('请求 Header'));
+  assert.ok(settings.includes('认证值以密钥保存'));
+  assert.ok(settings.includes('aria-label={`Header 值 ${index + 1}`}'));
 
   const settingsApi = read('pages/api/settings/index.js');
   assert.ok(settingsApi.includes('provider_configs: providerConfigs'));

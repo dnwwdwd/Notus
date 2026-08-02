@@ -744,7 +744,7 @@ export default function FilesPage() {
       refreshFiles={refreshFiles}
       onFilesChanged={handleAgentFilesChanged}
       onAgentPanelLockChange={setAgentPanelLock}
-      beforeAgentRun={() => (saveState === 'dirty' ? handleSave() : true)}
+      beforeAgentRun={() => (activeFile && saveState === 'dirty' ? handleSave() : true)}
       fullWidth={!renderedWorkspacePanels.editorOpen}
       onOpenDiffFile={handleOpenDiffFile}
     />

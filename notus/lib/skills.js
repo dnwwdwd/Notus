@@ -310,11 +310,16 @@ function installCandidate(candidate, source = {}) {
     }
     fs.renameSync(stage, target);
     scanAllSkills();
-    const targetPath = path.resolve(target);
+    // macOS 上 /var 通常是 /private/var 的符号链接。索引记录使用 realpath，
+    // 安装目标若只用 path.resolve 比较会被误判为未索引，导致安装整体回滚。
+    const resolvedPath = (value) => {
+      try { return fs.realpathSync(value); } catch { return path.resolve(value); }
+    };
+    const targetPath = resolvedPath(target);
     const installed = listSkills().find((item) => (
       item.name === inspected.name
       && item.status === 'valid'
-      && path.resolve(String(item.real_path || (item.skill_md_path ? path.dirname(item.skill_md_path) : ''))) === targetPath
+      && resolvedPath(String(item.real_path || (item.skill_md_path ? path.dirname(item.skill_md_path) : ''))) === targetPath
     ));
     if (!installed) throw new Error('安装后的 Skill 未被索引');
     getDb().prepare('INSERT INTO skill_installations (id,skill_id,method,repository_url,repository_ref,repository_commit,repository_subdirectory,archive_sha256,draft_id,installed_hash,installed_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').run(crypto.randomUUID(), installed.id, source.method || 'local', source.repositoryUrl || null, source.ref || null, source.commit || null, source.subdirectory || null, source.archiveSha256 || null, source.draftId || null, installed.content_hash, now(), now());

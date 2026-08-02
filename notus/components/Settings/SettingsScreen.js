@@ -710,7 +710,7 @@ const SearchConfig = () => {
   );
 };
 
-const Logs = () => {
+const Logs = ({ agentConversationId: suppliedAgentConversationId = '' }) => {
   const router = useRouter();
   const toast = useToast();
   const [items, setItems] = useState([]);
@@ -720,7 +720,7 @@ const Logs = () => {
   const [level, setLevel] = useState('');
   const [route, setRoute] = useState('');
   const [requestId, setRequestId] = useState('');
-  const agentConversationId = String(router.query.conversation_id || '').trim();
+  const agentConversationId = String(suppliedAgentConversationId || router.query.conversation_id || '').trim();
 
   const formatLogTimestamp = (value) => {
     if (!value) return '—';
@@ -1838,18 +1838,22 @@ const McpSettings = () => {
   const [capabilities, setCapabilities] = useState(null);
   const [draft, setDraft] = useState(null);
   const [testingId, setTestingId] = useState('');
-  const empty = { name: '', transport: 'streamable_http', enabled: true, url: '', command: '', args: '', cwd: '' };
+  const empty = { name: '', transport: 'streamable_http', enabled: true, url: '', allowLocalHttp: false, headers: [], command: '', args: '', cwd: '' };
   const load = useCallback(async () => { const response = await fetch('/api/settings/mcp/servers', { cache: 'no-store' }); const payload = await readJsonResponse(response, { fallbackMessage: '读取 MCP Server 失败' }); setServers(Array.isArray(payload.servers) ? payload.servers : []); }, []);
   useEffect(() => { Promise.all([load(), fetch('/api/runtime/capabilities', { cache: 'no-store' }).then((response) => readJsonResponse(response, { fallbackMessage: '读取运行环境能力失败' }))]).then(([, payload]) => setCapabilities(payload)).catch((error) => toast(error.message || '读取 MCP Server 失败', 'error')).finally(() => setLoading(false)); }, [load, toast]);
-  const edit = (server = null) => setDraft(server ? { id: server.id, name: server.name, transport: server.transport, enabled: server.enabled, url: server.config?.http?.url || '', command: server.config?.stdio?.command || '', args: (server.config?.stdio?.args || []).join(' '), cwd: server.config?.stdio?.cwd || '' } : { ...empty, transport: capabilities?.mcp?.stdio ? 'stdio' : 'streamable_http' });
+  const edit = (server = null) => setDraft(server ? { id: server.id, name: server.name, transport: server.transport, enabled: server.enabled, url: server.config?.http?.url || '', allowLocalHttp: Boolean(server.config?.http?.allow_local_http), headers: (server.config?.http?.headers || []).map((header) => ({ name: header.name || '', value: header.value || '', secret: Boolean(header.secret || header.secretId), secretId: header.secretId || '', configured: Boolean(header.configured || header.secretId || header.value) })), command: server.config?.stdio?.command || '', args: (server.config?.stdio?.args || []).join(' '), cwd: server.config?.stdio?.cwd || '' } : { ...empty, transport: capabilities?.mcp?.stdio ? 'stdio' : 'streamable_http' });
   const save = async () => {
     if (!draft?.name?.trim()) { toast('请填写 MCP Server 名称', 'warning'); return; }
     const args = String(draft.args || '').match(/(?:[^\s"]+|"[^"]*")+/g)?.map((item) => item.replace(/^"|"$/g, '')) || [];
-    const body = { name: draft.name, transport: draft.transport, enabled: Boolean(draft.enabled), ...(draft.transport === 'stdio' ? { stdio: { command: draft.command, args, cwd: draft.cwd } } : { http: { url: draft.url } }) };
+    const headers = (draft.headers || []).map((header) => ({ name: String(header.name || '').trim(), value: String(header.value || ''), secret: true, secretId: String(header.secretId || '') })).filter((header) => header.name);
+    const body = { name: draft.name, transport: draft.transport, enabled: Boolean(draft.enabled), ...(draft.transport === 'stdio' ? { stdio: { command: draft.command, args, cwd: draft.cwd } } : { http: { url: draft.url, allowLocalHttp: Boolean(draft.allowLocalHttp), headers } }) };
     try { const response = await fetch(draft.id ? `/api/settings/mcp/servers/${encodeURIComponent(draft.id)}` : '/api/settings/mcp/servers', { method: draft.id ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); await readJsonResponse(response, { fallbackMessage: '保存 MCP Server 失败' }); setDraft(null); await load(); notifyMcpServersChanged(); toast('MCP Server 已保存', 'success'); } catch (error) { toast(error.message || '保存 MCP Server 失败', 'error'); }
   };
   const test = async (server) => { setTestingId(server.id); try { const response = await fetch(`/api/settings/mcp/servers/${encodeURIComponent(server.id)}/test`, { method: 'POST' }); const result = await readJsonResponse(response, { fallbackMessage: 'MCP 连接测试失败' }); toast(`连接成功，发现 ${result.tool_count || 0} 个工具`, 'success'); await load(); } catch (error) { toast(error.message || 'MCP 连接测试失败', 'error'); } finally { setTestingId(''); } };
   const remove = async (server) => { if (!window.confirm(`删除 MCP Server“${server.name}”？`)) return; try { const response = await fetch(`/api/settings/mcp/servers/${encodeURIComponent(server.id)}`, { method: 'DELETE' }); await readJsonResponse(response, { fallbackMessage: '删除 MCP Server 失败' }); await load(); notifyMcpServersChanged(); toast('MCP Server 已删除', 'success'); } catch (error) { toast(error.message || '删除 MCP Server 失败', 'error'); } };
+  const updateHeader = (index, changes) => setDraft((current) => ({ ...current, headers: (current.headers || []).map((header, headerIndex) => headerIndex === index ? { ...header, ...changes } : header) }));
+  const addHeader = () => setDraft((current) => ({ ...current, headers: [...(current.headers || []), { name: '', value: '', secret: true, secretId: '', configured: false }] }));
+  const removeHeader = (index) => setDraft((current) => ({ ...current, headers: (current.headers || []).filter((_, headerIndex) => headerIndex !== index) }));
   const supportsStdio = Boolean(capabilities?.mcp?.stdio);
   const transportOptions = [
     ...(supportsStdio ? [{ value: 'stdio', label: 'stdio' }] : []),
@@ -1891,7 +1895,7 @@ const McpSettings = () => {
         {draft ? <div style={{ display: 'grid', gap: 16 }}>
           <Field label="名称"><TextInput value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="例如：本地文件工具" /></Field>
           {supportsStdio ? <Field label="传输方式"><SegmentedTabs value={draft.transport} onChange={(transport) => setDraft({ ...draft, transport })} options={transportOptions} /></Field> : null}
-          {draft.transport === 'stdio' ? <><Field label="命令"><TextInput value={draft.command} onChange={(event) => setDraft({ ...draft, command: event.target.value })} placeholder="npx" /></Field><Field label="参数" hint="用空格分隔；带空格的参数可用双引号。"><TextInput value={draft.args} onChange={(event) => setDraft({ ...draft, args: event.target.value })} placeholder="-y @modelcontextprotocol/server-filesystem /path" /></Field><Field label="工作目录" hint="可选，必须为绝对路径。"><TextInput value={draft.cwd} onChange={(event) => setDraft({ ...draft, cwd: event.target.value })} placeholder="/Users/name/project" /></Field></> : <Field label="URL"><TextInput value={draft.url} onChange={(event) => setDraft({ ...draft, url: event.target.value })} placeholder="https://example.com/mcp" /></Field>}
+          {draft.transport === 'stdio' ? <><Field label="命令"><TextInput value={draft.command} onChange={(event) => setDraft({ ...draft, command: event.target.value })} placeholder="npx" /></Field><Field label="参数" hint="用空格分隔；带空格的参数可用双引号。"><TextInput value={draft.args} onChange={(event) => setDraft({ ...draft, args: event.target.value })} placeholder="-y @modelcontextprotocol/server-filesystem /path" /></Field><Field label="工作目录" hint="可选，必须为绝对路径。"><TextInput value={draft.cwd} onChange={(event) => setDraft({ ...draft, cwd: event.target.value })} placeholder="/Users/name/project" /></Field></> : <><Field label="URL"><TextInput value={draft.url} onChange={(event) => setDraft({ ...draft, url: event.target.value })} placeholder="https://example.com/mcp" /></Field><Field label="本机 HTTP 地址" hint="仅在本机运行的 MCP 使用 http 时打开；只允许 localhost、127.0.0.1 或 ::1。"><div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, minHeight: 32 }}><span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>允许连接本机回环地址</span><Toggle on={Boolean(draft.allowLocalHttp)} onChange={(allowLocalHttp) => setDraft({ ...draft, allowLocalHttp })} /></div></Field><Field label="请求 Header" hint="认证值以密钥保存，编辑已有认证项时留空即可保留原值；列表和任务日志不会显示认证值。"><div style={{ display: 'grid', gap: 8 }}>{(draft.headers || []).map((header, index) => <div key={`${header.secretId || 'new'}-${index}`} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}><div style={{ flex: '1 1 130px', minWidth: 0 }}><TextInput aria-label={`Header 名称 ${index + 1}`} value={header.name} onChange={(event) => updateHeader(index, { name: event.target.value })} placeholder="Header 名称" /></div><div style={{ flex: '1 1 180px', minWidth: 0 }}><TextInput aria-label={`Header 值 ${index + 1}`} masked value={header.value} onChange={(event) => updateHeader(index, { value: event.target.value, configured: Boolean(event.target.value) || header.configured })} placeholder={header.configured ? '已保存，留空不修改' : 'Header 值'} /></div><Button size="sm" variant="ghost" aria-label={`删除 Header ${index + 1}`} onClick={() => removeHeader(index)}>删除</Button></div>)}<div><Button size="sm" variant="secondary" onClick={addHeader}><Icons.plus size={13} />添加 Header</Button></div></div></Field></>}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}><span style={{ fontSize: 13, fontWeight: 600 }}>启用此 Server</span><Toggle on={Boolean(draft.enabled)} onChange={(enabled) => setDraft({ ...draft, enabled })} /></div>
         </div> : null}
       </Dialog>
@@ -2111,7 +2115,7 @@ const CONTENT_MAP = {
   about: About,
 };
 
-export function SettingsDialog({ open, section = 'model', onClose }) {
+export function SettingsDialog({ open, section = 'model', conversationId = '', onClose }) {
   const [activeSection, setActiveSection] = useState(section);
 
   useEffect(() => { setActiveSection(section); }, [section]);
@@ -2136,7 +2140,7 @@ export function SettingsDialog({ open, section = 'model', onClose }) {
         <SettingsNav active={activeSection} onSelect={setActiveSection} />
         <div className="notus-settings-content" style={{ flex: 1, overflow: 'auto', background: 'var(--bg-primary)', padding: 32, minWidth: 0 }}>
           <div className="notus-settings-content__inner" style={{ width: '100%', maxWidth: SETTINGS_CONTENT_MAX_WIDTH, margin: '0 auto' }}>
-            <Content onOpenImageSettings={openImageSettings} />
+            <Content onOpenImageSettings={openImageSettings} agentConversationId={conversationId} />
           </div>
         </div>
       </div>

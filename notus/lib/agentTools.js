@@ -90,7 +90,8 @@ function agentMcpServerToolDefinition() {
       type: 'object',
       description: 'transport 为 streamable_http 时填写。',
       properties: {
-        url: { type: 'string', description: '安全 HTTPS MCP 地址。' },
+        url: { type: 'string', description: 'HTTPS MCP 地址；本机回环地址仅支持 localhost、127.0.0.1 或 ::1。' },
+        allowLocalHttp: { type: 'boolean', description: '仅当用户明确要求连接本机回环 HTTP MCP 时传 true；其余地址不得使用 HTTP。' },
         headers: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, value: { type: 'string' } }, required: ['name', 'value'] } },
         connectTimeoutMs: { type: 'integer', description: '可选，1000 到 60000。' },
         requestTimeoutMs: { type: 'integer', description: '可选，1000 到 600000。' },
@@ -110,7 +111,7 @@ function agentMcpServerToolDefinition() {
       },
     };
   }
-  return tool('add_mcp_server', '新增并测试 MCP Server。用户明确提供全部配置后直接执行，不需要二次确认。Streamable HTTP 需要 HTTPS 地址；stdio 仅桌面端可用。HTTP Header 和 stdio 环境变量的值会保存为密钥，绝不在工具结果中回显。', properties, ['name', 'transport']);
+  return tool('add_mcp_server', '新增并测试 MCP Server。用户明确提供全部配置后直接执行，不需要二次确认。Streamable HTTP 默认需要 HTTPS；只有用户明确要求的 localhost、127.0.0.1 或 ::1 本机地址可配合 allowLocalHttp 使用 HTTP。stdio 仅桌面端可用。HTTP Header 和 stdio 环境变量的值会保存为密钥，绝不在工具结果中回显。', properties, ['name', 'transport']);
 }
 
 function managementToolDefinitions() {
@@ -1495,8 +1496,13 @@ async function executeInstallSkillFromGit({ repository_url: repositoryUrl = '' }
   };
 }
 
-async function executeAddMcpServer(input = {}) {
+function sessionAllowsLocalHttpMcp(sessionId) { return Boolean(getSession(sessionId)?.mcp_session_permissions?.allow_local_http); }
+function localHttpMcpDenied(sessionId, server = null, input = {}) {
+  return (Boolean(input?.http?.allowLocalHttp) || Boolean(server?.config?.http?.allow_local_http)) && !sessionAllowsLocalHttpMcp(sessionId);
+}
+async function executeAddMcpServer(input = {}, sessionId) {
   const { saveServer, testServer } = require('./mcp');
+  if (localHttpMcpDenied(sessionId, null, input)) return { error: 'MCP_LOCAL_HTTP_FORBIDDEN', message: '只有本机发起的会话可以添加本机 HTTP MCP' };
   const transport = String(input?.transport || '').trim();
   const payload = {
     name: String(input?.name || '').trim(),
@@ -1555,9 +1561,9 @@ async function executeUpdateSkillFromGit({ skill_id } = {}) { const result = awa
 function executeUninstallSkill({ skill_id } = {}, sessionId) { const skill = require('./skills').getSkill(skill_id); if (!skill) return { error: 'SKILL_NOT_FOUND' }; return resourceApproval(sessionId, skill.managed ? 'skill_uninstall' : 'skill_disable', skill.name, { skill_id: skill.id, managed: skill.managed }); }
 function executeListMcpServers() { const { listServers } = require('./mcp'); return { servers: listServers({ includeDisabled: true }).map((item) => safeMcp(item)) }; }
 function executeGetMcpServerDetails({ server_id } = {}) { const server = require('./mcp').getServer(server_id); if (!server) return { error: 'MCP_SERVER_NOT_FOUND' }; return { server: safeMcp(server, true) }; }
-async function executeUpdateMcpServer(input = {}) { const { getServer, saveServer } = require('./mcp'); const existing = getServer(input.server_id); if (!existing) return { error: 'MCP_SERVER_NOT_FOUND' }; const payload = { ...input, name: input.name || existing.name, transport: input.transport || existing.transport, http: input.http ? { ...input.http, headers: agentSecretEntries(input.http.headers) } : undefined, stdio: input.stdio ? { ...input.stdio, env: agentSecretEntries(input.stdio.env) } : undefined }; const server = await saveServer(payload, existing.id); return { server: safeMcp(server) }; }
-async function executeTestMcpServer({ server_id } = {}) { const test = await require('./mcp').testServer(server_id); return { test: { ok: true, tool_count: test.tool_count, duration_ms: test.duration_ms } }; }
-async function executeSetMcpServerEnabled({ server_id, enabled } = {}) { const { getServer, saveServer } = require('./mcp'); const existing = getServer(server_id); if (!existing) return { error: 'MCP_SERVER_NOT_FOUND' }; const server = await saveServer({ name: existing.name, transport: existing.transport, enabled: Boolean(enabled), http: existing.config?.http, stdio: existing.config?.stdio }, existing.id); return { server: safeMcp(server) }; }
+async function executeUpdateMcpServer(input = {}, sessionId) { const { getServer, saveServer } = require('./mcp'); const existing = getServer(input.server_id); if (!existing) return { error: 'MCP_SERVER_NOT_FOUND' }; if (localHttpMcpDenied(sessionId, existing, input)) return { error: 'MCP_LOCAL_HTTP_FORBIDDEN', message: '只有本机发起的会话可以修改本机 HTTP MCP' }; const payload = { ...input, name: input.name || existing.name, transport: input.transport || existing.transport, http: input.http ? { ...input.http, headers: agentSecretEntries(input.http.headers) } : undefined, stdio: input.stdio ? { ...input.stdio, env: agentSecretEntries(input.stdio.env) } : undefined }; const server = await saveServer(payload, existing.id); return { server: safeMcp(server) }; }
+async function executeTestMcpServer({ server_id } = {}, sessionId) { const server = require('./mcp').getServer(server_id); if (localHttpMcpDenied(sessionId, server)) return { error: 'MCP_LOCAL_HTTP_FORBIDDEN', message: '只有本机发起的会话可以测试本机 HTTP MCP' }; const test = await require('./mcp').testServer(server_id); return { test: { ok: true, tool_count: test.tool_count, duration_ms: test.duration_ms } }; }
+async function executeSetMcpServerEnabled({ server_id, enabled } = {}, sessionId) { const { getServer, saveServer } = require('./mcp'); const existing = getServer(server_id); if (!existing) return { error: 'MCP_SERVER_NOT_FOUND' }; if (localHttpMcpDenied(sessionId, existing)) return { error: 'MCP_LOCAL_HTTP_FORBIDDEN', message: '只有本机发起的会话可以启停本机 HTTP MCP' }; const server = await saveServer({ name: existing.name, transport: existing.transport, enabled: Boolean(enabled), http: existing.config?.http, stdio: existing.config?.stdio }, existing.id); return { server: safeMcp(server) }; }
 function executeRemoveMcpServer({ server_id } = {}, sessionId) { const server = require('./mcp').getServer(server_id); if (!server) return { error: 'MCP_SERVER_NOT_FOUND' }; return resourceApproval(sessionId, 'mcp_remove', server.name, { server_id: server.id }); }
 
 async function executeToolSafely(toolUse = {}, session, notesDir = getEffectiveConfig().notesDir, context = {}) {

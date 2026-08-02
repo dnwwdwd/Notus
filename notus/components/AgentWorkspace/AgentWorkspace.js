@@ -2836,10 +2836,10 @@ export function AgentWorkspace({ messages, interactions = [], streamText, loadin
   ]);
 
   return (
-    <div style={{ position: 'relative', height: '100%', minHeight: 0, minWidth: 0, maxWidth: '100%', background: C.page, color: C.text, overflow: 'hidden', WebkitFontSmoothing: 'antialiased', MozOsxFontSmoothing: 'grayscale' }}>
+    <div className="notus-agent-workspace" style={{ position: 'relative', height: '100%', minHeight: 0, minWidth: 0, maxWidth: '100%', background: C.page, color: C.text, overflow: 'hidden', WebkitFontSmoothing: 'antialiased', MozOsxFontSmoothing: 'grayscale' }}>
       {messageImagePreview ? <ImagePreviewOverlay preview={messageImagePreview} onClose={() => setMessageImagePreview(null)} onMove={moveMessageImagePreview} /> : null}
-      <main ref={scrollContainerRef} onScroll={handleChatScroll} style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden', padding: '24px 16px 224px' }}>
-        <div style={{ width: AGENT_CHAT_CONTENT_WIDTH, maxWidth: 'none', minWidth: 0, margin: '0 auto', overflow: 'hidden' }}>
+      <main ref={scrollContainerRef} onScroll={handleChatScroll} className="notus-agent-workspace__scroll" style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}>
+        <div className="notus-agent-workspace__content" style={{ width: AGENT_CHAT_CONTENT_WIDTH, maxWidth: 'none', minWidth: 0, margin: '0 auto', overflow: 'hidden' }}>
           <MessageList
             messages={visibleMessages}
             interactions={interactions}

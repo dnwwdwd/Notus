@@ -47,12 +47,32 @@ function assertTransport(transport) {
   if (!['stdio', 'streamable_http'].includes(transport)) throw Object.assign(new Error('MCP transport 无效'), { code: 'MCP_CONFIG_INVALID' });
   if (transport === 'stdio' && !caps().mcp.stdio) throw Object.assign(new Error('当前运行环境不支持 stdio MCP'), { code: 'MCP_TRANSPORT_UNAVAILABLE' });
 }
-function validateHttpUrl(raw) {
+function normalizeHostname(url) { return String(url.hostname || '').replace(/^\[|\]$/g, '').toLowerCase(); }
+function isExactLoopbackHost(hostname) { return ['localhost', '127.0.0.1', '::1'].includes(hostname); }
+function isLoopbackAddress(hostname) { return hostname === 'localhost' || hostname === '::1' || /^127\./.test(hostname); }
+function isLocalHttpServer(server) { return Boolean(server?.transport === 'streamable_http' && server?.config?.http?.allow_local_http); }
+function secretIds(config = {}) {
+  return new Set([...(config.http?.headers || []), ...(config.stdio?.env || [])].map((item) => String(item?.secretId || '')).filter(Boolean));
+}
+function referencedSecretIds() {
+  const referenced = new Set();
+  getDb().prepare('SELECT config_json FROM mcp_servers WHERE owner_id = ?').all(OWNER_ID)
+    .forEach((row) => secretIds(parseJson(row.config_json, {})).forEach((secretId) => referenced.add(secretId)));
+  return referenced;
+}
+async function removeUnusedSecrets(candidateIds = []) {
+  const referenced = referencedSecretIds();
+  await Promise.all([...new Set(candidateIds)].filter((secretId) => !referenced.has(secretId)).map((secretId) => removeSecret(secretId).catch(() => {})));
+}
+function validateHttpUrl(raw, { allowLocalHttp = false } = {}) {
   const url = new URL(String(raw || ''));
-  const runtime = inferRuntimeTarget();
-  const localDevelopment = runtime === 'electron' && process.env.NODE_ENV !== 'production' && ['localhost', '127.0.0.1', '::1'].includes(url.hostname);
-  if (url.username || url.password || (url.protocol !== 'https:' && !(localDevelopment && url.protocol === 'http:'))) throw Object.assign(new Error('MCP HTTP 地址必须为安全 HTTPS 地址'), { code: 'MCP_HTTP_URL_BLOCKED' });
-  if (runtime !== 'electron' && /^(localhost|127\.|0\.0\.0\.0|169\.254\.)/.test(url.hostname)) throw Object.assign(new Error('当前运行环境不允许访问该 MCP 地址'), { code: 'MCP_HTTP_URL_BLOCKED' });
+  const hostname = normalizeHostname(url);
+  const loopback = isExactLoopbackHost(hostname);
+  if (url.username || url.password) throw Object.assign(new Error('MCP HTTP 地址不能包含用户名或密码'), { code: 'MCP_HTTP_URL_BLOCKED' });
+  if (isLoopbackAddress(hostname) && !loopback) throw Object.assign(new Error('本机 MCP 仅支持 localhost、127.0.0.1 或 ::1'), { code: 'MCP_HTTP_URL_BLOCKED' });
+  if (loopback && !allowLocalHttp) throw Object.assign(new Error('连接本机 MCP 地址前，请明确允许本机 HTTP 地址'), { code: 'MCP_HTTP_URL_BLOCKED' });
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback && allowLocalHttp)) throw Object.assign(new Error('MCP HTTP 地址必须为安全 HTTPS 地址'), { code: 'MCP_HTTP_URL_BLOCKED' });
+  if (/^(0\.0\.0\.0|169\.254\.)/.test(hostname)) throw Object.assign(new Error('当前运行环境不允许访问该 MCP 地址'), { code: 'MCP_HTTP_URL_BLOCKED' });
   return url.toString();
 }
 async function persistSecretEntries(entries = []) {
@@ -70,8 +90,9 @@ async function normalizeConfig(input = {}, existing = null) {
   const existingConfig = existing ? parseJson(existing.config_json, {}) : {};
   if (transport === 'streamable_http') {
     const http = input.http || {};
-    const url = validateHttpUrl(http.url || existingConfig.http?.url);
-    return { transport, config: { http: { url, headers: await persistSecretEntries(http.headers || existingConfig.http?.headers || []), connectTimeoutMs: Math.min(Math.max(Number(http.connectTimeoutMs || existingConfig.http?.connectTimeoutMs || 15000), 1000), 60000), requestTimeoutMs: Math.min(Math.max(Number(http.requestTimeoutMs || existingConfig.http?.requestTimeoutMs || 120000), 1000), 600000) } } };
+    const allowLocalHttp = http.allowLocalHttp === true || (http.allowLocalHttp === undefined && existingConfig.http?.allow_local_http === true);
+    const url = validateHttpUrl(http.url || existingConfig.http?.url, { allowLocalHttp });
+    return { transport, config: { http: { url, allow_local_http: allowLocalHttp, headers: await persistSecretEntries(http.headers || existingConfig.http?.headers || []), connectTimeoutMs: Math.min(Math.max(Number(http.connectTimeoutMs || existingConfig.http?.connectTimeoutMs || 15000), 1000), 60000), requestTimeoutMs: Math.min(Math.max(Number(http.requestTimeoutMs || existingConfig.http?.requestTimeoutMs || 120000), 1000), 600000) } } };
   }
   const stdio = input.stdio || {};
   const command = String(stdio.command || existingConfig.stdio?.command || '').trim();
@@ -88,6 +109,7 @@ async function saveServer(input = {}, id = '') {
   if (findServerByName(name, existing?.id)) {
     throw Object.assign(new Error(`MCP Server“${name}”已存在`), { code: 'MCP_SERVER_ALREADY_EXISTS' });
   }
+  const existingConfig = existing ? parseJson(existing.config_json, {}) : {};
   const normalized = await normalizeConfig(input, existing);
   const serverId = existing?.id || crypto.randomUUID();
   // 旧版本已经写入的工具策略继续留在数据库中，避免升级时丢失数据；
@@ -96,6 +118,7 @@ async function saveServer(input = {}, id = '') {
   const enabled = input.enabled === undefined ? (existing ? existing.enabled : true) : Boolean(input.enabled);
   getDb().prepare(`INSERT INTO mcp_servers (id,owner_id,name,transport,enabled,config_json,tool_policy_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,datetime('now'),datetime('now'))
     ON CONFLICT(id) DO UPDATE SET name=excluded.name,transport=excluded.transport,enabled=excluded.enabled,config_json=excluded.config_json,tool_policy_json=excluded.tool_policy_json,updated_at=datetime('now')`).run(serverId, OWNER_ID, name, normalized.transport, enabled ? 1 : 0, JSON.stringify(normalized.config), legacyPolicy);
+  await removeUnusedSecrets([...secretIds(existingConfig)]);
   // 连接缓存以 owner:id 为键。配置更新后应清理旧连接，避免继续使用旧地址、命令或凭据。
   await disconnectServer(serverId);
   return getServer(serverId);
@@ -104,9 +127,8 @@ async function removeServer(id) {
   await disconnectServer(id);
   const server = getServer(id); if (!server) return { deleted: false };
   const config = parseJson(getDb().prepare('SELECT config_json FROM mcp_servers WHERE id = ?').get(id)?.config_json, {});
-  const entries = [...(config.http?.headers || []), ...(config.stdio?.env || [])];
-  await Promise.all(entries.filter((item) => item.secretId).map((item) => removeSecret(item.secretId).catch(() => {})));
   getDb().prepare('DELETE FROM mcp_servers WHERE id = ?').run(id);
+  await removeUnusedSecrets([...secretIds(config)]);
   return { deleted: true };
 }
 async function resolvedEntries(entries = []) {
@@ -171,10 +193,10 @@ function intentTerms(goal = '') {
   });
   return [...terms].slice(0, 80);
 }
-async function prepareMcpTools(selection = {}, goal = '') {
+async function prepareMcpTools(selection = {}, goal = '', sessionPermissions = {}) {
   const mode = selection.mode || 'off';
   if (mode === 'off') return { tools: [], map: {}, instructions: [] };
-  const servers = listServers({ includeDisabled: false });
+  const servers = listServers({ includeDisabled: false }).filter((server) => sessionPermissions.allow_local_http === true || !isLocalHttpServer(server));
   let selected = mode === 'server' ? servers.filter((item) => item.id === selection.serverId) : servers;
   // 连接测试会写入缓存；长期运行或重启后，首次任务也应在缓存过期时静默
   // 刷新，避免自动选择和工具 schema 长期停留在旧版本。

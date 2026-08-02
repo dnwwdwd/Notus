@@ -1,4 +1,5 @@
 const Ajv = require('ajv');
+const Ajv2020 = require('ajv/dist/2020');
 const { sha256 } = require('./files');
 
 const RESULT_LIMITS = {
@@ -14,7 +15,13 @@ const SECRET_KEY_PATTERN = /(authorization|cookie|token|secret|password|api[_-]?
 const HIGH_ENTROPY_PATTERN = /\b(?:sk-[A-Za-z0-9_-]{16,}|[A-Za-z0-9+/=_-]{40,})\b/g;
 
 const ajv = new Ajv({ allErrors: true, strict: false, coerceTypes: false });
+const ajv2020 = new Ajv2020({ allErrors: true, strict: false, coerceTypes: false });
 const validators = new Map();
+
+function validatorForSchema(schema = {}) {
+  const metaSchema = String(schema?.$schema || '').trim().toLowerCase();
+  return metaSchema.includes('/draft/2020-12/') ? ajv2020 : ajv;
+}
 
 function toolDefinitionMap(definitions = []) {
   return new Map((Array.isArray(definitions) ? definitions : []).map((item) => [String(item?.name || ''), item]));
@@ -26,7 +33,7 @@ function validateToolInput(toolUse = {}, definitions = []) {
   const cacheKey = `${definition.name}:${sha256(JSON.stringify(definition.input_schema || {}))}`;
   let validator = validators.get(cacheKey);
   if (!validator) {
-    validator = ajv.compile(definition.input_schema || { type: 'object' });
+    validator = validatorForSchema(definition.input_schema).compile(definition.input_schema || { type: 'object' });
     validators.set(cacheKey, validator);
   }
   const valid = validator(toolUse.input || {});

@@ -571,6 +571,15 @@ a {
   padding: 24px 12px 18px;
 }
 
+.notus-agent-workspace {
+  container-name: notus-agent-workspace;
+  container-type: inline-size;
+}
+
+.notus-agent-workspace__scroll {
+  padding: 24px 16px 224px;
+}
+
 .notus-agent-composer-shell {
   border-radius: 16px;
 }
@@ -764,9 +773,13 @@ a {
   }
 }
 
-@media (max-width: 560px) {
+@container notus-agent-workspace (max-width: 560px) {
   .notus-agent-composer-dock {
     padding: 18px 8px 12px;
+  }
+
+  .notus-agent-workspace__scroll {
+    padding: 18px 12px 212px;
   }
 
   .notus-agent-composer-shell {
@@ -797,7 +810,7 @@ a {
   }
 
   .notus-agent-composer__model {
-    max-width: min(220px, calc(100vw - 102px));
+    max-width: min(220px, calc(100% - 42px));
   }
 
   .notus-agent-toolchain__summary {

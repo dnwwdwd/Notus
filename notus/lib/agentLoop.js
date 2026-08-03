@@ -411,6 +411,9 @@ async function runAgentLoop({ sessionId, runId = null, llmConfig, onStream, sign
   let loopIndex = Number(session.loop_count || 0);
   let noToolRounds = 0;
   let budgetRestricted = false;
+  // 自动应用预览后，模型通常还会生成一轮面向用户的总结。保留最近一次
+  // 变更集，才能把最终消息和可回看的 Diff 卡准确关联起来。
+  let latestOperationSetId = null;
 
   while (true) {
     if (signal?.aborted) {
@@ -574,8 +577,8 @@ async function runAgentLoop({ sessionId, runId = null, llmConfig, onStream, sign
       updateSessionStatus(session.id, 'completed');
       const finalText = thinking || '任务已完成。';
       const usage = getSessionUsage(session.id);
-      emit({ type: 'final', text: finalText, status: 'completed', reason: 'goal_achieved', loop_index: loopIndex, usage });
-      return { status: 'completed', reason: 'goal_achieved', final_text: finalText, usage };
+      emit({ type: 'final', text: finalText, status: 'completed', reason: 'goal_achieved', loop_index: loopIndex, operation_set_id: latestOperationSetId, usage });
+      return { status: 'completed', reason: 'goal_achieved', operation_set_id: latestOperationSetId, final_text: finalText, usage };
     }
 
     if (toolUseBlocks.length === 0) {
@@ -670,6 +673,7 @@ async function runAgentLoop({ sessionId, runId = null, llmConfig, onStream, sign
       }
 
       if (['create_note', 'preview_patch_files', 'preview_file_revision', 'preview_file_operations'].includes(toolUse.name) && !failed && result.operation_set_id) {
+        latestOperationSetId = result.operation_set_id;
         let previewResult = result;
         const canAutoApply = ['create_note', 'preview_patch_files', 'preview_file_revision', 'preview_file_operations'].includes(toolUse.name) && normalizedApprovalMode === 'auto_confirm';
         if (canAutoApply && !result.applied) {

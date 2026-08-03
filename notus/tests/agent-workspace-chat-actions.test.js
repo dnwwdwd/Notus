@@ -8,6 +8,7 @@ function read(relativePath) {
 
 async function runTests() {
   const workspaceSource = read('components/AgentWorkspace/AgentWorkspace.js');
+  const fileWorkspaceSource = read('components/AgentWorkspace/FileAgentWorkspace.js');
   const conversationsSource = read('utils/conversations.js');
   const conversations = await import('../utils/conversations.js');
 
@@ -16,7 +17,7 @@ async function runTests() {
     'aria-label="滚动到最新消息"',
     'scrollContainerToBottom(container, \'smooth\')',
     '<Icons.chevronDown size={14} />',
-    'function UserMessageRow({ message, disabled, removing = false, onResendMessage, onOpenAttachment, onPreviewMention, onPreviewImages })',
+    'function UserMessageRow({ message, disabled, removing = false, onResendMessage, onOpenAttachment, onPreviewMention, onPrefetchMention, onPreviewImages })',
     'function AssistantMessageRow({ message, disabled, removing = false, onRetryMessage, previousUserMessage',
     'aria-label="AI 回复操作"',
     'aria-label="用户消息操作"',
@@ -84,6 +85,18 @@ async function runTests() {
   assert.ok(
     workspaceSource.includes('const messageSessionKey = String(message?.meta?.session_id || \'\');'),
     '历史多轮助手回复必须按各自 session_id 恢复工具记录'
+  );
+  assert.ok(
+    fileWorkspaceSource.includes('function collectConversationOperationSets(payload = {})'),
+    '会话恢复必须收集操作集，避免历史消息丢失 Diff 详情卡'
+  );
+  assert.ok(
+    fileWorkspaceSource.includes('session?.operation_sets'),
+    '会话恢复必须把 agent_sessions 中完成态操作集并入消息操作集索引'
+  );
+  assert.ok(
+    fileWorkspaceSource.includes('setPendingOperationSets(collectConversationOperationSets(payload));'),
+    '加载会话时必须使用完整操作集索引恢复消息中的 Diff 详情卡'
   );
 
   assert.ok(

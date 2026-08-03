@@ -4,8 +4,6 @@ const {
   normalizePositiveId,
   shouldSyncCanvasQueryFile,
   shouldKeepCanvasRoutePending,
-  stripUrlToPath,
-  shouldSuppressQueryOnlyRouteOverlay,
 } = require('../lib/canvasRouting');
 
 function runTests() {
@@ -49,27 +47,6 @@ function runTests() {
   assert.strictEqual(shouldKeepCanvasRoutePending({
     pendingRouteFileId: 18,
     articleFileId: 18,
-  }), false);
-
-  assert.strictEqual(stripUrlToPath('/canvas?fileId=2'), '/canvas');
-  assert.strictEqual(stripUrlToPath('/canvas#draft'), '/canvas');
-
-  assert.strictEqual(shouldSuppressQueryOnlyRouteOverlay({
-    currentUrl: '/canvas?fileId=1',
-    nextUrl: '/canvas?fileId=2',
-    shallow: true,
-  }), true);
-
-  assert.strictEqual(shouldSuppressQueryOnlyRouteOverlay({
-    currentUrl: '/canvas?fileId=1',
-    nextUrl: '/knowledge?fileId=2',
-    shallow: true,
-  }), false);
-
-  assert.strictEqual(shouldSuppressQueryOnlyRouteOverlay({
-    currentUrl: '/canvas?fileId=1',
-    nextUrl: '/canvas?fileId=2',
-    shallow: false,
   }), false);
 
   console.log('canvas routing tests passed');

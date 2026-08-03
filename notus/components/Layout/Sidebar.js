@@ -177,11 +177,23 @@ function FileStatusIndicator({ status }) {
 const FileRow = ({ item, isActive, onSelect, onToggle, onContextMenu }) => {
   const pad = 8 + item.depth * 16;
   const isFolder = item.type === 'folder';
+  const mention = {
+    id: isFolder ? `folder:${item.path}` : String(item.id || item.path),
+    type: isFolder ? 'folder' : 'file',
+    name: isFolder ? item.name : getVisibleDocumentLabel(item, '未命名文档'),
+    path: String(item.path || ''),
+  };
 
   return (
     <div
       onClick={() => isFolder ? onToggle(item.path) : onSelect(item)}
       onContextMenu={onContextMenu ? (e) => { e.preventDefault(); onContextMenu(item, e.clientX, e.clientY); } : undefined}
+      draggable={Boolean(mention.path)}
+      onDragStart={(event) => {
+        event.dataTransfer.effectAllowed = 'copy';
+        event.dataTransfer.setData('application/x-notus-mention', JSON.stringify(mention));
+        event.dataTransfer.setData('text/plain', `@${mention.name}`);
+      }}
       style={{
         display: 'flex',
         alignItems: 'center',

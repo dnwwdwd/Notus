@@ -3,6 +3,8 @@ import { Dialog } from '../ui/Dialog';
 import { Icons } from '../ui/Icons';
 import { MarkdownPreview } from '../Editor/MarkdownPreview';
 
+const mentionContentCache = new Map();
+
 function visibleMentionMarkdown(content = '') {
   const source = String(content || '').replace(/\r\n/g, '\n');
   const match = source.match(/^---\n([\s\S]*?)\n---(?:\n|$)/);
@@ -30,7 +32,38 @@ function samePath(left, right) {
   return String(left || '').replace(/^\/+|\/+$/g, '') === String(right || '').replace(/^\/+|\/+$/g, '');
 }
 
-export function MentionPreviewDialog({ mention, onClose }) {
+function mentionContentKey(file = {}) {
+  return `${file?.id || ''}:${String(file?.path || '').replace(/^\/+|\/+$/g, '')}`;
+}
+
+async function fetchMentionContent(file = {}) {
+  const key = mentionContentKey(file);
+  const cached = mentionContentCache.get(key);
+  if (cached?.content !== undefined) return cached;
+  if (cached?.promise) return cached.promise;
+  const promise = fetch(`/api/files/${encodeURIComponent(file.id)}`, { cache: 'force-cache' })
+    .then(async (response) => {
+      if (!response.ok) throw new Error(response.status === 404 ? '该笔记已不存在' : await errorText(response, '读取笔记失败'));
+      const payload = await response.json();
+      const resolved = { content: visibleMentionMarkdown(payload.content) };
+      mentionContentCache.set(key, resolved);
+      return resolved;
+    })
+    .catch((error) => {
+      mentionContentCache.delete(key);
+      throw error;
+    });
+  mentionContentCache.set(key, { promise });
+  return promise;
+}
+
+export function prefetchMentionDocument(mention = {}) {
+  const fileId = Number(mention?.id);
+  if (mention?.type === 'folder' || mention?.type === 'skill' || !Number.isFinite(fileId) || fileId <= 0) return;
+  void fetchMentionContent(mention).catch(() => {});
+}
+
+export function MentionPreviewDialog({ mention, onClose, onOpenDocument }) {
   const [files, setFiles] = useState([]);
   const [selectedFile, setSelectedFile] = useState(null);
   const [content, setContent] = useState('');
@@ -43,18 +76,17 @@ export function MentionPreviewDialog({ mention, onClose }) {
   const loadContent = useCallback(async (file) => {
     if (!file?.id) return;
     setSelectedFile(file);
-    setLoadingContent(true);
     setError('');
+    const cached = mentionContentCache.get(mentionContentKey(file));
+    if (cached?.content !== undefined) {
+      setContent(cached.content);
+      setLoadingContent(false);
+      return;
+    }
+    setLoadingContent(true);
     try {
-      const response = await fetch(`/api/files/${encodeURIComponent(file.id)}`, { cache: 'no-store' });
-      if (!response.ok) {
-        const message = await errorText(response, '读取笔记失败');
-        throw new Error(response.status === 404 ? '该笔记已不存在' : message);
-      }
-      const payload = await response.json();
-      // Agent 创建的笔记会携带仅供系统识别的 frontmatter；预览和编辑器
-      // 保持同一可见内容口径，不能把它渲染给用户。
-      setContent(visibleMentionMarkdown(payload.content));
+      const payload = await fetchMentionContent(file);
+      setContent(payload.content);
     } catch (nextError) {
       setContent('');
       setError(nextError.message || '读取笔记失败');
@@ -74,12 +106,12 @@ export function MentionPreviewDialog({ mention, onClose }) {
     const load = async () => {
       setLoadingList(true);
       try {
-        if (isSkill) {
-          const response = await fetch(`/api/skills/${encodeURIComponent(mention.id)}`, { cache: 'no-store' });
-          if (!response.ok) throw new Error(await errorText(response, '读取 Skill 失败'));
-          const payload = await response.json();
-          if (cancelled) return;
-          setContent(`## ${payload.skill?.name || mention.name || 'Skill'}\n\n${payload.skill?.description || '未提供描述'}\n\n来源：${payload.skill?.source_label || '本机'}\n\n状态：${payload.skill?.enabled ? '已启用' : '已停用'}`);
+        if (isSkill) return;
+        const fileId = Number(mention?.id);
+        if (!isFolder && Number.isFinite(fileId) && fileId > 0) {
+          const directFile = { id: mention.id, path: mention.path, name: mention.name, title: mention.name };
+          setFiles([directFile]);
+          await loadContent(directFile);
           return;
         }
         const response = await fetch('/api/files', { cache: 'no-store' });
@@ -107,12 +139,24 @@ export function MentionPreviewDialog({ mention, onClose }) {
     return () => { cancelled = true; };
   }, [isFolder, isSkill, loadContent, mention]);
 
-  const title = useMemo(() => (
-    <span className="notus-mention-preview-title">
-      {isFolder ? <Icons.folder size={17} /> : isSkill ? <Icons.skill size={17} /> : <Icons.file size={17} />}
-      <span>{mention?.name || (isFolder ? '目录预览' : isSkill ? 'Skill 预览' : '笔记预览')}</span>
-    </span>
-  ), [isFolder, isSkill, mention?.name]);
+  const title = useMemo(() => {
+    const label = selectedFile?.title || selectedFile?.name || mention?.name || (isFolder ? '目录预览' : '笔记预览');
+    const openDocument = () => {
+      if (isFolder || !selectedFile?.path) return;
+      onClose?.();
+      onOpenDocument?.(selectedFile.path);
+    };
+    return (
+      <span className="notus-mention-preview-title">
+        {isFolder ? <Icons.folder size={17} /> : <Icons.file size={17} />}
+        {isFolder ? <span>{label}</span> : (
+          <button type="button" className="notus-mention-preview__title-link" onClick={openDocument} title="在编辑器中打开">
+            {label}
+          </button>
+        )}
+      </span>
+    );
+  }, [isFolder, mention?.name, onClose, onOpenDocument, selectedFile?.name, selectedFile?.path, selectedFile?.title]);
 
   return (
     <Dialog
@@ -125,11 +169,10 @@ export function MentionPreviewDialog({ mention, onClose }) {
       bodyStyle={{ minHeight: 0, display: 'flex', flex: 1, overflow: 'hidden' }}
     >
       <div className="notus-mention-preview" aria-busy={loadingList || loadingContent}>
-        {mention?.path && !isSkill ? <div className="notus-mention-preview__path">{mention.path}</div> : null}
+        {isSkill ? <div className="notus-mention-preview__status">Skill 说明会显示在名称悬停提示中。</div> : null}
         {loadingList ? <div className="notus-mention-preview__status">正在加载笔记列表…</div> : null}
         {!loadingList && error ? <div className="notus-mention-preview__error">{error}</div> : null}
         {!loadingList && !error && isFolder && files.length === 0 ? <div className="notus-mention-preview__status">该目录下暂无笔记</div> : null}
-        {!loadingList && !error && isSkill ? <section className="notus-mention-preview__content"><MarkdownPreview content={content} /></section> : null}
         {!loadingList && !error && files.length > 0 ? (
           <div className={`notus-mention-preview__body${isFolder ? ' is-folder' : ''}`}>
             {isFolder ? (
@@ -152,6 +195,11 @@ export function MentionPreviewDialog({ mention, onClose }) {
               {loadingContent ? <div className="notus-mention-preview__status">正在加载笔记内容…</div> : null}
               {!loadingContent && !error ? <MarkdownPreview content={content} /> : null}
             </section>
+          </div>
+        ) : null}
+        {!isSkill && !loadingList && !error && selectedFile ? (
+          <div className="notus-mention-preview__footer">
+            <span className="notus-mention-preview__footer-path">{selectedFile.path}</span>
           </div>
         ) : null}
       </div>

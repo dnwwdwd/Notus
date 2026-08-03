@@ -32,20 +32,8 @@ function shouldKeepCanvasRoutePending({ pendingRouteFileId, articleFileId } = {}
   return normalizePositiveId(articleFileId) !== nextPendingRouteFileId;
 }
 
-function stripUrlToPath(url = '') {
-  const source = String(url || '');
-  return source.split('#')[0].split('?')[0] || '/';
-}
-
-function shouldSuppressQueryOnlyRouteOverlay({ currentUrl, nextUrl, shallow } = {}) {
-  if (!shallow) return false;
-  return stripUrlToPath(currentUrl) === stripUrlToPath(nextUrl);
-}
-
 module.exports = {
   normalizePositiveId,
   shouldSyncCanvasQueryFile,
   shouldKeepCanvasRoutePending,
-  stripUrlToPath,
-  shouldSuppressQueryOnlyRouteOverlay,
 };

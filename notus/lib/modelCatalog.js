@@ -19,6 +19,7 @@ export const EMBEDDING_PROVIDERS = [
       { value: 'qwen3-vl-embedding', label: 'qwen3-vl-embedding（多模态，1024d）', dimension: '1024', multimodal: true },
       { value: 'qwen2.5-vl-embedding', label: 'qwen2.5-vl-embedding（多模态，1024d）', dimension: '1024', multimodal: true },
       { value: 'tongyi-embedding-vision-plus', label: 'tongyi-embedding-vision-plus（多模态，1152d）', dimension: '1152', multimodal: true },
+      { value: 'tongyi-embedding-vision-flash-2026-03-06', label: 'tongyi-embedding-vision-flash-2026-03-06（多模态，768d）', dimension: '768', multimodal: true },
     ],
   },
   {

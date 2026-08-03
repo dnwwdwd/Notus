@@ -6,7 +6,7 @@ import { Dialog } from '../ui/Dialog';
 import { Icons } from '../ui/Icons';
 import { ImagePreviewOverlay } from '../ui/ImagePreviewOverlay';
 import { MentionItem } from './MentionItem';
-import { MentionPreviewDialog } from './MentionPreviewDialog';
+import { MentionPreviewDialog, prefetchMentionDocument } from './MentionPreviewDialog';
 import { Tooltip } from '../ui/Tooltip';
 import { SourceCard } from '../ui/SourceCard';
 import { useToast } from '../ui/Toast';
@@ -527,6 +527,7 @@ function ToolTraceIcon({ step, size = 15 }) {
   if (['stopped', 'cancelled'].includes(status)) return <Icons.square size={Math.max(10, size - 2)} />;
   if (source.includes('mcp')) return <Icons.mcp size={size} />;
   if (source.includes('skill')) return <Icons.skill size={size} />;
+  if (source.includes('image') || source.includes('图片')) return <Icons.image size={size} />;
   if (source.includes('search') || source.includes('检索') || source.includes('搜索')) return <Icons.search size={size} />;
   if (source.includes('folder') || source.includes('目录')) return <Icons.folderOpen size={size} />;
   if (source.includes('create') || source.includes('新建')) return <Icons.filePlus size={size} />;
@@ -637,11 +638,16 @@ function CopyMessageButton({ text, successMessage = '已复制消息', disabled 
   );
 }
 
-function ToolChain({ steps, loading, sessionStatus = '', sessionId = '', onAction }) {
+function ToolChain({ steps, loading, sessionStatus = '', sessionId = '', startedAt = '', onAction }) {
   // 只展示服务端已经确认的真实动作，内部循环、排队和推测性 loading 不进入执行记录。
   const visibleSteps = useMemo(() => (Array.isArray(steps) ? steps : []), [steps]);
   const [expanded, setExpanded] = useState({});
-  const [traceExpanded, setTraceExpanded] = useState(true);
+  const liveSession = Boolean(loading) || ['created', 'queued', 'running'].includes(sessionStatus);
+  const tailStatus = visibleSteps[visibleSteps.length - 1]?.status || 'done';
+  const hasActionRequired = ['waiting', 'action_required'].includes(tailStatus)
+    || ['waiting_confirm', 'waiting_interaction', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery'].includes(sessionStatus);
+  // 已完成的历史记录初次渲染就保持收起，避免先展开一帧再折叠的视觉跳变。
+  const [traceExpanded, setTraceExpanded] = useState(() => liveSession || hasActionRequired);
   const [now, setNow] = useState(() => Date.now());
   const stepKey = visibleSteps.map((step, index) => step.id || step.label || index).join('|');
 
@@ -657,15 +663,20 @@ function ToolChain({ steps, loading, sessionStatus = '', sessionId = '', onActio
     });
   }, [stepKey, visibleSteps]);
 
-  const tailStatus = visibleSteps[visibleSteps.length - 1]?.status || 'done';
-  const hasRunning = loading || tailStatus === 'running';
-  const hasActionRequired = ['waiting', 'action_required'].includes(tailStatus)
-    || ['waiting_confirm', 'waiting_interaction', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery'].includes(sessionStatus);
+  const hasRunning = liveSession || tailStatus === 'running';
   const hasFailed = ['failed', 'error', 'stopped', 'cancelled'].includes(tailStatus);
-  const firstTimestamp = visibleSteps.map((step) => traceTimestamp(step.createdAt)).filter(Boolean)[0] || 0;
+  const firstTimestamp = visibleSteps.map((step) => traceTimestamp(step.createdAt)).filter(Boolean)[0]
+    || traceTimestamp(startedAt)
+    || 0;
   const lastTimestamp = visibleSteps.map((step) => traceTimestamp(step.updatedAt || step.createdAt)).filter(Boolean).at(-1) || firstTimestamp;
   const elapsed = firstTimestamp ? formatTraceElapsed((hasRunning ? now : lastTimestamp) - firstTimestamp) : '';
-  const statusLabel = hasFailed || hasActionRequired ? '需要处理' : hasRunning ? `正在处理${elapsed ? ` ${elapsed}` : ''}` : `已处理${elapsed ? ` ${elapsed}` : ''}`;
+  const statusLabel = hasFailed || hasActionRequired
+    ? '需要处理'
+    : sessionStatus === 'queued'
+      ? `任务已提交${elapsed ? ` · 已等待 ${elapsed}` : ''}`
+      : hasRunning
+        ? `正在处理${elapsed ? ` ${elapsed}` : ''}`
+        : `已处理${elapsed ? ` ${elapsed}` : ''}`;
 
   useEffect(() => {
     if (!hasRunning) return undefined;
@@ -673,7 +684,11 @@ function ToolChain({ steps, loading, sessionStatus = '', sessionId = '', onActio
     return () => window.clearInterval(timer);
   }, [hasRunning]);
 
-  if (!visibleSteps.length) return null;
+  useEffect(() => {
+    if (!liveSession && !hasActionRequired) setTraceExpanded(false);
+  }, [hasActionRequired, liveSession]);
+
+  if (!visibleSteps.length && !liveSession) return null;
 
   return (
     <section className="notus-agent-toolchain" aria-label="Agent 执行记录">
@@ -688,9 +703,9 @@ function ToolChain({ steps, loading, sessionStatus = '', sessionId = '', onActio
         {visibleSteps.map((step, index) => {
           const stepId = String(step.id || step.label || index);
           const open = Boolean(expanded[stepId]);
-          const hasDetails = Boolean(step.detail || step.tool || step.input || step.result || step.action);
+          const hasDetails = Boolean(step.detail || step.tool || step.input || step.result || step.action || step.images?.length);
           return (
-            <div key={stepId} className="notus-agent-toolchain__step">
+            <div key={stepId} className="notus-agent-toolchain__step notus-agent-toolchain__step--enter" style={{ '--notus-step-index': Math.min(index, 6) }}>
               <button
                 type="button"
                 aria-expanded={open}
@@ -713,6 +728,17 @@ function ToolChain({ steps, loading, sessionStatus = '', sessionId = '', onActio
                     {step.input ? <ToolPayload label="调用参数" value={step.input} /> : null}
                     {step.result ? <ToolPayload label="调用结果" value={step.result} /> : null}
                   </div> : null}
+                  {Array.isArray(step.images) && step.images.length > 0 ? (
+                    <div className="notus-agent-toolchain__images" aria-label="已查看的图片">
+                      {step.images.map((image, imageIndex) => image?.preview_url ? (
+                        <figure key={image.id || image.preview_url || imageIndex}>
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={image.preview_url} alt={image.alt || image.name || '已查看图片'} />
+                          <figcaption>{image.name || `图片 ${imageIndex + 1}`}</figcaption>
+                        </figure>
+                      ) : null)}
+                    </div>
+                  ) : null}
                   {step.action && typeof onAction === 'function' ? (
                     <div className="notus-agent-toolchain__actions">
                       <button
@@ -1122,7 +1148,7 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
   );
 }
 
-function UserMessageRow({ message, disabled, removing = false, onResendMessage, onOpenAttachment, onPreviewMention, onPreviewImages }) {
+function UserMessageRow({ message, disabled, removing = false, onResendMessage, onOpenAttachment, onPreviewMention, onPrefetchMention, onPreviewImages }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(String(message.content || ''));
   const [sending, setSending] = useState(false);
@@ -1218,7 +1244,7 @@ function UserMessageRow({ message, disabled, removing = false, onResendMessage, 
         <div data-message-bubble="true" style={{ maxWidth: '80%', minWidth: 0, padding: '13px 18px', borderRadius: '20px 20px 6px 20px', background: C.muted, color: C.text, fontSize: 15, lineHeight: 1.7, overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
           <div className="notus-message-mention-flow">
             {submittedContent === null ? (message.mentionSegments || []).map((segment, index) => segment.type === 'mention' ? (
-              <MentionItem key={`${segment.mention?.id || index}-${index}`} {...segment.mention} inline readonly onPreview={onPreviewMention} />
+              <MentionItem key={`${segment.mention?.id || index}-${index}`} {...segment.mention} inline readonly onPreview={onPreviewMention} onPrefetch={onPrefetchMention} />
             ) : <span key={`text-${index}`} style={{ whiteSpace: 'pre-wrap' }}>{segment.text}</span>) : <span style={{ whiteSpace: 'pre-wrap' }}>{displayContent}</span>}
           </div>
         </div>
@@ -1374,15 +1400,16 @@ function InteractionHistoryNode({ interaction }) {
   );
 }
 
-function AgentTaskTimeline({ activeSteps, loading, streamText, sessionStatus = '', sessionId = '', onAction }) {
+function AgentTaskTimeline({ activeSteps, loading, streamText, sessionStatus = '', sessionId = '', startedAt = '', onAction }) {
   const hasSteps = Array.isArray(activeSteps) && activeSteps.length > 0;
   const isStarting = !hasSteps && !streamText && (loading || ['created', 'queued'].includes(sessionStatus));
-  const hasActivity = hasSteps || Boolean(streamText) || isStarting;
+  const hasTrace = hasSteps || Boolean(startedAt);
+  const hasActivity = hasTrace || Boolean(streamText) || isStarting;
   if (!hasActivity) return null;
   return (
     <div className="notus-agent-task-timeline">
-      {isStarting ? <div className="notus-agent-task-timeline__pending" role="status" aria-live="polite">任务已提交，正在准备执行</div> : null}
-      {hasSteps ? <ToolChain steps={activeSteps} loading={loading} sessionStatus={sessionStatus} sessionId={sessionId} onAction={onAction} /> : null}
+      {isStarting && !hasTrace ? <div className="notus-agent-task-timeline__pending" role="status" aria-live="polite">任务正在提交</div> : null}
+      {hasTrace ? <ToolChain steps={activeSteps} loading={loading} sessionStatus={sessionStatus} sessionId={sessionId} startedAt={startedAt} onAction={onAction} /> : null}
       {streamText ? (
         <div className="notus-agent-task-timeline__draft">
           {!loading ? <div className="notus-agent-task-timeline__draft-label">中断前已生成的回复</div> : null}
@@ -1393,7 +1420,7 @@ function AgentTaskTimeline({ activeSteps, loading, streamText, sessionStatus = '
   );
 }
 
-function MessageList({ messages, interactions = [], streamText, loading, activeSteps, activeSessionId = null, activeSessionStatus = '', sessionTimelines = {}, removingMessageIds, onOpenOperationSet, onCitationClick, citationSelection, actionDisabled = false, onResendMessage, onRetryMessage, onOpenAttachment, onPreviewMention, onPreviewImages, onAgentStepAction }) {
+function MessageList({ messages, interactions = [], streamText, loading, activeSteps, activeSessionId = null, activeSessionStatus = '', sessionTimelines = {}, removingMessageIds, onOpenOperationSet, onCitationClick, citationSelection, actionDisabled = false, onResendMessage, onRetryMessage, onOpenAttachment, onPreviewMention, onPrefetchMention, onPreviewImages, onAgentStepAction }) {
   const hasPersistedTimeline = Array.isArray(activeSteps) && activeSteps.length > 0;
   const hasAgentActivity = hasPersistedTimeline || Boolean(streamText) || Boolean(loading)
     || ['created', 'queued', 'running'].includes(activeSessionStatus);
@@ -1407,7 +1434,7 @@ function MessageList({ messages, interactions = [], streamText, loading, activeS
     const steps = Array.isArray(timeline.activeSteps) ? timeline.activeSteps : [];
     const draft = String(timeline.streamText || '');
     if (steps.length === 0 && !draft && !timeline.loading) return null;
-    return <AgentTaskTimeline key={key} activeSteps={steps} loading={Boolean(timeline.loading)} streamText={draft} sessionStatus={timeline.sessionStatus || ''} sessionId={timeline.sessionId || ''} onAction={onAgentStepAction} />;
+    return <AgentTaskTimeline key={key} activeSteps={steps} loading={Boolean(timeline.loading)} streamText={draft} sessionStatus={timeline.sessionStatus || ''} sessionId={timeline.sessionId || ''} startedAt={timeline.startedAt || ''} onAction={onAgentStepAction} />;
   };
   const currentTimeline = hasAgentActivity ? {
     sessionId: currentSessionKey,
@@ -1448,6 +1475,7 @@ function MessageList({ messages, interactions = [], streamText, loading, activeS
                 onResendMessage={onResendMessage}
                 onOpenAttachment={onOpenAttachment}
                 onPreviewMention={onPreviewMention}
+                onPrefetchMention={onPrefetchMention}
                 onPreviewImages={onPreviewImages}
               />
               {userTrace}
@@ -1489,13 +1517,14 @@ function AgentConfirmModeSelect({ value, onChange, disabled }) {
       onChange={onChange}
       disabled={disabled}
       ariaLabel="Agent 确认方式"
+      className="notus-agent-confirm-mode"
       style={{ background: C.soft, boxShadow: 'inset 0 0 0 1px rgba(229,227,216,0.86)' }}
       options={AGENT_CONFIRM_MODE_OPTIONS.map((option) => ({ ...option, ariaLabel: option.value === 'auto_confirm' ? '自动应用修改' : '手动应用修改', icon: option.icon === 'hand' ? Icons.hand : Icons.zap }))}
     />
   );
 }
 
-function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigChange, onSend, searchConfig, searchPreference, onSearchPreferenceChange, onRequireSearchConfig, mcpSelection = { mode: 'off' }, onMcpSelectionChange, mcpAvailable = false, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [], onPreviewMention }) {
+function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigChange, onSend, searchConfig, searchPreference, onSearchPreferenceChange, onRequireSearchConfig, mcpSelection = { mode: 'off' }, onMcpSelectionChange, mcpAvailable = false, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [], onPreviewMention, onPrefetchMention }) {
   const [composerState, setComposerState] = useState({ content: '', mentions: [], segments: [] });
   const [files, setFiles] = useState([]);
   const [imagePreview, setImagePreview] = useState(null);
@@ -1511,6 +1540,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
   const [activeMentionIndex, setActiveMentionIndex] = useState(0);
   const [dismissedMentionKey, setDismissedMentionKey] = useState('');
   const [isComposing, setIsComposing] = useState(false);
+  const [mentionDropActive, setMentionDropActive] = useState(false);
   const fileInputRef = useRef(null);
   const imageInputRef = useRef(null);
   const composerRef = useRef(null);
@@ -1523,6 +1553,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
   const composerDraftHydratedRef = useRef(false);
   const composerDraftSaveTimerRef = useRef(null);
   const composerInteractionRef = useRef(false);
+  const mentionDropCounterRef = useRef(0);
   const selectedConfig = useMemo(() => llmConfigs.find((item) => String(item.id) === String(selectedConfigId)) || llmConfigs[0] || null, [llmConfigs, selectedConfigId]);
   const toast = useToast();
   const parsedAttachmentMode = attachmentMode === 'parsed';
@@ -1649,8 +1680,9 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
     chip.tabIndex = 0;
     chip.setAttribute('role', 'button');
     chip.setAttribute('data-notus-mention', encodeURIComponent(JSON.stringify(mention)));
-    chip.setAttribute('title', `${mention.name}\n${mention.path}`);
-    chip.setAttribute('aria-label', `预览${mention.type === 'folder' ? '目录' : mention.type === 'skill' ? 'Skill' : '笔记'}：${mention.name}`);
+    const isSkill = mention.type === 'skill';
+    chip.setAttribute('title', isSkill ? (mention.description || '未提供 Skill 描述') : `${mention.name}\n${mention.path}`);
+    chip.setAttribute('aria-label', isSkill ? `Skill：${mention.name}` : `预览${mention.type === 'folder' ? '目录' : '笔记'}：${mention.name}`);
     const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     icon.setAttribute('viewBox', '0 0 24 24');
     icon.setAttribute('fill', 'none');
@@ -1672,15 +1704,18 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
     const openPreview = (event) => {
       event.preventDefault();
       event.stopPropagation();
+      if (isSkill) return;
       onPreviewMention?.(mention);
     };
     chip.addEventListener('mousedown', (event) => event.preventDefault());
+    chip.addEventListener('mouseenter', () => { if (!isSkill) onPrefetchMention?.(mention); });
+    chip.addEventListener('focus', () => { if (!isSkill) onPrefetchMention?.(mention); });
     chip.addEventListener('click', openPreview);
     chip.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' || event.key === ' ') openPreview(event);
     });
     return chip;
-  }, [onPreviewMention]);
+  }, [onPrefetchMention, onPreviewMention]);
 
   const restoreComposerDom = useCallback((segments = []) => {
     const root = composerRef.current;
@@ -1936,24 +1971,27 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
     });
   }, []);
 
-  const applyMention = (option) => {
-    if (!activeMention) return;
+  const normalizeMention = useCallback((option = {}) => ({
+    id: String(option?.id || option?.value || option?.path || ''),
+    type: option?.type === 'folder' || option?.kind === 'folder' ? 'folder' : option?.type === 'skill' || option?.kind === 'skill' ? 'skill' : 'file',
+    name: String(option?.name || option?.label || option?.path || '未命名文件'),
+    path: String(option?.path || option?.preview || ''),
+    description: String(option?.description || ''),
+  }), []);
+
+  const insertMention = useCallback((option, targetRange = null) => {
     composerInteractionRef.current = true;
-    const mention = {
-      id: String(option?.id || option?.value || option?.path || ''),
-      type: option?.type === 'folder' || option?.kind === 'folder' ? 'folder' : option?.type === 'skill' || option?.kind === 'skill' ? 'skill' : 'file',
-      name: String(option?.name || option?.label || option?.path || '未命名文件'),
-      path: String(option?.path || option?.preview || ''),
-    };
+    const mention = normalizeMention(option);
     if (!mention.id || !mention.path) return;
     const root = composerRef.current;
-    const textNode = activeMention.textNode;
-    if (!root || !textNode || !root.contains(textNode) || typeof document === 'undefined') return;
+    if (!root || typeof document === 'undefined') return;
     const chip = createMentionChip(mention);
     if (!chip) return;
-    const range = document.createRange();
-    range.setStart(textNode, activeMention.start);
-    range.setEnd(textNode, activeMention.end);
+    const range = targetRange && root.contains(targetRange.startContainer) ? targetRange.cloneRange() : document.createRange();
+    if (!targetRange || !root.contains(targetRange.startContainer)) {
+      range.selectNodeContents(root);
+      range.collapse(false);
+    }
     range.deleteContents();
     range.insertNode(chip);
     const tail = document.createTextNode('');
@@ -1971,7 +2009,40 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
     setDismissedMentionKey('');
     setActiveMentionIndex(0);
     root.focus();
+  }, [createMentionChip, normalizeMention, syncComposerState]);
+
+  const applyMention = (option) => {
+    if (!activeMention) return;
+    const root = composerRef.current;
+    const textNode = activeMention.textNode;
+    if (!root || !textNode || !root.contains(textNode) || typeof document === 'undefined') return;
+    const range = document.createRange();
+    range.setStart(textNode, activeMention.start);
+    range.setEnd(textNode, activeMention.end);
+    insertMention(option, range);
   };
+
+  const handleMentionDrop = useCallback((event) => {
+    const raw = event.dataTransfer?.getData('application/x-notus-mention') || '';
+    if (!raw) return;
+    event.preventDefault();
+    mentionDropCounterRef.current = 0;
+    setMentionDropActive(false);
+    let mention;
+    try { mention = JSON.parse(raw); } catch { return; }
+    const root = composerRef.current;
+    if (!root || !mention?.path) return;
+    let range = null;
+    const position = document.caretPositionFromPoint?.(event.clientX, event.clientY);
+    if (position) {
+      range = document.createRange();
+      range.setStart(position.offsetNode, position.offset);
+      range.collapse(true);
+    } else {
+      range = document.caretRangeFromPoint?.(event.clientX, event.clientY) || null;
+    }
+    insertMention(mention, range);
+  }, [insertMention]);
 
   const addFiles = (fileList, options = {}) => {
     const rejected = [];
@@ -2328,8 +2399,26 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
               setIsComposing(false);
               updateMentionQuery();
             }}
+            onDragEnter={(event) => {
+              if (!Array.from(event.dataTransfer?.types || []).includes('application/x-notus-mention')) return;
+              event.preventDefault();
+              mentionDropCounterRef.current += 1;
+              setMentionDropActive(true);
+            }}
+            onDragOver={(event) => {
+              if (!Array.from(event.dataTransfer?.types || []).includes('application/x-notus-mention')) return;
+              event.preventDefault();
+              event.dataTransfer.dropEffect = 'copy';
+            }}
+            onDragLeave={(event) => {
+              if (!Array.from(event.dataTransfer?.types || []).includes('application/x-notus-mention')) return;
+              event.preventDefault();
+              mentionDropCounterRef.current = Math.max(0, mentionDropCounterRef.current - 1);
+              if (mentionDropCounterRef.current === 0) setMentionDropActive(false);
+            }}
+            onDrop={handleMentionDrop}
             onKeyDown={handleKeyDown}
-            style={{ width: '100%', minHeight: AGENT_INPUT_TEXTAREA_DEFAULT_ROWS * AGENT_INPUT_LINE_HEIGHT + 2, maxHeight: 196, overflowY: 'auto', outline: 'none', background: 'transparent', color: disabled ? C.tertiary : C.text, fontSize: 15, lineHeight: 1.65, padding: 0, fontFamily: 'inherit', boxSizing: 'border-box', whiteSpace: 'pre-wrap', overflowWrap: 'break-word', wordBreak: 'normal' }}
+            style={{ width: '100%', minHeight: AGENT_INPUT_TEXTAREA_DEFAULT_ROWS * AGENT_INPUT_LINE_HEIGHT + 2, maxHeight: 196, overflowY: 'auto', outline: 'none', background: mentionDropActive ? 'rgba(251,228,210,0.26)' : 'transparent', color: disabled ? C.tertiary : C.text, fontSize: 15, lineHeight: 1.65, padding: 0, fontFamily: 'inherit', boxSizing: 'border-box', whiteSpace: 'pre-wrap', overflowWrap: 'break-word', wordBreak: 'normal', borderRadius: 8, transition: 'background 120ms ease' }}
           />
           {activeMention ? (
             <div style={{ position: 'absolute', left: 14, right: 14, bottom: 'calc(100% + 8px)', padding: 8, borderRadius: 16, background: '#fff', boxShadow: '0 -10px 40px -10px rgba(0,0,0,0.14), inset 0 0 0 1px rgba(229,227,216,0.95)', zIndex: 24 }}>
@@ -2381,7 +2470,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
             <div className="notus-agent-composer__task-controls">
               {showAgentConfirmMode ? <AgentConfirmModeSelect value={agentConfirmMode} onChange={onAgentConfirmModeChange} disabled={busy || disabled} /> : null}
               <div style={{ position: 'relative' }}>
-                <button type="button" onClick={toggleWebSearch} disabled={busy || disabled} style={transitionButton({ height: 28, padding: '0 10px', borderRadius: 8, background: webSearchSelected ? 'rgba(251,228,210,0.40)' : 'transparent', color: webSearchSelected ? C.accent : C.tertiary, display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: webSearchSelected ? 800 : 600, opacity: busy || disabled ? 0.5 : 1 })}><Icons.globe size={15} />联网</button>
+                <button type="button" aria-label="联网搜索" onClick={toggleWebSearch} disabled={busy || disabled} style={transitionButton({ height: 28, padding: '0 10px', borderRadius: 8, background: webSearchSelected ? 'rgba(251,228,210,0.40)' : 'transparent', color: webSearchSelected ? C.accent : C.tertiary, display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: webSearchSelected ? 800 : 600, opacity: busy || disabled ? 0.5 : 1 })}><Icons.globe size={15} /><span className="notus-agent-control-label">联网</span></button>
               {searchOpen ? (
                 <>
                   <button type="button" aria-label="关闭搜索商下拉" onClick={() => setSearchOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 19, border: 0, background: 'transparent', padding: 0 }} />
@@ -2400,7 +2489,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
               <div style={{ position: 'relative' }}>
                 <Tooltip content="暂无 MCP 服务" disabled={mcpAvailable}>
                   <span style={{ display: 'inline-flex' }}>
-                    <button type="button" aria-label={mcpAvailable ? '切换 MCP 自动工具' : '暂无 MCP 服务'} onClick={toggleMcp} disabled={busy || disabled || !mcpAvailable} style={transitionButton({ height: 28, padding: '0 10px', borderRadius: 8, background: mcpEnabled ? 'rgba(251,228,210,0.40)' : 'transparent', color: mcpEnabled ? C.accent : C.tertiary, display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: mcpEnabled ? 800 : 600, opacity: busy || disabled || !mcpAvailable ? 0.5 : 1 })}><Icons.mcp size={15} /><span>{mcpLabel}</span></button>
+                    <button type="button" aria-label={mcpAvailable ? '切换 MCP 自动工具' : '暂无 MCP 服务'} onClick={toggleMcp} disabled={busy || disabled || !mcpAvailable} style={transitionButton({ height: 28, padding: '0 10px', borderRadius: 8, background: mcpEnabled ? 'rgba(251,228,210,0.40)' : 'transparent', color: mcpEnabled ? C.accent : C.tertiary, display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: mcpEnabled ? 800 : 600, opacity: busy || disabled || !mcpAvailable ? 0.5 : 1 })}><Icons.mcp size={15} /><span className="notus-agent-control-label">{mcpLabel}</span></button>
                   </span>
                 </Tooltip>
                 {mcpOpen && mcpAvailable ? (
@@ -2416,7 +2505,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
           </div>
           <div className="notus-agent-composer__actions">
             <div style={{ position: 'relative' }}>
-              <button type="button" className="notus-agent-composer__model" onClick={() => { setSearchOpen(false); setMcpOpen(false); setModelOpen((prev) => !prev); }} disabled={busy || disabled || llmConfigs.length === 0} style={transitionButton({ height: 28, padding: '0 8px', borderRadius: 8, background: 'transparent', color: C.secondary, display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 13, fontWeight: 700, opacity: llmConfigs.length === 0 || disabled ? 0.55 : 1 })}><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{modelLabel(selectedConfig)}</span><Icons.chevronDown size={13} /></button>
+              <Tooltip content={modelLabel(selectedConfig)} disabled={!selectedConfig}><span style={{ display: 'inline-flex', minWidth: 0 }}><button type="button" className="notus-agent-composer__model" onClick={() => { setSearchOpen(false); setMcpOpen(false); setModelOpen((prev) => !prev); }} disabled={busy || disabled || llmConfigs.length === 0} style={transitionButton({ height: 28, padding: '0 8px', borderRadius: 8, background: 'transparent', color: C.secondary, display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 13, fontWeight: 700, opacity: llmConfigs.length === 0 || disabled ? 0.55 : 1 })}><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{modelLabel(selectedConfig)}</span><Icons.chevronDown size={13} /></button></span></Tooltip>
               {modelOpen ? (
                 <>
                   <button type="button" aria-label="关闭模型下拉" onClick={() => setModelOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 19, border: 0, background: 'transparent', padding: 0 }} />
@@ -2668,6 +2757,7 @@ export function AgentWorkspace({ messages, interactions = [], streamText, loadin
     });
   }, [messages]);
   const [messageImagePreview, setMessageImagePreview] = useState(null);
+  const handlePrefetchMention = useCallback((mention) => prefetchMentionDocument(mention), []);
   const [mcpSelection, setMcpSelection] = useState(() => readMcpSelectionPreference());
   const [mcpAvailable, setMcpAvailable] = useState(false);
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
@@ -2965,6 +3055,7 @@ export function AgentWorkspace({ messages, interactions = [], streamText, loadin
             onRetryMessage={handleResendMessage}
             onOpenAttachment={handleOpenAttachment}
             onPreviewMention={setPreviewMention}
+            onPrefetchMention={handlePrefetchMention}
             onPreviewImages={openMessageImagePreview}
             onAgentStepAction={(action, _step, sessionId) => {
               if (action === 'stop_agent') void onStop?.(sessionId);
@@ -3008,8 +3099,8 @@ export function AgentWorkspace({ messages, interactions = [], streamText, loadin
           <Icons.chevronDown size={14} />
         </button>
       ) : null}
-      <AgentInput loading={Boolean(loading)} disabled={Boolean(disabled)} llmConfigs={llmConfigs || []} selectedConfigId={selectedConfigId} onConfigChange={onConfigChange} onSend={onSend} searchConfig={searchConfig} searchPreference={searchPreference} onSearchPreferenceChange={handleSearchPreferenceChange} onRequireSearchConfig={requireSearchConfig} mcpSelection={mcpSelection} onMcpSelectionChange={handleMcpSelectionChange} mcpAvailable={mcpAvailable} placeholder={placeholder} agentConfirmMode={agentConfirmMode} onAgentConfirmModeChange={onAgentConfirmModeChange} attachmentMode={attachmentMode} mentionOptions={mentionOptions} onPreviewMention={setPreviewMention} />
-      <MentionPreviewDialog mention={previewMention} onClose={() => setPreviewMention(null)} />
+      <AgentInput loading={Boolean(loading)} disabled={Boolean(disabled)} llmConfigs={llmConfigs || []} selectedConfigId={selectedConfigId} onConfigChange={onConfigChange} onSend={onSend} searchConfig={searchConfig} searchPreference={searchPreference} onSearchPreferenceChange={handleSearchPreferenceChange} onRequireSearchConfig={requireSearchConfig} mcpSelection={mcpSelection} onMcpSelectionChange={handleMcpSelectionChange} mcpAvailable={mcpAvailable} placeholder={placeholder} agentConfirmMode={agentConfirmMode} onAgentConfirmModeChange={onAgentConfirmModeChange} attachmentMode={attachmentMode} mentionOptions={mentionOptions} onPreviewMention={setPreviewMention} onPrefetchMention={handlePrefetchMention} />
+      <MentionPreviewDialog mention={previewMention} onClose={() => setPreviewMention(null)} onOpenDocument={onOpenDiffFile} />
       <Dialog open={searchPromptOpen} onClose={() => setSearchPromptOpen(false)} title={promptTitle} maxWidth={420} footer={<><Button variant="ghost" onClick={() => setSearchPromptOpen(false)}>取消</Button><Button variant="primary" onClick={() => { setSearchPromptOpen(false); openSettings('search', { provider: promptProvider?.id }); }}>前往设置</Button></>}>
         <div style={{ fontSize: 14, color: C.secondary, lineHeight: 1.8 }}>{promptMessage}</div>
       </Dialog>

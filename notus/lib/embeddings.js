@@ -33,7 +33,10 @@ function isKnownDoubaoMultimodalModel(model) {
 }
 
 function supportsQwenDimensionParameter(model) {
-  return String(model || '').toLowerCase().startsWith('qwen3-vl-embedding');
+  const normalized = String(model || '').toLowerCase();
+  return normalized.startsWith('qwen3-vl-embedding')
+    || normalized.startsWith('tongyi-embedding-vision-flash-2026-03-06')
+    || normalized.startsWith('tongyi-embedding-vision-plus-2026-03-06');
 }
 
 function looksLikeMultimodalModel(model) {

@@ -853,7 +853,7 @@ Electron 和懒猫使用相同的 Git HTTPS 实现。推荐使用纯 Node.js Git
 }
 ```
 
-第一版的“更新”由用户在设置页手动触发：重新拉取同一来源的 `main` / `master`，要求 Frontmatter `name` 不变，staging 校验后以备份目录交换。失败恢复旧目录、旧索引和启停状态；不做后台检查、Hash/Diff 预览或自动定时更新。
+“更新”仍由用户在设置页手动触发：重新拉取同一来源的 `main` / `master`，要求 Frontmatter `name` 不变，staging 校验后以备份目录交换。失败恢复旧目录、旧索引和启停状态。设置页载入 Git 受管 Skill 时可执行一次按需远端 Hash 检查；只有远端 `SKILL.md` 内容与当前已安装 Hash 不同才显示“更新”，不做后台定时更新，也不提供 Diff 预览。
 
 ### 10.4 ZIP 安装
 
@@ -1555,10 +1555,11 @@ POST /api/v1/skills/install/git
 ### 19.5 Git 更新
 
 ```http
+GET  /api/skills/:id/update
 POST /api/skills/:id/update
 ```
 
-服务端只接受当前安装记录为 Git 且包含仓库 URL 的受管 Skill；请求不接收仓库地址或凭据。更新按既有来源拉取 `main` / `master`，要求 `SKILL.md` 的 `name` 不变，并通过 staging/备份目录可回滚替换。
+`GET` 只对当前安装记录为 Git 且包含仓库 URL 的受管 Skill 进行一次临时 clone 检查，依次尝试 `main` / `master`，比较远端有效 `SKILL.md` 的 content hash 与 `installed_hash`，返回 `updateAvailable`；网络失败或来源异常返回不可更新而不影响列表。`POST` 请求不接收仓库地址或凭据，只有 `updateAvailable=true` 时执行更新。更新按既有来源拉取 `main` / `master`，要求 `SKILL.md` 的 `name` 不变，并通过 staging/备份目录可回滚替换。
 
 返回：
 

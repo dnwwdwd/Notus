@@ -52,6 +52,13 @@ function upsertById(list = [], item = null) {
   return next;
 }
 
+function collectConversationOperationSets(payload = {}) {
+  const sessionSets = (Array.isArray(payload?.agent_sessions) ? payload.agent_sessions : [])
+    .flatMap((session) => Array.isArray(session?.operation_sets) ? session.operation_sets : []);
+  return [...(Array.isArray(payload?.pending_operation_sets) ? payload.pending_operation_sets : []), ...sessionSets]
+    .reduce((items, operationSet) => upsertById(items, operationSet), []);
+}
+
 function timelineFromSession(session = {}) {
   const restored = buildRestoredAgentTimeline(session);
   const activeSteps = Array.isArray(restored.steps) ? restored.steps : [];
@@ -108,6 +115,7 @@ function mapSkillMention(skill) {
     token: `@{skill:${id}}`,
     label: name,
     preview: `${skill?.description || '本地 Skill'} · ${skill?.source_label || '本机'}`,
+    description: String(skill?.description || '未提供 Skill 描述'),
     kind: 'skill',
     searchText: `${name} ${skill?.description || ''} ${skill?.source_label || ''}`,
   };
@@ -273,6 +281,11 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
   const operationSetById = useMemo(() => Object.fromEntries(
     pendingOperationSets.map((item) => [String(item.id || item.operation_set_id), item])
   ), [pendingOperationSets]);
+  const operationSetBySessionId = useMemo(() => pendingOperationSets.reduce((items, item) => {
+    const sessionId = String(item?.agent_session_id || item?.session_id || '');
+    if (sessionId) items[sessionId] = item;
+    return items;
+  }, {}), [pendingOperationSets]);
   const activeInteraction = useMemo(() => {
     const rows = [...pendingInteractions].reverse();
     return rows.find((item) => item.status === 'pending')
@@ -333,7 +346,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
       const payload = await readApiResponse(response, '读取对话详情失败');
       if (loadSequence !== conversationLoadSequenceRef.current) return null;
       setMessages(mapConversationMessages(payload.messages, 'canvas'));
-      setPendingOperationSets(Array.isArray(payload.pending_operation_sets) ? payload.pending_operation_sets : []);
+      setPendingOperationSets(collectConversationOperationSets(payload));
       setPendingInteractions(Array.isArray(payload.pending_interactions) ? payload.pending_interactions : []);
       setAgentResumeJobs(Array.isArray(payload.agent_resume_jobs) ? payload.agent_resume_jobs : []);
       setRestoredAgentSessions(Array.isArray(payload.agent_sessions) ? payload.agent_sessions : []);
@@ -803,10 +816,10 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
 
   const displayedMessages = useMemo(() => messages.map((message) => {
     const operationSetId = String(message?.meta?.operation_set_id || message?.operationSet?.id || '');
-    return operationSetId && operationSetById[operationSetId]
-      ? { ...message, operationSet: operationSetById[operationSetId] }
-      : message;
-  }), [messages, operationSetById]);
+    const sessionId = String(message?.meta?.session_id || '');
+    const operationSet = operationSetById[operationSetId] || operationSetBySessionId[sessionId] || message?.operationSet || null;
+    return operationSet ? { ...message, operationSet } : message;
+  }), [messages, operationSetById, operationSetBySessionId]);
   // 后台运行、暂停、失败和提问卡都不再锁住输入；新消息会以同会话 FIFO 入队。
   // 仅模型尚未就绪或输入组件自身正在上传时禁用。
   const inputDisabled = !aiUiState.ready;

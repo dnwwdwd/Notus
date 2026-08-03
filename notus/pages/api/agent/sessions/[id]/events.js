@@ -6,6 +6,7 @@ const { getTaskBySession, getQueuePosition } = require('../../../../../lib/agent
 
 function send(res, payload) {
   if (!res.writableEnded) res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  res.flush?.();
 }
 
 export default function handler(req, res) {

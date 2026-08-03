@@ -2,6 +2,7 @@ export const TOOL_DISPLAY = {
   search_knowledge: '检索知识库',
   web_search: '联网搜索',
   read_file: '读取文件',
+  view_images: '查看图片',
   create_note: '新建笔记',
   preview_patch_files: '生成修改预览',
   preview_file_revision: '生成全文修订预览',

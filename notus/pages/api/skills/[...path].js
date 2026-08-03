@@ -3,7 +3,7 @@ const os = require('os');
 const path = require('path');
 const formidable = require('formidable');
 const { ensureRuntime } = require('../../../lib/runtime');
-const { getSkill, setSkillEnabled, deleteSkill, installFromGit, updateSkillFromGit, installFromZip } = require('../../../lib/skills');
+const { getSkill, setSkillEnabled, deleteSkill, installFromGit, updateSkillFromGit, checkSkillUpdateFromGit, installFromZip } = require('../../../lib/skills');
 
 export const config = { api: { bodyParser: false } };
 
@@ -35,6 +35,7 @@ export default async function handler(req, res) {
     const id = parts[0];
     if (!id) return res.status(404).end();
     if (parts[1] === 'update' && req.method === 'POST') return res.status(200).json(await updateSkillFromGit(id));
+    if (parts[1] === 'update' && req.method === 'GET') return res.status(200).json(await checkSkillUpdateFromGit(id));
     if (parts[1] === 'state' && req.method === 'PATCH') {
       const body = await readJsonBody(req);
       return res.status(200).json({ skill: setSkillEnabled(id, Boolean(body.enabled)) });

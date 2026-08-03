@@ -36,6 +36,20 @@ function splitMedia(input = {}) {
   return { attachments: all.filter((item) => !isImage(item)), images: [...images, ...all.filter(isImage)] };
 }
 
+function buildViewedImagePreviews(images = [], conversationId = null) {
+  return (Array.isArray(images) ? images : []).map((image, index) => {
+    const storedName = String(image?.stored_name || image?.storedName || '').trim();
+    return {
+      id: String(image?.id || storedName || index),
+      name: String(image?.name || `图片 ${index + 1}`),
+      alt: String(image?.name || `用户提交的图片 ${index + 1}`),
+      preview_url: storedName && conversationId
+        ? `/api/agent/images/${encodeURIComponent(storedName)}?conversation_id=${encodeURIComponent(conversationId)}`
+        : '',
+    };
+  });
+}
+
 function emit(sessionId, runId, event) {
   return publish({ sessionId, runId, event });
 }
@@ -81,13 +95,23 @@ async function execute(task) {
     let initialImages = getImageInputBlocks(images, { messageId: task.user_message_id });
     let currentImageRecognition = null;
     if (images.length && task.user_message_id) {
+      const viewedImages = buildViewedImagePreviews(images, conversationId);
+      emit(sessionId, runId, {
+        type: 'progress',
+        stage: 'image_view_start',
+        text: `正在查看 ${images.length} 张图片。`,
+        conversation_id: conversationId,
+        message_id: task.user_message_id,
+        image_count: images.length,
+        images: viewedImages,
+      });
       try {
         currentImageRecognition = await recognizeConversationImages({ conversationId, messageId: task.user_message_id, images, llmConfig, signal: controller.signal });
         if (currentImageRecognition?.usage) recordRunUsage({ sessionId, sourceType: 'image_recognition', provider: llmConfig.llmProvider, model: llmConfig.llmModel, usage: currentImageRecognition.usage });
-        emit(sessionId, runId, { type: 'progress', stage: 'image_recognition_done', text: '图片识别完成。', conversation_id: conversationId, message_id: task.user_message_id, image_count: images.length });
+        emit(sessionId, runId, { type: 'progress', stage: 'image_recognition_done', text: `已查看 ${images.length} 张图片。`, conversation_id: conversationId, message_id: task.user_message_id, image_count: images.length, images: viewedImages });
         initialImages = [];
       } catch (error) {
-        emit(sessionId, runId, { type: 'progress', stage: 'image_recognition_done', text: '图片识别未完成，任务将继续使用其他材料。', status: 'error', error: error.code || 'IMAGE_RECOGNITION_FAILED', conversation_id: conversationId });
+        emit(sessionId, runId, { type: 'progress', stage: 'image_recognition_done', text: '图片查看未完成，任务将继续使用其他材料。', status: 'error', error: error.code || 'IMAGE_RECOGNITION_FAILED', conversation_id: conversationId, message_id: task.user_message_id, image_count: images.length, images: viewedImages });
       }
     }
     const loopResult = await runAgentLoop({

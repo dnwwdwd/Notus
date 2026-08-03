@@ -404,6 +404,25 @@ async function updateSkillFromGit(id) {
     throw error;
   } finally { fs.rmSync(temp, { recursive: true, force: true }); }
 }
+async function checkSkillUpdateFromGit(id) {
+  const skill = getSkill(id);
+  if (!skill?.managed) return { can_update: false, reason: 'not_managed' };
+  const installation = getCurrentInstallation(skill.id);
+  if (installation?.method !== 'git' || !installation.repository_url) return { can_update: false, reason: 'not_git' };
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'notus-skill-git-check-'));
+  try {
+    const url = validateGitUrl(installation.repository_url);
+    const ref = await cloneGitMainOrMaster({ dir: temp, url });
+    const remote = inspectSkill({ path: path.dirname(temp) }, temp, { allowDirectoryNameMismatch: true });
+    if (remote.status !== 'valid' || remote.name !== skill.name) return { can_update: false, reason: 'invalid_remote' };
+    return { can_update: Boolean(remote.contentHash && remote.contentHash !== installation.installed_hash), repository_ref: ref };
+  } catch {
+    // 网络或鉴权异常不能阻断 Skill 的启停、扫描和加载，保守地隐藏更新入口。
+    return { can_update: false, reason: 'unavailable' };
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+}
 async function installFromZip(filePath, input = {}) {
   const jobId = createJob('zip_install', {});
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'notus-skill-zip-'));
@@ -483,4 +502,4 @@ function deleteSkill(id) {
   fs.rmSync(target, { recursive: true, force: true }); scanAllSkills(); return { deleted: true };
 }
 
-module.exports = { getCapabilities, skillRoots, initializeSkills, stopSkillWatchers, scanAllSkills, listSkills, getSkill, getSkillManagementDetails, setSkillEnabled, eligibleSkillSummaries, loadSkill, readSkillFile, discoverCandidates, cloneGitMainOrMaster, installFromGit, updateSkillFromGit, installFromZip, createSkillDraft, createSkillRevisionDraft, getSkillDraft, installSkillDraft, deleteSkill, getJob, saveSecret };
+module.exports = { getCapabilities, skillRoots, initializeSkills, stopSkillWatchers, scanAllSkills, listSkills, getSkill, getSkillManagementDetails, setSkillEnabled, eligibleSkillSummaries, loadSkill, readSkillFile, discoverCandidates, cloneGitMainOrMaster, installFromGit, updateSkillFromGit, checkSkillUpdateFromGit, installFromZip, createSkillDraft, createSkillRevisionDraft, getSkillDraft, installSkillDraft, deleteSkill, getJob, saveSecret };

@@ -215,6 +215,21 @@ function buildEventStep(event = {}) {
   if (event.type === 'loop_start') {
     return null;
   }
+  if (event.type === 'image_view_start' || event.type === 'image_view_done' || event.type === 'image_recognition_done') {
+    const count = Number(event.image_count || event.images?.length || 0);
+    const isStart = event.type === 'image_view_start';
+    const failed = !isStart && event.status === 'error';
+    return {
+      id: `image-view-${event.message_id || loop || 'current'}`,
+      label: count > 1 ? `查看 ${count} 张图片` : '查看图片',
+      status: isStart ? 'running' : failed ? 'error' : 'done',
+      detail: failed ? '图片查看未完成，已继续执行后续任务。' : isStart ? '正在读取本轮提交的图片。' : '已读取本轮提交的图片。',
+      tool: 'view_images',
+      result: failed ? (event.error || 'IMAGE_VIEW_FAILED') : `已查看 ${count || 1} 张图片`,
+      images: Array.isArray(event.images) ? event.images : [],
+      open: true,
+    };
+  }
   if (event.type === 'llm_retry') {
     return {
       id: `llm-retry-${loop || 'current'}`,
@@ -371,7 +386,7 @@ export function applyAgentTimelineEvent(timeline = {}, event = {}) {
 
   if (event.type === 'task_state') {
     sessionStatus = event.status || sessionStatus || 'queued';
-    if (event.status === 'queued') loading = false;
+    if (event.status === 'queued') loading = true;
   } else if (event.type === 'session_created' || event.type === 'session_resumed' || event.type === 'loop_start') {
     sessionStatus = 'running';
     loading = true;
@@ -640,6 +655,7 @@ export function useAgentLoopController({
       streamText: '',
       loading: true,
       sessionStatus: isResume ? 'running' : 'queued',
+      startedAt: new Date().toISOString(),
     };
     let sessionAccess = {
       token: resumeToken,
@@ -754,7 +770,8 @@ export function useAgentLoopController({
       publishTimeline(null, {
         sessionId: String(acceptedSessionId),
         userMessageId: Number(accepted.user_message_id || 0) || null,
-        loading: accepted.status !== 'queued',
+        startedAt: accepted.created_at || timeline.startedAt,
+        loading: true,
         sessionStatus: accepted.status || 'queued',
       });
       if (acceptedConversationId) onConversationId?.(acceptedConversationId);
@@ -854,7 +871,7 @@ export function useAgentLoopController({
 
         if (event.type === 'task_state') {
           setActiveAgentSession((prev) => ({ status: event.status || prev?.status || 'queued', queue_position: event.queue_position || null }));
-          if (event.status === 'queued') setLoading(false);
+          if (event.status === 'queued') setLoading(true);
         } else if (event.type === 'session_created') {
           appendUserMessage(event);
           notifyTaskAccepted(event);

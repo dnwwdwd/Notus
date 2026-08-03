@@ -24,14 +24,24 @@ assert.ok(controller.includes('conversationId: Number(event.conversation_id || e
 const truncateIndex = workspace.indexOf('const response = await fetch(`/api/conversations/${conversationId}/truncate`');
 const rewriteIndex = workspace.indexOf('setRewrittenMessages((prev) => ({ ...prev, [sourceKey]: nextContent }));');
 assert.ok(truncateIndex > -1 && rewriteIndex > truncateIndex, '改写前必须先完成服务端截断，不能只在界面隐藏旧消息');
+assert.ok(
+  workspace.includes("const replacesConversation = isRewrite || options.reason === 'retry';"),
+  '重试也必须从原用户消息截断并覆盖后续消息，不能另追加一轮相同对话'
+);
+assert.ok(
+  workspace.includes('if (replacesConversation) {')
+    && workspace.includes('skipUserMessageAppend: replacesConversation')
+    && workspace.includes('rewriteUserMessageId: replacesConversation ? Number(sourceMessage?.id || 0) || null : null,'),
+  '重试必须复用被截断的真实用户消息，而不是新增相同用户消息'
+);
 assert.ok(workspace.includes('当前消息尚未完成服务端保存，无法改写。请稍后重试。'), '未持久化消息不得绕过服务端截断');
 assert.ok(
   workspace.includes("mentionSegments: isRewrite ? [{ type: 'text', text: nextContent }] : (Array.isArray(sourceMessage?.mentionSegments) ? sourceMessage.mentionSegments : []),"),
   '改写后不能把旧消息的 Mention 文本当作新的 Agent 目标'
 );
 assert.ok(
-  workspace.includes('rewriteUserMessageId: isRewrite ? Number(sourceMessage?.id || 0) || null : null,'),
-  '改写任务必须携带被改写的真实用户消息 ID'
+  workspace.includes('rewriteUserMessageId: replacesConversation ? Number(sourceMessage?.id || 0) || null : null,'),
+  '改写或重试任务必须携带被截断的真实用户消息 ID'
 );
 assert.ok(
   fileWorkspace.includes('rewriteUserMessageId: Number(options.rewriteUserMessageId || 0) || null,'),

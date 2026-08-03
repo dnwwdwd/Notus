@@ -3017,7 +3017,10 @@ export function AgentWorkspace({ messages, interactions = [], streamText, loadin
 
     try {
       const isRewrite = options.reason === 'rewrite';
-      if (isRewrite) {
+      // 改写与重试都会从当前用户消息截断。重试不改写原文，但必须移除旧回答及其后的分支，
+      // 否则启动新任务会追加一条相同用户消息，历史上下文也会出现两次相同请求。
+      const replacesConversation = isRewrite || options.reason === 'retry';
+      if (replacesConversation) {
         const sourceId = sourceMessage?.id;
         const conversationId = Number(sourceMessage?.conversationId || sourceMessage?.conversation_id || 0) || null;
         if (!conversationId || !Number.isFinite(Number(sourceId)) || Number(sourceId) <= 0) {
@@ -3067,12 +3070,12 @@ export function AgentWorkspace({ messages, interactions = [], streamText, loadin
         attachments: Array.isArray(sourceMessage?.attachments) ? sourceMessage.attachments : [],
         mentions: isRewrite ? [] : (Array.isArray(sourceMessage?.mentions) ? sourceMessage.mentions : []),
         mentionSegments: isRewrite ? [{ type: 'text', text: nextContent }] : (Array.isArray(sourceMessage?.mentionSegments) ? sourceMessage.mentionSegments : []),
-        rewriteUserMessageId: isRewrite ? Number(sourceMessage?.id || 0) || null : null,
+        rewriteUserMessageId: replacesConversation ? Number(sourceMessage?.id || 0) || null : null,
         webSearchEnabled: activeWebSearchEnabled,
         searchProvider: activeWebSearchEnabled ? activeSearchProvider : null,
         searchProviders: activeWebSearchEnabled ? [activeSearchProvider] : [],
         mcpSelection,
-        skipUserMessageAppend: options.reason === 'rewrite',
+        skipUserMessageAppend: replacesConversation,
       });
       return true;
     } catch (sendError) {
@@ -3126,10 +3129,10 @@ export function AgentWorkspace({ messages, interactions = [], streamText, loadin
             onPreviewMention={setPreviewMention}
             onPrefetchMention={handlePrefetchMention}
             onPreviewImages={openMessageImagePreview}
+            onPreviewToolchainImages={openToolchainImagePreview}
             onAgentStepAction={(action, _step, sessionId) => {
               if (action === 'stop_agent') void onStop?.(sessionId);
               if (action === 'resume_agent') void onResumeAgentTask?.(sessionId);
-            onPreviewToolchainImages={openToolchainImagePreview}
             }}
           />}
           {error ? <div style={{ marginTop: 16, padding: '12px 14px', borderRadius: 14, background: 'rgba(217,119,87,0.08)', color: C.accentDark, fontSize: 13, lineHeight: 1.7 }}>{error}</div> : null}
@@ -3174,12 +3177,12 @@ export function AgentWorkspace({ messages, interactions = [], streamText, loadin
       <Dialog open={searchPromptOpen} onClose={() => setSearchPromptOpen(false)} title={promptTitle} maxWidth={420} footer={<><Button variant="ghost" onClick={() => setSearchPromptOpen(false)}>取消</Button><Button variant="primary" onClick={() => { setSearchPromptOpen(false); openSettings('search', { provider: promptProvider?.id }); }}>前往设置</Button></>}>
         <div style={{ fontSize: 14, color: C.secondary, lineHeight: 1.8 }}>{promptMessage}</div>
       </Dialog>
-      <DiffDialog
-        open={Boolean(detailOperationSet)}
-        operationSet={detailOperationSet}
       <Dialog open={mcpPromptOpen} onClose={() => setMcpPromptOpen(false)} title="需要配置 MCP 服务" maxWidth={420} footer={<><Button variant="ghost" onClick={() => setMcpPromptOpen(false)}>暂不配置</Button><Button variant="primary" onClick={() => { setMcpPromptOpen(false); openSettings('mcp'); }}>前往配置</Button></>}>
         <div style={{ fontSize: 14, color: C.secondary, lineHeight: 1.8 }}>当前没有可用的 MCP 服务。配置并启用至少一个服务后，才能在本次任务中开启 MCP 自动工具。</div>
       </Dialog>
+      <DiffDialog
+        open={Boolean(detailOperationSet)}
+        operationSet={detailOperationSet}
         onClose={() => setDetailOperationSet(null)}
         onApplyAll={onApplyOperationSet}
         onApplyFile={onApplyOperationFile}

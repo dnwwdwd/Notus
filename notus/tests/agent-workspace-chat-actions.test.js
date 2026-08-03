@@ -37,7 +37,7 @@ async function runTests() {
     'setEditing(false);',
     'await fetch(`/api/conversations/${conversationId}/truncate`',
     'window.setTimeout(() => {',
-    'skipUserMessageAppend: options.reason === \'rewrite\'',
+    'skipUserMessageAppend: replacesConversation',
     'attachments: Array.isArray(sourceMessage?.attachments) ? sourceMessage.attachments : []',
   ].forEach((snippet) => {
     assert.ok(

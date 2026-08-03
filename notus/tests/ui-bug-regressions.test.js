@@ -224,6 +224,24 @@ function runTests() {
   assert.ok(clarifyDrawer.includes('const selectOptionAndAdvance'));
   assert.ok(clarifyDrawer.includes("setPhase('expanded-review')"));
   assert.ok(clarifyDrawer.includes('<ReviewRow'));
+  assert.ok(clarifyDrawer.includes('notus-agent-question-card__toggle'));
+  assert.ok(clarifyDrawer.includes('notus-agent-question-card__review-row'));
+
+  assert.ok(globalStyles.includes('.notus-agent-question-card__detail'));
+  assert.ok(globalStyles.includes('.notus-agent-toolchain__question-answer'));
+
+  assert.ok(agentWorkspace.includes('function buildInteractionHistoryStep'));
+  assert.ok(agentWorkspace.includes('function mergeInteractionStepsIntoTimeline'));
+  assert.ok(agentWorkspace.includes('const interactionStepsFor'));
+  assert.ok(agentWorkspace.includes('Icons.messageCircle'));
+  assert.ok(!agentWorkspace.includes('function InteractionHistoryNode'));
+  assert.ok(agentWorkspace.includes('<Tooltip content="联网搜索">'));
+  assert.ok(agentWorkspace.includes("<Tooltip content={mcpAvailable ? 'MCP 工具' : '暂无 MCP 服务'}>"));
+  assert.ok(agentWorkspace.includes("if (!mcpAvailable) {\n      onRequireMcpConfig?.();"));
+  assert.ok(agentWorkspace.includes('title="需要配置 MCP 服务"'));
+  assert.ok(agentWorkspace.includes("openSettings('mcp')"));
+  assert.ok(agentWorkspace.includes('mcpAvailabilityChecked && !mcpAvailable'));
+  assert.ok(agentWorkspace.includes('className="notus-agent-composer__network-tools"'));
 
   const agentPrompt = read('lib/agentLoopPrompt.js');
   assert.ok(agentPrompt.includes('文件系统任务要和内容任务分开处理'));

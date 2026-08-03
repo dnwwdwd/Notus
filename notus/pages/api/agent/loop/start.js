@@ -7,23 +7,17 @@ const { createTask, getQueuePosition, wakeTask } = require('../../../../lib/agen
 const { wakeAgentTaskWorker } = require('../../../../lib/agentTaskWorker');
 const { makeConversationImageReference } = require('../../../../lib/conversationImages');
 const { allowsLocalHttpMcp } = require('../../../../lib/directLoopbackRequest');
+const { mergeAgentMedia } = require('../../../../lib/agentMedia');
 
 // 与既有恢复协议保持兼容：waiting_retry、waiting_model_recovery 均可由“继续任务”
 // 唤醒，但实际 lease 的接管已经移到后台 Worker，HTTP Route 不再持有运行 lease。
 const RESUMABLE_WAITING_STATUSES = ['waiting_retry', 'waiting_model_recovery'];
 function releaseLeaseBeforeResumeEvent(event, sessionId) { return { event, sessionId }; }
-function isImageInput(item = {}) {
-  const name = String(item?.name || item?.file_name || item?.filename || '').toLowerCase();
-  const type = String(item?.type || item?.contentType || '').split(';')[0].trim().toLowerCase();
-  return item?.media_kind === 'image' || item?.source_kind === 'image' || type.startsWith('image/') || /\.(png|jpe?g|webp|gif)$/.test(name);
-}
-
 function splitMediaInputs(body = {}) {
   const attachments = Array.isArray(body.attachments) ? body.attachments : [];
   const mediaItems = Array.isArray(body.media_items) ? body.media_items : (Array.isArray(body.mediaItems) ? body.mediaItems : []);
   const images = Array.isArray(body.images) ? body.images : [];
-  const all = [...attachments, ...mediaItems];
-  return { attachments: all.filter((item) => !isImageInput(item)), images: [...images, ...all.filter(isImageInput)] };
+  return mergeAgentMedia({ attachments, mediaItems, images });
 }
 
 function persistedImages(images, conversationId, messageId) {

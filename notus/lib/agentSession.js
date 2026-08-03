@@ -708,12 +708,50 @@ function truncateTimelineText(value, maxBytes = 16 * 1024) {
   return buffer.subarray(0, maxBytes).toString('utf8') + '\n[内容已截断]';
 }
 
+const IMAGE_VIEW_STAGES = new Set(['image_view_start', 'image_view_done', 'image_recognition_done']);
+const CONTROLLED_IMAGE_PREVIEW_PATTERN = /^\/api\/agent\/images\/([^/?]+)\?conversation_id=(\d+)$/;
+
+function isImageInput(item = {}) {
+  const name = String(item?.name || item?.file_name || item?.filename || '').toLowerCase();
+  const type = String(item?.type || item?.contentType || '').split(';')[0].trim().toLowerCase();
+  return item?.media_kind === 'image' || item?.source_kind === 'image' || type.startsWith('image/') || /\.(png|jpe?g|webp|gif)$/.test(name);
+}
+
+function imageIdentityKeys(item = {}) {
+  return [item?.id, item?.stored_name, item?.storedName]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+}
+
+function sanitizeViewedImages(images = [], conversationId = null) {
+  const normalizedConversationId = normalizePositiveInt(conversationId);
+  const seen = new Set();
+  return (Array.isArray(images) ? images : []).reduce((result, image, index) => {
+    const id = String(image?.id || image?.stored_name || image?.storedName || '').trim();
+    const previewUrl = String(image?.preview_url || image?.previewUrl || '').trim();
+    const matched = previewUrl.match(CONTROLLED_IMAGE_PREVIEW_PATTERN);
+    if (!id || !normalizedConversationId || !matched || Number(matched[2]) !== normalizedConversationId || seen.has(id)) return result;
+    seen.add(id);
+    result.push({
+      id,
+      name: truncateTimelineText(image?.name || `图片 ${index + 1}`, 512),
+      alt: truncateTimelineText(image?.alt || image?.name || `已查看图片 ${index + 1}`, 512),
+      preview_url: previewUrl,
+    });
+    return result;
+  }, []).slice(0, 30);
+}
+
 function sanitizeRunEvent(event = {}) {
   const type = String(event.type || '').trim();
   if (!['progress', 'artifact', 'final'].includes(type)) return null;
+  const stage = String(event.stage || '').trim();
+  const isImageViewEvent = type === 'progress' && IMAGE_VIEW_STAGES.has(stage);
+  const conversationId = normalizePositiveInt(event.conversation_id || event.conversationId);
+  const viewedImages = isImageViewEvent ? sanitizeViewedImages(event.images, conversationId) : [];
   const payload = {
     type,
-    stage: String(event.stage || '').trim(),
+    stage,
     text: truncateTimelineText(event.text || event.final_text || '', type === 'final' ? 64 * 1024 : 16 * 1024),
     loop_index: Math.max(0, Number(event.loop_index || 0)),
     tool_name: String(event.tool_name || '').trim(),
@@ -733,9 +771,57 @@ function sanitizeRunEvent(event = {}) {
     resumable: Boolean(event.resumable),
     operation_set_id: normalizePositiveInt(event.operation_set_id),
     interaction_id: normalizePositiveInt(event.interaction?.id || event.interaction_id),
+    conversation_id: isImageViewEvent ? conversationId : null,
+    message_id: isImageViewEvent ? normalizePositiveInt(event.message_id) : null,
+    image_count: isImageViewEvent ? (viewedImages.length || Math.min(30, Math.max(0, Number(event.image_count || 0)))) : 0,
+    images: viewedImages,
     usage: type === 'final' ? redactSecrets(event.usage ?? null) : null,
   };
-  return redactSecrets(payload);
+  const redacted = redactSecrets(payload);
+  // 图片预览地址只允许由 sanitizeViewedImages 校验后的同源受控路径组成。
+  // 随机存储文件名会被通用高熵脱敏误判，恢复时会变成无效地址；在最终脱敏后复原
+  // 这一个已验证字段，其余文本、参数和结果仍继续执行脱敏。
+  if (isImageViewEvent && Array.isArray(redacted.images)) {
+    redacted.images = redacted.images.map((image, index) => ({
+      ...image,
+      preview_url: viewedImages[index]?.preview_url || '',
+    })).filter((image) => image.preview_url);
+  }
+  return redacted;
+}
+
+function restoreViewedImagePreviews(event = {}, { conversationId = null, messageId = null, input = {} } = {}) {
+  const stage = String(event?.stage || '').trim();
+  const normalizedConversationId = normalizePositiveInt(conversationId);
+  if (!IMAGE_VIEW_STAGES.has(stage) || !normalizedConversationId) return event;
+  const candidates = [
+    ...(Array.isArray(input?.images) ? input.images : []),
+    ...(Array.isArray(input?.media_items) ? input.media_items.filter(isImageInput) : []),
+    ...(Array.isArray(input?.attachments) ? input.attachments.filter(isImageInput) : []),
+  ];
+  const sourcesByKey = new Map();
+  candidates.forEach((image) => imageIdentityKeys(image).forEach((key) => sourcesByKey.set(key, image)));
+  const originalImages = Array.isArray(event?.images) && event.images.length > 0 ? event.images : candidates;
+  const seenStoredNames = new Set();
+  const images = originalImages.reduce((result, image, index) => {
+    const source = imageIdentityKeys(image).map((key) => sourcesByKey.get(key)).find(Boolean);
+    const storedName = String(source?.stored_name || source?.storedName || '').trim();
+    if (!source || !storedName || seenStoredNames.has(storedName)) return result;
+    seenStoredNames.add(storedName);
+    result.push({
+      id: String(source.id || storedName),
+      name: String(image?.name || source?.name || `图片 ${index + 1}`),
+      alt: String(image?.alt || `已查看图片 ${index + 1}`),
+      preview_url: `/api/agent/images/${encodeURIComponent(storedName)}?conversation_id=${normalizedConversationId}`,
+    });
+    return result;
+  }, []);
+  return {
+    ...event,
+    message_id: normalizePositiveInt(event.message_id) || normalizePositiveInt(messageId),
+    image_count: images.length || Math.min(30, Math.max(0, Number(event.image_count || 0))),
+    images,
+  };
 }
 
 function recordRunEvent({ sessionId, runId = null, event = null } = {}) {
@@ -756,7 +842,10 @@ function recordRunEvent({ sessionId, runId = null, event = null } = {}) {
 }
 
 function listRunEvents(sessionId) {
-  return getDb().prepare(`
+  const database = getDb();
+  const task = database.prepare('SELECT conversation_id, user_message_id, input_json FROM agent_task_queue WHERE session_id = ?').get(normalizePositiveInt(sessionId));
+  const taskInput = safeJsonParse(task?.input_json, {});
+  return database.prepare(`
     SELECT id, session_id, run_id, event_type, stage, payload_json, created_at
     FROM agent_run_events WHERE session_id = ? ORDER BY id ASC
   `).all(normalizePositiveInt(sessionId)).map((row) => ({
@@ -765,7 +854,11 @@ function listRunEvents(sessionId) {
     run_id: row.run_id || null,
     event_type: row.event_type,
     stage: row.stage || '',
-    payload: safeJsonParse(row.payload_json, {}),
+    payload: restoreViewedImagePreviews(safeJsonParse(row.payload_json, {}), {
+      conversationId: task?.conversation_id,
+      messageId: task?.user_message_id,
+      input: taskInput,
+    }),
     created_at: row.created_at,
   }));
 }
@@ -832,6 +925,8 @@ module.exports = {
   listRunEvents,
   getLatestRunEventId,
   recordRunEvent,
+  sanitizeRunEvent,
+  restoreViewedImagePreviews,
   countSnapshots,
   markStaleWaitingSessions,
   ensureSessionActive,

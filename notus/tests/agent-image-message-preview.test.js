@@ -6,7 +6,7 @@ const source = fs.readFileSync(path.join(__dirname, '..', 'components/AgentWorks
 const { getAgentImagePreviewUrl } = require('../utils/agentMedia');
 
 assert.ok(source.includes('function FileChip({ file, onRemove, readOnly, onOpen, onPreview, imageOnly = false, imageSize = 72 })'));
-assert.ok(source.includes("import { getAgentImagePreviewUrl } from '../../utils/agentMedia';"));
+assert.ok(source.includes("import { dedupeAgentMedia, getAgentImagePreviewUrl } from '../../utils/agentMedia';"));
 assert.ok(source.includes('return getAgentImagePreviewUrl(file);'));
 assert.ok(source.includes('if (image && imageOnly && previewUrl)'));
 assert.ok(source.includes('|| isSupportedImageFile(file);'));
@@ -14,8 +14,9 @@ assert.ok(source.includes('imageOnly={isImageMedia(file)}'));
 assert.ok(source.includes('const images = incoming.filter(isSupportedImageFile);'));
 assert.ok(source.includes("addFiles(images, { ...options, mediaKind: 'image' });"));
 assert.ok(source.includes('`${PARSED_ATTACHMENT_ACCEPT},${IMAGE_ACCEPT}`'));
-assert.ok(source.includes('const messageImages = Array.isArray(message.attachments) ? message.attachments.filter(isImageMedia) : [];'));
-assert.ok(source.includes('const messageAttachments = Array.isArray(message.attachments) ? message.attachments.filter((file) => !isImageMedia(file)) : [];'));
+assert.ok(source.includes('const messageMedia = dedupeAgentMedia(message.attachments);'));
+assert.ok(source.includes('const messageImages = messageMedia.filter(isImageMedia);'));
+assert.ok(source.includes('const messageAttachments = messageMedia.filter((file) => !isImageMedia(file));'));
 assert.ok(source.includes('data-message-image-row="true"'));
 assert.ok(source.includes('data-message-bubble="true"'));
 assert.ok(source.includes('imageSize={112}'));

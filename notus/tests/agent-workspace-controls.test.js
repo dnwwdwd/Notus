@@ -15,10 +15,12 @@ assert.ok(workspace.includes("if (parsed?.mode === 'server') return { mode: 'aut
 assert.ok(workspace.includes("const mcpLabel = 'MCP';"));
 assert.ok(workspace.includes("/api/settings/mcp/servers?enabled_only=1"));
 assert.ok(workspace.includes("window.addEventListener('notus-mcp-servers-changed', onChanged);"));
-assert.ok(workspace.includes("if (mcpAvailable || mcpMode !== 'auto') return;"));
-assert.ok(workspace.includes('disabled={busy || disabled || !mcpAvailable}'));
-assert.ok(workspace.includes('content="暂无 MCP 服务"'));
+assert.ok(workspace.includes("if (!mcpAvailabilityChecked || mcpAvailable || mcpMode !== 'auto') return;"));
+assert.ok(workspace.includes('aria-disabled={!mcpAvailable}'));
+assert.ok(workspace.includes("content={mcpAvailable ? 'MCP 工具' : '暂无 MCP 服务'}"));
 assert.ok(workspace.includes('const toggleMcp = () => {'));
+assert.ok(workspace.includes('onRequireMcpConfig?.();'));
+assert.ok(workspace.includes("if (!mcpAvailabilityChecked || mcpAvailable || mcpMode !== 'auto') return;"));
 assert.ok(workspace.includes("onMcpSelectionChange?.({ mode: 'auto' });"));
 assert.ok(workspace.includes("onMcpSelectionChange?.({ mode: 'off' });"));
 assert.ok(!workspace.includes('本次任务不提供外部 MCP 工具。'));

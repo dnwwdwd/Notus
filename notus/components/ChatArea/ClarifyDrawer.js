@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 import { Icons } from '../ui/Icons';
 
@@ -95,83 +94,56 @@ function AnswerRow({ buttonRef, selected, dimmed, label, hint, disabled, onClick
       type="button"
       disabled={disabled}
       onClick={onClick}
-      style={{
-        width: '100%',
-        textAlign: 'left',
-        display: 'flex',
-        alignItems: 'flex-start',
-        gap: 10,
-        padding: '10px 12px',
-        background: selected ? 'var(--accent-subtle)' : 'var(--bg-elevated)',
-        border: selected ? '1px solid var(--accent)' : '1px solid var(--border-primary)',
-        borderRadius: 'var(--radius-md)',
-        cursor: disabled ? 'not-allowed' : 'pointer',
-        transition: 'all var(--transition-fast)',
-        opacity: dimmed ? 0.56 : 1,
-      }}
+      className={`notus-agent-question-card__option notus-agent-pressable${selected ? ' is-selected' : ''}${dimmed ? ' is-dimmed' : ''}`}
     >
-      <div
-        aria-hidden="true"
-        style={{
-          width: 14,
-          height: 14,
-          borderRadius: '50%',
-          marginTop: 2,
-          flexShrink: 0,
-          border: selected ? '4px solid var(--accent)' : '1.5px solid var(--border-primary)',
-          background: selected ? 'var(--bg-elevated)' : 'transparent',
-          transition: 'all var(--transition-fast)',
-        }}
-      />
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 'var(--text-sm)', lineHeight: 1.55, color: 'var(--text-primary)', fontWeight: selected ? 500 : 400 }}>
-          {label}
-        </div>
-        {hint ? (
-          <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 3, lineHeight: 1.45 }}>
-            {hint}
-          </div>
-        ) : null}
-      </div>
+      <span className="notus-agent-question-card__option-mark" aria-hidden="true" />
+      <span className="notus-agent-question-card__option-copy">
+        <span className="notus-agent-question-card__option-label">{label}</span>
+        {hint ? <span className="notus-agent-question-card__option-hint">{hint}</span> : null}
+      </span>
     </button>
   );
 }
 
-function Dots({ states = [] }) {
+function QuestionCardHeader({
+  title,
+  summary,
+  expanded,
+  onToggle,
+  status,
+  controlsId,
+}) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-      {states.map((state, index) => {
-        const baseStyle = {
-          width: 7,
-          height: 7,
-          borderRadius: '50%',
-        };
-        if (state === 'current') {
-          return (
-            <div
-              key={`${state}-${index}`}
-              style={{
-                ...baseStyle,
-                width: 9,
-                height: 9,
-                background: 'var(--accent)',
-                boxShadow: '0 0 0 2px var(--bg-elevated), 0 0 0 3.5px var(--accent)',
-              }}
-            />
-          );
-        }
-        return (
-          <div
-            key={`${state}-${index}`}
-            style={{
-              ...baseStyle,
-              background: state === 'done' ? 'var(--accent)' : 'var(--border-primary)',
-            }}
-          />
-        );
-      })}
+    <button
+      type="button"
+      className="notus-agent-tool-row notus-agent-question-card__toggle"
+      aria-expanded={expanded}
+      aria-controls={controlsId}
+      onClick={onToggle}
+    >
+      <span className="notus-agent-toolchain__icon" aria-hidden="true">
+        <Icons.sparkles size={14} />
+      </span>
+      <span className="notus-agent-toolchain__label">{title}</span>
+      {summary ? <span className="notus-agent-question-card__summary">{summary}</span> : null}
+      {status ? <span className="notus-agent-question-card__status">{status}</span> : null}
+      <Icons.chevronRight size={14} className={expanded ? 'notus-agent-tool-chevron is-open' : 'notus-agent-tool-chevron'} aria-hidden="true" />
+    </button>
+  );
+}
+
+function QuestionProgress({ states = [] }) {
+  return (
+    <div className="notus-agent-question-card__progress" aria-label={`已回答 ${states.filter((state) => state === 'done').length} 题`}>
+      {states.map((state, index) => (
+        <span key={`${state}-${index}`} className={`notus-agent-question-card__progress-dot is-${state}`} />
+      ))}
     </div>
   );
+}
+
+function Dots({ states = [] }) {
+  return <QuestionProgress states={states} />;
 }
 
 function ReviewRow({
@@ -181,7 +153,6 @@ function ReviewRow({
   editing,
   disabled,
   onClick,
-  narrow,
   rowRef,
 }) {
   const preview = buildAnswerPreview(question, current);
@@ -191,49 +162,19 @@ function ReviewRow({
       type="button"
       disabled={disabled}
       onClick={onClick}
-      style={{
-        width: '100%',
-        textAlign: 'left',
-        padding: narrow ? '10px 14px' : '12px 16px',
-        background: editing ? 'var(--accent-subtle)' : 'transparent',
-        borderTop: index === 0 ? 'none' : '1px solid var(--border-subtle)',
-        display: 'flex',
-        gap: 10,
-        alignItems: 'flex-start',
-        cursor: disabled ? 'default' : 'pointer',
-      }}
+      className={`notus-agent-question-card__review-row notus-agent-tool-row${editing ? ' is-editing' : ''}`}
     >
-      <div
-        aria-hidden="true"
-        style={{
-          width: 18,
-          height: 18,
-          marginTop: 2,
-          borderRadius: '50%',
-          flexShrink: 0,
-          background: 'var(--accent-subtle)',
-          color: 'var(--accent)',
-          fontSize: 10,
-          fontWeight: 600,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}
-      >
-        {index + 1}
-      </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 3, lineHeight: 1.45 }}>
-          {getQuestionTitle(question)}
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', fontSize: 'var(--text-sm)', color: 'var(--text-primary)', lineHeight: 1.55 }}>
-          {preview.custom ? <Badge tone="accent">自定义</Badge> : null}
-          <span style={{ fontWeight: 500 }}>{preview.text || '未回答'}</span>
-        </div>
-      </div>
-      <span style={{ fontSize: 11, marginTop: 4, color: editing ? 'var(--accent)' : 'var(--text-tertiary)', display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+      <span className="notus-agent-question-card__review-index" aria-hidden="true">{index + 1}</span>
+      <span className="notus-agent-question-card__review-copy">
+        <span className="notus-agent-question-card__review-question">{getQuestionTitle(question)}</span>
+        <span className="notus-agent-question-card__review-answer">
+          {preview.custom ? <span className="notus-agent-question-card__custom-label">自定义</span> : null}
+          <span>{preview.text || '未回答'}</span>
+        </span>
+      </span>
+      <span className="notus-agent-question-card__review-edit">
         <Icons.edit size={10} />
-        {editing ? '正在改' : '修改'}
+        {editing ? '正在修改' : '修改'}
       </span>
     </button>
   );
@@ -468,111 +409,56 @@ export function ClarifyDrawer({
 
   if (phase === 'collapsed') {
     return (
-      <div
-        onTouchStart={handleTouchStart}
-        onTouchEnd={handleTouchEnd}
-        onClick={() => setPhase(isRetryable ? 'failed' : isStale ? 'stale' : allAnswered ? 'expanded-review' : 'expanded-question')}
-        style={{
-          background: 'var(--bg-elevated)',
-          border: '1px solid color-mix(in srgb, var(--accent) 18%, var(--border-primary))',
-          borderRadius: 'var(--radius-lg) var(--radius-lg) 0 0',
-          boxShadow: '0 -8px 24px -8px rgba(60, 40, 20, 0.12), 0 -2px 6px -2px rgba(60, 40, 20, 0.06)',
-          padding: '10px 14px',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 10,
-          cursor: 'pointer',
-        }}
-      >
-        <div style={{ width: 34, height: 4, borderRadius: 999, background: 'var(--border-primary)', marginRight: 2 }} />
-        <div style={{ display: 'grid', gap: 2, minWidth: 0, flex: 1 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-            <span style={{ color: 'var(--accent)', display: 'inline-flex' }}>
-              <Icons.sparkles size={13} />
-            </span>
-            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)' }}>
-              {interaction?.payload?.title || '确认后继续'}
-            </span>
-            <Badge tone={statusMeta.tone}>{statusMeta.label}</Badge>
-          </div>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {collapsedSummary}
-          </div>
-        </div>
-        <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
-          展开
-        </span>
-      </div>
+      <section className={`notus-agent-question-card is-collapsed${narrow ? ' is-narrow' : ''}`} onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd} aria-label="提问卡片">
+        <QuestionCardHeader
+          title={interaction?.payload?.title || '需要你的回答'}
+          summary={collapsedSummary}
+          status={statusMeta.label}
+          expanded={false}
+          controlsId={`agent-question-${interaction.id}`}
+          onToggle={() => setPhase(isRetryable ? 'failed' : isStale ? 'stale' : allAnswered ? 'expanded-review' : 'expanded-question')}
+        />
+      </section>
     );
   }
 
   return (
-    <div
+    <section
       onKeyDown={handleKeyDown}
       onTouchStart={handleTouchStart}
       onTouchEnd={handleTouchEnd}
-      style={{
-        background: 'var(--bg-elevated)',
-        border: '1px solid color-mix(in srgb, var(--accent) 18%, var(--border-primary))',
-        borderBottom: 'none',
-        borderRadius: 'var(--radius-lg) var(--radius-lg) 0 0',
-        boxShadow: '0 -8px 24px -8px rgba(60, 40, 20, 0.12), 0 -2px 6px -2px rgba(60, 40, 20, 0.06)',
-        overflow: 'hidden',
-      }}
+      className={`notus-agent-question-card${narrow ? ' is-narrow' : ''}`}
+      aria-label="提问卡片"
     >
-      <div style={{ display: 'flex', justifyContent: 'center', padding: '6px 0 4px' }}>
-        <div style={{ width: 36, height: 3, borderRadius: 999, background: 'var(--border-primary)' }} />
-      </div>
-
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '4px 16px 10px', borderBottom: '1px solid var(--border-subtle)' }}>
-        <span style={{ color: 'var(--accent)', display: 'inline-flex' }}>
-          <Icons.sparkles size={13} />
-        </span>
-        <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-primary)' }}>
-          Notus · {interaction?.payload?.kicker || interaction?.payload?.title || '确认后继续'}
-        </span>
-        <div style={{ flex: 1 }} />
-        <span style={{ fontSize: 11, color: 'var(--text-tertiary)', background: 'var(--bg-secondary)', padding: '2px 8px', borderRadius: 'var(--radius-full)' }}>
-          {phase === 'expanded-review' || phase === 'failed' ? `${activeQuestions.length} / ${activeQuestions.length}` : `${activeIndex + 1} / ${activeQuestions.length}`}
-        </span>
-        <button
-          type="button"
-          title="收起，先用普通对话"
-          onClick={() => setPhase('collapsed')}
-          style={{
-            width: 22,
-            height: 22,
-            borderRadius: 'var(--radius-sm)',
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            color: 'var(--text-tertiary)',
-          }}
-        >
-          <Icons.chevronDown size={13} />
-        </button>
-      </div>
+      <QuestionCardHeader
+        title={interaction?.payload?.kicker || interaction?.payload?.title || '需要你的回答'}
+        summary={phase === 'expanded-review' || phase === 'failed' ? `已回答 ${activeQuestions.length} 题` : `第 ${activeIndex + 1} / ${activeQuestions.length} 题`}
+        status={statusMeta.label}
+        expanded
+        controlsId={`agent-question-${interaction.id}`}
+        onToggle={() => setPhase('collapsed')}
+      />
 
       {phase === 'stale' ? (
-        <div style={{ padding: narrow ? '14px 14px 16px' : '16px 16px 18px', display: 'grid', gap: 12 }}>
-          <div style={{ fontSize: 'var(--text-base)', fontWeight: 600, color: 'var(--text-primary)' }}>
+        <div id={`agent-question-${interaction.id}`} className="notus-agent-question-card__detail">
+          <div className="notus-agent-question-card__title">
             当前内容已经变化
           </div>
-          <div style={{ fontSize: 'var(--text-sm)', lineHeight: 1.7, color: 'var(--text-secondary)' }}>
+          <div className="notus-agent-question-card__description">
             这张提问卡片对应的上下文已经失效，请重新发起一次请求。
           </div>
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-            <Button type="button" variant="ghost" size="sm" onClick={() => onCancel?.(interaction)}>
+          <div className="notus-agent-question-card__actions">
+            <Button type="button" variant="ghost" size="sm" className="notus-agent-pressable" onClick={() => onCancel?.(interaction)}>
               关闭
             </Button>
           </div>
         </div>
       ) : phase === 'expanded-question' ? (
-        <div style={{ padding: narrow ? '12px 14px' : '14px 16px' }}>
-          <div style={{ fontSize: narrow ? 15 : 16, lineHeight: 1.55, color: 'var(--text-primary)', fontWeight: 600, letterSpacing: -0.1, marginBottom: 12 }}>
+        <div id={`agent-question-${interaction.id}`} className="notus-agent-question-card__detail">
+          <div className="notus-agent-question-card__title">
             {getQuestionTitle(currentQuestion)}
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div className="notus-agent-question-card__options">
             {(currentQuestion.options || []).map((option, index) => {
               const selected = currentAnswer.optionId === option.id && !String(currentAnswer.customText || '').trim();
               return (
@@ -592,15 +478,8 @@ export function ClarifyDrawer({
             })}
 
             {currentQuestion.allow_custom || currentQuestion.type === 'text_input' ? (
-              <div
-                style={{
-                  background: 'var(--bg-elevated)',
-                  border: `1px solid ${String(currentAnswer.customText || currentAnswer.text || '').trim() ? 'var(--accent)' : 'var(--border-primary)'}`,
-                  borderRadius: 'var(--radius-md)',
-                  overflow: 'hidden',
-                }}
-              >
-                <div style={{ padding: '8px 12px 2px', fontSize: 11, color: String(currentAnswer.customText || currentAnswer.text || '').trim() ? 'var(--accent)' : 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: 6 }}>
+              <div className={`notus-agent-question-card__custom${String(currentAnswer.customText || currentAnswer.text || '').trim() ? ' has-value' : ''}`}>
+                <div className="notus-agent-question-card__custom-label">
                   <Icons.edit size={11} />
                   <span>{currentQuestion.type === 'text_input' ? '直接输入答案' : '自定义回答'}</span>
                 </div>
@@ -626,24 +505,14 @@ export function ClarifyDrawer({
                       optionId: nextText ? 'custom' : '',
                     });
                   }}
-                  style={{
-                    width: '100%',
-                    minHeight: 36,
-                    padding: '2px 12px 10px',
-                    border: 'none',
-                    outline: 'none',
-                    background: 'transparent',
-                    color: 'var(--text-primary)',
-                    fontSize: 'var(--text-sm)',
-                    lineHeight: 1.55,
-                  }}
+                  className="notus-agent-question-card__custom-input"
                 />
               </div>
             ) : null}
           </div>
         </div>
       ) : (
-        <div>
+        <div id={`agent-question-${interaction.id}`} className="notus-agent-question-card__review">
           {(isRetryable ? activeQuestions.filter((question) => isQuestionAnswered(question, answers[question.id] || {})) : activeQuestions).map((question, index) => (
             <ReviewRow
               key={question.id}
@@ -653,7 +522,6 @@ export function ClarifyDrawer({
               question={question}
               current={answers[question.id] || {}}
               index={index}
-              narrow={narrow}
               editing={activeIndex === index && phase === 'expanded-review'}
               disabled={!isPending}
               onClick={() => {
@@ -666,34 +534,34 @@ export function ClarifyDrawer({
         </div>
       )}
 
-      <div style={{ padding: '10px 14px', borderTop: '1px solid var(--border-subtle)', background: 'var(--bg-secondary)', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+      <div className="notus-agent-question-card__footer">
         {phase === 'expanded-question' ? <Dots states={dots} /> : null}
         {phase !== 'expanded-question' && !narrow ? (
-          <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+          <span className="notus-agent-question-card__hint">
             {phase === 'failed' ? '上次续跑失败了，可以直接重试。' : '点任意一行可以回去修改'}
           </span>
         ) : !narrow ? (
-          <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{footerHint}</span>
+          <span className="notus-agent-question-card__hint">{footerHint}</span>
         ) : null}
-        <div style={{ flex: 1 }} />
+        <div className="notus-agent-question-card__footer-spacer" />
         {(phase === 'expanded-question' && activeIndex > 0 && isPending) ? (
           <button
             type="button"
             aria-label="上一题"
             title="上一题（←）"
             onClick={goToPreviousQuestion}
-            style={{ width: 28, height: 28, padding: 0, color: 'var(--text-secondary)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 'var(--radius-sm)' }}
+            className="notus-agent-question-card__icon-action notus-agent-pressable"
           >
             <Icons.chevronRight size={11} style={{ transform: 'rotate(180deg)' }} />
           </button>
         ) : null}
         {(phase === 'expanded-review' || phase === 'failed') && onCancel ? (
-          <Button type="button" variant="ghost" size="sm" onClick={() => onCancel(interaction)}>
+          <Button type="button" variant="ghost" size="sm" className="notus-agent-pressable" onClick={() => onCancel(interaction)}>
             放弃
           </Button>
         ) : null}
         {isRetryable && phase === 'failed' ? (
-          <Button type="button" variant="primary" size="sm" onClick={() => onRetry?.(interaction)}>
+          <Button type="button" variant="primary" size="sm" className="notus-agent-pressable" onClick={() => onRetry?.(interaction)}>
             {retryLabel}
           </Button>
         ) : null}
@@ -704,7 +572,7 @@ export function ClarifyDrawer({
             title="下一题（→）"
             disabled={!canAdvanceCurrent}
             onClick={goToNextQuestion}
-            style={{ width: 28, height: 28, padding: 0, color: canAdvanceCurrent ? 'var(--accent)' : 'var(--text-tertiary)', opacity: canAdvanceCurrent ? 1 : 0.5, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 'var(--radius-sm)', cursor: canAdvanceCurrent ? 'pointer' : 'not-allowed' }}
+            className="notus-agent-question-card__icon-action notus-agent-pressable"
           >
             <Icons.chevronRight size={13} />
           </button>
@@ -717,6 +585,7 @@ export function ClarifyDrawer({
             loading={submitting}
             disabled={phase === 'expanded-question' ? !canAdvanceCurrent : !allAnswered}
             onClick={handlePrimaryAction}
+            className="notus-agent-pressable"
           >
             {phase === 'expanded-question'
               ? '回顾答案'
@@ -724,6 +593,6 @@ export function ClarifyDrawer({
           </Button>
         ) : null}
       </div>
-    </div>
+    </section>
   );
 }

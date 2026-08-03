@@ -13,6 +13,27 @@ function getAgentImagePreviewUrl(file = {}) {
   return String(file?.previewUrl || '').trim();
 }
 
+function agentMediaIdentityKeys(file = {}) {
+  const keys = [];
+  const id = String(file?.id || '').trim();
+  if (id) keys.push(`id:${id}`);
+  const storedName = String(file?.stored_name || file?.storedName || '').trim();
+  if (storedName) keys.push(`stored:${storedName}`);
+  return keys;
+}
+
+function dedupeAgentMedia(files = []) {
+  const seen = new Set();
+  return (Array.isArray(files) ? files : []).filter((file) => {
+    const identityKeys = agentMediaIdentityKeys(file);
+    if (identityKeys.length === 0) return true;
+    if (identityKeys.some((key) => seen.has(key))) return false;
+    identityKeys.forEach((key) => seen.add(key));
+    return true;
+  });
+}
+
 module.exports = {
   getAgentImagePreviewUrl,
+  dedupeAgentMedia,
 };

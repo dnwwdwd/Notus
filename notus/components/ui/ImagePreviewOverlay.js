@@ -84,9 +84,9 @@ export function ImagePreviewOverlay({ preview, onClose, onMove }) {
           alt={currentImage.alt || `图片 ${preview.currentIndex + 1}`}
           className="notus-image-preview-image"
         />
-        <div className="notus-image-preview-meta">
+        {preview.hideTitle ? null : <div className="notus-image-preview-meta">
           <div className="notus-image-preview-title">{currentImage.alt || `图片 ${preview.currentIndex + 1}`}</div>
-        </div>
+        </div>}
       </div>
 
       <button

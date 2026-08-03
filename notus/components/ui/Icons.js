@@ -37,6 +37,7 @@ export const Icons = {
   copy: (p) => <Icon {...p}><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"/></Icon>,
   code: (p) => <Icon {...p}><path d="m8 8-4 4 4 4M16 8l4 4-4 4M14 4l-4 16"/></Icon>,
   quote: (p) => <Icon {...p}><path d="M7 7H4v6h5l-2 4M17 7h-3v6h5l-2 4"/></Icon>,
+  messageCircle: (p) => <Icon {...p}><path d="M20 11.5a7.5 7.5 0 0 1-8 7.5 8.3 8.3 0 0 1-3.2-.7L4 20l1.6-4.1A7.2 7.2 0 0 1 4.5 12a7.5 7.5 0 0 1 15-0.5z"/><path d="M8.5 12h.01M12 12h.01M15.5 12h.01"/></Icon>,
   divider: (p) => <Icon {...p}><path d="M4 12h16M8 6h8M8 18h8"/></Icon>,
   listUl: (p) => <Icon {...p}><path d="M9 6h12M9 12h12M9 18h12"/><circle cx="4" cy="6" r="1" fill="currentColor" stroke="none"/><circle cx="4" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="4" cy="18" r="1" fill="currentColor" stroke="none"/></Icon>,
   listOl: (p) => <Icon {...p}><path d="M10 6h11M10 12h11M10 18h11M4 4v4M3 8h2M3 16h3a1 1 0 0 1 0 2H3.5a1 1 0 0 0 0 2H6"/></Icon>,

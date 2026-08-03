@@ -53,6 +53,8 @@ assert.ok(agentWorkspace.includes('className="notus-agent-workspace__scroll"'), 
 const globalStyles = read('styles/globals.css');
 assert.ok(globalStyles.includes('container-name: notus-agent-workspace;'), '窄 AI 面板必须按自身宽度而非整个窗口切换布局');
 assert.ok(globalStyles.includes('@container notus-agent-workspace (max-width: 560px)'), '窄 AI 面板应在容器宽度不足时切换工具条布局');
+assert.ok(globalStyles.includes('@container notus-agent-workspace (max-width: 680px)'), '确认方式应先于联网和 MCP 收敛为图标');
+assert.ok(globalStyles.includes('.notus-agent-composer__network-tools {\n    flex-basis: 100%;'), '仅在最窄宽度让联网和 MCP 成组换行');
 assert.ok(globalStyles.includes('.notus-agent-composer__model {\n    max-width: 96px;'), '窄 AI 面板中的模型选择应使用容器内固定上限，不能引用窗口宽度');
 assert.ok(globalStyles.includes('.notus-resizable-layout:not(.is-left-collapsed) .notus-resizable-layout__panel--left,'), '收起编辑器后不得保留 1200px 断点的左栏最小宽度');
 assert.ok(globalStyles.includes('.notus-resizable-layout:not(.is-right-collapsed) .notus-resizable-layout__panel--right {'), '收起 AI 面板后不得保留 1200px 断点的右栏最小宽度');

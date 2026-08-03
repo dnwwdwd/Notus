@@ -331,9 +331,16 @@ export function buildRestoredAgentTimeline(session = {}) {
       return { ...payload, created_at: row?.created_at || '' };
     })
     .filter(Boolean);
+  const isCompleted = session.status === 'completed';
+  const visiblePersistedEvents = persistedEvents.filter((event) => {
+    // 用户已看到最终回复时，之前一次可恢复的模型请求错误已经解决；继续保留只会
+    // 误导为当前任务仍待处理。真正失败的 session 不经过这条分支，仍完整展示错误。
+    if (isCompleted && event.type === 'artifact' && event.artifact_type === 'run_error') return false;
+    return true;
+  });
   const legacyLogs = Array.isArray(session.run_logs) ? session.run_logs : [];
-  const sourceEvents = persistedEvents.length > 0
-    ? persistedEvents
+  const sourceEvents = visiblePersistedEvents.length > 0
+    ? visiblePersistedEvents
     : legacyLogs.filter((row) => row?.tool_name && row.tool_name !== '__run_metadata__').map((row) => ({
       type: 'progress',
       stage: 'tool_done',

@@ -14,6 +14,7 @@ const { claimRunnableTasks, updateTask, recoverOrphanedTasks, getTaskBySession }
 const { publish } = require('./agentRunEventBus');
 const { getDb } = require('./db');
 const { updateResumeJob } = require('./agentControlPlane');
+const { mergeAgentMedia } = require('./agentMedia');
 
 const logger = createLogger({ subsystem: 'agent-task-worker' });
 const WORKER_STATE_KEY = '__notus_agent_task_worker_state__';
@@ -22,18 +23,11 @@ const workerState = globalThis[WORKER_STATE_KEY] || (globalThis[WORKER_STATE_KEY
   running: false,
 });
 
-function isImage(item = {}) {
-  const name = String(item?.name || item?.file_name || '').toLowerCase();
-  const type = String(item?.type || item?.contentType || '').toLowerCase();
-  return item?.media_kind === 'image' || type.startsWith('image/') || /\.(png|jpe?g|webp|gif)$/.test(name);
-}
-
 function splitMedia(input = {}) {
   const attachments = Array.isArray(input.attachments) ? input.attachments : [];
   const media = Array.isArray(input.media_items) ? input.media_items : [];
   const images = Array.isArray(input.images) ? input.images : [];
-  const all = [...attachments, ...media];
-  return { attachments: all.filter((item) => !isImage(item)), images: [...images, ...all.filter(isImage)] };
+  return mergeAgentMedia({ attachments, mediaItems: media, images });
 }
 
 function buildViewedImagePreviews(images = [], conversationId = null) {
@@ -42,7 +36,7 @@ function buildViewedImagePreviews(images = [], conversationId = null) {
     return {
       id: String(image?.id || storedName || index),
       name: String(image?.name || `图片 ${index + 1}`),
-      alt: String(image?.name || `用户提交的图片 ${index + 1}`),
+      alt: `已查看图片 ${index + 1}`,
       preview_url: storedName && conversationId
         ? `/api/agent/images/${encodeURIComponent(storedName)}?conversation_id=${encodeURIComponent(conversationId)}`
         : '',

@@ -50,7 +50,7 @@ assert.ok(eventBus.includes("const EVENT_BUS_KEY = '__notus_agent_run_event_bus_
 assert.ok(eventBus.includes('const emitter = globalThis[EVENT_BUS_KEY]'), 'Worker 与 SSE Route 必须订阅同一个事件总线');
 assert.ok(taskWorker.includes('const finalSession = getSession(sessionId);'), '后台 Worker 收尾时必须读取真实会话状态');
 assert.ok(taskWorker.includes("const status = finalSession.status || loopResult?.status || 'failed';"), '后台 Worker 必须写回真实终态');
-assert.ok(agentWorkspace.includes('content="暂无 MCP 服务"'), '无 MCP 时应显示指定 Tooltip');
+assert.ok(agentWorkspace.includes("content={mcpAvailable ? 'MCP 工具' : '暂无 MCP 服务'}"), 'MCP 必须按可用状态显示 Tooltip');
 assert.ok(agentWorkspace.includes('onOpenFile={openDiffFile}'), 'Diff 文件列表应可打开文件');
 assert.ok(!icons.includes("skill: ({ style, ...p } = {}) => <Icon {...p} style={{ color: 'var(--accent)'"), 'Skill 图标不能在未选中时强制强调色');
 

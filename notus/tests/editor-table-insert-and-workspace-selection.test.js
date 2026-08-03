@@ -19,8 +19,8 @@ assert.ok(appContext.includes('activeFileId: null, pendingCitation: null'), 'fil
 assert.ok(sidebar.includes('clearFileSelection();'), 'sidebar should clear the selected file when clicked again');
 assert.ok(sidebar.includes("navigateWithFallback(router, `/${currentPage}`, { mode: 'router' })"), 'sidebar should remove the fileId route state after deselection');
 
-assert.ok(settings.includes("background: '#F9F9F8'"), 'image storage options should use the search settings segmented control style');
-assert.ok(settings.includes("fontFamily: 'Georgia, Songti SC, STSong, serif'"), 'image storage should use the search settings heading style');
-assert.ok(settings.includes('保存</Button>'), 'image storage should use the compact search settings save action');
+assert.ok(settings.includes('<SegmentedTabs value={selectedProvider}'), 'image storage should use the shared segmented control');
+assert.ok(settings.includes('ariaLabel="图床服务商"'), 'image storage provider selector should keep an accessible label');
+assert.ok(settings.includes('onSaved={applySettings}'), 'image storage provider save should refresh the active configuration');
 
 console.log('editor table insert and workspace selection tests passed');

@@ -14,6 +14,42 @@
 
 ## 当前记录
 
+### BUG-20260803-003 AI 单面板扩宽时内容列偏移
+
+- 状态：已修复（2026-08-03）。
+- 现象：展开 AI 面板、关闭富文本编辑器后，缓慢扩大窗口宽度，在部分宽度范围内消息列和输入框内容列没有相对 AI 面板居中，视觉上偏右。
+- 影响范围：`/files` 的 AI 单面板状态及其响应式断点切换；不影响对话数据、面板开关持久化或 Agent 执行。
+- 根因：`notus/styles/globals.css` 的 `max-width: 1200px` 规则无条件以 `!important` 给左右面板设置 `min-width: 300px`；`ResizableLayout` 虽已标记 `is-left-collapsed`，透明的编辑器左栏仍占 300px，将 AI 面板和其内容列整体推向右侧。
+- 修复：300px 最小宽度仅作用于未收起的对应面板；收起的左或右栏保持零宽，AI 单面板从工作区左边界开始，消息列与输入框继续相对同一 AI 面板居中。
+- 验证：Browser 在 1000、1100、1200、1279、1281、1360px 连续扩宽，以及 390px 窄屏下验证内容列与输入框偏移均等于理论居中值；`workspace-layout-and-topbar.test.js`、`ui-bug-regressions.test.js`、`npm run lint:web` 和 `git diff --check` 通过。控制台仅有既有 Tiptap 重复扩展和 Next HMR 开发警告，无运行时错误或框架覆盖层。
+
+### BUG-20260803-002 回归更新
+
+- 状态：已修复（2026-08-03）。
+- 用户截图确认：此前修复只覆盖了窄屏横向溢出，搜索服务商、图床服务商与全局 Agent 的调用点仍以 `width: 100%` 或 `width: min(100%, 540px)` 覆盖公共组件，导致宽屏下标签组被拉成整行并留下无效灰色区域。
+- 修复：移除三处调用方强制宽度，并在公共 `SegmentedTabs` 上固定 `width: fit-content` 与 `justify-self: start`，防止 Grid 默认拉伸；空间不足时仍由组件自身限制最大宽度并在标签区横向滚动。
+- 验证：Browser 桌面实测图床服务商从 860px 收紧至 297px、全局 Agent 从 860px 收紧至 368px，页面无横向溢出；静态回归测试与 `npm run lint:web` 通过。390px 的设置抽屉菜单在测试环境未切换至目标面板，已记录为待单独实机回归，不将该抽屉状态异常计入本修复通过项。
+
+### BUG-20260803-002｜设置页分段 Tab 在窄宽度下重新溢出
+
+- 状态：已修复（2026-08-03，390px Browser 回归）
+- 现象：设置页内的搜索、图床、MCP、全局 Agent 等分段 Tab 在不同页面的窄宽度下会超出内容区；修复一个调用点后，其他未单独补样式的页面仍会复现。
+- 影响范围：所有复用 `SegmentedTabs` 的设置页及设置弹窗内的分段选择器；不影响业务数据、保存或切换行为。
+- 根因：`SegmentedTabs` 默认以选项最小宽度撑开的 `inline-flex` 输出，根组件没有 `maxWidth`、可收缩最小宽度和自身横向滚动策略；设置页仅有少数调用点零散补充了宽度/滚动样式，造成跨页面约束不一致。
+- 修复：将 `minWidth: 0`、`maxWidth: 100%`、`boxSizing: border-box` 与自身 `overflowX: auto` 收口到公共组件。调用方仍可覆盖布局，但默认不会带动设置内容区横向溢出。
+- 已检查关联流程：个性化图片上传位置、搜索服务商、图床服务商、MCP、全局 Agent、Agent 输入确认方式；选择状态和 Tooltip 语义未改。
+- 验证：先新增 `ui-bug-regressions.test.js` 断言并确认修复前失败，修复后通过；Browser 在 390px 宽度打开设置弹窗，页面 `documentScrollWidth` 与 `clientWidth` 均为 390，公共 Tab 运行时默认不再使用可见溢出策略；`npm run lint:web` 通过（仅保留既有 `FileAgentWorkspace` Hook 依赖 warning）。
+
+### BUG-20260803-001｜Agent 历史消息未恢复文件操作 Diff 详情卡
+
+- 状态：已修复（2026-08-03，真实 Claude Agent 与刷新回归）
+- 现象：Agent 创建、修改、重命名或移动文件后，消息中不再显示“查看详情”的 Diff 卡，用户无法从该消息打开对应的文件操作预览。
+- 影响范围：文件工作区的 Agent 历史会话恢复，以及完成态文件操作集的消息级详情入口；实时和恢复后的创建、修改、移动操作均需保持可查看。
+- 根因：`AgentWorkspace` 的 `OperationSetCard` 与 `DiffDialog` 组件仍存在，但最终消息在自动应用文件修订后继续生成总结时会丢失 `operation_set_id`；早期记录也可能只有 `agent_session_id`。`FileAgentWorkspace` 仅按消息 ID 反查，无法恢复这两类完成态操作集。
+- 修复：`runAgentLoop()` 记录最近一个成功的操作集，在最终总结事件和最终助手消息中继续携带它；`FileAgentWorkspace` 合并会话级与列表级操作集并按 ID 去重，消息关联优先使用 `operation_set_id`，缺失时按 `agent_session_id` 回退恢复 `OperationSetCard`；不改变 Diff 的确认、应用、回滚或文件权限边界。
+- 已检查关联流程：实时 SSE 完成事件、会话详情 API、历史恢复、操作集应用/回滚、文件树刷新；图片 Diff、资料/文件回执开关未受影响。
+- 验证：`agent-workspace-controls.test.js` 新增最终操作集与 session 回退关联断言；真实 Claude Agent 已完成“读取三篇笔记 → 生成全文修订 → 自动应用”，刷新后完成态工具链默认折叠，消息出现“1 个文件全文修订 / 查看详情”卡；`npm --prefix notus run lint`、`npm --prefix notus run build` 与 `git diff --check` 通过。
+
 ### BUG-20260802-026｜已保存历史会话首屏恢复触发 hydration 警告
 
 - 状态：已修复（2026-08-02 Browser 回归）

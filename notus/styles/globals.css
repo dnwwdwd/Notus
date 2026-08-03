@@ -217,6 +217,8 @@ button {
 .notus-message-mention-flow { white-space: normal; }
 
 .notus-mention-item:hover { background: color-mix(in srgb, var(--accent-subtle) 65%, var(--bg-secondary)); }
+.notus-mention-item[role="button"]:hover { color: var(--accent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent); }
+.notus-mention-item[role="button"]:hover .notus-mention-item__label { text-decoration: underline; text-underline-offset: 2px; }
 .notus-mention-item:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
 
 .notus-mention-item__label {
@@ -249,8 +251,9 @@ button {
 .notus-mention-preview-dialog { width: min(65vw, 960px) !important; }
 .notus-mention-preview-title { min-width: 0; display: inline-flex; align-items: center; gap: 8px; color: var(--text-primary); }
 .notus-mention-preview-title svg { color: var(--accent); flex: 0 0 auto; }
+.notus-mention-preview__title-link { min-width: 0; overflow: hidden; padding: 0; color: var(--accent); font: inherit; font-weight: 700; text-align: left; text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.notus-mention-preview__title-link:hover { color: var(--accent-hover); }
 .notus-mention-preview { min-height: 180px; display: flex; flex: 1; flex-direction: column; overflow: hidden; }
-.notus-mention-preview__path { margin-bottom: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-tertiary); font-size: 12px; }
 .notus-mention-preview__status,
 .notus-mention-preview__error { min-height: 140px; display: flex; align-items: center; justify-content: center; text-align: center; color: var(--text-secondary); font-size: 14px; }
 .notus-mention-preview__error { color: var(--danger); }
@@ -263,6 +266,12 @@ button {
 .notus-mention-preview__list button span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .notus-mention-preview__content { min-width: 0; min-height: 0; display: flex; flex: 1; overflow: hidden; }
 .notus-mention-preview__content .md-preview { min-height: 0; padding: 26px 30px; font-size: var(--text-base); }
+.notus-mention-preview__footer { display: flex; align-items: center; gap: 8px; min-height: 38px; padding: 10px 2px 0; color: var(--text-tertiary); font-size: 12px; }
+.notus-mention-preview__footer-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.notus-agent-toolchain__images { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.notus-agent-toolchain__images figure { width: 112px; margin: 0; overflow: hidden; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--bg-secondary); }
+.notus-agent-toolchain__images img { display: block; width: 112px; height: 84px; object-fit: cover; background: var(--bg-primary); }
+.notus-agent-toolchain__images figcaption { overflow: hidden; padding: 5px 6px; color: var(--text-tertiary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 
 @media (max-width: 700px) {
   .notus-mention-preview-dialog { width: calc(100vw - 32px) !important; }
@@ -416,6 +425,11 @@ a {
 
 .notus-agent-toolchain__step + .notus-agent-toolchain__step {
   border-top: 1px solid var(--border-subtle);
+}
+
+.notus-agent-toolchain__step--enter {
+  animation: notus-agent-tool-step-in 220ms cubic-bezier(0.23, 1, 0.32, 1) both;
+  animation-delay: calc(var(--notus-step-index, 0) * 70ms);
 }
 
 .notus-agent-toolchain__row {
@@ -598,6 +612,11 @@ a {
   to { opacity: 1; transform: translateY(0); }
 }
 
+@keyframes notus-agent-tool-step-in {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 .notus-agent-composer-dock {
   padding: 24px 12px 18px;
 }
@@ -621,6 +640,7 @@ a {
   justify-content: space-between;
   gap: 10px;
   padding: 0 12px 12px;
+  transition: gap 160ms ease, padding 160ms ease;
 }
 
 .notus-agent-composer__tools,
@@ -633,6 +653,7 @@ a {
 
 .notus-agent-composer__tools {
   flex-wrap: wrap;
+  transition: gap 160ms ease, max-width 160ms ease;
 }
 
 .notus-agent-composer__attachments,
@@ -650,11 +671,13 @@ a {
 .notus-agent-composer__actions {
   flex: 0 1 auto;
   gap: 8px;
+  transition: gap 160ms ease;
 }
 
 .notus-agent-composer__model {
   min-width: 0;
   max-width: 150px;
+  transition: max-width 160ms ease;
 }
 
 .notus-agent-composer__model > span {
@@ -805,10 +828,16 @@ a {
   .notus-agent-tool-chevron,
   .notus-agent-toolchain__stop,
   .notus-agent-toolchain__actions button,
-  .notus-agent-toolchain__detail {
+  .notus-agent-toolchain__detail,
+  .notus-agent-composer__footer,
+  .notus-agent-composer__tools,
+  .notus-agent-composer__actions,
+  .notus-agent-composer__model {
     transition-duration: 0ms !important;
     animation: none !important;
   }
+
+  .notus-agent-toolchain__step--enter { animation: none !important; }
 
   .notus-agent-tool-row:active,
   .notus-agent-pressable:active {
@@ -830,19 +859,17 @@ a {
   }
 
   .notus-agent-composer__footer {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    gap: 8px;
+    align-items: flex-end;
+    gap: 6px;
     padding: 0 10px 10px;
   }
 
   .notus-agent-composer__tools {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    align-items: start;
-    gap: 8px;
-    max-width: 100%;
-    overflow: visible;
+    flex: 1 1 auto;
+    flex-wrap: nowrap;
+    gap: 4px;
+    max-width: calc(100% - 108px);
+    overflow: hidden;
   }
 
   .notus-agent-composer__attachments {
@@ -850,18 +877,41 @@ a {
   }
 
   .notus-agent-composer__task-controls {
+    flex-wrap: nowrap;
     justify-content: flex-start;
     gap: 4px;
   }
 
   .notus-agent-composer__actions {
     justify-content: flex-end;
-    padding-top: 4px;
-    border-top: 1px solid rgba(229, 227, 216, 0.72);
+    flex: 0 0 auto;
+    padding: 0;
+    border: 0;
   }
 
   .notus-agent-composer__model {
-    max-width: min(220px, calc(100% - 42px));
+    max-width: 96px;
+  }
+
+  .notus-agent-confirm-mode button {
+    min-width: 28px !important;
+    padding-inline: 6px !important;
+  }
+
+  .notus-agent-confirm-mode .notus-segmented-tabs__label,
+  .notus-agent-control-label {
+    display: none;
+  }
+
+  .notus-agent-confirm-mode button {
+    gap: 0 !important;
+  }
+
+  .notus-agent-composer__task-controls > div > button {
+    width: 28px;
+    padding-inline: 0 !important;
+    justify-content: center;
+    gap: 0 !important;
   }
 
   .notus-agent-toolchain__summary {
@@ -879,6 +929,21 @@ a {
   .notus-agent-toolchain__detail {
     margin-left: 22px;
     padding-left: 10px;
+  }
+
+}
+
+@container notus-agent-workspace (max-width: 390px) {
+  .notus-agent-composer__tools {
+    max-width: calc(100% - 86px);
+  }
+
+  .notus-agent-composer__attachments button:last-child {
+    display: none !important;
+  }
+
+  .notus-agent-composer__model {
+    max-width: 64px;
   }
 }
 
@@ -1514,7 +1579,8 @@ a {
 @media (prefers-reduced-motion: reduce) {
   .notus-sidebar,
   .notus-resizable-layout__panel--left,
-  .notus-resizable-layout__handle {
+  .notus-resizable-layout__handle,
+  .notus-settings-nav {
     transition-duration: 0ms !important;
   }
 }
@@ -1523,13 +1589,22 @@ a {
   min-width: 0;
 }
 
+.notus-settings-layout {
+  position: relative;
+}
+
+.notus-settings-nav-trigger,
+.notus-settings-nav-backdrop {
+  display: none;
+}
+
 @media (max-width: 1200px) {
   .notus-sidebar:not(.is-collapsed) {
     width: 196px !important;
   }
 
-  .notus-resizable-layout__panel--left,
-  .notus-resizable-layout__panel--right {
+  .notus-resizable-layout:not(.is-left-collapsed) .notus-resizable-layout__panel--left,
+  .notus-resizable-layout:not(.is-right-collapsed) .notus-resizable-layout__panel--right {
     min-width: 300px !important;
   }
 }
@@ -1584,33 +1659,74 @@ a {
   }
 
   .notus-settings-layout {
-    flex-direction: column;
+    display: block !important;
   }
 
   .notus-settings-nav {
-    width: 100% !important;
-    min-height: 58px;
-    padding: 10px 12px !important;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    overflow-x: auto;
-    overflow-y: hidden;
-    border-right: 0 !important;
-    border-bottom: 1px solid var(--border-subtle);
-    scrollbar-width: thin;
+    position: absolute;
+    z-index: 3;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: min(272px, calc(100% - 44px)) !important;
+    min-height: 0;
+    padding: 16px 12px !important;
+    overflow-y: auto;
+    overflow-x: hidden;
+    border-right: 1px solid var(--border-subtle) !important;
+    border-bottom: 0;
+    box-shadow: 10px 0 30px rgba(26, 19, 17, 0.16);
+    transform: translateX(-104%);
+    transition: transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
+    pointer-events: none;
   }
 
-  .notus-settings-nav > div {
-    flex: 0 0 auto;
-    height: 34px !important;
-    margin-bottom: 0 !important;
-    padding: 0 10px !important;
-    white-space: nowrap;
-    font-size: var(--text-sm) !important;
+  .notus-settings-nav.is-mobile-open {
+    transform: translateX(0);
+    pointer-events: auto;
+  }
+
+  .notus-settings-nav > button {
+    height: 40px !important;
+    margin-bottom: 4px !important;
+    padding: 0 12px !important;
+    font-size: var(--text-base) !important;
+  }
+
+  .notus-settings-nav-trigger {
+    width: 28px;
+    height: 28px;
+    margin: -4px 0 -4px -4px;
+    padding: 0;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text-secondary);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
+
+  .notus-settings-nav-trigger:hover {
+    background: var(--bg-hover);
+    color: var(--accent);
+  }
+
+  .notus-settings-nav-backdrop {
+    position: absolute;
+    z-index: 2;
+    inset: 0;
+    display: block;
+    border: 0;
+    padding: 0;
+    background: rgba(26, 19, 17, 0.22);
+    cursor: default;
+    animation: fadeIn 160ms ease;
   }
 
   .notus-settings-content {
+    height: 100%;
     padding: 20px 16px !important;
   }
 

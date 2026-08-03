@@ -25,6 +25,7 @@ function runTests() {
 
   const sidebar = read('components/Layout/Sidebar.js');
   const shell = read('components/Layout/Shell.js');
+  const appRoot = read('pages/_app.js');
   const resizableLayout = read('components/ui/ResizableLayout.js');
   const globalStyles = read('styles/globals.css');
   const desktopMain = fs.readFileSync(path.resolve(root, '..', 'desktop/main/index.js'), 'utf8');
@@ -46,6 +47,8 @@ function runTests() {
   assert.ok(sidebar.includes('setMobileSidebarOpen((current) => !current);'));
   assert.ok(desktopMain.includes('minWidth: 390'));
   assert.ok(desktopMain.includes('minHeight: 640'));
+  assert.ok(!appRoot.includes('PageTransitionOverlay'));
+  assert.ok(!fs.existsSync(path.join(root, 'components/ui/PageTransitionOverlay.js')));
   assert.ok(!sidebar.includes('activeTocKey'));
   assert.ok(sidebar.includes('const selected = Boolean(t.active);'));
   assert.ok(sidebar.includes('var(--accent-subtle)'));
@@ -67,34 +70,55 @@ function runTests() {
 
   const segmentedTabs = read('components/ui/SegmentedTabs.js');
   assert.ok(segmentedTabs.includes('export function SegmentedTabs'));
+  assert.ok(segmentedTabs.includes('responsiveLabels = false'));
+  assert.ok(segmentedTabs.includes("width: 'fit-content'") && segmentedTabs.includes("justifySelf: 'start'"), '公共 Tab 必须抵抗 Grid 父容器的默认拉伸');
+  assert.ok(segmentedTabs.includes('notus-segmented-tabs--responsive-labels'));
+  assert.ok(segmentedTabs.includes('@media (max-width: 720px)'));
+  assert.ok(segmentedTabs.includes("boxSizing: 'border-box'"));
+  assert.ok(segmentedTabs.includes("maxWidth: '100%'"));
+  assert.ok(segmentedTabs.includes('minWidth: 0'));
+  assert.ok(segmentedTabs.includes("overflowX: 'auto'"));
 
   const settings = read('components/Settings/SettingsScreen.js');
   assert.ok(settings.includes('closeOnBackdrop={false}'));
   assert.ok(settings.includes('showHeader'));
   assert.ok(!settings.includes('title="设置"'));
-  assert.ok(settings.includes('const SettingsPageHeader'));
-  assert.ok(settings.includes('const SettingsPageHeader = ({ title, icon })'));
-  assert.ok(!settings.includes('SettingsPageHeader = ({ title, icon, description })'));
+  assert.ok(!settings.includes('const SettingsPageHeader'));
+  assert.ok(!settings.includes('<SettingsPageHeader'));
   assert.ok(settings.includes('const SETTINGS_CONTENT_MAX_WIDTH = 860'));
   assert.ok(settings.includes('const SETTINGS_SURFACE_STYLE'));
   assert.ok(settings.includes('<section style={{ ...SETTINGS_SURFACE_STYLE, display: \'grid\', gap: 24 }}>'));
   assert.ok(!settings.includes("maxWidth: 672"));
-  assert.ok((settings.match(/<SettingsPageHeader/g) || []).length >= 8);
+  assert.strictEqual((settings.match(/<SettingsPageHeader/g) || []).length, 0);
   assert.ok(settings.includes('图片上传位置'));
   assert.ok(settings.includes('前往图床设置'));
   assert.ok(settings.includes('options={IMAGE_STORAGE_OPTIONS}'));
+  assert.ok(settings.includes('responsiveLabels'));
+  assert.ok(settings.includes("compactLabel: '腾讯 COS'"));
+  assert.ok(settings.includes("compactLabel: '阿里 OSS'"));
   assert.ok(!settings.includes('IMAGE_STORAGE_OPTIONS.map((item) => ({ ...item, icon:'));
   assert.ok(settings.includes('const [selectedProvider, setSelectedProvider] = useState(CLOUD_IMAGE_STORAGE_OPTIONS[0].value);'));
   assert.ok(settings.includes('initializeSelectedProvider: true'));
-  assert.ok(settings.includes("background: '#F9F9F8'"));
+  assert.ok(settings.includes('<SegmentedTabs value={selectedProvider} onChange={setSelectedProvider} ariaLabel="图床服务商"'));
+  assert.ok(!settings.includes("background: '#F9F9F8'"));
+  assert.ok(segmentedTabs.includes('height = 30'));
   assert.ok(settings.includes('value: \'oss\', label: \'阿里云 OSS\''));
-  assert.ok(!settings.includes('ariaLabel="图床服务商"'));
+  assert.ok(settings.includes('ariaLabel="图床服务商"'));
   assert.ok(settings.includes('请先在个性化页切换上传位置，再清除密钥'));
   assert.ok(!settings.includes("        设置\n      </div>"));
   assert.ok(settings.includes('height: 42'));
   assert.ok(!settings.includes('>上传位置</div>'));
   assert.ok(settings.includes('className="notus-settings-dialog"'));
-  assert.ok(settings.includes('className="notus-settings-nav"'));
+  assert.ok(settings.includes("'notus-settings-nav', mobileOpen ? 'is-mobile-open' : ''"));
+  assert.ok(settings.includes('const [mobileNavOpen, setMobileNavOpen] = useState(false);'));
+  assert.ok(settings.includes('aria-label="打开设置菜单"'));
+  assert.ok(settings.includes('aria-label="关闭设置菜单"'));
+  assert.ok(settings.includes('mobileOpen={mobileNavOpen}'));
+  assert.ok(!settings.includes('activeSectionMeta.label'));
+
+  assert.ok(globalStyles.includes('.notus-settings-nav.is-mobile-open'));
+  assert.ok(globalStyles.includes('.notus-settings-nav-backdrop'));
+  assert.ok(globalStyles.includes('transform: translateX(-104%)'));
   assert.ok(settings.includes('导入 ZIP'));
   assert.ok(settings.includes("fetch('/api/skills/install/zip', { method: 'POST', body: form })"));
   assert.ok(settings.includes('type="file" accept=".zip,application/zip,application/x-zip-compressed"'));
@@ -150,14 +174,24 @@ function runTests() {
   assert.ok(agentWorkspace.includes('width: AGENT_CHAT_CONTENT_WIDTH'));
   assert.ok(agentWorkspace.includes('className="notus-agent-composer-dock"'));
   assert.ok(agentWorkspace.includes('className="notus-agent-composer__model"'));
+  assert.ok(agentWorkspace.includes('className="notus-agent-confirm-mode"'));
+  assert.ok(agentWorkspace.includes('className="notus-agent-control-label"'));
+  assert.ok(agentWorkspace.includes('aria-label="联网搜索"'));
+  assert.ok(agentWorkspace.includes('Tooltip content={modelLabel(selectedConfig)}'));
   assert.ok(agentWorkspace.includes('onOpenFile={onOpenDiffFile}'));
   assert.ok(agentWorkspace.includes("removed.push(`原路径：${operation.old_path || operation.old || ''}`);"));
   assert.ok(!agentWorkspace.includes('function AgentDiffCard'));
 
+  assert.ok(segmentedTabs.includes("className = ''"));
+  assert.ok(segmentedTabs.includes("'notus-segmented-tabs', responsiveLabels ? 'notus-segmented-tabs--responsive-labels' : '', className"));
+
   const mentionPreview = read('components/AgentWorkspace/MentionPreviewDialog.js');
   assert.ok(mentionPreview.includes('function visibleMentionMarkdown(content = \'\')'));
   assert.ok(mentionPreview.includes("dialogStyle={{ maxHeight: 'calc(100dvh - 32px)'"));
-  assert.ok(mentionPreview.includes('setContent(visibleMentionMarkdown(payload.content));'));
+  assert.ok(mentionPreview.includes('const mentionContentCache = new Map();'));
+  assert.ok(mentionPreview.includes('export function prefetchMentionDocument'));
+  assert.ok(mentionPreview.includes('setContent(payload.content);'));
+  assert.ok(mentionPreview.includes('notus-mention-preview__title-link'));
 
   const fileAgentWorkspace = read('components/AgentWorkspace/FileAgentWorkspace.js');
   assert.ok(fileAgentWorkspace.includes("window.addEventListener('notus-skills-changed', refreshSkills);"));

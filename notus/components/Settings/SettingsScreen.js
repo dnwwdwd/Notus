@@ -24,17 +24,6 @@ import { Tooltip } from '../ui/Tooltip';
 
 const APP_VERSION = packageMeta.version || '0.1.2';
 const SETTINGS_CONTENT_MAX_WIDTH = 860;
-const SETTINGS_PAGE_TITLE_STYLE = {
-  fontFamily: 'Georgia, Songti SC, STSong, serif',
-  fontSize: 22,
-  lineHeight: 1.25,
-  fontWeight: 700,
-  letterSpacing: '-0.012em',
-  display: 'flex',
-  alignItems: 'center',
-  gap: 8,
-};
-
 const SETTINGS_SURFACE_STYLE = {
   background: '#fff',
   border: '1px solid #E5E3D8',
@@ -74,15 +63,6 @@ const EXTERNAL_MCP_PERMISSION_GROUPS = [
 const EXTERNAL_MCP_MANUAL_PERMISSION_GROUP = { title: '手动确认', items: [['get_change_status', '查询待确认变更状态']] };
 const EXTERNAL_MCP_DEFAULT_PERMISSIONS = EXTERNAL_MCP_PERMISSION_GROUPS[0].items.map(([id]) => id);
 
-const SettingsPageHeader = ({ title, icon }) => (
-  <div style={{ borderBottom: '1px solid #E5E3D8', paddingBottom: 16, marginBottom: 28 }}>
-    <div style={SETTINGS_PAGE_TITLE_STYLE}>
-      {icon}
-      {title}
-    </div>
-  </div>
-);
-
 export const SETTINGS_SECTIONS = [
   { id: 'model', label: '模型配置', icon: <Icons.robot size={17} /> },
   { id: 'search', label: '搜索配置', icon: <Icons.settings size={17} /> },
@@ -97,16 +77,20 @@ export const SETTINGS_SECTIONS = [
   { id: 'about', label: '关于', icon: <Icons.info size={17} /> },
 ];
 
-const SettingsNav = ({ active, onSelect }) => {
+const SettingsNav = ({ active, onSelect, mobileOpen = false }) => {
   return (
-    <div className="notus-settings-nav" style={{ width: 224, background: 'var(--bg-sidebar)', borderRight: '1px solid var(--border-subtle)', padding: '20px 16px', flexShrink: 0 }}>
+    <nav className={['notus-settings-nav', mobileOpen ? 'is-mobile-open' : ''].filter(Boolean).join(' ')} aria-label="设置菜单" style={{ width: 224, background: 'var(--bg-sidebar)', borderRight: '1px solid var(--border-subtle)', padding: '20px 16px', flexShrink: 0 }}>
       {SETTINGS_SECTIONS.map((item) => {
         const activeItem = item.id === active;
         return (
-          <div
+          <button
+            type="button"
             key={item.id}
             onClick={() => onSelect(item.id)}
+            aria-current={activeItem ? 'page' : undefined}
             style={{
+              width: '100%',
+              border: 0,
               height: 42,
               padding: '0 12px',
               display: 'flex',
@@ -119,14 +103,16 @@ const SettingsNav = ({ active, onSelect }) => {
               fontSize: 'var(--text-base)',
               fontWeight: activeItem ? 500 : 400,
               cursor: 'pointer',
+              fontFamily: 'inherit',
+              textAlign: 'left',
             }}
           >
             {item.icon}
             {item.label}
-          </div>
+          </button>
         );
       })}
-    </div>
+    </nav>
   );
 };
 
@@ -386,8 +372,6 @@ const ModelConfig = () => {
 
   return (
     <div style={{ width: '100%', color: '#2D2D2D' }}>
-      <SettingsPageHeader title="模型配置" icon={<Icons.robot size={20} style={{ color: '#D97757' }} />} />
-
       <div style={{ display: 'flex', flexDirection: 'column', gap: 32 }}>
         <section style={{ background: '#fff', border: '1px solid #E5E3D8', borderRadius: 12, padding: 24, boxShadow: '0 1px 2px rgba(0,0,0,0.04)', display: 'flex', flexDirection: 'column', gap: 20 }}>
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
@@ -607,8 +591,6 @@ const SearchConfig = () => {
 
   return (
     <div style={{ width: '100%', color: '#2D2D2D' }}>
-      <SettingsPageHeader title="搜索引擎配置" icon={<Icons.settings size={20} style={{ color: '#D97757' }} />} />
-
       <div style={{ ...SETTINGS_SURFACE_STYLE, display: 'grid', gap: 24 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid #F2F0EA', paddingBottom: 20 }}>
           <div>
@@ -623,33 +605,7 @@ const SearchConfig = () => {
         <div style={{ display: 'grid', gap: 24, opacity: config.enabled ? 1 : 0.45, pointerEvents: config.enabled ? 'auto' : 'none' }}>
           <div style={{ display: 'grid', gap: 10 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: '#4B4944' }}>搜索服务商</div>
-            <div style={{ display: 'flex', gap: 8, padding: 4, background: '#F9F9F8', border: '1px solid #E5E3D8', borderRadius: 10, overflowX: 'auto' }}>
-              {providers.map((provider) => {
-                const active = provider.id === selectedProvider.id;
-                return (
-                  <button
-                    key={provider.id}
-                    type="button"
-                    onClick={() => { patchConfig({ selected_provider: provider.id }); setApiKey(''); }}
-                    style={{
-                      flex: 1,
-                      minWidth: 88,
-                      height: 32,
-                      border: active ? '1px solid rgba(229,227,216,0.8)' : '1px solid transparent',
-                      borderRadius: 8,
-                      background: active ? '#fff' : 'transparent',
-                      color: active ? '#D97757' : '#6B6963',
-                      boxShadow: active ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
-                      fontSize: 13,
-                      fontWeight: 600,
-                      cursor: 'pointer',
-                    }}
-                  >
-                    {provider.name}
-                  </button>
-                );
-              })}
-            </div>
+            <SegmentedTabs value={selectedProvider.id} onChange={(providerId) => { patchConfig({ selected_provider: providerId }); setApiKey(''); }} ariaLabel="搜索服务商" minWidth={88} options={providers.map((provider) => ({ value: provider.id, label: provider.name }))} />
           </div>
 
           <div style={{ display: 'grid', gap: 14, border: '1px solid #F2F0EA', background: '#FDFCFB', borderRadius: 14, padding: 16 }}>
@@ -783,8 +739,6 @@ const Logs = ({ agentConversationId: suppliedAgentConversationId = '' }) => {
 
   return (
     <div style={{ width: '100%' }}>
-      <SettingsPageHeader title="日志" icon={<Icons.list size={20} style={{ color: '#D97757' }} />} />
-
       <Section title="Agent Loop 执行日志">
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
           <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', lineHeight: 1.7 }}>
@@ -1016,7 +970,6 @@ const Personalization = ({ onOpenImageSettings }) => {
 
   return (
     <div style={{ width: '100%' }}>
-      <SettingsPageHeader title="个性化" icon={<Icons.palette size={20} style={{ color: '#D97757' }} />} />
       <section style={{ ...SETTINGS_SURFACE_STYLE, display: 'grid', gap: 24 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, paddingBottom: 20, borderBottom: '1px solid #F2F0EA' }}>
           <div style={{ fontSize: 'var(--text-sm)', fontWeight: 600 }}>标题与文件名双向绑定</div>
@@ -1046,7 +999,7 @@ const Personalization = ({ onOpenImageSettings }) => {
             <div style={{ fontSize: 'var(--text-sm)', fontWeight: 600 }}>图片上传位置</div>
             <div style={{ marginTop: 4, fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', lineHeight: 1.6 }}>选择已配置的图床后，新图片会使用对应位置保存。</div>
           </div>
-          <SegmentedTabs value={imageTarget} onChange={handleImageTargetChange} disabled={savingImageTarget} ariaLabel="图片上传位置" minWidth={84} height={30} style={{ flexShrink: 0 }} options={IMAGE_STORAGE_OPTIONS} />
+          <SegmentedTabs value={imageTarget} onChange={handleImageTargetChange} disabled={savingImageTarget} ariaLabel="图片上传位置" minWidth={84} height={30} responsiveLabels style={{ flexShrink: 1, minWidth: 0, maxWidth: '100%' }} options={IMAGE_STORAGE_OPTIONS} />
         </div>
       </section>
     </div>
@@ -1054,10 +1007,10 @@ const Personalization = ({ onOpenImageSettings }) => {
 };
 
 const IMAGE_STORAGE_OPTIONS = [
-  { value: 'local', label: '本地资源目录' },
-  { value: 'cos', label: '腾讯云 COS' },
-  { value: 'oss', label: '阿里云 OSS' },
-  { value: 'r2', label: 'Cloudflare R2' },
+  { value: 'local', label: '本地资源目录', compactLabel: '本地' },
+  { value: 'cos', label: '腾讯云 COS', compactLabel: '腾讯 COS' },
+  { value: 'oss', label: '阿里云 OSS', compactLabel: '阿里 OSS' },
+  { value: 'r2', label: 'Cloudflare R2', compactLabel: 'R2' },
 ];
 
 const CLOUD_IMAGE_STORAGE_OPTIONS = [
@@ -1194,16 +1147,10 @@ const ImageStorageConfig = () => {
 
   return (
     <div style={{ width: '100%', color: '#2D2D2D' }}>
-      <SettingsPageHeader title="图床配置" icon={<Icons.image size={20} style={{ color: '#D97757' }} />} />
       <div style={{ display: 'grid', gap: 16 }}>
         <div style={{ display: 'grid', gap: 10 }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: '#4B4944' }}>图床服务商</div>
-          <div style={{ display: 'flex', gap: 8, padding: 4, background: '#F9F9F8', border: '1px solid #E5E3D8', borderRadius: 10, overflowX: 'auto' }}>
-            {CLOUD_IMAGE_STORAGE_OPTIONS.map((provider) => {
-              const active = provider.value === selectedProvider;
-              return <button key={provider.value} type="button" onClick={() => setSelectedProvider(provider.value)} style={{ flex: 1, minWidth: 96, height: 32, border: active ? '1px solid rgba(229,227,216,0.8)' : '1px solid transparent', borderRadius: 8, background: active ? '#fff' : 'transparent', color: active ? '#D97757' : '#6B6963', boxShadow: active ? '0 1px 3px rgba(0,0,0,0.08)' : 'none', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>{provider.label}</button>;
-            })}
-          </div>
+          <SegmentedTabs value={selectedProvider} onChange={setSelectedProvider} ariaLabel="图床服务商" minWidth={96} options={CLOUD_IMAGE_STORAGE_OPTIONS.map((provider) => ({ value: provider.value, label: provider.label }))} />
         </div>
         <ImageStorageProviderConfig provider={selectedProvider} savedConfig={providerConfigs[selectedProvider]} isActive={activeProvider === selectedProvider} onSaved={applySettings} />
       </div>
@@ -1320,7 +1267,6 @@ const Storage = () => {
 
   return (
     <div style={{ width: '100%' }}>
-      <SettingsPageHeader title="存储" icon={<Icons.database size={20} style={{ color: '#D97757' }} />} />
       <Section title="运行环境">
         <Field label="当前平台">
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -1423,7 +1369,6 @@ const ShortcutsSettings = () => {
 
   return (
     <div style={{ width: '100%' }}>
-      <SettingsPageHeader title="快捷键" icon={<Icons.keyboard size={20} style={{ color: '#D97757' }} />} />
 
       {capabilities.supportsDesktopShell && (
         <Section title="桌面端说明">
@@ -1540,7 +1485,19 @@ const SkillsSettings = () => {
   const load = useCallback(async () => {
     const response = await fetch('/api/skills', { cache: 'no-store' });
     const payload = await readJsonResponse(response, { fallbackMessage: '读取 Skills 失败' });
-    setSkills(Array.isArray(payload.skills) ? payload.skills : []);
+    const listed = Array.isArray(payload.skills) ? payload.skills : [];
+    const updateStates = await Promise.all(listed.map(async (skill) => {
+      if (!skill.can_update) return [String(skill.id), false];
+      try {
+        const check = await fetch(`/api/skills/${encodeURIComponent(skill.id)}/update`, { cache: 'no-store' });
+        const result = await readJsonResponse(check, { fallbackMessage: '检查 Skill 更新失败' });
+        return [String(skill.id), Boolean(result.can_update)];
+      } catch {
+        return [String(skill.id), false];
+      }
+    }));
+    const canUpdateById = new Map(updateStates);
+    setSkills(listed.map((skill) => ({ ...skill, can_update: Boolean(canUpdateById.get(String(skill.id))) })));
   }, []);
 
   useEffect(() => {
@@ -2035,14 +1992,8 @@ const GlobalAgentFiles = () => {
 
   return (
     <div style={{ width: '100%', color: '#2D2D2D' }}>
-      <SettingsPageHeader title="全局 Agent" icon={<Icons.robot size={20} style={{ color: '#D97757' }} />} />
       <div style={{ display: 'grid', gap: 16 }}>
-        <div style={{ width: 'min(100%, 540px)', display: 'flex', gap: 8, padding: 4, background: '#F9F9F8', border: '1px solid #E5E3D8', borderRadius: 10, overflowX: 'auto' }}>
-          {GLOBAL_AGENT_FILE_OPTIONS.map((option) => {
-            const active = option.value === activeFile;
-            return <button key={option.value} type="button" aria-pressed={active} onClick={() => setActiveFile(option.value)} style={{ flex: '1 0 156px', minWidth: 120, height: 36, border: active ? '1px solid rgba(229,227,216,0.8)' : '1px solid transparent', borderRadius: 8, background: active ? '#fff' : 'transparent', color: active ? '#D97757' : '#6B6963', boxShadow: active ? '0 1px 3px rgba(0,0,0,0.08)' : 'none', fontSize: 13, fontWeight: 650, cursor: 'pointer', transition: 'background 160ms ease, color 160ms ease, box-shadow 160ms ease' }}>{option.label}</button>;
-          })}
-        </div>
+        <SegmentedTabs value={activeFile} onChange={setActiveFile} ariaLabel="全局 Agent 文件" minWidth={120} options={GLOBAL_AGENT_FILE_OPTIONS.map((option) => ({ value: option.value, label: option.label }))} />
         <section style={{ ...SETTINGS_SURFACE_STYLE, padding: 0, overflow: 'hidden' }}>
           <div style={{ minHeight: 62, padding: '13px 18px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', borderBottom: '1px solid #ECE9DF', background: '#FDFCFB' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
@@ -2081,7 +2032,6 @@ const GlobalAgentFiles = () => {
 const About = () => {
   return (
     <div style={{ width: '100%' }}>
-      <SettingsPageHeader title="关于" icon={<Icons.info size={20} style={{ color: '#D97757' }} />} />
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', marginBottom: 24 }}>
         <div style={{ width: 56, height: 56, borderRadius: 12, background: 'var(--accent-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
           <NotusLogo size={36} />
@@ -2117,18 +2067,18 @@ const CONTENT_MAP = {
 
 export function SettingsDialog({ open, section = 'model', conversationId = '', onClose }) {
   const [activeSection, setActiveSection] = useState(section);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
-  useEffect(() => { setActiveSection(section); }, [section]);
+  useEffect(() => { setActiveSection(section); setMobileNavOpen(false); }, [section]);
 
   const Content = CONTENT_MAP[activeSection] || CONTENT_MAP.model;
-  const activeSectionMeta = SETTINGS_SECTIONS.find((item) => item.id === activeSection) || SETTINGS_SECTIONS[0];
   const openImageSettings = () => setActiveSection('image-storage');
 
   return (
     <Dialog
       open={open}
       onClose={onClose}
-      title={<span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>{activeSectionMeta.icon}{activeSectionMeta.label}</span>}
+      title={<button type="button" className="notus-settings-nav-trigger" aria-label="打开设置菜单" aria-expanded={mobileNavOpen} onClick={() => setMobileNavOpen(true)}><Icons.list size={17} /></button>}
       className="notus-settings-dialog"
       showHeader
       maxWidth={1180}
@@ -2137,7 +2087,8 @@ export function SettingsDialog({ open, section = 'model', conversationId = '', o
       dialogStyle={{ width: 'min(1180px, calc(100vw - 64px))', height: 'min(760px, calc(100vh - 64px))', margin: 0, display: 'flex', flexDirection: 'column' }}
     >
       <div className="notus-settings-layout" style={{ flex: 1, minHeight: 0, display: 'flex', overflow: 'hidden' }}>
-        <SettingsNav active={activeSection} onSelect={setActiveSection} />
+        {mobileNavOpen ? <button type="button" className="notus-settings-nav-backdrop" aria-label="关闭设置菜单" onClick={() => setMobileNavOpen(false)} /> : null}
+        <SettingsNav active={activeSection} mobileOpen={mobileNavOpen} onSelect={(nextSection) => { setActiveSection(nextSection); setMobileNavOpen(false); }} />
         <div className="notus-settings-content" style={{ flex: 1, overflow: 'auto', background: 'var(--bg-primary)', padding: 32, minWidth: 0 }}>
           <div className="notus-settings-content__inner" style={{ width: '100%', maxWidth: SETTINGS_CONTENT_MAX_WIDTH, margin: '0 auto' }}>
             <Content onOpenImageSettings={openImageSettings} agentConversationId={conversationId} />

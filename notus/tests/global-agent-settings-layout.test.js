@@ -3,7 +3,8 @@ const fs = require('fs');
 const path = require('path');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'components/Settings/SettingsScreen.js'), 'utf8');
-assert.ok(source.includes("width: 'min(100%, 540px)'") && source.includes("flex: '1 0 156px'"), '全局 Agent Tab 必须使用可响应的明确宽度');
+assert.ok(source.includes('ariaLabel="全局 Agent 文件"') && !source.includes("width: 'min(100%, 540px)'"), '全局 Agent Tab 应按内容收紧，窄屏时由公共组件自行滚动');
+assert.ok(!source.includes("style={{ display: 'flex', width: '100%', overflowX: 'auto' }}"), '设置页服务商 Tab 不得强制占满内容列');
 assert.ok(source.includes('notus-global-agent-editor') && source.includes('minHeight: 390'), '应使用独立的 Markdown 编辑表面');
 assert.ok(source.includes('content === savedContent') && source.includes('>保存修改</Button>'), '未修改时应禁用取消和保存');
 assert.ok(!source.includes('三份 Markdown 文件会在后续 Agent 请求中生效。'), '必须移除全局 Agent 页顶部说明文字');

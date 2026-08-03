@@ -5,7 +5,6 @@ import 'katex/dist/katex.min.css';
 import Head from 'next/head';
 import { useRouter } from 'next/router';
 import { ToastProvider } from '../components/ui/Toast';
-import { PageTransitionOverlay } from '../components/ui/PageTransitionOverlay';
 import { AppProvider } from '../contexts/AppContext';
 import { AppStatusProvider } from '../contexts/AppStatusContext';
 import { PlatformProvider } from '../contexts/PlatformContext';
@@ -69,7 +68,6 @@ export default function App({ Component, pageProps }) {
               <ToastProvider>
                 <SettingsDialogProvider>
                   <CoreRoutePrefetcher />
-                  <PageTransitionOverlay />
                   <Component {...pageProps} />
                   <SettingsDialogRoot />
                 </SettingsDialogProvider>

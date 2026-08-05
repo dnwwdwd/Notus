@@ -14,6 +14,16 @@
 
 ## 当前记录
 
+### BUG-20260804-001｜AI 输入框失焦后无法删除 Mention 文件项
+
+- 状态：已修复（2026-08-04，本地 Browser 与回归测试）。
+- 现象：AI 输入框内已有文件或目录 Mention 时，输入框失焦后没有稳定的删除入口，用户无法直接移除该项。
+- 影响范围：仅未发送 Agent 草稿中的文件、目录和 Skill Mention 删除交互，以及相应 IndexedDB 草稿同步；已发送消息、Mention 预览、文件拖放、Agent 上下文序列化和服务端会话数据不受影响。
+- 根因：`AgentWorkspace.js` 的动态 `createMentionChip()` 只创建图标和名称，未创建 `.notus-mention-item__remove` 按钮；现有 CSS 又只为该按钮定义 hover/focus 显示规则，输入组件因而没有可在失焦状态使用的删除控件。
+- 修复：动态 Mention 卡片创建带无障碍名称的删除按钮。点击删除时阻止预览事件冒泡，移除对应卡片、恢复输入光标并同步结构化 `segments`；输入框内的删除按钮始终可见，不再依赖输入框焦点。
+- 已检查关联流程：键盘 Backspace/Delete 删除、`@` 选择、文件树拖放、Mention 预览、历史消息只读卡片、IndexedDB 草稿恢复和发送时 `mention_segments` 序列化。只改变未发送输入卡片的删除入口，不改变文件内容或会话数据。
+- 验证：`ui-bug-regressions.test.js`、`agent-workspace-controls.test.js` 和 `npm run lint` 通过（仅保留既有 Hook 依赖警告）。本地 Browser 重新加载草稿后，在输入框未聚焦时确认 1 个 Mention 对应 1 个可见“移除 mention：用户访谈摘要”按钮；为保留现有草稿，没有在该样例上执行实际删除点击。
+
 ### BUG-20260803-008｜AI 回复重试追加重复用户消息而非覆盖原对话分支
 
 - 状态：已修复（2026-08-03，自动化与本地 Browser 实机回归）。

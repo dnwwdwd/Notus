@@ -5,7 +5,7 @@ const path = require('path');
 const root = path.resolve(__dirname, '..');
 
 function read(relativePath) {
-  return fs.readFileSync(path.join(root, relativePath), 'utf8');
+  return fs.readFileSync(path.join(root, relativePath), 'utf8').replace(/\r\n/g, '\n');
 }
 
 function runTests() {
@@ -115,6 +115,7 @@ function runTests() {
   assert.ok(settings.includes('aria-label="关闭设置菜单"'));
   assert.ok(settings.includes('mobileOpen={mobileNavOpen}'));
   assert.ok(!settings.includes('activeSectionMeta.label'));
+  assert.ok(settings.includes("{ id: 'global-agent', label: 'Agent 档案'"));
 
   assert.ok(globalStyles.includes('.notus-settings-nav.is-mobile-open'));
   assert.ok(globalStyles.includes('.notus-settings-nav-backdrop'));
@@ -162,6 +163,10 @@ function runTests() {
   assert.ok(agentWorkspace.includes('没有匹配的文件'));
   assert.ok(agentWorkspace.includes('mentionOptions = []'));
   assert.ok(agentWorkspace.includes('const activeMention = useMemo'));
+  assert.ok(agentWorkspace.includes('const removeChip = (event) =>'));
+  assert.ok(agentWorkspace.includes('removeButton.setAttribute(\'aria-label\', `移除 mention：${mention.name}`)'));
+  assert.ok(agentWorkspace.includes('restoreComposerCaret(trailingText, 0);'));
+  assert.ok(globalStyles.includes('.notus-agent-composer .notus-mention-item--inline .notus-mention-item__remove'));
   assert.ok(agentWorkspace.includes('function AgentWorkspace({'));
   assert.ok(agentWorkspace.includes('mentionOptions={mentionOptions}'));
   assert.ok(agentWorkspace.includes('function isFileSystemOperation(operation = {})'));

@@ -709,7 +709,34 @@ function truncateTimelineText(value, maxBytes = 16 * 1024) {
 }
 
 const IMAGE_VIEW_STAGES = new Set(['image_view_start', 'image_view_done', 'image_recognition_done']);
+const ATTACHMENT_PARSE_STAGES = new Set(['attachment_parse_start', 'attachment_parse_done']);
 const CONTROLLED_IMAGE_PREVIEW_PATTERN = /^\/api\/agent\/images\/([^/?]+)\?conversation_id=(\d+)$/;
+
+function normalizeAttachmentSourceKind(value) {
+  return String(value || '').trim().toLowerCase() === 'url' ? 'url' : 'file';
+}
+
+function sanitizeAttachmentSource(value, sourceKind) {
+  const source = String(value || '').trim();
+  if (!source) return '';
+  if (sourceKind === 'url') {
+    try {
+      const url = new URL(source);
+      // 解析记录只需要告诉用户读取了哪个页面，查询参数和 hash 可能包含临时凭据。
+      return truncateTimelineText(`${url.protocol}//${url.host}${url.pathname}`, 2 * 1024);
+    } catch {
+      return '';
+    }
+  }
+  // 不把上传临时目录或任意路径重新带回时间线，只保留文件名。
+  return truncateTimelineText(source.split(/[\\/]/).pop().replace(/[\x00-\x1F]/g, '_'), 512);
+}
+
+function normalizeTimelineCount(value, maximum) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  return Math.min(maximum, Math.floor(parsed));
+}
 
 function isImageInput(item = {}) {
   const name = String(item?.name || item?.file_name || item?.filename || '').toLowerCase();
@@ -747,6 +774,8 @@ function sanitizeRunEvent(event = {}) {
   if (!['progress', 'artifact', 'final'].includes(type)) return null;
   const stage = String(event.stage || '').trim();
   const isImageViewEvent = type === 'progress' && IMAGE_VIEW_STAGES.has(stage);
+  const isAttachmentParseEvent = type === 'progress' && ATTACHMENT_PARSE_STAGES.has(stage);
+  const sourceKind = isAttachmentParseEvent ? normalizeAttachmentSourceKind(event.source_kind) : '';
   const conversationId = normalizePositiveInt(event.conversation_id || event.conversationId);
   const viewedImages = isImageViewEvent ? sanitizeViewedImages(event.images, conversationId) : [];
   const payload = {
@@ -766,6 +795,7 @@ function sanitizeRunEvent(event = {}) {
     reason: String(event.reason || '').trim(),
     error_category: String(event.error_category || '').trim(),
     error_code: String(event.error_code || '').trim(),
+    error: isImageViewEvent ? truncateTimelineText(event.error || '', 512) : '',
     message: truncateTimelineText(event.message || '', 8 * 1024),
     retry_attempts: Math.max(0, Number(event.retry_attempts || 0)),
     resumable: Boolean(event.resumable),
@@ -775,6 +805,13 @@ function sanitizeRunEvent(event = {}) {
     message_id: isImageViewEvent ? normalizePositiveInt(event.message_id) : null,
     image_count: isImageViewEvent ? (viewedImages.length || Math.min(30, Math.max(0, Number(event.image_count || 0)))) : 0,
     images: viewedImages,
+    source: isAttachmentParseEvent ? sanitizeAttachmentSource(event.source, sourceKind) : '',
+    source_kind: sourceKind,
+    textLength: isAttachmentParseEvent ? normalizeTimelineCount(event.textLength, 1_000_000) : 0,
+    pageCount: isAttachmentParseEvent ? normalizeTimelineCount(event.pageCount, 100_000) : 0,
+    warning: isAttachmentParseEvent ? truncateTimelineText(event.warning || '', 2 * 1024) : '',
+    errorCode: isAttachmentParseEvent ? truncateTimelineText(event.errorCode || '', 512) : '',
+    duplicate: isAttachmentParseEvent && Boolean(event.duplicate),
     usage: type === 'final' ? redactSecrets(event.usage ?? null) : null,
   };
   const redacted = redactSecrets(payload);

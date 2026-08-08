@@ -1563,7 +1563,7 @@ function AgentConfirmModeSelect({ value, onChange, disabled }) {
   );
 }
 
-function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigChange, onSend, searchConfig, searchPreference, onSearchPreferenceChange, onRequireSearchConfig, onRequireMcpConfig, mcpSelection = { mode: 'off' }, onMcpSelectionChange, mcpAvailable = false, mcpAvailabilityChecked = false, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [], onPreviewMention, onPrefetchMention }) {
+function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigChange, onSend, onInterrupt, interruptibleSessionId = null, searchConfig, searchPreference, onSearchPreferenceChange, onRequireSearchConfig, onRequireMcpConfig, mcpSelection = { mode: 'off' }, onMcpSelectionChange, mcpAvailable = false, mcpAvailabilityChecked = false, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [], onPreviewMention, onPrefetchMention }) {
   const [composerState, setComposerState] = useState({ content: '', mentions: [], segments: [] });
   const [files, setFiles] = useState([]);
   const [imagePreview, setImagePreview] = useState(null);
@@ -2319,6 +2319,15 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
   };
 
   const canSend = !busy && !disabled && Boolean(selectedConfig) && (Boolean(value.trim()) || files.length > 0 || mentions.length > 0);
+  const canInterrupt = Boolean(interruptibleSessionId && typeof onInterrupt === 'function');
+  const primaryActionEnabled = canInterrupt || canSend;
+  const handlePrimaryAction = () => {
+    if (canInterrupt) {
+      void onInterrupt(interruptibleSessionId);
+      return;
+    }
+    void submit();
+  };
   const toggleWebSearch = () => {
     if (busy || disabled) return;
     if (!searchConfig.enabled) {
@@ -2575,7 +2584,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
                 </>
               ) : null}
             </div>
-            <button type="button" aria-label="发送" disabled={!canSend} onClick={() => submit()} style={transitionButton({ width: 34, height: 34, borderRadius: 10, background: canSend ? C.accent : C.muted, color: canSend ? '#fff' : '#BDBBB3', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: canSend ? 'pointer' : 'not-allowed', boxShadow: canSend ? '0 6px 18px rgba(217,119,87,0.22)' : 'none' })}>{uploading ? <span aria-hidden="true" style={{ width: 14, height: 14, borderRadius: 999, display: 'inline-block', boxSizing: 'border-box', border: '2px solid rgba(255,255,255,0.45)', borderTopColor: '#fff', animation: 'spin 0.82s linear infinite' }} /> : <Icons.arrowUp size={18} />}</button>
+            <Tooltip content={canInterrupt ? '中断当前任务' : '发送'}><span style={{ display: 'inline-flex' }}><button type="button" aria-label={canInterrupt ? '中断当前任务' : '发送'} disabled={!primaryActionEnabled} onClick={handlePrimaryAction} style={transitionButton({ width: 34, height: 34, borderRadius: 10, background: primaryActionEnabled ? C.accent : C.muted, color: primaryActionEnabled ? '#fff' : '#BDBBB3', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: primaryActionEnabled ? 'pointer' : 'not-allowed', boxShadow: primaryActionEnabled ? '0 6px 18px rgba(217,119,87,0.22)' : 'none' })}>{canInterrupt ? <Icons.square size={16} /> : uploading ? <span aria-hidden="true" style={{ width: 14, height: 14, borderRadius: 999, display: 'inline-block', boxSizing: 'border-box', border: '2px solid rgba(255,255,255,0.45)', borderTopColor: '#fff', animation: 'spin 0.82s linear infinite' }} /> : <Icons.arrowUp size={18} />}</button></span></Tooltip>
           </div>
         </div>
       </div>
@@ -2784,7 +2793,7 @@ function SearchConfigView({ config, onSaved, onBack, selectProvider }) {
   );
 }
 
-export function AgentWorkspace({ messages, interactions = [], streamText, loading, error, activeSteps, activeSessionId = null, activeSessionStatus = '', sessionTimelines = {}, llmConfigs, selectedConfigId, onConfigChange, onSend, onStop, onResumeAgentTask, onConversationRewritten, onApplyOperationSet, onApplyOperationFile, onRollbackOperationFile, onDiscardOperationFile, onCitationClick, citationSelection, disabled, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [], fullWidth = false, onOpenDiffFile, restoringConversation = false }) {
+export function AgentWorkspace({ messages, interactions = [], streamText, loading, error, activeSteps, activeSessionId = null, activeSessionStatus = '', sessionTimelines = {}, interruptibleSessionId = null, llmConfigs, selectedConfigId, onConfigChange, onSend, onStop, onResumeAgentTask, onConversationRewritten, onApplyOperationSet, onApplyOperationFile, onRollbackOperationFile, onDiscardOperationFile, onCitationClick, citationSelection, disabled, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [], fullWidth = false, onOpenDiffFile, restoringConversation = false }) {
   const { openSettings } = useSettingsDialog();
   const toast = useToast();
   const [searchConfig, setSearchConfig] = useState({ enabled: false, selected_provider: 'firecrawl', modes: {}, counts: {}, api_key_set: {}, providers: SEARCH_PROVIDER_FALLBACKS });
@@ -3172,7 +3181,7 @@ export function AgentWorkspace({ messages, interactions = [], streamText, loadin
           <Icons.chevronDown size={14} />
         </button>
       ) : null}
-      <AgentInput loading={Boolean(loading)} disabled={Boolean(disabled)} llmConfigs={llmConfigs || []} selectedConfigId={selectedConfigId} onConfigChange={onConfigChange} onSend={onSend} searchConfig={searchConfig} searchPreference={searchPreference} onSearchPreferenceChange={handleSearchPreferenceChange} onRequireSearchConfig={requireSearchConfig} onRequireMcpConfig={() => setMcpPromptOpen(true)} mcpSelection={mcpSelection} onMcpSelectionChange={handleMcpSelectionChange} mcpAvailable={mcpAvailable} mcpAvailabilityChecked={mcpAvailabilityChecked} placeholder={placeholder} agentConfirmMode={agentConfirmMode} onAgentConfirmModeChange={onAgentConfirmModeChange} attachmentMode={attachmentMode} mentionOptions={mentionOptions} onPreviewMention={setPreviewMention} onPrefetchMention={handlePrefetchMention} />
+      <AgentInput loading={Boolean(loading)} disabled={Boolean(disabled)} llmConfigs={llmConfigs || []} selectedConfigId={selectedConfigId} onConfigChange={onConfigChange} onSend={onSend} onInterrupt={onStop} interruptibleSessionId={interruptibleSessionId} searchConfig={searchConfig} searchPreference={searchPreference} onSearchPreferenceChange={handleSearchPreferenceChange} onRequireSearchConfig={requireSearchConfig} onRequireMcpConfig={() => setMcpPromptOpen(true)} mcpSelection={mcpSelection} onMcpSelectionChange={handleMcpSelectionChange} mcpAvailable={mcpAvailable} mcpAvailabilityChecked={mcpAvailabilityChecked} placeholder={placeholder} agentConfirmMode={agentConfirmMode} onAgentConfirmModeChange={onAgentConfirmModeChange} attachmentMode={attachmentMode} mentionOptions={mentionOptions} onPreviewMention={setPreviewMention} onPrefetchMention={handlePrefetchMention} />
       <MentionPreviewDialog mention={previewMention} onClose={() => setPreviewMention(null)} onOpenDocument={onOpenDiffFile} />
       <Dialog open={searchPromptOpen} onClose={() => setSearchPromptOpen(false)} title={promptTitle} maxWidth={420} footer={<><Button variant="ghost" onClick={() => setSearchPromptOpen(false)}>取消</Button><Button variant="primary" onClick={() => { setSearchPromptOpen(false); openSettings('search', { provider: promptProvider?.id }); }}>前往设置</Button></>}>
         <div style={{ fontSize: 14, color: C.secondary, lineHeight: 1.8 }}>{promptMessage}</div>

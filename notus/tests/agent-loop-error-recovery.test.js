@@ -5,6 +5,7 @@ const path = require('path');
 const root = path.resolve(__dirname, '..');
 const controllerSource = fs.readFileSync(path.join(root, 'hooks/useAgentLoopController.js'), 'utf8');
 const startRouteSource = fs.readFileSync(path.join(root, 'pages/api/agent/loop/start.js'), 'utf8');
+const loopSource = fs.readFileSync(path.join(root, 'lib/agentLoop.js'), 'utf8');
 
 assert.ok(
   controllerSource.includes("setActiveAgentSession({ status: 'failed', reason: 'error' });"),
@@ -32,6 +33,16 @@ assert.ok(
     && startRouteSource.includes("error: 'Agent 服务初始化失败，请稍后重试。'")
     && startRouteSource.includes('request_id: context.request_id'),
   '任务入队异常必须记录并以结构化 JSON 返回'
+);
+assert.ok(
+  loopSource.includes('const resolveAbortResult = () => {')
+    && loopSource.includes('const abortAfterModel = resolveAbortResult();')
+    && loopSource.includes('const abortAfterTool = resolveAbortResult();'),
+  '取消请求即使发生在模型或工具执行期间，也必须在返回后阻止任务继续完成'
+);
+assert.ok(
+  loopSource.indexOf('recordToolReceipt(session, toolUse.name, result);') < loopSource.indexOf('const abortAfterTool = resolveAbortResult();'),
+  '已返回的工具结果必须先写入审计记录，再结束已取消任务'
 );
 
 console.log('agent loop error recovery tests passed');

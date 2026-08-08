@@ -29,6 +29,7 @@ import { shouldClearAgentPresentation } from '../../utils/agentSessionRestore';
 const CONFIRM_MODE_STORAGE_KEY = 'notus-files-agent-confirm-mode';
 const AUTO_CONFIRM = 'auto_confirm';
 const MANUAL_CONFIRM = 'manual_confirm';
+const INTERRUPTIBLE_AGENT_SESSION_STATUSES = new Set(['created', 'queued', 'running']);
 
 function readConfirmMode() {
   if (typeof window === 'undefined') return AUTO_CONFIRM;
@@ -475,6 +476,25 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     ...restoredSessionTimelines,
     ...liveSessionTimelines,
   }), [liveSessionTimelines, restoredSessionTimelines]);
+  const interruptibleSessionId = useMemo(() => {
+    const activeConversationKey = String(activeConversationId || '');
+    const candidates = [agentLoop.activeAgentSession, ...restoredAgentSessions]
+      .map((session) => {
+        const sessionId = String(session?.id || '');
+        const activeStatus = sessionId && sessionId === String(agentLoop.activeAgentSession?.id || '')
+          ? agentLoop.activeAgentSession?.status
+          : '';
+        const liveStatus = sessionId ? liveSessionTimelines[sessionId]?.sessionStatus : '';
+        return { ...session, status: activeStatus || liveStatus || session?.status || '' };
+      })
+      .filter((session) => {
+        if (!session?.id || !INTERRUPTIBLE_AGENT_SESSION_STATUSES.has(session.status)) return false;
+        const sessionConversationKey = String(session.conversation_id || '');
+        return !activeConversationKey || !sessionConversationKey || sessionConversationKey === activeConversationKey;
+      })
+      .sort((left, right) => Number(right?.id || 0) - Number(left?.id || 0));
+    return candidates[0]?.id || null;
+  }, [activeConversationId, agentLoop.activeAgentSession, liveSessionTimelines, restoredAgentSessions]);
   const restoreAgentSession = agentLoop.restoreAgentSession;
   const resumeAgentLoop = agentLoop.startAgentLoop;
   const activeAgentSessionId = String(agentLoop.activeAgentSession?.id || '');
@@ -843,6 +863,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
           activeSessionId={agentLoop.activeAgentSession?.id || null}
           activeSessionStatus={agentLoop.activeAgentSession?.status || ''}
           sessionTimelines={sessionTimelines}
+          interruptibleSessionId={interruptibleSessionId}
           llmConfigs={llmConfigs}
           selectedConfigId={selectedLlmConfigId}
           onConfigChange={handleConfigChange}

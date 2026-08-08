@@ -1,136 +1,187 @@
-# Notus
+**English | [简体中文](README.zh-CN.md)**
 
-> 一款支持 Web 与 Electron 桌面端的本地优先 AI 笔记应用，集文档编辑、知识库与 AI 创作于一体，完全开源，数据完全存储在本地。
+<p align="center"><img src="notus/public/notus-logo.svg" width="112" alt="Notus Logo" /></p>
 
-![19a52fb571013aff9b36ff3e59f9616f](https://hejiajun-img-bucket.oss-cn-wuhan-lr.aliyuncs.com/img/19a52fb571013aff9b36ff3e59f9616f.png)
+<p align="center">A local-first Markdown knowledge workspace with a built-in AI Agent for writing, research, and reviewable file edits.</p>
 
-## 为什么选择 Notus
+---
 
-Notus 的功能定位对标 NotebookLM 和 YouMind：把文档编辑、知识库问答与 AI 写作整合到一个工具里。但与它们不同的是：
+## Table of Contents
 
-- **完全开源、免费**：所有代码公开，欢迎 PR 和二次开发
-- **数据完全本地化**：不依赖云端存储,无需担心数据泄露和隐私问题
-- **多端支持**：Web、Electron 桌面端（macOS / Windows），并保留对懒猫运行时的兼容能力
+- [What It Is](#what-it-is)
+- [Core Features](#core-features)
+- [Write Control & Task Safety](#write-control--task-safety)
+- [Data & Privacy](#data--privacy)
+- [Platforms](#platforms)
+- [Running Locally](#running-locally)
+- [Building & Packaging](#building--packaging)
+- [Project Structure](#project-structure)
+- [Links](#links)
 
-![image-20260502184107035](https://hejiajun-img-bucket.oss-cn-wuhan-lr.aliyuncs.com/img/image-20260502184107035.png)
-![image-20260502184129983](https://hejiajun-img-bucket.oss-cn-wuhan-lr.aliyuncs.com/img/image-20260502184129983.png)
-![image-20260502184337281](https://hejiajun-img-bucket.oss-cn-wuhan-lr.aliyuncs.com/img/image-20260502184337281.png)
-![image-20260502184558547](https://hejiajun-img-bucket.oss-cn-wuhan-lr.aliyuncs.com/img/image-20260502184558547.png)
-![image-20260502184507823](https://hejiajun-img-bucket.oss-cn-wuhan-lr.aliyuncs.com/img/image-20260502184507823.png)
-![image-20260502184528722](https://hejiajun-img-bucket.oss-cn-wuhan-lr.aliyuncs.com/img/image-20260502184528722.png)
+---
 
-## 核心功能
+## What It Is
 
-### 📝 文档编辑
+Notus treats Markdown files as the center of your workspace. You can edit notes, search your own material, let the AI Agent research or write on your behalf, and review every file change before it lands.
 
-Typora 拥有的功能 Notus 基本都有，可以彻底告别 Typora。
+---
 
-- **原生 Markdown 编辑器**：所见即所得，告别双栏预览
-- **大纲导航**：标题树实时预览，一键定位任意章节
-- **保存即索引**：改一处，知识库同步更新，无需手动操作
+## Core Features
 
-![image-20260502180605732](https://hejiajun-img-bucket.oss-cn-wuhan-lr.aliyuncs.com/img/image-20260502180605732.png)
+### Edit & Manage Markdown
 
-### 📚 知识库
+- Rich-text editor with bidirectional Markdown conversion, syntax highlighting, tables, outline view, and file search.
+- Files are saved to your local workspace; changes are incrementally indexed into the knowledge base.
+- Browse a persistent file tree, search notes by title or path, and open files directly from search results or diff previews.
+- Editor and AI panel layout, toggle states, current file, and shortcuts are all saved locally and restored on next launch.
+- Optionally sync note titles to the Markdown H1 heading and filename; conflicts are surfaced without silently overwriting saved content.
+- When pasting or inserting images, choose between writing to a local asset directory or uploading to Alibaba Cloud OSS, Tencent Cloud COS, or Cloudflare R2.
+- Imported documents enter the knowledge base; Agent conversations also accept parsed attachments, images, and explicitly pasted URLs.
 
-将导入的文档作为个人知识库，所有回答都基于文档内容，绝不捏造事实，减少大模型幻觉，做你的私人文档助理。
+### Search Your Knowledge Base
 
-- **零幻觉**：命中阈值以下直接拒答，不瞎编
-- **来源可查**：每条回答附出处，一键跳转原文
-- **精准检索**：语义 + 关键词双路召回，换个说法也能找到，支持全文档匹配与置顶文档来源匹配
+- Hybrid retrieval: vector search + FTS5 keyword matching + title/path matching + segment aggregation + conditional reranking.
+- Answers include traceable citations so you can verify against the original note.
+- The Agent reads files, analyzes directories, or searches the knowledge base as the task demands — it does not treat the currently open editor file as implicit context.
+- File and directory Mentions scope retrieval; directories are analyzed in batches, not read wholesale for a single reference.
+- When evidence is thin, the task plans multiple search queries automatically; repeated research within the same task reuses the cache. Notes, attachments, URLs, and web search always maintain clear source boundaries.
 
-![image-20260502181509584](https://hejiajun-img-bucket.oss-cn-wuhan-lr.aliyuncs.com/img/image-20260502181509584.png)
+### Use Documents, Images, and URLs in Conversation
 
-### ✍️ AI 创作
+- Accepts PDF, DOCX, Markdown, plain text, and readable web pages as conversation material; attachments and image inputs are handled separately.
+- Paste or upload images for visual analysis; image summaries and controlled references persist across subsequent turns in the same conversation.
+- When organizing conversation images into notes, the Agent generates a text-and-image diff, verifies the target file version, and writes images according to your configured image host on apply.
+- Past conversations can be searched by title or message content and exported; reopening a saved conversation restores pending tasks and prior tool records.
 
-以知识库为底层基建，AI 按照你的个人风格仿写。自动生成文章大纲，支持 @ 和 Prompt 改动指定文本块,而不是改动全文，避免改了 A 处又动了 B 处，避免撑爆上下文。
+### AI Agent Writing & Research
 
-- **块级精准改写**：只动你指定的段落，其余一字不碰
-- **先预览再应用**：红删绿增，确认后才写入文件
-- **学你的风格**：自动从历史文章匹配写法，越用越像你
+- Start a conversation without opening any file; type `@` to reference files, directories, or enabled Skills.
+- Agent tasks run in the background via a persistent queue, with SSE updates, resumable checkpoints, tool records, and per-conversation task history.
+- Creating or switching conversations does not cancel a running task; returning to the original conversation restores state, tool records, and the resume entry point.
+- The Agent asks clarifying questions when it needs information; file writes produce a Markdown diff that supports auto-apply, manual confirmation, or rollback.
+- The Agent can create, modify, rename, and move Markdown files or directories inside a controlled preview; no delete tool is currently provided.
+- Editing or retrying an AI reply resumes from the original message position without creating duplicate conversation branches.
+- When a model request fails or is waiting for a user answer, execution resumes from the saved checkpoint without restarting the task.
+- Web search is toggled per task; supported providers: Firecrawl, Tavily, Exa, Zhipu Web Search.
+- The model selector supports search by model name, provider, or config name; a single task can combine text, attachments, images, local notes, and on-demand web research.
 
-![image-20260502182642962](https://hejiajun-img-bucket.oss-cn-wuhan-lr.aliyuncs.com/img/image-20260502182642962.png)
+### Extend the Agent
 
-### 🤖 Agent 工程
+- Skills can be installed from a local directory, an HTTPS Git repository, a ZIP archive, or an Agent draft; they can be enabled, disabled, updated, and rescanned in Settings. Enabled Skills are selectable from the `@` menu.
+- Streamable HTTP MCP is supported on all platforms; stdio MCP is additionally available on the Electron desktop. Headers and environment variables are stored as secrets and never appear in listings, tool results, or logs.
+- Notus can also act as a Streamable HTTP MCP Server, exposing selected note read/write tools to external Agents; writes can be set to auto-apply or require diff confirmation.
+- `soul.md`, `memory.md`, and `style.md` store long-term preferences, writing style, and persona references — all with history and rollback.
+- External MCP tokens are managed separately from server configuration. Tokens expose only the tools the user has enabled; the database stores only the token hash. Write operations also verify the current note hash.
 
-- **上下文管理**：超过上下文阈值时自动压缩上下文
-- **用户意图识别**：在创作页面识别用户意图是改写文章还是单纯 Chat，匹配不同策略、调用不同工具；意图模糊时自动生成提问卡片询问用户，避免 AI 误解意图产生幻觉
-- **工具调用**：内置工具供 AI 自我调用
+---
 
-## 项目结构
+## Write Control & Task Safety
 
-- `notus/`：Next.js 15 Pages Router 应用与全部业务 API
-- `desktop/`：Electron 主进程、预加载桥接与桌面打包脚本
-- `docs/产品技术实现说明.md`：技术实现规范
-- `docs/产品设计说明.md`：产品设计文档
-- `docs/项目进度.md`：当前实现进度
-- `CLAUDE.md` / `AGENTS.md`：仓库协作说明
+- Choose auto-apply for qualifying writes, or require manual review for every file change.
+- Every write preview is compared against the current version of the target file before applying; if the file has changed, the preview is returned rather than silently overwriting.
+- Agent questions appear as inline cards; answering resumes the same task.
+- Pending confirmation, pending answers, recoverable failures, and interrupted tasks are all retained in conversation history.
+- Task events are persisted before being pushed via SSE, so tool records and final replies survive page refreshes, browser disconnects, and app restarts.
+- Pre-send task input is saved in browser IndexedDB; text, Mentions, attachments, and image metadata can all be recovered in the browser.
 
-## 开发
+---
+
+## Data & Privacy
+
+- Markdown files are the single source of truth; SQLite stores the index, conversations, previews, and task state locally.
+- Editing and local knowledge base search require no Notus hosted account.
+- Model calls, web search, object storage, and MCP connections are all optional capabilities using providers and credentials you configure yourself.
+- Secrets are never written to API responses, Agent events, tool results, or logs.
+- Skill files, MCP responses, web pages, and attachments are all treated as untrusted task material and cannot expand file permissions or override Agent safety rules.
+
+---
+
+## Platforms
+
+| Platform | Details |
+| --- | --- |
+| Web | Next.js standalone build |
+| Desktop | Electron app for macOS and Windows |
+| Lazy Cat | Compatibility support retained |
+
+The Web and desktop builds share the same Next.js standalone output. Platform-specific capabilities such as stdio MCP are determined by the platform layer, not by runtime environment checks in the application code.
+
+---
+
+## Running Locally
+
+### Requirements
+
+- Node.js 20.19.x
+- npm
+
+### Start the Development Environment
 
 ```bash
-# 安装依赖
 npm install
 
-# 只启动 Web 开发服务
+# Start the Web dev server
 npm run dev:web
 
-# 只启动 Electron，并连接已经运行中的 http://127.0.0.1:3000
+# Connect Electron to a running http://127.0.0.1:3000
 npm run dev:desktop
 
-# 同时启动 Web 与桌面端，日常联调推荐用这个
+# Start both Web and Electron together
 npm run dev:desktop:all
 ```
 
-## 构建
+To configure a model or search service, copy `notus/.env.local.example` to `notus/.env.local` and fill in the relevant values. Supported settings can also be managed in the application's Settings panel.
+
+---
+
+## Building & Packaging
 
 ```bash
-# 只构建 notus Web 应用
+# Lint and build the Web app
+npm run lint:web
 npm run build:web
 
-# 导出 Web 可分发目录（standalone）
+# Run repository tests
+npm run test:all
+
+# Export the Web standalone directory
 npm run dist:web
 
-# 只准备 Electron 桌面资源
+# Prepare or package Electron
 npm run build:desktop
-
-# 按当前主机环境打包桌面安装包
 npm run dist:desktop
 
-# 打包 macOS Intel 安装包（dmg）
+# Target-specific desktop installers
 npm run dist:desktop:mac:x64
-
-# 打包 macOS Apple Silicon 安装包（dmg）
 npm run dist:desktop:mac:arm64
-
-# 打包 Windows x64 安装包（exe）
 npm run dist:desktop:win:x64
 
-# 执行懒猫 .lpk 打包
+# Package the Lazy Cat installer
 npm run dist:lpk
 ```
 
-## 产物位置
+| Output | Path |
+| --- | --- |
+| Web standalone | `web-dist/` |
+| Electron installer | `desktop/dist/` |
+| Lazy Cat package | Repository root |
 
-- `npm run dist:web`：输出到 `web-dist/`
-- `npm run dist:desktop`：输出到 `desktop/dist/`
-- `npm run dist:desktop:mac:x64`：输出 Intel Mac 使用的 `dmg`
-- `npm run dist:desktop:mac:arm64`：输出 Apple Silicon Mac 使用的 `dmg`
-- `npm run dist:desktop:win:x64`：输出 Windows x64 使用的 `exe`
-- `npm run dist:lpk`：输出到仓库根目录，例如 `cloud.lazycat.app.notus-v0.1.2.lpk`
+---
 
-## 桌面端说明
+## Project Structure
 
-- 桌面端当前新增运行时系统级快捷键 `Command+K` / `Ctrl+K`，可在应用仍在运行时唤起主窗口并直接打开搜索。
-- 支持 Windows 和 Mac 平台下载，Apple Silicon 设备下载 `arm64`（Intel 设备暂不支持）。
-- `npm run dist:desktop` 是按当前主机环境打包的通用入口，不保证一次生成全部架构产物。
-- 跨平台或跨架构打包是否可用，取决于当前打包环境与 `electron-builder` 的限制。
+```text
+notus/     Next.js pages, components, API Routes, and core business libraries
+desktop/   Electron main process, preload bridge, and packaging scripts
+docs/      Product, technical, and workflow documentation
+```
 
-## 链接
+---
 
-- 官网：https://notus.hejiajun.icu/
-- 开源地址：https://github.com/dnwwdwd/Notus
+## Links
 
-## 贡献
+- Website: [notus.hejiajun.com](https://notus.hejiajun.com/)
+- GitHub: [github.com/dnwwdwd/Notus](https://github.com/dnwwdwd/Notus)
+- License: [Apache-2.0](LICENSE)
 
-欢迎 PR 或一起开发，对项目有任何想法或建议欢迎提 Issue 交流。如果觉得项目对你有帮助，欢迎点个 star ⭐️
+Issues and Pull Requests are welcome. Please read `AGENTS.md` before contributing and follow the code, test, and documentation conventions in the repository.

@@ -414,29 +414,32 @@ async function runAgentLoop({ sessionId, runId = null, llmConfig, onStream, sign
   // 自动应用预览后，模型通常还会生成一轮面向用户的总结。保留最近一次
   // 变更集，才能把最终消息和可回看的 Diff 卡准确关联起来。
   let latestOperationSetId = null;
+  const resolveAbortResult = () => {
+    if (!signal?.aborted && !isCancellationRequested(session.id)) return null;
+    const explicitlyCancelled = signal?.reason === 'cancel' || isCancellationRequested(session.id);
+    if (explicitlyCancelled) {
+      updateSessionStatus(session.id, 'cancelled');
+      emit({ type: 'final', text: '任务已取消。', status: 'cancelled', reason: 'cancelled', usage: getSessionUsage(session.id) });
+      return { status: 'cancelled', reason: 'cancelled' };
+    }
+    saveMessagesCheckpoint(session.id, messages, [], '', runId);
+    updateSessionStatus(session.id, 'queued_resume');
+    emit({
+      type: 'artifact',
+      artifact_type: 'run_error',
+      status: 'queued_resume',
+      error_category: 'interrupted',
+      error_code: 'CONNECTION_INTERRUPTED',
+      message: '连接已中断，工具链、回复草稿和任务进度已保留。',
+      resumable: true,
+      loop_index: loopIndex,
+    });
+    return { status: 'queued_resume', reason: 'connection_interrupted' };
+  };
 
   while (true) {
-    if (signal?.aborted) {
-      const explicitlyCancelled = signal.reason === 'cancel' || isCancellationRequested(session.id);
-      if (explicitlyCancelled) {
-        updateSessionStatus(session.id, 'cancelled');
-        emit({ type: 'final', text: '任务已取消。', status: 'cancelled', reason: 'cancelled', usage: getSessionUsage(session.id) });
-        return { status: 'cancelled' };
-      }
-      saveMessagesCheckpoint(session.id, messages, [], '', runId);
-      updateSessionStatus(session.id, 'queued_resume');
-      emit({
-        type: 'artifact',
-        artifact_type: 'run_error',
-        status: 'queued_resume',
-        error_category: 'interrupted',
-        error_code: 'CONNECTION_INTERRUPTED',
-        message: '连接已中断，工具链、回复草稿和任务进度已保留。',
-        resumable: true,
-        loop_index: loopIndex,
-      });
-      return { status: 'queued_resume', reason: 'connection_interrupted' };
-    }
+    const abortResult = resolveAbortResult();
+    if (abortResult) return abortResult;
 
     session = getSession(session.id);
     loopIndex += 1;
@@ -545,6 +548,8 @@ async function runAgentLoop({ sessionId, runId = null, llmConfig, onStream, sign
       });
       return { status: nextStatus, reason: 'llm_request_failed', error_category: classification.category };
     }
+    const abortAfterModel = resolveAbortResult();
+    if (abortAfterModel) return abortAfterModel;
     const responseUsage = response.usage || {
       prompt_tokens: Number(response.budget?.estimated_prompt_tokens || 0),
       completion_tokens: 0,
@@ -629,6 +634,9 @@ async function runAgentLoop({ sessionId, runId = null, llmConfig, onStream, sign
       recordToolReceipt(session, toolUse.name, result);
 
       emit({ type: 'progress', stage: 'tool_done', text: failed ? `${toolUse.name} 执行失败。` : `${toolUse.name} 执行完成。`, tool_name: toolUse.name, result_summary: summarizeToolResult(toolUse.name, result), loop_index: loopIndex, failed });
+
+      const abortAfterTool = resolveAbortResult();
+      if (abortAfterTool) return abortAfterTool;
 
       if (failed) {
         if (recordToolFail(session.id, toolUse.name)) {

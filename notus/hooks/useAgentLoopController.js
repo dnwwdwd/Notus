@@ -225,7 +225,7 @@ function buildEventStep(event = {}) {
       status: isStart ? 'running' : failed ? 'error' : 'done',
       detail: failed ? '图片查看未完成，已继续执行后续任务。' : isStart ? '正在读取本轮提交的图片。' : '已读取本轮提交的图片。',
       tool: 'view_images',
-      result: failed ? (event.error || 'IMAGE_VIEW_FAILED') : `已查看 ${count || 1} 张图片`,
+      result: failed ? (event.error || event.error_code || 'IMAGE_VIEW_FAILED') : `已查看 ${count || 1} 张图片`,
       images: Array.isArray(event.images) ? event.images : [],
       open: true,
     };
@@ -1361,6 +1361,7 @@ export function useAgentLoopController({
       setLoading(false);
       setStreamText('');
       setSteps((prev) => upsertStep(completeSteps(prev), buildEventStep({ type: 'cancelled' })));
+      setActiveAgentSession((prev) => (prev ? { status: 'cancelling', reason: 'cancelling' } : prev));
     }
     const cancelTicket = session?.control_tickets?.cancel;
     if (!session?.id || (!session?.token && !cancelTicket)) {
@@ -1368,14 +1369,19 @@ export function useAgentLoopController({
       return;
     }
     try {
-      await fetch('/api/agent/loop/cancel', {
+      const response = await fetch('/api/agent/loop/cancel', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: session.id, session_token: session.token, control_ticket: cancelTicket || undefined }),
       });
-    } catch {}
-    if (isCurrentSession) setActiveAgentSession({ status: 'cancelled', reason: 'cancelled' });
-  }, [setActiveAgentSession, setSteps]);
+      if (!response.ok) throw new Error(await readErrorResponse(response, '中断 Agent 任务失败'));
+      if (isCurrentSession) setActiveAgentSession({ status: 'cancelled', reason: 'cancelled' });
+    } catch (error) {
+      if (isCurrentSession) setActiveAgentSession((prev) => (prev ? { status: 'running', reason: '' } : prev));
+      setError(error.message || '中断 Agent 任务失败');
+      onError?.(error);
+    }
+  }, [onError, setActiveAgentSession, setSteps]);
 
   const getAgentSession = useCallback((sessionId) => (
     knownSessionsRef.current.get(String(sessionId || '')) || null

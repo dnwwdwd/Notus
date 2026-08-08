@@ -48,6 +48,30 @@ const imageViewEvent = {
 };
 const persisted = sanitizeRunEvent(imageViewEvent);
 
+const attachmentEvent = sanitizeRunEvent({
+  type: 'progress',
+  stage: 'attachment_parse_done',
+  source: 'upload-note.md',
+  source_kind: 'file',
+  status: 'success',
+  textLength: 24,
+  pageCount: 1,
+});
+assert.strictEqual(attachmentEvent.source, 'upload-note.md', '附件解析事件必须保留安全的来源名称');
+assert.strictEqual(attachmentEvent.source_kind, 'file', '附件解析事件必须保留来源类型');
+assert.strictEqual(attachmentEvent.textLength, 24, '附件解析事件必须保留已解析字数');
+assert.strictEqual(attachmentEvent.pageCount, 1, '附件解析事件必须保留页数摘要');
+
+const safeUrlAttachmentEvent = sanitizeRunEvent({
+  type: 'progress',
+  stage: 'attachment_parse_done',
+  source: 'https://example.com/reference?access_token=private-value#section',
+  source_kind: 'url',
+  textLength: 'not-a-number',
+});
+assert.strictEqual(safeUrlAttachmentEvent.source, 'https://example.com/reference', '网页解析记录不能保留 URL 查询参数或片段');
+assert.strictEqual(safeUrlAttachmentEvent.textLength, 0, '异常字数必须回退为零，不能写入 NaN');
+
 assert.strictEqual(persisted.message_id, 42, '图片查看事件补发时必须保留消息 ID');
 assert.strictEqual(persisted.image_count, 1, '图片查看事件补发时必须保留图片数量');
 assert.deepStrictEqual(persisted.images, imageViewEvent.images, '图片查看事件补发时必须保留受控缩略图');

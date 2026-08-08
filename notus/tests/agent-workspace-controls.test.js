@@ -126,6 +126,18 @@ assert.ok(workspace.includes('onResumeAgentTask?.(sessionId)'), '继续任务必
 assert.ok(fileWorkspace.includes('resumeFailedAgentTask = useCallback(async (targetSessionId = null)'), '文件工作区必须按点击的 session 恢复任务');
 assert.ok(workspace.includes("if (action === 'stop_agent') void onStop?.(sessionId);"));
 assert.ok(!workspace.includes("{loading ? <button type=\"button\" aria-label=\"停止当前任务\" onClick={() => onStop?.()}"));
+assert.ok(workspace.includes('onInterrupt={onStop}'), '输入框中断必须复用按 session 精确取消的回调');
+assert.ok(workspace.includes('interruptibleSessionId={interruptibleSessionId}'), '输入框必须接收当前可中断任务的 session ID');
+assert.ok(workspace.includes("aria-label={canInterrupt ? '中断当前任务' : '发送'}"), '运行任务时发送按钮必须切换为中断按钮');
+assert.ok(workspace.includes('void onInterrupt(interruptibleSessionId);'), '中断按钮必须传递当前任务的 session ID');
+assert.ok(workspace.includes('<Icons.square size={16} />'), '中断按钮必须使用停止图标');
+assert.ok(fileWorkspace.includes("const INTERRUPTIBLE_AGENT_SESSION_STATUSES = new Set(['created', 'queued', 'running']);"), '只有可取消的在途任务才会切换输入按钮');
+assert.ok(fileWorkspace.includes('const interruptibleSessionId = useMemo(() => {'), '切回历史对话后必须从已恢复任务重新识别可中断 session');
+assert.ok(fileWorkspace.includes('const liveStatus = sessionId ? liveSessionTimelines[sessionId]?.sessionStatus : \'\';'), '恢复任务收到终态事件后必须以实时状态覆盖旧的恢复状态');
+assert.ok(fileWorkspace.includes('interruptibleSessionId={interruptibleSessionId}'), '文件工作区必须把可中断 session 传入输入框');
+assert.ok(fileWorkspace.includes("return { ...session, status: activeStatus || liveStatus || session?.status || '' };"), '本地取消状态必须优先于恢复列表和实时订阅状态，避免重复中断');
+assert.ok(controller.includes("setActiveAgentSession((prev) => (prev ? { status: 'cancelling', reason: 'cancelling' } : prev));"), '取消请求尚未确认时必须移除可重复点击的中断状态');
+assert.ok(controller.includes("if (!response.ok) throw new Error(await readErrorResponse(response, '中断 Agent 任务失败'));"), '取消接口失败时不得伪装成已取消');
 assert.ok(workspace.includes('className="notus-agent-composer-dock"'));
 assert.ok(workspace.includes('className="notus-agent-composer__model"'));
 assert.ok(workspace.includes('className="notus-agent-composer__attachments"'), '窄面板须将附件操作作为独立分组');

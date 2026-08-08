@@ -44,6 +44,18 @@ function runTests() {
     );
   });
 
+  [
+    "const [editorFocused, setEditorFocused] = useState(false);",
+    "e.on('focus', refreshEditorState);",
+    "e.on('blur', refreshEditorState);",
+    'if (!e || !editorFocused) return false;',
+  ].forEach((snippet) => {
+    assert.ok(
+      toolbarSource.includes(snippet),
+      `EditorToolbar should only show active formatting while the editor is focused: ${snippet}`
+    );
+  });
+
   assert.ok(
     styleSource.includes('[data-text-align="center"]'),
     'globals.css should style centered editor blocks'

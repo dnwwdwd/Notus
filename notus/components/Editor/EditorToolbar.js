@@ -266,15 +266,40 @@ export const EditorToolbar = ({ editor, fileId, isDirty = false }) => {
   const [dialogMode, setDialogMode] = useState(null);
   const [copyingAll, setCopyingAll] = useState(false);
   const [copiedAll, setCopiedAll] = useState(false);
+  const [editorFocused, setEditorFocused] = useState(false);
+  const [, setEditorStateVersion] = useState(0);
   const copiedTimerRef = useRef(null);
 
   const e = editor;
   const disabled = !e;
 
-  const isActive = useCallback((name, attrs) => {
-    if (!e) return false;
-    return attrs ? e.isActive(name, attrs) : e.isActive(name);
+  useEffect(() => {
+    if (!e) {
+      setEditorFocused(false);
+      return undefined;
+    }
+
+    const refreshEditorState = () => {
+      setEditorFocused(Boolean(e.isFocused));
+      setEditorStateVersion((version) => version + 1);
+    };
+    refreshEditorState();
+    e.on('focus', refreshEditorState);
+    e.on('blur', refreshEditorState);
+    e.on('selectionUpdate', refreshEditorState);
+    e.on('transaction', refreshEditorState);
+    return () => {
+      e.off('focus', refreshEditorState);
+      e.off('blur', refreshEditorState);
+      e.off('selectionUpdate', refreshEditorState);
+      e.off('transaction', refreshEditorState);
+    };
   }, [e]);
+
+  const isActive = useCallback((name, attrs) => {
+    if (!e || !editorFocused) return false;
+    return attrs ? e.isActive(name, attrs) : e.isActive(name);
+  }, [e, editorFocused]);
 
   const handleLink = () => {
     if (!e) return;
@@ -475,7 +500,7 @@ export const EditorToolbar = ({ editor, fileId, isDirty = false }) => {
         </ToolbarButton>
         <ToolbarButton
           title="文本居中"
-          active={Boolean(e?.isActive({ textAlign: 'center' }))}
+          active={isActive({ textAlign: 'center' })}
           disabled={disabled}
           onClick={() => e?.chain().focus().toggleTextAlignCenter().run()}
         >

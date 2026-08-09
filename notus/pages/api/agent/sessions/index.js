@@ -1,5 +1,7 @@
 const { ensureRuntime } = require('../../../../lib/runtime');
 const { countSnapshots, listRecentSessions, listRunLogs } = require('../../../../lib/agentSession');
+const { getTaskBySession } = require('../../../../lib/agentTaskQueue');
+const { listExecutionSegments } = require('../../../../lib/agentExecutionSegments');
 const { listOperationSetsBySession } = require('../../../../lib/canvasOperationSets');
 const { sanitizeResearchReceipts } = require('../../../../lib/agentResearch');
 
@@ -24,6 +26,8 @@ export default function handler(req, res) {
       return {
         ...session,
         snapshots_count: countSnapshots(session.id),
+        task: getTaskBySession(session.id),
+        execution_segments: listExecutionSegments(session.id),
         run_logs: runLogs.slice(Math.max(0, runLogs.length - logLimit)),
         research_receipts: sanitizeResearchReceipts(session.id),
         operation_sets: listOperationSetsBySession(session.id),

@@ -210,7 +210,7 @@ function updateSessionStatus(sessionId, status) {
   const requested = String(status || '').trim();
   const normalized = requested === 'waiting_confirm' ? 'waiting_interaction' : requested;
   if (!normalized) throw new Error('status is required');
-  const waitingSinceExpr = ['waiting_interaction', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery'].includes(normalized) ? 'datetime(\'now\')' : 'NULL';
+  const waitingSinceExpr = ['waiting_interaction', 'waiting_operation_confirmation', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery'].includes(normalized) ? 'datetime(\'now\')' : 'NULL';
   getDb().prepare(`
     UPDATE agent_sessions
     SET status = ?, waiting_since = ${waitingSinceExpr}, state_version = state_version + 1, updated_at = datetime('now')
@@ -466,7 +466,7 @@ function compactMessagesForStorage(messages = []) {
   return compact.concat(keep);
 }
 
-function saveMessagesCheckpoint(sessionId, messages, lastResponseContent, appliedToolUseId, runId = '') {
+function saveMessagesCheckpoint(sessionId, messages, lastResponseContent, appliedToolUseId, runId = '', options = {}) {
   const checkpoint = {
     messages: compactMessagesForStorage(messages),
     last_response_content: lastResponseContent,
@@ -477,14 +477,23 @@ function saveMessagesCheckpoint(sessionId, messages, lastResponseContent, applie
     const sid = normalizePositiveInt(sessionId);
     const result = db.prepare(`
       INSERT INTO agent_checkpoints (
-        session_id, run_id, messages_json, last_response_content_json, tool_use_id
-      ) VALUES (?, ?, ?, ?, ?)
+        session_id, run_id, messages_json, last_response_content_json, tool_use_id,
+        phase, execution_segment_id, llm_request_window_id, tool_results_json,
+        next_tool_index, pending_operation_set_id, resume_tool_result_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       sid,
       String(runId || '') || null,
       JSON.stringify(checkpoint.messages),
       JSON.stringify(lastResponseContent || []),
-      String(appliedToolUseId || '') || null
+      String(appliedToolUseId || '') || null,
+      String(options.phase || 'before_llm'),
+      normalizePositiveInt(options.executionSegmentId),
+      normalizePositiveInt(options.llmRequestWindowId),
+      JSON.stringify(Array.isArray(options.toolResults) ? options.toolResults : []),
+      Math.max(0, Number(options.nextToolIndex) || 0),
+      normalizePositiveInt(options.pendingOperationSetId),
+      options.resumeToolResult == null ? null : JSON.stringify(options.resumeToolResult)
     );
     const checkpointId = Number(result.lastInsertRowid);
     db.prepare(`
@@ -516,6 +525,13 @@ function loadMessagesCheckpoint(sessionId) {
       messages: safeJsonParse(current.messages_json, []),
       lastResponseContent: safeJsonParse(current.last_response_content_json, []),
       appliedToolUseId: current.tool_use_id || '',
+      phase: current.phase || 'before_llm',
+      executionSegmentId: normalizePositiveInt(current.execution_segment_id),
+      llmRequestWindowId: normalizePositiveInt(current.llm_request_window_id),
+      toolResults: safeJsonParse(current.tool_results_json, []),
+      nextToolIndex: Math.max(0, Number(current.next_tool_index || 0)),
+      pendingOperationSetId: normalizePositiveInt(current.pending_operation_set_id),
+      resumeToolResult: safeJsonParse(current.resume_tool_result_json, null),
     };
   }
   const row = db.prepare('SELECT messages_checkpoint, checkpoint_tool_use_id FROM agent_sessions WHERE id = ?').get(sid);
@@ -528,6 +544,26 @@ function loadMessagesCheckpoint(sessionId) {
     lastResponseContent: checkpoint.last_response_content || [],
     appliedToolUseId: row.checkpoint_tool_use_id || '',
   };
+}
+
+function setCheckpointResumeToolResult(sessionId, operationSetId, toolResult, options = {}) {
+  const db = getDb();
+  const sid = normalizePositiveInt(sessionId);
+  const setId = normalizePositiveInt(operationSetId);
+  if (!sid || !setId) return false;
+  const result = db.prepare(`
+    UPDATE agent_checkpoints
+    SET resume_tool_result_json = ?, phase = 'after_tools'
+    WHERE id = (
+      SELECT id FROM agent_checkpoints
+      WHERE session_id = ? AND status = 'active' AND pending_operation_set_id = ?
+      ORDER BY id DESC LIMIT 1
+    )
+  `).run(JSON.stringify({
+    content: typeof toolResult?.content === 'string' ? toolResult.content : JSON.stringify(toolResult || {}),
+    is_error: Boolean(toolResult?.is_error || options.isError),
+  }), sid, setId);
+  return Number(result.changes || 0) > 0;
 }
 
 function clearMessagesCheckpoint(sessionId, checkpointId = null) {
@@ -800,6 +836,14 @@ function sanitizeRunEvent(event = {}) {
     retry_attempts: Math.max(0, Number(event.retry_attempts || 0)),
     resumable: Boolean(event.resumable),
     operation_set_id: normalizePositiveInt(event.operation_set_id),
+    task_change_set_id: normalizePositiveInt(event.task_change_set_id),
+    task_change_set_version: Math.max(0, Number(event.task_change_set_version || 0)),
+    execution_segment_id: normalizePositiveInt(event.execution_segment_id),
+    segment_sequence_no: Math.max(0, Number(event.segment_sequence_no || 0)),
+    request_window_no: Math.max(0, Number(event.request_window_no || 0)),
+    tool_index: Math.max(0, Number(event.tool_index || 0)),
+    change_file_count: Math.max(0, Number(event.change_file_count || 0)),
+    change_directory_count: Math.max(0, Number(event.change_directory_count || 0)),
     interaction_id: normalizePositiveInt(event.interaction?.id || event.interaction_id),
     conversation_id: isImageViewEvent ? conversationId : null,
     message_id: isImageViewEvent ? normalizePositiveInt(event.message_id) : null,
@@ -951,6 +995,7 @@ module.exports = {
   snapshotFiles,
   rollbackSession,
   saveMessagesCheckpoint,
+  setCheckpointResumeToolResult,
   loadMessagesCheckpoint,
   clearMessagesCheckpoint,
   logToolCall,

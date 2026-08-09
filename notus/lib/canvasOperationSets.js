@@ -3,7 +3,7 @@ const { sha256 } = require('./files');
 const { createDiffHunks } = require('./fileRevisionDiff');
 
 const DEFAULT_EXPIRE_DAYS = 7;
-const ACTIVE_STATUSES = ['pending', 'stale'];
+const ACTIVE_STATUSES = ['pending', 'stale', 'applying'];
 const TERMINAL_STATUSES = [
   'applied',
   'cancelled',
@@ -14,7 +14,7 @@ const TERMINAL_STATUSES = [
   'rolled_back',
   'rollback_conflict',
 ];
-const PATCH_STATUSES = ['pending', 'applied', 'auto_applied', 'rolled_back', 'discarded', 'failed'];
+const PATCH_STATUSES = ['pending', 'applying', 'applied', 'auto_applied', 'rolled_back', 'discarded', 'failed'];
 const PATCH_APPLIED_STATUSES = ['applied', 'auto_applied'];
 const PATCH_CANCELLED_STATUSES = ['rolled_back', 'discarded'];
 
@@ -112,6 +112,10 @@ function formatRow(row) {
     id: Number(row.id),
     conversation_id: normalizeNullablePositiveInt(row.conversation_id),
     agent_session_id: normalizeNullablePositiveInt(row.agent_session_id),
+    task_change_set_id: normalizeNullablePositiveInt(row.task_change_set_id),
+    execution_segment_id: normalizeNullablePositiveInt(row.execution_segment_id),
+    batch_sequence_no: Math.max(0, Number(row.batch_sequence_no || 0)),
+    tool_use_id: String(row.tool_use_id || '') || null,
     file_id: normalizeNullablePositiveInt(row.file_id),
     message_id: normalizeNullablePositiveInt(row.message_id),
     article_hash: String(row.article_hash || ''),
@@ -160,6 +164,10 @@ function createOperationSet({
   conversation_id: snakeConversationId,
   agentSessionId = null,
   agent_session_id: snakeAgentSessionId = null,
+  executionSegmentId = null,
+  execution_segment_id: snakeExecutionSegmentId = null,
+  toolUseId = '',
+  tool_use_id: snakeToolUseId = '',
   fileId = null,
   file_id: snakeFileId = null,
   messageId = null,
@@ -218,6 +226,12 @@ function createOperationSet({
   if (hasColumn(database, 'canvas_operation_sets', 'agent_session_id')) {
     pushColumn('agent_session_id', normalizeNullablePositiveInt(agentSessionId || snakeAgentSessionId));
   }
+  if (hasColumn(database, 'canvas_operation_sets', 'execution_segment_id')) {
+    pushColumn('execution_segment_id', normalizeNullablePositiveInt(executionSegmentId || snakeExecutionSegmentId));
+  }
+  if (hasColumn(database, 'canvas_operation_sets', 'tool_use_id')) {
+    pushColumn('tool_use_id', String(toolUseId || snakeToolUseId || '') || null);
+  }
   pushColumn('file_id', normalizeNullablePositiveInt(fileId || snakeFileId));
   pushColumn('message_id', normalizeNullablePositiveInt(messageId));
   pushColumn('article_hash', String(articleHash || ''));
@@ -264,6 +278,18 @@ function getOperationSetById(id) {
     WHERE id = ?
   `).get(normalizeNullablePositiveInt(id));
   return formatRow(row);
+}
+
+function getOperationSetByToolUse(sessionId, toolUseId) {
+  const database = getDb();
+  const normalizedSessionId = normalizeNullablePositiveInt(sessionId);
+  const normalizedToolUseId = String(toolUseId || '').trim();
+  if (!normalizedSessionId || !normalizedToolUseId || !hasColumn(database, 'canvas_operation_sets', 'tool_use_id')) return null;
+  return formatRow(database.prepare(`
+    SELECT * FROM canvas_operation_sets
+    WHERE agent_session_id = ? AND tool_use_id = ?
+    ORDER BY id DESC LIMIT 1
+  `).get(normalizedSessionId, normalizedToolUseId));
 }
 
 function markOperationSetStatus(id, status) {
@@ -399,6 +425,7 @@ module.exports = {
   createOperationSet,
   deriveOperationSetStatus,
   getOperationSetById,
+  getOperationSetByToolUse,
   listOperationSetsByConversation,
   listOperationSetsBySession,
   markConversationOperationSetsStale,

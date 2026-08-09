@@ -208,6 +208,7 @@ button {
 .notus-mention-item--inline .notus-mention-item__remove { display: none; width: 16px; height: 16px; }
 .notus-mention-item--inline:hover .notus-mention-item__remove,
 .notus-mention-item--inline:focus-within .notus-mention-item__remove { display: inline-flex; }
+.notus-agent-composer .notus-mention-item--inline .notus-mention-item__remove { display: inline-flex; }
 
 .notus-agent-composer:empty::before {
   content: attr(data-placeholder);

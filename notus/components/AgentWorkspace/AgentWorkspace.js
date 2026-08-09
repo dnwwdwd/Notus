@@ -1857,7 +1857,34 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
     const label = document.createElement('span');
     label.className = 'notus-mention-item__label';
     label.textContent = mention.name;
-    chip.append(icon, label);
+    const removeButton = document.createElement('button');
+    removeButton.type = 'button';
+    removeButton.className = 'notus-mention-item__remove';
+    removeButton.setAttribute('aria-label', `移除 mention：${mention.name}`);
+    removeButton.textContent = '×';
+    const removeChip = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const root = composerRef.current;
+      if (!root || !root.contains(chip)) return;
+      let trailingText = chip.nextSibling;
+      if (trailingText?.nodeType !== 3) {
+        trailingText = document.createTextNode('');
+        chip.after(trailingText);
+      }
+      chip.remove();
+      composerInteractionRef.current = true;
+      restoreComposerCaret(trailingText, 0);
+      syncComposerState();
+      setMentionQuery(null);
+      setDismissedMentionKey('');
+    };
+    removeButton.addEventListener('mousedown', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    removeButton.addEventListener('click', removeChip);
+    chip.append(icon, label, removeButton);
     const openPreview = (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -1872,7 +1899,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
       if (event.key === 'Enter' || event.key === ' ') openPreview(event);
     });
     return chip;
-  }, [onPrefetchMention, onPreviewMention]);
+  }, [onPrefetchMention, onPreviewMention, restoreComposerCaret, syncComposerState]);
 
   const restoreComposerDom = useCallback((segments = []) => {
     const root = composerRef.current;

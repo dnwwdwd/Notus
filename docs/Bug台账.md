@@ -151,6 +151,15 @@
 - 修复：`FileAgentWorkspace` 从当前对话的实时或已恢复 session 中识别状态为 `created / queued / running` 的最新任务，并以本地取消状态、实时 timeline、恢复列表的顺序取状态，避免终态或取消中的任务重复显示中断入口；`AgentWorkspace` 将该 session ID 传给 `AgentInput`。输入框主按钮在存在目标任务时改为方形停止图标和“中断当前任务”无障碍名称，调用既有 `stopAgentLoop(sessionId)`，由 `/api/agent/loop/cancel` 执行精确取消；取消请求等待确认时先进入 `cancelling`，防止重复点击。`runAgentLoop()` 在模型响应和工具执行返回后再次检查 session 取消状态，阻止已取消任务继续完成；工具已返回时先完成审计记录，再写入取消终态。新建或切换对话仍只解绑本地展示和 SSE，不调用取消接口；回到原对话后重新恢复中断入口。
 - 已检查关联流程：任务队列、取消票据、工具链头部停止入口、历史会话恢复、新建/切换对话、模型选择、上传与草稿保存。确认卡、续跑、文件读写、MCP、图片/附件和平台中间层不改变。
 - 验证：新增 `agent-workspace-controls.test.js` 与 `agent-loop-error-recovery.test.js` 断言，覆盖输入按钮的 session 归属、取消等待时防重复点击、终态状态覆盖，以及模型/工具返回后仍会执行取消检查并保留审计记录。此前 Browser 已使用本地真实 Agent 验证：发送后主按钮立即切为中断；新建对话后恢复发送且后台任务未被取消；切回原对话后重新出现中断按钮；点击后消息显示“任务已取消”，主按钮恢复发送。后续针对最终两处状态细化的 Browser 复跑被浏览器插件的 URL 安全策略拦截，需在允许本地 URL 的浏览器环境补做。`agent-workspace-chat-actions.test.js`、Web lint 与 `git diff --check` 一并通过。
+### BUG-20260804-001｜AI 输入框失焦后无法删除 Mention 文件项
+
+- 状态：已修复（2026-08-04，本地 Browser 与回归测试）。
+- 现象：AI 输入框内已有文件或目录 Mention 时，输入框失焦后没有稳定的删除入口，用户无法直接移除该项。
+- 影响范围：仅未发送 Agent 草稿中的文件、目录和 Skill Mention 删除交互，以及相应 IndexedDB 草稿同步；已发送消息、Mention 预览、文件拖放、Agent 上下文序列化和服务端会话数据不受影响。
+- 根因：`AgentWorkspace.js` 的动态 `createMentionChip()` 只创建图标和名称，未创建 `.notus-mention-item__remove` 按钮；现有 CSS 又只为该按钮定义 hover/focus 显示规则，输入组件因而没有可在失焦状态使用的删除控件。
+- 修复：动态 Mention 卡片创建带无障碍名称的删除按钮。点击删除时阻止预览事件冒泡，移除对应卡片、恢复输入光标并同步结构化 `segments`；输入框内的删除按钮始终可见，不再依赖输入框焦点。
+- 已检查关联流程：键盘 Backspace/Delete 删除、`@` 选择、文件树拖放、Mention 预览、历史消息只读卡片、IndexedDB 草稿恢复和发送时 `mention_segments` 序列化。只改变未发送输入卡片的删除入口，不改变文件内容或会话数据。
+- 验证：`ui-bug-regressions.test.js`、`agent-workspace-controls.test.js` 和 `npm run lint` 通过（仅保留既有 Hook 依赖警告）。本地 Browser 重新加载草稿后，在输入框未聚焦时确认 1 个 Mention 对应 1 个可见“移除 mention：用户访谈摘要”按钮；为保留现有草稿，没有在该样例上执行实际删除点击。
 
 ### BUG-20260803-008｜AI 回复重试追加重复用户消息而非覆盖原对话分支
 

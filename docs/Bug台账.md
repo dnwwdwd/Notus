@@ -14,6 +14,144 @@
 
 ## 当前记录
 
+### BUG-20260809-003｜Agent 运行状态错误禁用历史消息操作
+
+- 状态：已修复（2026-08-09，自动化与 Browser 页面回归通过）。
+- 现象：同一对话仍有 Agent 任务运行或中断状态残留时，输入框已经可以发送新消息，但历史用户消息的复制、改写和 AI 回复的重试仍显示为 disabled。
+- 影响范围：文件工作区 Agent 的消息操作行；不影响消息内容、任务队列、任务取消和输入框发送本身。
+- 根因：`AgentWorkspace` 将全局 `loading` 传入 `MessageList.actionDisabled`，该值又被用户消息复制/改写和 AI 回复重试共用；任务展示状态因此越过了本应独立的消息操作边界。
+- 修复：`MessageList.actionDisabled` 只保留模型不可用这一前置条件，不再接收全局 `loading`；用户消息复制固定为本地可用。改写和 AI 重试继续保留模型不可用、消息前置条件和自身提交中的必要禁用。
+- 已检查关联流程：用户消息复制、用户消息改写、AI 回复重试、错误卡片重试、输入框发送与中断、模型不可用禁用条件。
+- 验证：已新增 `agent-workspace-controls.test.js` 回归断言；旧代码执行该测试失败，明确指出运行中的 `loading` 不应整体禁用历史消息操作；修复后该测试通过。恢复本地开发服务后，Browser 打开含“模型请求失败”记录的历史对话，确认用户消息复制、改写和 AI 回复重试均为 enabled；实际打开改写编辑框并取消，未创建新任务。`npm run test:all`、`npm run lint:web`（仅既有第 594 行 Hook 依赖 warning）和 `git diff --check` 通过。
+
+### BUG-20260809-002｜同一对话的遗留任务占用输入框中断按钮，且新消息被队列阻塞
+
+- 状态：已修复（2026-08-09，本地构建、回归测试、Browser 页面检查与隔离取消接口联调通过）。
+- 现象：同一对话存在多个 `created / queued / running` 任务时，输入框会显示“中断当前任务”。点击后仍保持中断状态，用户不能再次发送；同时遗留的 `created / queued` 任务会占用 FIFO，使 LLM 失败后的新消息长时间停在 `queued`。
+- 影响范围：文件工作区 Agent 的任务恢复、输入框中断、同会话 FIFO、LLM 失败后的重新发送和普通排队任务；不改变跨会话任务。
+- 根因：输入框从 `restoredAgentSessions` 找到可中断的 session ID，但 `useAgentLoopController` 的 `knownSessionsRef` 只登记当前展示的 session。多个恢复任务并存时，取消函数可能只拿到 ID 而拿不到票据和会话对象，直接返回；即使取消了其中一条，另一条仍占用中断按钮。此前 `supersedePendingUserActionTasks()` 也只清理用户等待决定的状态，未清理旧的 `created / queued` 行。
+- 修复：恢复列表同步登记到取消控制器；输入框中断一个在途任务时，前端为同一对话的每条 `created / queued / running` 任务提交各自的 cancel ticket，取消接口逐项校验后同时结束任务，并把每条本地时间线立即标为 `cancelling / cancelled`。新 prompt 入队前继续保留运行中的真实任务，但会替代同一对话内遗留的 `created / queued` 与用户等待决定任务，避免 FIFO 被旧行阻塞。用户点击原任务的“继续任务/重试”仍走原 checkpoint。
+- 已检查关联流程：提问卡回答、预算继续、LLM 继续/重试、改写/重试、普通 FIFO、同一对话多任务取消、运行中 Abort、Worker 启动恢复和历史会话恢复；未改变保存 API、跨会话并发或运行中任务被新 prompt 强制中止的规则。
+- 验证：先补充回归断言；旧代码运行 `agent-workspace-controls.test.js` 会断言恢复任务未登记给取消控制器，`agent-task-queue.test.js` 会断言旧排队任务未被新 prompt 清理。实现后两项测试通过。隔离数据目录启动本地 Next 服务后，预置同一对话两条 `queued` session，读取会话详情确认两条均取得 cancel ticket；提交两条票据调用取消接口，响应返回 `cancelled_session_ids:[1,2]`，数据库确认两条 session 与队列均为 `cancelled`。Browser 刷新本地 `/files`，输入主按钮为“发送”而非“中断当前任务”，未出现本次改动引入的页面错误。`npm run build:web`、`npm run lint:web`（仅保留既有第 594 行 Hook 依赖 warning）和 `git diff --check` 通过。
+
+### BUG-20260809-001｜重复提交任务与取消后输入框仍显示中断
+
+- 状态：已修复（2026-08-09，控制面、队列与界面回归通过）。
+- 现象：同一对话在发送按钮被快速重复触发时会创建两条等待任务；取消其中尚未运行的任务后，队列已是 `cancelled`，但 session 仍为 `created`，输入框继续显示中断图标。
+- 影响范围：文件工作区 Agent 的新任务受理、同会话 FIFO、输入框中断入口、历史恢复和 Worker 启动恢复；不改变用户有意连续发送不同任务时的 FIFO 行为。
+- 根因：`useAgentLoopController.startAgentLoop()` 在服务端 `202` 回执前没有同步防重锁，重复事件可并行创建两个 session；`requestCancellation()` 只写入 `cancel_requested_at`，取消 API 虽结束队列任务却没有把无活动 run 的 session 写为 `cancelled`。历史上留下的“session 已终态、队列仍等待”记录也未在 Worker 启动时校正。
+- 修复：新任务受理前使用同步 ref 合并重复提交，收到 `202` 或失败后释放，不妨碍已受理后的下一条 FIFO 任务；取消无活动 run 的 session 时同步清除 lease 并写为 `cancelled`，前端立即把对应独立时间线标为取消；Worker 启动恢复时校正 session 已终态但队列仍等待的旧记录。
+- 已检查关联流程：发送按钮与 Enter 提交、用户消息乐观回显、任务队列领取、控制票据取消、运行中 Abort、SSE 时间线、历史会话恢复、改写/重试取消旧任务和恢复任务；未改变模型调用、媒体载荷、checkpoint 或跨会话并发规则。
+- 验证：旧代码下 `agent-control-plane.test.js` 断言到 session 仍为 `created`，`agent-workspace-controls.test.js` 断言到缺少防重锁，`agent-task-queue.test.js` 断言到旧等待队列未被清理；修复后三项及 `ui-bug-regressions.test.js`、`npm run lint:web`、`git diff --check` 通过。
+
+### BUG-20260808-003｜短时 Agent 任务的工具链显示“已处理 0 秒”
+
+- 状态：已修复（2026-08-09，完整任务边界回归与 Browser 页面验证通过）。
+- 现象：Agent 执行时间较短时，历史对话中的工具链处理概览曾显示“已处理 0 秒”；前次改为“不到 1 秒”后，整个 Agent 任务明显持续数秒、但首尾可见工具步骤恰好同秒的任务仍显示“已处理不到 1 秒”。
+- 影响范围：文件工作区 Agent 工具链顶部的排队、运行和完成时长文案；不影响 Agent session 状态、SSE 事件、任务队列、工具执行结果或消息内容。
+- 根因：`ToolChain` 先使用第一个和最后一个可见工具步骤的事件时间，只在没有任何可见步骤时才回退任务开始时间；模型请求、排队和同秒工具事件未被纳入总时长。实际数据中 session 45 从 `11:28:04` 到 `11:28:13` 共 9 秒，但工具开始与结束均为 `11:28:10`，前端因此得到 0ms。
+- 修复：工具链总时长优先使用任务队列的 `started_at / finished_at`；实时任务在终态 SSE 事件到达时记录结束时间。工具步骤仍只负责展示过程，不再作为总时长边界；有效总时长确实小于 1 秒时才显示“不到 1 秒”。
+- 已检查关联流程：`ToolChain`、`AgentTaskTimeline`、实时与历史时间线、任务队列 `started_at / finished_at`、工具步骤首尾时间、等待确认/提问/恢复状态、停止和继续操作；不修改队列、SSE 或任务执行逻辑。
+- 验证：已加入“任务 9 秒、可见工具事件同秒”回归断言，旧代码失败、修复后通过。Browser 打开 session 45 所在历史对话，工具链由错误的“不到 1 秒”显示为“已处理 9 秒”。
+
+### BUG-20260808-004｜LLM 请求失败后继续任务复用过期恢复票据
+
+- 状态：待修复方案确认。
+- 现象：LLM API 请求失败后任务进入可恢复状态，点击“继续任务”返回 `CAPABILITY_EXPIRED`；本次用户提供的请求编号为 `afe80012-20c8-42cb-9f78-bf58655e206c`。
+- 影响范围：Agent 任务从 `waiting_retry / waiting_model_recovery` 恢复执行的入口；长时间运行后失败、页面长时间保持打开或恢复前未重新读取会话详情时可能触发。LLM 请求失败本身、checkpoint 保存和其他新任务发送不因此改变。
+- 根因：`notus/lib/agentControlPlane.js` 的 `DEFAULT_CAPABILITY_TTL_MS` 为 15 分钟，票据同时校验签名内容中的 `exp` 与 `agent_capabilities.expires_at`。`FileAgentWorkspace.js:589-609` 的“继续任务”直接使用页面内原有的 `session.control_tickets.resume`，没有在点击前重新读取会话详情；因此票据从任务开始或上次读取会话时计时，可能在任务失败后才过期。
+- 当前有效期：普通控制票据和恢复票据均为签发后 15 分钟；实现允许传入更短时长，但不会低于 30 秒。会话详情 `GET /api/conversations/:id` 会为仍可恢复的 session 重新签发票据。
+- 临时处理：刷新当前会话或重新打开对话后再点击“继续任务”，可取得新的恢复票据；这只是临时绕过，不能替代代码修复。
+- 已检查关联流程：`/api/agent/loop/start` 的恢复分支、`GET /api/conversations/:id` 票据重新签发、`FileAgentWorkspace` 继续任务入口、Agent Worker 的 `waiting_retry / waiting_model_recovery` 状态、HMAC 票据数据库校验；未修改恢复逻辑。
+- 验证：静态确认普通调用均使用默认 15 分钟；`node notus/tests/agent-control-plane.test.js` 已覆盖 30 秒票据过期判定，但尚未对本次请求编号对应的真实任务执行“失败后刷新并续跑”回归。
+
+### BUG-20260808-005｜LLM 失败后改写用户 prompt 的新任务长期停留在待执行
+
+- 状态：已修复（2026-08-08，本地 Browser 真实失败路径与自动化回归通过）。
+- 现象：LLM API 请求失败进入可恢复状态后，用户点击消息“改写”并重新发送，改写入口可能仍被禁用；即使新任务创建成功，也可能一直显示“待执行”，没有进入 Worker 执行。
+- 影响范围：文件工作区 Agent 的 LLM 错误卡片、用户消息改写、错误卡片重试、SSE 等待态、Agent session、`agent_task_queue` 同会话 FIFO 和 Worker 取消观察。原任务的 checkpoint 续跑入口仍由“继续任务”负责。
+- 根因：可恢复 `run_error` 到达后 SSE 继续保持心跳，但前端仍把 `loading` 保持为 `true`，所以消息改写按钮被禁用；同时改写接口只取消 session，没有把旧 `agent_task_queue` 任务改成终态，导致新任务被同会话 FIFO 永久挡在 `queued`。
+- 复现：本地 Web 使用临时不可达模型配置 `http://127.0.0.1:65534/v1` 发送 Agent 任务，页面出现“模型请求失败”错误卡片；修复前当前用户消息的“改写”按钮为 disabled，数据库中旧任务为 `waiting_retry`。修复后在同一失败消息上改写并重新发送，前端先进入“正在处理”，随后回到错误卡片；接口读取到旧任务 `cancelled`、新任务 `waiting_retry`，未停留在 `queued`。
+- 修复：`useAgentLoopController` 在收到可恢复或终态 `run_error` 后立即解除 loading，不等待保活 SSE 自然结束；`rewriteConversationFromMessage()` 在同一事务内把旧非终态队列任务设为 `cancelled`、清理 `run_id`、补写结束时间，并对仍在收尾的 session 写入 `cancel_requested_at`，使新任务可以按 FIFO 领取。`updateTask()` 拒绝普通 Worker 状态回写覆盖 `cancelled` 行，避免旧任务在收尾竞态中复活。
+- 已检查关联流程：错误信息组件和“继续任务”、消息改写、错误卡片“重试”、原 prompt 的 Mention/附件/图片/media_items 传递、SSE 事件收尾、session 状态恢复、任务队列领取和 Worker 取消；`CAPABILITY_EXPIRED` 票据有效期问题仍单独记录为 BUG-20260808-004，本次未混合修改。
+- 验证：先在旧代码上运行回归断言，分别确认前端 loading 不会解除、旧 `waiting_retry` 队列任务会阻塞新任务；修复后 `node notus/tests/agent-llm-retry-resume.test.js`、`node notus/tests/agent-task-queue.test.js`、`node notus/tests/agent-message-rewrite-context.test.js`、`node notus/tests/agent-workspace-controls.test.js`、`npm run test:all`、`npm run lint:web` 和 `git diff --check` 通过。Browser 在 `http://127.0.0.1:3000/files` 使用临时失败配置复现并完成改写回归；恢复本地默认模型配置后，错误卡片仍显示，两个“改写”入口和“继续任务/重试”均可用，停止按钮已消失。页面仅有既有 Next HMR `appIsrManifest` 开发警告，没有应用运行时错误。
+
+### BUG-20260808-006｜Diff 修改详情在窄屏下横向溢出
+
+- 状态：已修复（2026-08-08，内置 Browser 841px 真实视口回归通过）。
+- 现象：Agent 消息中的“查看详情”打开 Diff 修改详情后，文件列表和内容区域使用固定双栏布局；页面较窄时文件侧栏、长行内容和操作区共同挤压或超出视口，难以浏览和操作。
+- 影响范围：文件工作区 Agent 的文件修改 Diff 详情弹窗，涉及文件列表、差异内容滚动和底部操作区；不影响文件写入、应用、回滚、放弃或图片变更数据。
+- 根因：`notus/components/AgentWorkspace/AgentWorkspace.js` 原先用内联固定尺寸和 `220px minmax(0, 1fr)` 双栏承载文件列表，侧栏没有移动端抽屉状态，差异长行又按内容宽度保留，缺少窄屏弹窗外壳和内部滚动边界；同时 Diff 外层 `z-index:80` 低于页面吸顶工具栏的 `z-index:120`，窄屏时弹窗顶部被页面工具栏盖住，文件入口无法点击。
+- 修复：Diff 弹窗改为 CSS 类控制的可收缩外壳，并提升到 `z-index:2000`；宽度不超过视口，内容区使用独立滚动区域。视口宽度不大于 960px 时，文件列表从主布局中隐藏，标题栏提供“文件”入口，通过悬浮抽屉和遮罩显示，选中或点击遮罩可关闭抽屉；差异内容继续在弹窗内部滚动，不撑开页面。
+- 已检查关联流程：文件修改消息中的“查看详情”、多文件切换、文件链接打开、应用修改、回滚修改、放弃修改、图片变更预览和弹窗关闭；未修改 Diff 操作权限、文件写入接口和 Agent 回执开关。
+- 验证：内置 Browser 通过 CDP 将真实视口调整为 841×720，确认 `max-width:960px` 生效；Diff 弹窗宽 817px、页面和弹窗均无横向溢出，文件入口显示，弹窗位于页面吸顶工具栏之上。`node notus/tests/agent-workspace-controls.test.js`、`node notus/tests/ui-bug-regressions.test.js`、`npm run lint:web`、`git diff --check` 已通过。
+
+### BUG-20260808-007｜模型请求失败卡片叠加外层边框和底部阴影
+
+- 状态：已修复（2026-08-08，Browser 计算样式与自动化回归通过）。
+- 现象：模型请求失败组件已经有自己的暖色边框，但外层工具链步骤容器仍保留上下边框，页面出现重复边界和额外分隔线；移除外层边框后，卡片自身仍保留底部阴影。
+- 影响范围：Agent 工具链中的 `run_error` 错误信息组件；不影响错误分类、继续任务、原消息重试或任务状态。
+- 根因：`.notus-agent-toolchain__steps` 无论步骤内容都绘制上下边框，`AgentErrorCard` 又单独绘制卡片边框，错误状态下形成嵌套边界；同时 `.notus-agent-error-card` 的两层 `box-shadow` 未移除。
+- 修复：错误步骤不再进入普通工具步骤列表；错误卡片作为工具链的同级内容单独渲染，普通工具步骤仍保留原有上下分隔线，不再依赖状态类覆盖边框。错误卡片仅保留暖色 1px 边框，明确移除自身阴影。
+- 验证：Browser 计算样式确认错误步骤列表为空、`.notus-agent-toolchain__steps` 不再渲染，错误卡片保留单层边框且 `box-shadow: none`；`node notus/tests/agent-workspace-controls.test.js`、`node notus/tests/ui-bug-regressions.test.js`、`npm run lint:web` 和 `git diff --check` 通过。
+
+### BUG-20260808-008｜顶部保存和搜索图标交互时出现边框或焦点线
+
+- 状态：已修复（2026-08-08，Browser 宽屏/窄屏视觉回归通过）。
+- 现象：顶部菜单栏的保存入口和文件搜索入口在悬停、按下或获得焦点时出现边框样式，窄屏搜索按钮按下时还会显示浏览器默认 focus outline。
+- 影响范围：Web 文件页顶部菜单栏的保存入口和文件搜索入口；不影响保存请求、搜索弹窗、快捷键或文件内容。
+- 根因：窄屏保存入口保留了 `1px solid transparent` 内联边框，宽屏保存入口复用 `Button secondary` 的边框；顶部搜索 `HeaderIconButton` 未显式清除原生 focus outline。
+- 修复：顶部图标按钮和宽屏保存按钮统一使用 `border:none`、`box-shadow:none`、`outline:none`，保留背景色变化和按下缩放反馈。
+- 已检查关联流程：顶部保存状态、宽屏/窄屏布局、文件搜索弹窗、键盘焦点和按钮按下状态；未修改保存 API、搜索查询或导航逻辑。
+- 验证：Browser 在 841px 和 1280px 视口分别检查默认、悬停、按下和搜索点击后的状态；保存和搜索按钮计算样式均为 `border:0`、`box-shadow:none`、`outline:none`，搜索弹窗正常打开。`workspace-layout-and-topbar.test.js`、`ui-bug-regressions.test.js`、`npm run lint:web`、`npm run test:all` 和 `git diff --check` 通过。
+
+### BUG-20260808-001｜无可用 MCP Server 时输入框按钮仍可点击
+
+- 状态：已修复（2026-08-08，静态回归与本地 Web 页面验证）。
+- 现象：当前运行环境没有任何可见且已启用的 MCP Server 时，Agent 输入区的 MCP 按钮虽然显示半透明并标记了 `aria-disabled`，但仍然可以点击。
+- 影响范围：Agent 输入区的 MCP 自动开关；不影响 MCP Server 设置、工具缓存、任务请求中的 `off / auto` 选择或服务端权限判断。
+- 根因：`notus/components/AgentWorkspace/AgentWorkspace.js` 的 MCP 按钮只把 `busy || disabled` 传给原生 `disabled`，`mcpAvailable` 只参与文案、透明度和点击回调判断；因此 `mcpAvailable=false` 时 DOM 按钮仍可获得点击事件。
+- 修复：按钮的原生 `disabled`、`aria-disabled` 和不可用鼠标样式统一使用 `busy || disabled || !mcpAvailable`；无可用 Server 时按钮名称为“暂无 MCP 服务”，不打开自动模式菜单，也不改变本地 MCP 选择。同步更新产品设计、技术实现、界面规范和文件工作区流程文档，清理“点击空态入口打开配置引导”的过时口径。
+- 已检查关联流程：`enabled_only=1` 可用性查询、窗口聚焦和 `notus-mcp-servers-changed` 刷新、空列表时旧 `auto` 偏好归一为 `off`、有 Server 时自动模式开关、MCP 任务参数、设置页管理和服务端工具权限；未修改 MCP 配置数据。
+- 验证：新增 `agent-workspace-controls.test.js` 原生 `disabled` 断言，`node notus/tests/agent-workspace-controls.test.js` 通过。当前本地数据库仍有一个名为“本机 DBHub 真实测试”的已启用 Server，因此页面实际验证的是有 Server 分支；未为模拟空列表而删除或禁用用户本地配置。`git diff --check` 通过。
+
+### BUG-20260808-002｜MCP 自动选项被窄面板工具区裁剪
+
+- 状态：已修复（2026-08-08，本地 Browser 复现与修复后页面回归）。
+- 现象：有可用 MCP Server 时点击输入框 MCP 按钮，DOM 中已生成“自动”单选项，但页面截图看不到该下拉项，用户无法确认或切换自动模式。
+- 影响范围：文件工作区 Agent 输入框在 560px 以下容器宽度（包括固定 456px AI 面板）时的 MCP 自动菜单；MCP 选择值、服务端工具选择和任务权限未受影响。
+- 根因：`notus/styles/globals.css` 在 `@container notus-agent-workspace (max-width: 560px)` 中将 `.notus-agent-composer__tools` 设为 `overflow: hidden`。MCP 菜单使用 `position: absolute; bottom: calc(100% + 4px)` 向输入框上方展开，超出工具区边界后被父容器裁剪。
+- 修复：将该窄面板工具区改为 `overflow: visible`，保留工具按钮自身的宽度与换行规则；新增静态回归断言，确保向上弹出的 MCP 和模型菜单不会被工具栏裁切。
+- 已检查关联流程：MCP 可用性异步查询、无 Server 原生禁用、自动/关闭选择、模型菜单、390px 以下换行和 Tooltip；未改变 MCP 配置、任务参数或服务端权限。
+- 验证：Browser 当前页确认下拉节点实际存在但位置被裁剪；修复后使用本地 Web 页面再次点击 MCP 按钮，截图可见“自动”选项，`node notus/tests/agent-workspace-controls.test.js`、`npm run lint:web`、`git diff --check` 通过。
+
+### BUG-20260807-002｜Markdown 附件解析完成后工具记录显示 0 字
+
+- 状态：已修复（2026-08-07，本地 Browser 与全量自动化测试回归）。
+- 现象：用户粘贴或上传 Markdown 文件后，服务端解析可成功完成，但 Agent 对话内的“解析上传附件”工具记录可能显示“已读取 0 字”。
+- 影响范围：文件工作区 Agent 的 Markdown 附件上传、解析事件、实时工具链与历史时间线恢复；图片上传、PDF/DOCX/文本解析、文件写入与知识库索引待一并检查。
+- 根因：`agentTaskWorker.js` 通过 `attachment_parse_done` 事件发出解析器已计算的 `source`、`source_kind` 与 `textLength`；事件进入 `agentSession.js:sanitizeRunEvent()` 后，字段白名单没有保留这三个值。实时广播和持久化恢复都只能得到空字段，`useAgentLoopController.js:buildEventStep()` 因而把来源回退为“附件”、字数回退为 `0`。解析正文已由 `parsedAttachmentStore` 保存并注入 Prompt，未受影响。
+- 复现与验证：本地运行 Web 服务后，在 Agent 输入框上传 `README.md`（8.4 KB）并发送只读概括任务。模型最终正确概括 README 内容，证明 Markdown 已解析并进入 Prompt；展开“解析上传附件”步骤同时显示“已读取 0 字”“调用参数：附件”“调用结果：0 字”。`parsed-attachments.test.js` 与 `agent-workspace-controls.test.js` 通过，前者也确认 Markdown 解析与保存本身正常。
+- 修复与验证：`sanitizeRunEvent()` 现在仅对 `attachment_parse_start / attachment_parse_done` 保留文件名或去除 query/hash 的网页地址、来源类型、字数、页数、重复标记、受限长度的警告和错误码；文件临时路径、附件正文和 URL 凭据仍不进入 SSE 或历史事件。图片识别错误同时保留受控错误码，避免工具记录退化为固定错误。新增回归断言后先在旧实现上失败；修复后 `agent-image-toolchain-timeline.test.js`、`parsed-attachments.test.js`、`agent-workspace-controls.test.js` 与 `npm run test:all` 通过。Browser 新建对话上传 `README.md` 后，展开“解析上传附件”显示“调用参数：README.md”“已读取 8562 字”“调用结果：8562 字”，模型也完成了对应概括。
+
+### BUG-20260807-003｜富文本工具栏未随编辑器焦点和选区更新格式状态
+
+- 状态：已修复（2026-08-07，本地 Browser 与全量自动化测试回归）。
+- 现象：鼠标焦点离开富文本正文后，引用块、链接或其他格式按钮仍可能保持高亮；重新在正文定位到不匹配的语法位置时，也可能显示上一次渲染留下的高亮状态。
+- 影响范围：文件工作区的富文本编辑器工具栏，包括标题、行内格式、链接、列表、引用块、代码块、表格与居中格式；不影响 Markdown 保存、格式命令本身或 Agent 文件修改。
+- 根因：`EditorToolbar` 直接在 React 渲染期间读取 `editor.isActive()`，但没有监听 Tiptap 的 `focus / blur / selectionUpdate / transaction` 事件。编辑器实例传入后工具栏不会因选区或焦点变化重新渲染，导致界面使用过期格式状态。
+- 修复与验证：工具栏订阅 `focus / blur / selectionUpdate / transaction`，每次更新都刷新 React 状态；`isActive()` 只在正文编辑器有焦点时读取 Tiptap 格式状态，居中按钮也复用该判断。新增断言先在旧实现上失败；修复后 `editor-text-align-support.test.js` 与 `npm run test:all` 通过。Browser 中点击空正文后切换“引用块”时按钮正确高亮，点击标题输入区后按钮的前景色和背景立即恢复普通状态；撤销引用块后回到正文，按钮不会继续高亮。
+
+### BUG-20260807-001｜Agent 执行期间发送按钮未切换为中断操作
+
+- 状态：已修复（2026-08-07，自动化与本地 Browser 完整流程回归）。
+- 现象：用户发出 Agent 任务后，即使当前任务仍在创建、排队或执行，AI 输入框右下角仍显示发送箭头并继续走新任务提交路径，不能从输入区中断当前对话的任务。
+- 影响范围：文件工作区 Agent 输入框、当前对话的任务状态恢复和按 session 取消；新建/切换对话、后台 Worker、SSE 订阅、任务队列和其他对话任务不应被取消或改写。
+- 根因：`AgentWorkspace` 的 `AgentInput` 没有接收可中断 session ID 或停止回调，主按钮固定调用 `submit()`；`FileAgentWorkspace` 在切换对话时按既有规则解绑旧展示状态，恢复中的运行 session 也没有重新传给输入框。进一步实测发现，`runAgentLoop()` 只在每轮开始或模型请求抛出中止错误时检查取消；模型在取消登记后正常返回时，后续路径仍会把任务写成完成。恢复列表的旧 `running` 状态还会在终态 SSE 到达后错误保留中断按钮。
+- 修复：`FileAgentWorkspace` 从当前对话的实时或已恢复 session 中识别状态为 `created / queued / running` 的最新任务，并以本地取消状态、实时 timeline、恢复列表的顺序取状态，避免终态或取消中的任务重复显示中断入口；`AgentWorkspace` 将该 session ID 传给 `AgentInput`。输入框主按钮在存在目标任务时改为方形停止图标和“中断当前任务”无障碍名称，调用既有 `stopAgentLoop(sessionId)`，由 `/api/agent/loop/cancel` 执行精确取消；取消请求等待确认时先进入 `cancelling`，防止重复点击。`runAgentLoop()` 在模型响应和工具执行返回后再次检查 session 取消状态，阻止已取消任务继续完成；工具已返回时先完成审计记录，再写入取消终态。新建或切换对话仍只解绑本地展示和 SSE，不调用取消接口；回到原对话后重新恢复中断入口。
+- 已检查关联流程：任务队列、取消票据、工具链头部停止入口、历史会话恢复、新建/切换对话、模型选择、上传与草稿保存。确认卡、续跑、文件读写、MCP、图片/附件和平台中间层不改变。
+- 验证：新增 `agent-workspace-controls.test.js` 与 `agent-loop-error-recovery.test.js` 断言，覆盖输入按钮的 session 归属、取消等待时防重复点击、终态状态覆盖，以及模型/工具返回后仍会执行取消检查并保留审计记录。此前 Browser 已使用本地真实 Agent 验证：发送后主按钮立即切为中断；新建对话后恢复发送且后台任务未被取消；切回原对话后重新出现中断按钮；点击后消息显示“任务已取消”，主按钮恢复发送。后续针对最终两处状态细化的 Browser 复跑被浏览器插件的 URL 安全策略拦截，需在允许本地 URL 的浏览器环境补做。`agent-workspace-chat-actions.test.js`、Web lint 与 `git diff --check` 一并通过。
+
 ### BUG-20260803-008｜AI 回复重试追加重复用户消息而非覆盖原对话分支
 
 - 状态：已修复（2026-08-03，自动化与本地 Browser 实机回归）。

@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Agent 错误信息组件</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --page: #f6f4ee;
+      --surface: #fffefa;
+      --surface-soft: #f4f1e9;
+      --border: #e5e3d8;
+      --border-warm: #ead0c4;
+      --text: #343432;
+      --secondary: #6f6d66;
+      --tertiary: #99968c;
+      --accent: #d97757;
+      --accent-dark: #9d4f38;
+      --accent-soft: rgba(217, 119, 87, .11);
+      --shadow: 0 13px 32px rgba(61, 53, 45, .08), 0 2px 8px rgba(61, 53, 45, .04);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-width: 320px;
+      background: var(--page);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .page {
+      min-height: 100vh;
+      padding: 52px 24px 72px;
+    }
+
+    .masthead {
+      width: min(740px, 100%);
+      margin: 0 auto 28px;
+    }
+
+    .eyebrow {
+      margin-bottom: 9px;
+      color: var(--accent-dark);
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+
+    h1 { margin: 0; font-size: clamp(24px, 4vw, 32px); letter-spacing: -.03em; }
+    .intro { margin: 10px 0 0; color: var(--secondary); font-size: 14px; line-height: 1.8; }
+
+    .stage {
+      display: grid;
+      gap: 14px;
+      width: min(740px, 100%);
+      margin: 0 auto;
+    }
+
+    .state-switcher {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      padding: 5px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: rgba(255, 254, 250, .75);
+    }
+
+    .state-switcher button {
+      border: 0;
+      border-radius: 8px;
+      padding: 8px 11px;
+      background: transparent;
+      color: var(--secondary);
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    .state-switcher button[aria-selected="true"] { background: var(--surface-soft); color: var(--text); font-weight: 750; }
+
+    .toolchain {
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .toolchain-summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      min-height: 38px;
+      color: var(--secondary);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .toolchain-summary span:first-child { display: inline-flex; align-items: center; gap: 7px; }
+    .dot { width: 7px; height: 7px; border-radius: 999px; background: var(--accent); }
+    .dot.muted { background: #b8b4aa; }
+
+    .error-card {
+      overflow: hidden;
+      border: 1px solid var(--border-warm);
+      border-radius: 15px;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+
+    .error-main {
+      display: grid;
+      grid-template-columns: 34px minmax(0, 1fr);
+      gap: 12px;
+      padding: 15px 16px 14px;
+    }
+
+    .error-icon {
+      display: grid;
+      width: 34px;
+      height: 34px;
+      place-items: center;
+      border-radius: 10px;
+      background: var(--accent-soft);
+      color: var(--accent-dark);
+    }
+
+    .error-icon svg { width: 18px; height: 18px; }
+    .error-title { margin: 1px 0 5px; font-size: 14px; font-weight: 800; }
+    .error-message { margin: 0; color: var(--secondary); font-size: 13px; line-height: 1.65; }
+
+    .error-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 14px;
+      margin-top: 12px;
+      color: var(--tertiary);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 11px;
+    }
+
+    .error-meta span { overflow-wrap: anywhere; }
+
+    .error-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      min-height: 56px;
+      padding: 10px 12px 10px 16px;
+      border-top: 1px solid var(--border);
+      background: #fff;
+    }
+
+    .footer-note { min-width: 0; color: var(--tertiary); font-size: 11px; line-height: 1.55; }
+    .actions { display: flex; flex: 0 0 auto; gap: 8px; }
+    .actions button {
+      min-height: 32px;
+      border-radius: 9px;
+      padding: 0 13px;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+    .secondary-button { border: 1px solid var(--border); background: var(--surface-soft); color: var(--secondary); }
+    .primary-button { border: 1px solid var(--accent); background: var(--accent); color: white; box-shadow: 0 4px 11px rgba(217, 119, 87, .18); }
+    button:focus-visible { outline: 2px solid rgba(217,119,87,.45); outline-offset: 2px; }
+    button:active { transform: scale(.97); }
+
+    .context-note {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 11px 13px;
+      border-radius: 11px;
+      background: var(--surface-soft);
+      color: var(--secondary);
+      font-size: 12px;
+      line-height: 1.65;
+    }
+    .context-note strong { color: var(--text); }
+
+    @media (max-width: 520px) {
+      .page { padding: 28px 14px 48px; }
+      .error-footer { align-items: stretch; flex-direction: column; }
+      .actions { width: 100%; }
+      .actions button { flex: 1; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="masthead">
+      <div class="eyebrow">Notus Agent / Recovery</div>
+      <h1>任务没有完成</h1>
+      <p class="intro">错误信息沿用文件 Diff 详情的阅读层级：先说明发生了什么，再给出可以继续的动作。</p>
+    </header>
+
+    <section class="stage" aria-label="错误卡片设计预览">
+      <div class="state-switcher" role="tablist" aria-label="切换错误状态">
+        <button type="button" role="tab" aria-selected="true" data-state="retryable">模型暂时不可用</button>
+        <button type="button" role="tab" aria-selected="false" data-state="action">需要检查配置</button>
+        <button type="button" role="tab" aria-selected="false" data-state="request">请求未完成</button>
+      </div>
+
+      <div class="toolchain">
+        <div class="toolchain-summary">
+          <span><i class="dot" aria-hidden="true"></i><span id="summary">需要处理</span></span>
+          <span id="duration">已处理 18 秒</span>
+        </div>
+
+        <article class="error-card" role="alert">
+          <div class="error-main">
+            <div class="error-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 2.8 20h18.4L12 3Z"/><path d="M12 9v4.5M12 17h.01"/></svg>
+            </div>
+            <div>
+              <h2 class="error-title" id="title">模型服务暂时不可用</h2>
+              <p class="error-message" id="message">当前任务进度已保留。可以稍后重新发送这条任务，原来的附件和图片也会一起带上。</p>
+              <div class="error-meta"><span id="code">LLM_TEMPORARILY_UNAVAILABLE</span><span id="request">请求编号：afe80012…</span></div>
+            </div>
+          </div>
+          <footer class="error-footer">
+            <span class="footer-note">重试会重新发送上一条用户消息及其 Mention、附件、图片。</span>
+            <div class="actions"><button class="secondary-button" type="button" id="continue">继续任务</button><button class="primary-button" type="button" id="retry">↻&nbsp; 重试</button></div>
+          </footer>
+        </article>
+
+        <div class="context-note"><span aria-hidden="true">↳</span><span><strong>设计原则：</strong>错误卡片与 Diff 详情共用信息密度、边框和底部操作区；重试是重新发送原消息，继续任务仍是从 checkpoint 恢复。</span></div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const states = {
+      retryable: { title: '模型服务暂时不可用', message: '当前任务进度已保留。可以稍后重新发送这条任务，原来的附件和图片也会一起带上。', code: 'LLM_TEMPORARILY_UNAVAILABLE', request: '请求编号：afe80012…', summary: '需要处理', duration: '已处理 18 秒', showContinue: true },
+      action: { title: '模型服务需要处理', message: '请检查额度、API Key、权限或模型配置。确认后可以重新发送这条任务。', code: 'LLM_ACTION_REQUIRED', request: '请求编号：afe80012…', summary: '需要处理', duration: '已处理 26 秒', showContinue: true },
+      request: { title: '请求未完成', message: '服务没有返回可用结果。页面只显示受控提示，详细原因可以通过请求编号在日志中定位。', code: 'HTTP 502', request: '请求编号：afe80012…', summary: '请求失败', duration: '已处理 2 秒', showContinue: false },
+    };
+    const buttons = document.querySelectorAll('[data-state]');
+    const render = (key) => {
+      const state = states[key];
+      document.getElementById('title').textContent = state.title;
+      document.getElementById('message').textContent = state.message;
+      document.getElementById('code').textContent = state.code;
+      document.getElementById('request').textContent = state.request;
+      document.getElementById('summary').textContent = state.summary;
+      document.getElementById('duration').textContent = state.duration;
+      document.getElementById('continue').hidden = !state.showContinue;
+      buttons.forEach((button) => button.setAttribute('aria-selected', String(button.dataset.state === key)));
+    };
+    buttons.forEach((button) => button.addEventListener('click', () => render(button.dataset.state)));
+    document.getElementById('retry').addEventListener('click', (event) => {
+      const button = event.currentTarget;
+      button.textContent = '… 重新发送中';
+      button.disabled = true;
+      window.setTimeout(() => { button.innerHTML = '↻&nbsp; 重试'; button.disabled = false; }, 900);
+    });
+    document.getElementById('continue').addEventListener('click', (event) => {
+      event.currentTarget.textContent = '准备继续…';
+      event.currentTarget.disabled = true;
+    });
+  </script>
+</body>
+</html>

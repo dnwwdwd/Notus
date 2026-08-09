@@ -1,0 +1,18 @@
+{
+  "type": "design",
+  "designSystems": [],
+  "primaryDesignSystem": null,
+  "assets": {
+    "Agent Error Retry Component": {
+      "versions": [
+        {
+          "path": "Agent Error Retry Component.html",
+          "createdAt": "2026-08-08T12:20:56.824Z",
+          "status": "needs-review"
+        }
+      ]
+    }
+  },
+  "createdAt": "2026-08-08T12:20:56.829Z",
+  "updatedAt": "2026-08-08T12:20:56.829Z"
+}

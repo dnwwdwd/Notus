@@ -8,7 +8,7 @@
 
 创作页 Agent 输入需要支持读取用户提供的外部材料，并恢复更清晰的文件修改详情交互：
 
-- 仅在创作页启用 PDF、DOCX、MD、TXT 附件上传解析；知识库页保持现有附件展示行为。
+- 仅在创作页启用 PDF、DOCX、MD、TXT、CSV 附件上传解析；知识库页保持现有附件展示行为。CSV 按 UTF-8 纯文本读取。
 - 支持剪贴板文件解析。
 - 粘贴超过 100 字符的纯文本时，自动转成 `.txt` 附件，不直接塞入输入框；每条消息最多 5 个解析附件。
 - 支持解析用户输入中的网页链接正文，并作为本轮 Agent 上下文。
@@ -23,8 +23,8 @@
 
 ## 落地记录
 
-- 新增受控附件上传接口，上传文件暂存到运行时 `attachments` 目录，只接受 `.pdf/.docx/.md/.markdown/.txt`。
-- 新增解析链路：PDF 使用 LiteParse 且关闭 OCR，DOCX 使用 mammoth，MD/TXT 按 UTF-8 文本读取，网页链接使用 Readability 提取正文并提供 HTML 正文兜底。
+- 新增受控附件上传接口，上传文件暂存到运行时 `attachments` 目录，只接受 `.pdf/.docx/.md/.markdown/.txt/.csv`。
+- 新增解析链路：PDF 使用 LiteParse 且关闭 OCR，DOCX 使用 mammoth，MD/TXT/CSV 按 UTF-8 文本读取，网页链接使用 Readability 提取正文并提供 HTML 正文兜底。
 - `messages` 增加 `type` 字段并允许 `role='system'`，解析成功或部分成功的来源以 `system + parsed_attachment` 消息保存。
 - Agent Loop 每轮从当前 conversation 加载解析附件，拼入 system prompt，单来源和总长度按预算截断。
 - 创作页 `AgentWorkspace` 启用解析附件模式，支持文件选择、剪贴板文件和超过 100 字符的粘贴文本生成附件 chip；无文本但有附件时使用默认任务“请读取并分析已上传的文件。”。

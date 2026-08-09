@@ -130,7 +130,7 @@ body: session_id + resume_job_id + control_ticket(resume_session) + llm_config_i
 - 状态更新同时匹配 `active_run_id` 和 `state_version`。
 - session 仍为 `running` 且已有不同的未过期 run 时，第二个 run 接管失败并返回 `SESSION_RUN_CONFLICT`。session 已进入 `queued_resume / waiting_retry / waiting_model_recovery` 时，旧 Loop 已停止执行，新 run 可以接管 API 收尾阶段尚未清空的 lease；旧 run 的条件释放不会影响新 run。
 - 每个活动 run 注册 `AbortController`。
-- 取消接口写入 `cancel_requested_at`，再中止当前进程内的 LLM、MCP 和受支持联网请求。
+- 取消接口写入 `cancel_requested_at`，再中止当前进程内的 LLM、MCP 和受支持联网请求；尚未持有 run 的 session 同步进入 `cancelled` 并清理队列，避免恢复页面继续显示中断入口。
 - LLM 总请求默认超时 180 秒；MCP 与联网工具默认 30 秒，统一从 `lib/config.js` 读取。
 - SSE 每 15 秒发送 comment heartbeat，防止空闲代理提前关闭连接。
 
@@ -295,7 +295,7 @@ Ajv 8 是直接依赖。所有 tool input 在执行前按工具的 JSON Schema �
 
 ## 16. LLM 失败重试与任务续跑
 
-Harness 在每次主 LLM 请求前提交可恢复 checkpoint。临时错误最多额外重试 3 次，退避为 1s/2s/4s；额度、密钥、权限和模型可用性问题不自动重试。分类与状态映射为：
+Harness 在每次主 LLM 请求前提交可恢复 checkpoint。临时错误最多额外重试 5 次，退避为 1s/2s/4s/8s/16s；额度、密钥、权限和模型可用性问题不自动重试。分类与状态映射为：
 
 ```text
 retryable       → waiting_retry
@@ -303,7 +303,11 @@ action_required → waiting_model_recovery
 fatal           → failed
 ```
 
-`waiting_retry / waiting_model_recovery` 不是终态。会话详情继续签发 resume ticket，`acquireRunLease()` 允许两种状态接管。SSE 先以 `progress:llm_retry` 更新工具链；耗尽或需要用户处理时输出 `artifact:run_error`，不输出 `final`。Route 在发送可恢复错误前释放旧 lease，前端等 SSE 收尾后才开放继续按钮，并以同步 in-flight 锁拦截重复点击。前端的“继续任务”使用原 session 和 checkpoint，已保存的 tool result 作为 messages 恢复，不重新执行已完成工具；当次模型选择写回任务表，后续 SSE 从恢复前的事件游标继续。Provider 原始响应正文不进入 SSE 或最终消息。
+`waiting_retry / waiting_model_recovery` 不是终态。会话详情继续签发 resume ticket，`acquireRunLease()` 允许两种状态接管。SSE 先以 `progress:llm_retry` 更新工具链；耗尽或需要用户处理时输出 `artifact:run_error`，不输出 `final`。Route 在发送可恢复错误前释放旧 lease；前端收到 `run_error` 后立即解除 loading，等待态 SSE 只继续发送 heartbeat，不得锁住继续、改写和重试入口，并以同步 in-flight 锁拦截重复点击。前端的“继续任务”使用原 session 和 checkpoint，已保存的 tool result 作为 messages 恢复，不重新执行已完成工具；当次模型选择写回任务表，后续 SSE 从恢复前的事件游标继续。Provider 原始响应正文不进入 SSE 或最终消息。
+
+消息改写或错误卡片重试会先截断服务端消息分支。事务同时取消锚点之后的非终态 session 和 `agent_task_queue` 任务，清理旧任务的 `run_id` 并写入 `finished_at`；仍可能处于模型/工具收尾的 session 通过 `cancel_requested_at` 让 Worker 在调用返回后结束，队列状态回写也不能覆盖已取消行。用户从输入框发送新的 prompt 时，不截断历史消息，但会通过 `supersedePendingUserActionTasks()` 结束同一会话遗留的 `created / queued / waiting_interaction / waiting_limit_confirmation / waiting_retry / waiting_model_recovery` 任务及 pending interaction；运行中的真实任务不由新 prompt 中止。用户点击输入框中断时，前端为同一对话的每条 `created / queued / running` 任务提交各自的 cancel ticket，接口逐项校验后停止对应任务并返回 ID 列表，前端逐条写入取消时间线；用户点击旧任务“继续任务/重试”不触发替代，仍恢复原 checkpoint。这样遗留任务不会让新建任务长期停留在 `queued` 或继续占用输入框的中断按钮。
 # 持久化队列执行层（2026-08-01）
 
 Agent Loop 由 `agentTaskWorker` 而非 API 请求执行。Worker 在 runtime 初始化时扫描任务表，按会话 FIFO claim，并用已有 lease/checkpoint 保护执行。Worker 的定时器与调度锁存于 Node 进程级单例：不同 API Route 的模块加载只能复用同一 Worker，不能再次执行启动恢复并把仍在运行的 task 重置为队列任务。SSE 只是可随时断开的观察通道，事件游标用于补发；其 EventEmitter 也在进程内共享，Worker 发布后当前订阅会即时收到，未连接或断线的页面则按游标回补。Worker 对最终助手消息使用 task 的 `final_message_id` 幂等保护；交互回答创建 resume job 后唤醒原 task。
+
+工具链摘要的总时长以队列 task 的 `started_at / finished_at` 为历史恢复边界，实时订阅以受理时间和终态事件时间为边界；`agent_run_events` 只构造可见步骤，不能替代任务总时长。

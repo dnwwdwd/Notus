@@ -14,6 +14,89 @@
 
 ## 当前记录
 
+### BUG-20260809-011｜Agent 日志时间、内部元数据与运行状态展示错误
+
+- 状态：已修复（2026-08-09，本地自动化、构建与 Browser 回归通过；真实 Provider、Electron、懒猫待实机回归）。
+- 现象：设置页“Agent Loop 执行日志”将晚间重试的 session 显示为 `2026-08-09 13:10:00`；内部 `__run_metadata__` 行被显示为“成功 / 工具调用已完成 / 0 ms”；session 保持 `running` 时，页面不显示已经运行多久、当前是在等待模型还是正在执行工具，用户无法判断任务是否仍在实际推进。
+- 影响范围：Web、Electron 与懒猫的 Agent 日志页；Agent session 诊断、真实 Provider 重试和长文件任务的可理解性。不影响数据库中的任务执行、工具调用、文件写入或重试额度。
+- 根因：
+  1. SQLite 的 `datetime('now')` 以 UTC 生成不带时区的文本。`SettingsScreen` 与 `AgentLoopLogList` 直接使用 `new Date(value)` 解析，例如 `2026-08-09 13:10:00` 会先被当作本地 `13:10`，后续指定 `Asia/Shanghai` 也不会补回八小时；项目已有 `utils/messageTimestamps.js:parseMessageTimestamp()` 已正确补 `Z`，日志页没有复用该规则。
+  2. `agentLoop.js` 用 `logToolCall({ toolName: '__run_metadata__', status: 'metadata' })` 保存 Prompt/工具集版本。`AgentLoopLogList` 没有过滤或单独呈现该内部记录，并把所有非失败行都渲染为“成功”和“工具调用已完成”，因此产生误导性的 0 ms 工具条目。
+  3. 日志页只显示 `updated_at`、轮次和快照数；session 在下一次 LLM 请求中时不会生成工具日志，页面也没有读取执行段、请求窗口或队列时间。因此 `running` 既可能表示正在等待模型，也可能表示异常收尾，现有页面无法说明运行时长和当前阶段。
+- 已检查关联流程：`agent_sessions`、`agent_task_queue`、`agent_execution_segments`、`agent_llm_request_windows`、`agent_run_logs`、`agent_run_events`、设置页日志 API 和文件工作区执行记录。截图中的“检索知识库”“读取文件”均为真实工具记录；`__run_metadata__` 不是工具调用。
+- 修复：日志时间统一复用 `parseMessageTimestamp()`，把 SQLite UTC 文本按 UTC 解释后再格式化为 `Asia/Shanghai`；`__run_metadata__` 从工具列表排除；日志 API 返回 task 与执行段，日志页显示“已运行”时长和当前执行段阶段。Agent 执行记录新增持久化的模型请求阶段、执行段分组和断线恢复，不再把等待模型、重试、工具与等待确认都概括为 running。
+- 验证：2026-08-09 复现截图显示 session #197 的 `2026-08-09 13:10:00`、`__run_metadata__ / 0 ms` 和 `running`。本机在东八区验证：同一 SQLite UTC 文本补 `Z` 后格式化为 `21:10`。Browser 使用本地模拟任务验证日志显示 `2026-08-09 21:35:13`、`3 轮 · 0 快照 · 已运行 10 秒`、两个真实“新建笔记”工具行，未显示 `__run_metadata__`；模拟 429、刷新等待确认和手动继续流程均显示可理解的持久化状态。尚未读取截图环境的原始数据库，不能仅依据日志页断言 session #197 已经卡死。
+
+### BUG-20260809-010｜LPK 快捷打包命令与仓库说明不一致
+
+- 状态：待修复方案确认。
+- 现象：项目说明列出 `npm run dist:lpk:script`，但根目录 `package.json` 未定义该命令；执行时 npm 返回 `Missing script: "dist:lpk:script"`。
+- 影响范围：按项目说明手动重打 `.lpk` 的开发者；不影响已存在的 `npm run dist:lpk`，其底层 `desktop/scripts/build-lpk.js` 已会按包名前缀删除旧 `.lpk` 后再构建。
+- 根因：仓库说明保留了 `scripts/dist-lpk.sh` 与 `dist:lpk:script` 的描述，但当前仓库没有 `scripts/` 目录，且 `package.json` 只定义了 `dist:lpk`。
+- 临时处理：使用 `npm run dist:lpk`。
+- 建议修复：在 `package.json` 恢复兼容别名，或删除文档中失效的脚本与命令描述；两种方式均不改变实际 LPK 构建流程。
+- 验证：2026-08-09 执行 `npm run dist:lpk:script` 稳定复现缺失脚本；改用 `npm run dist:lpk` 后，旧包已删除并成功生成 `cloud.lazycat.app.notus-v0.1.13.lpk`（188 MB，SHA-256：`6580840bf909f322e38d47a0ded7a23ea2febd0c459dee43483f6806d5665aa7`）。
+
+### BUG-20260809-009｜Tiptap 重复注册 Link 与 Underline 扩展
+
+- 状态：已修复（2026-08-09，自动化、Browser 控制台与 Web / Desktop 构建通过）。
+- 现象：打开富文本笔记后，浏览器控制台报告 `Duplicate extension names found: ['link', 'underline']`，提示重复扩展可能造成编辑问题。
+- 影响范围：文件工作区富文本编辑器的 Link 与 Underline 扩展注册；当前编辑、保存和 Agent 文件写入仍可用，潜在风险集中在重复命令、插件顺序和后续升级兼容。
+- 根因：当前 `@tiptap/starter-kit` 3.22.4 已内置 Link 与 Underline，`WysiwygEditor.js` 又显式注册带自定义配置的 Link 和独立 Underline，形成同名扩展重复。
+- 修复：在 StarterKit 配置中关闭内置 Link 与 Underline，继续使用现有显式 Link 配置和 Underline 扩展，不改变链接点击规则和工具栏命令。
+- 已检查关联流程：StarterKit 配置、链接点击行为、工具栏下划线命令、Markdown 编辑器动态加载；保留显式 Link 配置和 Underline 能力，只关闭 StarterKit 内的同名默认扩展。
+- 验证：旧代码执行 `ui-bug-regressions.test.js` 会因缺少 StarterKit 去重配置失败；修复后测试通过。Browser 重新打开富文本笔记后，最新控制台不再出现 Tiptap 重复扩展警告。`npm run test:all`、`npm run lint:web`、`npm run build:web`、`npm run build:desktop` 和 `git diff --check` 通过；Lint 仅保留既有 Hook 依赖 warning。
+
+### BUG-20260809-008｜已完成自动任务的历史重试步骤被标为中断暂停
+
+- 状态：已修复（2026-08-09，自动化与 Browser 历史恢复通过）。
+- 现象：自动模式任务实时完成时执行记录显示“已处理”，从历史对话重新打开后却显示“需要处理”；最后一条“重试模型请求”详情被追加“连接中断后已暂停”，但会话和最终回复都已完成。
+- 影响范围：带模型重试事件的 completed Agent session 历史恢复；不影响实时重试计数、任务执行、累计 Diff、失败会话或真实中断会话。
+- 根因：`buildRestoredAgentTimeline()` 将所有持久化后仍为 `running` 的步骤统一改为 `stopped`，没有先检查 session 是否已是 `completed`。模型重试成功后没有同 ID 的结束事件覆盖最后一条 retry，历史恢复因此把已解决步骤误判为中断。
+- 修复：历史构建时根据 session 终态处理遗留运行步骤：completed 会话改为 `done`，非终态会话仍改为 `stopped` 并保留中断说明。
+- 已检查关联流程：每个执行段的重试记录、completed 历史恢复、真实非终态中断、累计 Diff 和历史搜索切换；非终态 session 的运行步骤仍需显示暂停说明。
+- 验证：旧代码执行 `agent-workspace-controls.test.js` 会因 completed 历史步骤缺少终态分支失败；修复后测试通过。Browser 使用历史搜索重新打开三段均有 `1/5` 重试的自动任务，标题恢复为“已处理 3 秒”，累计 Diff 仍为 2 个文件。
+
+### BUG-20260809-007｜任务刷新后继续完成时执行记录暂时消失
+
+- 状态：已修复（2026-08-09，自动化与 Browser 运行中刷新回归通过）。
+- 现象：Agent 已完成第一批文件修改、正在等待下一次模型响应时刷新页面，任务能够在后台继续并返回最终回复，累计 Diff 也存在，但执行记录在终态到达后消失；任务完成后再刷新一次，完整执行记录又能恢复。
+- 影响范围：文件工作区 Agent 在运行中刷新后继续接收 SSE 增量并到达终态的当前页面；不影响服务端任务执行、持久化事件、最终回复、文件写入、累计 Diff 或完成后重新读取历史。
+- 根因：`FileAgentWorkspace` 以对象展开让 `liveSessionTimelines` 整条覆盖 `restoredSessionTimelines`。刷新后恢复时间线已有历史步骤，新 SSE 订阅却先发布一条 `activeSteps: []` 的实时时间线；`MessageList` 又优先使用控制器自身的空 `activeSteps`，再次绕过按 session 保存的恢复步骤。终态到达后，刷新瞬间生成的恢复暂停提示也没有被清除。
+- 修复：恢复时间线与实时增量改为按 session、按步骤 ID 合并；当前 session 的展示再以恢复步骤为底叠加控制器步骤。实时状态进入 completed、failed 或 cancelled 后，移除只用于非终态恢复的合成暂停提示，保留真实工具步骤。
+- 已检查关联流程：运行中刷新、SSE 重新订阅、恢复时间线、实时终态、最终消息 session 归属、累计 Diff 和完成后二次刷新；新任务使用新的 session，不应继承其他 session 的步骤。
+- 验证：旧代码执行 `agent-workspace-controls.test.js` 会因缺少两层时间线合并和终态清理断言失败；修复后测试通过。Browser 在第一批文件修改已应用、第二次模型请求延迟期间刷新页面，任务后台完成后当前页面仍显示“已处理 13 秒”“生成修改预览”、最终回复和 1 个文件累计 Diff，无需二次刷新。
+
+### BUG-20260809-006｜已取消 Agent 任务的执行记录仍显示“需要处理”
+
+- 状态：已修复（2026-08-09，自动化与 Browser 取消恢复通过）。
+- 现象：用户停止正在执行的 Agent 任务后，步骤显示“任务已取消”、最终回复显示“任务已取消”，但执行记录折叠标题仍显示“需要处理”，且没有任何继续或确认操作。
+- 影响范围：文件工作区 Agent 显式取消后的实时状态与历史恢复标题；不影响取消请求、任务终态、已应用文件修改或累计 Diff。
+- 根因：`AgentWorkspace.js` 的 `ToolChain` 把 `cancelled` 与 `failed / error / stopped` 一并归入 `hasFailed`，再统一输出“需要处理”，没有优先按 session 的 `cancelled` 终态显示取消结果。
+- 修复：取消终态从失败/待处理判断中分离，session 或尾步骤为 cancelled 时，执行记录标题优先显示“已取消”；真实失败、恢复和等待确认继续显示“需要处理”。
+- 已检查关联流程：运行中停止、取消步骤、最终回复、累计 Diff、可恢复错误和真实等待确认状态；可恢复错误与真实等待状态仍须保留“需要处理”。
+- 验证：旧代码执行 `agent-workspace-controls.test.js` 会因缺少取消终态分支失败；修复后测试通过。Browser 在首批自动修改已应用、下一次模型请求未完成时停止任务，刷新后标题显示“已取消”，累计 Diff 仍可打开并显示该文件“已应用”。
+
+### BUG-20260809-005｜刷新后 Agent 确认模式显示与实际提交不一致
+
+- 状态：已修复（2026-08-09，自动化、Browser 刷新与请求载荷通过）。
+- 现象：用户保存“手动应用修改”偏好后刷新文件页，确认方式控件仍显示“自动应用修改”，但发送任务时服务端收到的 `approval_mode` 是 `manual_confirm`；用户看到的模式与实际文件处理方式相反。
+- 影响范围：文件工作区 Agent 确认模式的页面刷新和首次 Hydration；不影响用户在当前页面再次点击模式后的切换，也不影响服务端按已收到模式执行安全检查。
+- 根因：`FileAgentWorkspace` 使用 `useState(() => readConfirmMode())` 初始化确认模式。服务端渲染时没有 `window`，只能输出 `auto_confirm`；浏览器 Hydration 时读取 `localStorage` 得到 `manual_confirm`。React 控制台明确报告 `aria-selected` 和样式属性不匹配且不会自动修补，导致 DOM 保留自动模式外观，而 React 内部提交状态已经是手动模式。
+- 修复：服务端和浏览器首次渲染统一以自动模式初始化；组件挂载后再从 `localStorage` 恢复偏好，使 DOM 外观与提交状态由同一次 React 更新保持一致。
+- 已检查关联流程：确认模式本地持久化、服务端首屏、浏览器 Hydration、刷新后控件状态、发送任务请求载荷、自动/手动分批文件修改；不改变确认模式的存储键和值。
+- 验证：旧代码执行 `agent-workspace-controls.test.js` 会因 Hydration 初始化仍读取本地存储失败；修复后测试通过。Browser 保存手动模式并刷新后控件正确显示手动；切回自动并提交失败场景，数据库任务载荷为 `approval_mode:auto_confirm`，首批修改自动应用。最新控制台不再出现确认模式 Hydration mismatch。
+
+### BUG-20260809-004｜手动确认任务完成后执行记录仍显示“需要处理”
+
+- 状态：已修复（2026-08-09，自动化与 Browser 实时/刷新恢复通过）。
+- 现象：手动模式分批应用全部修改并收到最终回复后，执行记录标题仍显示“需要处理”；刷新恢复同一对话后状态不变，已处理的确认步骤也继续显示为等待确认。
+- 影响范围：文件工作区 Agent 手动确认模式的实时完成态和历史恢复态；不影响修改实际应用、任务最终回复、累计 Diff、自动模式或任务队列状态。
+- 根因：`notus/hooks/useAgentLoopController.js` 将 `operation_confirmation` 事件恢复为 `waiting` 步骤，但任务最终完成时调用的 `completeSteps()` 只把 `running` 步骤改为完成，没有结束已处理的文件确认步骤；`ToolChain` 随后根据尾步骤的 `waiting` 状态继续判断为“需要处理”。隔离测试库中会话状态已经是 `completed`，两批 operation set 均为 `applied`，但末尾持久化确认事件仍保留 `waiting_operation_confirmation`。
+- 修复：任务 final 和 completed 历史恢复会把 operation confirmation 步骤改为“已确认文件修改”，状态设为完成；失败、取消或仍在等待确认的会话不执行这项转换。
+- 已检查关联流程：手动模式首批应用并继续、第二批应用并完成、实时工具链、刷新恢复、累计 Diff、自动模式和取消后仍保留待确认修改；取消或失败状态下真实未处理的确认步骤不能被误标为完成。
+- 验证：旧代码执行 `agent-workspace-controls.test.js` 会因缺少确认步骤终态处理失败；修复后测试通过。Browser 在手动模式依次应用两批修改后，实时和刷新历史标题均为“已处理”，两条步骤均显示“已确认文件修改”，同一累计 Diff 卡包含 2 个文件。
+
 ### BUG-20260809-003｜Agent 运行状态错误禁用历史消息操作
 
 - 状态：已修复（2026-08-09，自动化与 Browser 页面回归通过）。

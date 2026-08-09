@@ -37,8 +37,10 @@ async function runTests() {
     'setEditing(false);',
     'await fetch(`/api/conversations/${conversationId}/truncate`',
     'window.setTimeout(() => {',
-    'skipUserMessageAppend: replacesConversation',
-    'attachments: Array.isArray(sourceMessage?.attachments) ? sourceMessage.attachments : []',
+    'skipUserMessageAppend: replacesConversation && Number(sourceMessage?.id || 0) > 0',
+    'attachments: sourceAttachments',
+    'images: sourceImages',
+    'mediaItems: sourceMediaItems',
   ].forEach((snippet) => {
     assert.ok(
       workspaceSource.includes(snippet),
@@ -152,7 +154,7 @@ async function runTests() {
   assert.ok(workspaceSource.includes('function AttachmentContentDialog'));
   assert.ok(workspaceSource.includes("fetch('/api/agent/attachments/content'"));
   assert.ok(workspaceSource.includes('PDF 不支持复制'));
-  assert.ok(workspaceSource.includes("`查看附件内容：${file.name || '未命名附件'}`"));
+  assert.ok(workspaceSource.includes('`查看附件内容：${fileName}`'));
 
   console.log('agent workspace chat actions tests passed');
 }

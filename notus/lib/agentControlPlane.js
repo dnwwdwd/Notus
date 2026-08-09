@@ -281,8 +281,21 @@ function registerActiveRun(runId, controller) {
 function requestCancellation(sessionId) {
   const sid = toPositiveInt(sessionId);
   const db = getDb();
-  const session = db.prepare('SELECT active_run_id FROM agent_sessions WHERE id = ?').get(sid);
-  db.prepare("UPDATE agent_sessions SET cancel_requested_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(sid);
+  const session = db.prepare('SELECT active_run_id, status FROM agent_sessions WHERE id = ?').get(sid);
+  const inactiveSession = !session?.active_run_id;
+  db.prepare(`
+    UPDATE agent_sessions
+    SET cancel_requested_at = datetime('now'),
+        status = CASE
+          WHEN ? AND status NOT IN ('completed', 'cancelled', 'failed', 'rolled_back') THEN 'cancelled'
+          ELSE status
+        END,
+        active_run_id = CASE WHEN ? THEN NULL ELSE active_run_id END,
+        lease_expires_at = CASE WHEN ? THEN NULL ELSE lease_expires_at END,
+        state_version = CASE WHEN ? THEN state_version + 1 ELSE state_version END,
+        updated_at = datetime('now')
+    WHERE id = ?
+  `).run(inactiveSession ? 1 : 0, inactiveSession ? 1 : 0, inactiveSession ? 1 : 0, inactiveSession ? 1 : 0, sid);
   const controller = session?.active_run_id ? activeRuns.get(String(session.active_run_id)) : null;
   if (controller && !controller.signal.aborted) controller.abort('cancel');
   return { requested: true, active: Boolean(controller), runId: session?.active_run_id || null };

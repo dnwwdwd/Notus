@@ -426,12 +426,29 @@ function rewriteConversationFromMessage({ conversationId, messageId, content } =
           WHEN status IN ('completed', 'failed', 'cancelled', 'rolled_back') THEN status
           ELSE 'cancelled'
         END,
+        cancel_requested_at = CASE
+          WHEN status IN ('completed', 'failed', 'cancelled', 'rolled_back') THEN cancel_requested_at
+          ELSE datetime('now')
+        END,
         messages_checkpoint = NULL,
         checkpoint_tool_use_id = NULL,
         updated_at = datetime('now')
       WHERE conversation_id = ?
         AND (created_at >= ? OR updated_at >= ?)
     `).run(normalizedConversationId, cutoff, cutoff);
+
+    if (cancelledSessionIds.length > 0) {
+      const placeholders = cancelledSessionIds.map(() => '?').join(', ');
+      db.prepare(`
+        UPDATE agent_task_queue
+        SET status = 'cancelled',
+            run_id = NULL,
+            finished_at = COALESCE(finished_at, datetime('now')),
+            updated_at = datetime('now')
+        WHERE session_id IN (${placeholders})
+          AND status NOT IN ('completed', 'failed', 'cancelled')
+      `).run(...cancelledSessionIds);
+    }
 
     db.prepare(`
       UPDATE conversation_interactions

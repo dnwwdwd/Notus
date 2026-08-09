@@ -44,9 +44,17 @@ async function run() {
     releaseRunLease,
     renewRunLease,
     validateCapability,
+    requestCancellation,
   } = require('../lib/agentControlPlane');
+  const { cancelTask, createTask, getTaskBySession } = require('../lib/agentTaskQueue');
 
   const conversation = ensureConversation({ kind: 'agent', title: 'control plane' });
+  const cancellationTestSession = createSession({ goal: '控制面后续测试', conversationId: conversation.id });
+  createTask({ sessionId: cancellationTestSession.sessionId, conversationId: conversation.id, input: { goal: '控制面后续测试' } });
+  requestCancellation(cancellationTestSession.sessionId);
+  cancelTask(cancellationTestSession.sessionId);
+  assert.strictEqual(getSession(cancellationTestSession.sessionId).status, 'cancelled', '取消尚未运行的任务必须立即结束 session，不能继续被前端识别为可中断');
+  assert.strictEqual(getTaskBySession(cancellationTestSession.sessionId).status, 'cancelled', '取消尚未运行的任务必须立即结束队列记录');
   const created = createSession({ goal: '测试恢复', conversationId: conversation.id });
   const interaction = createInteraction({
     conversationId: conversation.id,

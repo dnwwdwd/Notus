@@ -535,7 +535,7 @@ function buildAgentFrontmatterContent(title = '', content = '') {
   return `${frontmatter}\n\n${body}`;
 }
 
-async function executeCreateNote({ path: filePath, content = '', title = '' } = {}, sessionId, notesDir = getEffectiveConfig().notesDir) {
+async function executeCreateNote({ path: filePath, content = '', title = '' } = {}, sessionId, notesDir = getEffectiveConfig().notesDir, context = {}) {
   const session = getSession(sessionId);
   let normalized;
   try { normalized = normalizeAgentPath(filePath, { ensureMarkdown: true }); } catch (error) { return { error: 'INVALID_PATH', message: error.message }; }
@@ -550,6 +550,8 @@ async function executeCreateNote({ path: filePath, content = '', title = '' } = 
   const operationSet = createOperationSet({
     conversationId: session.conversation_id,
     agentSessionId: session.id,
+    executionSegmentId: context.executionSegmentId,
+    toolUseId: context.toolUseId,
     articleHash: sha256(JSON.stringify({ path: normalized, content: finalContent })),
     mode: 'create_file',
     operations: [],
@@ -947,7 +949,7 @@ function alignPatchOldText(currentContent = '', oldText = '') {
   return { ok: false, reason: 'OLD_NOT_FOUND', message: 'old 文本没有在当前文件中找到唯一匹配，请先 read_file 读取精确原文后重试。' };
 }
 
-async function executePreviewPatchFiles({ patches = [] } = {}, sessionId) {
+async function executePreviewPatchFiles({ patches = [] } = {}, sessionId, _notesDir, context = {}) {
   const session = getSession(sessionId);
   const normalized = (Array.isArray(patches) ? patches : []).map((patch) => {
     try { return normalizePatch(patch); } catch { return null; }
@@ -978,6 +980,8 @@ async function executePreviewPatchFiles({ patches = [] } = {}, sessionId) {
   const operationSet = createOperationSet({
     conversationId: session.conversation_id,
     agentSessionId: session.id,
+    executionSegmentId: context.executionSegmentId,
+    toolUseId: context.toolUseId,
     articleHash: sha256(JSON.stringify(normalized)),
     mode: normalized.length > 1 ? 'multiple_files' : 'single_file',
     operations: [],
@@ -997,7 +1001,7 @@ async function executePreviewPatchFiles({ patches = [] } = {}, sessionId) {
   return { operation_set_id: operationSet.id, patch_count: normalized.length, patches: normalized.map((patch) => ({ file_path: patch.file_path })) };
 }
 
-async function executePreviewFileOperations({ operations = [] } = {}, sessionId) {
+async function executePreviewFileOperations({ operations = [] } = {}, sessionId, _notesDir, context = {}) {
   const session = getSession(sessionId);
   const normalized = (Array.isArray(operations) ? operations : []).map((operation) => {
     try { return normalizeFileSystemPatch(operation); } catch { return null; }
@@ -1017,6 +1021,8 @@ async function executePreviewFileOperations({ operations = [] } = {}, sessionId)
   const operationSet = createOperationSet({
     conversationId: session.conversation_id,
     agentSessionId: session.id,
+    executionSegmentId: context.executionSegmentId,
+    toolUseId: context.toolUseId,
     articleHash: sha256(JSON.stringify(normalized)),
     mode: normalized.length > 1 ? 'multiple_file_operations' : 'single_file_operation',
     operations: [],

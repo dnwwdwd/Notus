@@ -310,7 +310,7 @@ async function previewFileRevision({
   draft_content: snakeDraftContent = '',
   parentOperationSetId = null,
   parent_operation_set_id: snakeParentOperationSetId = null,
-} = {}, sessionId) {
+} = {}, sessionId, _notesDir, context = {}) {
   const session = getSession(sessionId);
   let normalizedPath;
   try {
@@ -356,6 +356,8 @@ async function previewFileRevision({
   const operationSet = createOperationSet({
     conversationId: session.conversation_id,
     agentSessionId: session.id,
+    executionSegmentId: context.executionSegmentId,
+    toolUseId: context.toolUseId,
     fileId: file.id,
     articleHash: baseHash,
     mode: 'file_revision',

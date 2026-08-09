@@ -10,11 +10,12 @@ const { buildResearchSummary, buildWriteSummary, correctConflictingSourceClaims,
 const { updateInteraction } = require('./conversationInteractions');
 const { acquireRunLease, registerActiveRun, releaseRunLease, renewRunLease, recordRunUsage, recoverStaleRunLeases } = require('./agentControlPlane');
 const { assertAttachmentLimits, assertImageContextSize, assertImageLimits, getImageInputBlocks, MAX_ANTHROPIC_IMAGE_CONTEXT_BYTES } = require('./conversationImages');
-const { claimRunnableTasks, updateTask, recoverOrphanedTasks, getTaskBySession } = require('./agentTaskQueue');
+const { claimRunnableTasks, updateTask, settleTaskRun, recoverOrphanedTasks, getTaskBySession } = require('./agentTaskQueue');
 const { publish } = require('./agentRunEventBus');
 const { getDb } = require('./db');
 const { updateResumeJob } = require('./agentControlPlane');
 const { mergeAgentMedia } = require('./agentMedia');
+const { markTaskChangeSetFinished } = require('./agentTaskChangeSets');
 
 const logger = createLogger({ subsystem: 'agent-task-worker' });
 const WORKER_STATE_KEY = '__notus_agent_task_worker_state__';
@@ -122,6 +123,7 @@ async function execute(task) {
     });
     const finalSession = getSession(sessionId);
     const status = finalSession.status || loopResult?.status || 'failed';
+    if (['completed', 'failed', 'cancelled'].includes(status)) markTaskChangeSetFinished(sessionId, status);
     if (status === 'waiting_interaction' && loopResult?.interaction?.id) {
       const intro = String(loopResult.interaction?.payload?.clarify_intro || '').trim() || '请回答这张提问卡片后继续执行。';
       const messageId = appendConversationMessage({ conversationId, role: 'assistant', content: intro, meta: { agent_loop: true, session_id: sessionId, status, answer_mode: 'clarify_needed', interaction_id: loopResult.interaction.id, interaction_kind: loopResult.interaction.kind || 'clarify_card', reason: loopResult.reason } });
@@ -135,14 +137,16 @@ async function execute(task) {
       }
     }
     touchConversation(conversationId);
-    const queueStatus = ['waiting_interaction', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery'].includes(status) ? status : status;
-    updateTask(sessionId, { status: queueStatus, finished: ['completed', 'failed', 'cancelled'].includes(status) });
-    if (resumeJob) updateResumeJob(resumeJob.id, { status: ['waiting_interaction', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery'].includes(status) ? 'queued' : status === 'completed' ? 'completed' : 'failed', result: { status }, finished: ['completed', 'failed', 'cancelled'].includes(status) });
+    settleTaskRun(sessionId, status, { finished: ['completed', 'failed', 'cancelled'].includes(status) });
+    if (resumeJob) updateResumeJob(resumeJob.id, { status: ['waiting_interaction', 'waiting_operation_confirmation', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery'].includes(status) ? 'queued' : status === 'completed' ? 'completed' : 'failed', result: { status }, finished: ['completed', 'failed', 'cancelled'].includes(status) });
   } catch (error) {
     const cancelled = controller.signal.aborted && controller.signal.reason === 'cancel';
     const interrupted = controller.signal.aborted && !cancelled;
     const status = cancelled ? 'cancelled' : interrupted ? 'queued' : 'failed';
     try { updateSessionStatus(sessionId, cancelled ? 'cancelled' : interrupted ? 'queued_resume' : 'failed'); } catch {}
+    if (!interrupted) {
+      try { markTaskChangeSetFinished(sessionId, cancelled ? 'cancelled' : 'failed'); } catch {}
+    }
     updateTask(sessionId, { status, lastError: { code: error.code || 'AGENT_TASK_FAILED', message: error.message || '任务执行失败' }, finished: !interrupted });
     emit(sessionId, runId, { type: 'artifact', artifact_type: 'run_error', status: interrupted ? 'queued_resume' : 'failed', error_category: interrupted ? 'interrupted' : 'fatal', error_code: interrupted ? 'WORKER_INTERRUPTED' : (error.code || 'AGENT_TASK_FAILED'), message: interrupted ? '任务已保存，将在服务恢复后继续执行。' : 'Agent 执行异常，执行记录已保留。', resumable: interrupted });
     logger.error('agent.task.failed', { session_id: sessionId, error });

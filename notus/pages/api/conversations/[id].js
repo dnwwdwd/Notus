@@ -11,6 +11,8 @@ const { countSnapshots, listRunEvents, listRunLogs, listSessionsByConversation }
 const { sanitizeResearchReceipts } = require('../../../lib/agentResearch');
 const { issueCapability, listResumeJobsByConversation, recoverStaleRunLeases } = require('../../../lib/agentControlPlane');
 const { getTaskBySession, getQueuePosition } = require('../../../lib/agentTaskQueue');
+const { listExecutionSegments } = require('../../../lib/agentExecutionSegments');
+const { getTaskChangeSetBySession } = require('../../../lib/agentTaskChangeSets');
 
 export default function handler(req, res) {
   const context = createRequestContext(req, res, '/api/conversations/[id]');
@@ -43,7 +45,7 @@ export default function handler(req, res) {
     // 已过期的 running 收敛成可恢复状态，避免前端永久认为任务仍在执行。
     recoverStaleRunLeases({ conversationId: id });
     const agentSessions = listSessionsByConversation(id).map((session) => {
-      const active = ['created', 'queued', 'running', 'waiting_interaction', 'queued_resume', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery'].includes(session.status);
+      const active = ['created', 'queued', 'running', 'waiting_interaction', 'waiting_operation_confirmation', 'queued_resume', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery'].includes(session.status);
       return {
         ...session,
         snapshots_count: countSnapshots(session.id),
@@ -51,6 +53,8 @@ export default function handler(req, res) {
         run_events: listRunEvents(session.id),
         research_receipts: sanitizeResearchReceipts(session.id),
         operation_sets: listOperationSetsBySession(session.id),
+        execution_segments: listExecutionSegments(session.id),
+        task_change_set: getTaskChangeSetBySession(session.id),
         task: getTaskBySession(session.id),
         queue_position: getQueuePosition(session.id),
         control_tickets: {

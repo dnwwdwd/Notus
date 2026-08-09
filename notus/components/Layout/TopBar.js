@@ -47,14 +47,17 @@ const HeaderIconButton = ({
   onClick,
   onMouseEnter,
   onFocus,
+  hoverBackground,
   style,
 }) => {
   const baseBackground = selectedIcon ? 'transparent' : (style?.background || (active ? 'var(--accent-subtle)' : 'transparent'));
+  const interactiveHoverBackground = selectedIcon ? 'transparent' : (hoverBackground || (active ? 'var(--accent-subtle)' : 'var(--bg-hover)'));
 
   return (
     <Tooltip content={tooltip || label} placement="bottom" gap={6}>
       <button
         type="button"
+        className="notus-topbar-icon-button"
         aria-label={label}
         title={label}
         disabled={disabled || loading}
@@ -70,18 +73,19 @@ const HeaderIconButton = ({
           justifyContent: 'center',
           color: active ? 'var(--accent)' : disabled ? 'var(--text-tertiary)' : 'var(--text-secondary)',
           background: selectedIcon ? 'transparent' : active ? 'var(--accent-subtle)' : 'transparent',
-          border: selectedIcon ? 'none' : undefined,
-          boxShadow: selectedIcon ? 'none' : undefined,
           cursor: disabled || loading ? 'not-allowed' : 'pointer',
           opacity: disabled ? 0.55 : 1,
           transition: 'background var(--transition-fast), color var(--transition-fast), transform var(--transition-fast), opacity var(--transition-fast)',
           flexShrink: 0,
           touchAction: 'manipulation',
           ...style,
+          border: 'none',
+          boxShadow: 'none',
+          outline: 'none',
         }}
         onMouseEnter={(event) => {
           if (!disabled && !loading) {
-            event.currentTarget.style.background = selectedIcon || active || style?.background ? baseBackground : 'var(--bg-hover)';
+            event.currentTarget.style.background = interactiveHoverBackground;
           }
           onMouseEnter?.(event);
         }}
@@ -152,8 +156,6 @@ export const TopBar = ({
       ? '未保存，点击保存'
       : '当前文档已保存';
   const saveButtonDisabled = saveDisabled || saveState === 'saved';
-  const dirtySaveOutline = 'color-mix(in srgb, var(--danger) 42%, var(--border-primary))';
-
   const openSearch = useCallback(() => {
     setSearchOpen(true);
     onCmdK?.();
@@ -334,10 +336,10 @@ export const TopBar = ({
               disabled={saveButtonDisabled}
               loading={saveState === 'saving'}
               onClick={() => { void onSave?.(); }}
+              hoverBackground={saveState === 'dirty' ? 'color-mix(in srgb, var(--danger) 10%, var(--bg-elevated))' : 'var(--bg-hover)'}
               style={{
-                background: saveState === 'dirty' ? 'color-mix(in srgb, var(--danger) 10%, var(--bg-elevated))' : saveState === 'saved' ? 'var(--accent-subtle)' : 'var(--bg-secondary)',
+                background: 'transparent',
                 color: saveState === 'dirty' ? 'var(--danger)' : saveState === 'saved' ? 'var(--success)' : 'var(--text-secondary)',
-                border: saveState === 'dirty' ? `1px solid ${dirtySaveOutline}` : '1px solid transparent',
                 opacity: 1,
               }}
             >
@@ -358,7 +360,9 @@ export const TopBar = ({
                     opacity: 1,
                     background: saveState === 'dirty' ? 'color-mix(in srgb, var(--danger) 8%, var(--bg-elevated))' : undefined,
                     color: saveState === 'dirty' ? 'var(--danger)' : saveState === 'saved' ? 'var(--success)' : undefined,
-                    borderColor: saveState === 'dirty' ? dirtySaveOutline : saveState === 'saved' ? 'color-mix(in srgb, var(--success) 30%, var(--border-primary))' : undefined,
+                    border: 'none',
+                    boxShadow: 'none',
+                    outline: 'none',
                   }}
                 >
                   {saveLabel}

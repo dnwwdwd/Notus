@@ -40,7 +40,7 @@ function runTests() {
     'const openImagePreview = useCallback',
     'onPreview={openImagePreview}',
     '<ImagePreviewOverlay',
-    'aria-label={canPreview ? `预览图片：${file.name || \'未命名图片\'}`',
+    'aria-label={canPreview ? `预览图片：${fileName}`',
   ].forEach((snippet) => {
     assert.ok(
       agentSource.includes(snippet),

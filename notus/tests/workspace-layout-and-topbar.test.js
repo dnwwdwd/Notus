@@ -10,6 +10,11 @@ const filesPage = read('pages/files/index.js');
 const agentWorkspace = read('components/AgentWorkspace/AgentWorkspace.js');
 
 assert.ok(topBar.includes('selectedIcon = false'), 'top bar should support borderless selected icons');
+assert.ok(topBar.includes('className="notus-topbar-icon-button"'), 'top bar icon buttons should use the borderless interaction style');
+assert.ok(topBar.includes("border: 'none',\n          boxShadow: 'none',\n          outline: 'none',"), 'top bar icon buttons must not show border or focus outline');
+assert.ok(topBar.includes("border: 'none',\n                    boxShadow: 'none',\n                    outline: 'none',"), 'wide save button must not show border or focus outline');
+assert.ok(topBar.includes("background: 'transparent',"), '窄屏已保存图标在静止态不能保留背景色或边框感');
+assert.ok(topBar.includes('hoverBackground={saveState === \'dirty\''), '窄屏保存入口只应在未保存时提供错误色交互反馈');
 assert.ok(topBar.includes('const HEADER_ICON_SIZE = 32'), 'top bar icons should share the settings button size');
 assert.ok(topBar.includes('const EditorPanelIcon'), 'top bar should use a visual editor panel icon');
 assert.ok(topBar.includes('const AgentPanelIcon'), 'top bar should use a visual agent panel icon');

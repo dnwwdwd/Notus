@@ -609,6 +609,291 @@ a {
   transition: transform 140ms cubic-bezier(0.23, 1, 0.32, 1), background-color 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 
+.notus-agent-error-card {
+  overflow: hidden;
+  margin: 10px 0 2px;
+  border: 1px solid rgba(234, 208, 196, 0.95);
+  border-radius: 15px;
+  background: var(--bg-primary);
+  box-shadow: none;
+}
+
+.notus-agent-error-card__main {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 12px;
+  padding: 15px 16px 14px;
+}
+
+.notus-agent-error-card__icon {
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: rgba(217, 119, 87, 0.11);
+  color: var(--accent-hover);
+}
+
+.notus-agent-error-card__content { min-width: 0; }
+.notus-agent-error-card__title { margin: 1px 0 5px; color: var(--text-primary); font-size: 14px; font-weight: 800; }
+.notus-agent-error-card__message { margin: 0; color: var(--text-secondary); font-size: 13px; line-height: 1.65; overflow-wrap: anywhere; }
+
+.notus-agent-error-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin-top: 12px;
+  color: var(--text-tertiary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.notus-agent-error-card__footer {
+  display: flex;
+  min-height: 56px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 10px 12px 12px 16px;
+  background: var(--bg-primary);
+}
+
+.notus-agent-error-card__actions { display: flex; flex: 0 0 auto; justify-content: flex-end; gap: 8px; }
+.notus-agent-error-card__actions button { min-height: 32px; border-radius: 9px; padding: 0 12px; font-size: 12px; font-weight: 800; }
+.notus-agent-error-card__secondary { border: 1px solid var(--border-subtle); background: var(--bg-secondary); color: var(--text-secondary); }
+.notus-agent-error-card__primary { display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid var(--accent); background: var(--accent); color: #fff; box-shadow: 0 4px 11px rgba(217, 119, 87, 0.18); }
+.notus-agent-error-card__primary:disabled { cursor: not-allowed; opacity: 0.52; box-shadow: none; }
+.notus-agent-error-card__secondary:disabled { cursor: not-allowed; opacity: 0.52; }
+
+@media (max-width: 520px) {
+  .notus-agent-error-card__footer { padding: 8px 12px 12px; }
+  .notus-agent-error-card__actions { flex-wrap: wrap; }
+}
+
+.notus-diff-dialog__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.notus-diff-dialog {
+  display: flex;
+  width: min(980px, calc(100vw - 48px));
+  height: min(760px, calc(100vh - 48px));
+  min-width: 0;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 18px;
+  background: var(--bg-elevated);
+  box-shadow: 0 24px 80px rgba(45, 45, 45, 0.22);
+}
+
+.notus-diff-dialog__header,
+.notus-diff-dialog__content-header,
+.notus-diff-dialog__footer {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.notus-diff-dialog__header {
+  min-height: 58px;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px;
+}
+
+.notus-diff-dialog__header-actions {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 8px;
+}
+
+.notus-diff-dialog__file-toggle {
+  display: none;
+  min-height: 34px;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.notus-diff-dialog__body {
+  position: relative;
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.notus-diff-dialog__sidebar {
+  min-width: 0;
+  padding: 8px;
+  overflow-y: auto;
+}
+
+.notus-diff-dialog__content {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.notus-diff-dialog__content-header {
+  min-height: 44px;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+}
+
+.notus-diff-dialog__scroll {
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  padding: 12px 0;
+}
+
+.notus-diff-dialog__lines {
+  min-width: max-content;
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+
+.notus-diff-dialog__footer {
+  min-height: 56px;
+  flex-shrink: 0;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.notus-diff-dialog__footer > span {
+  min-width: 0;
+  flex: 1;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.notus-diff-dialog__footer > div {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 8px;
+}
+
+.notus-diff-dialog__file-backdrop {
+  display: none;
+}
+
+@media (max-width: 960px) {
+  .notus-diff-dialog__backdrop {
+    align-items: stretch;
+    padding: 12px;
+  }
+
+  .notus-diff-dialog {
+    width: 100% !important;
+    height: 100% !important;
+    max-width: none;
+    max-height: none;
+    border-radius: 14px;
+  }
+
+  .notus-diff-dialog__header {
+    min-height: 54px;
+    padding: 10px 12px;
+  }
+
+  .notus-diff-dialog__file-toggle {
+    display: inline-flex;
+  }
+
+  .notus-diff-dialog__body {
+    display: block;
+  }
+
+  .notus-diff-dialog__sidebar {
+    position: absolute;
+    z-index: 5;
+    inset: 0 auto 0 0;
+    display: flex;
+    width: min(260px, calc(100% - 40px));
+    flex-direction: column;
+    transform: translateX(-100%);
+    visibility: hidden;
+    box-shadow: 18px 0 36px rgba(45, 45, 45, 0.12);
+    pointer-events: none;
+    transition: transform 180ms cubic-bezier(0.16, 1, 0.3, 1), visibility 180ms linear;
+  }
+
+  .notus-diff-dialog__sidebar.is-mobile-open {
+    transform: translateX(0);
+    visibility: visible;
+    pointer-events: auto;
+  }
+
+  .notus-diff-dialog__file-backdrop {
+    position: absolute;
+    z-index: 4;
+    inset: 0;
+    display: block;
+    width: 100%;
+    border: 0;
+    background: rgba(45, 45, 45, 0.2);
+    cursor: default;
+    animation: fadeIn 160ms ease;
+  }
+
+  .notus-diff-dialog__content {
+    height: 100%;
+  }
+
+  .notus-diff-dialog__content-header {
+    padding: 8px 12px;
+  }
+
+  .notus-diff-dialog__footer {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .notus-diff-dialog__footer > span {
+    flex-basis: 100%;
+  }
+
+  .notus-diff-dialog__footer > div {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
+
+@media (max-width: 420px) {
+  .notus-diff-dialog__backdrop {
+    padding: 0;
+  }
+
+  .notus-diff-dialog {
+    border-radius: 0;
+  }
+
+  .notus-diff-dialog__footer > div {
+    flex-wrap: wrap;
+  }
+}
+
 .notus-agent-toolchain__question-answer {
   display: grid;
   gap: 2px;
@@ -1226,7 +1511,7 @@ a {
     flex-wrap: nowrap;
     gap: 4px;
     max-width: calc(100% - 108px);
-    overflow: hidden;
+    overflow: visible;
   }
 
   .notus-agent-composer__attachments {
@@ -1950,6 +2235,19 @@ a {
   min-width: 0;
 }
 
+.notus-settings-dialog {
+  overflow: hidden;
+}
+
+.notus-settings-dialog .notus-dialog__header {
+  background: var(--bg-secondary);
+  border-bottom-color: var(--border-primary) !important;
+}
+
+.notus-settings-dialog .notus-dialog__body {
+  background: var(--bg-primary);
+}
+
 .notus-settings-layout {
   position: relative;
 }
@@ -2017,6 +2315,7 @@ a {
     width: calc(100vw - 24px) !important;
     height: calc(100dvh - 24px) !important;
     max-width: none !important;
+    box-shadow: 0 18px 52px rgba(26, 19, 17, 0.18);
   }
 
   .notus-settings-layout {
@@ -2112,6 +2411,11 @@ a {
     padding: 14px 16px !important;
   }
 
+  .notus-settings-dialog .notus-dialog__header {
+    min-height: 50px;
+    padding: 12px 14px !important;
+  }
+
   .notus-dialog__body {
     padding: 16px !important;
     max-width: 100%;
@@ -2121,6 +2425,10 @@ a {
   .notus-dialog__footer {
     padding: 12px 16px !important;
     flex-wrap: wrap;
+  }
+
+  .notus-settings-dialog .notus-settings-content {
+    padding: 16px 14px !important;
   }
 
   .notus-document-find-bar {
@@ -2206,6 +2514,17 @@ a {
 
   .notus-image-preview-image {
     max-height: calc(100dvh - 160px);
+  }
+}
+
+@media (max-width: 420px) {
+  .notus-settings-dialog {
+    width: calc(100vw - 16px) !important;
+    height: calc(100dvh - 16px) !important;
+  }
+
+  .notus-settings-dialog .notus-settings-content {
+    padding: 14px 12px !important;
   }
 }
 

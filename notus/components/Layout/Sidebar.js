@@ -174,13 +174,37 @@ function FileStatusIndicator({ status }) {
   );
 }
 
+function useTextOverflow(ref, value) {
+  const [truncated, setTruncated] = useState(false);
+
+  useEffect(() => {
+    const node = ref.current;
+    if (!node) return undefined;
+
+    const check = () => {
+      setTruncated(node.scrollWidth > node.clientWidth + 1);
+    };
+    check();
+
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(check);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [ref, value]);
+
+  return truncated;
+}
+
 const FileRow = ({ item, isActive, onSelect, onToggle, onContextMenu }) => {
   const pad = 8 + item.depth * 16;
   const isFolder = item.type === 'folder';
+  const label = isFolder ? item.name : getVisibleDocumentLabel(item, '未命名文档');
+  const labelRef = useRef(null);
+  const labelTruncated = useTextOverflow(labelRef, label);
   const mention = {
     id: isFolder ? `folder:${item.path}` : String(item.id || item.path),
     type: isFolder ? 'folder' : 'file',
-    name: isFolder ? item.name : getVisibleDocumentLabel(item, '未命名文档'),
+    name: label,
     path: String(item.path || ''),
   };
 
@@ -226,9 +250,11 @@ const FileRow = ({ item, isActive, onSelect, onToggle, onContextMenu }) => {
           <Icons.file size={14} />
         </>
       )}
-      <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-        {isFolder ? item.name : getVisibleDocumentLabel(item, '未命名文档')}
-      </span>
+      <Tooltip content={label} disabled={!labelTruncated} triggerStyle={{ flex: 1, minWidth: 0, display: 'block' }}>
+        <span ref={labelRef} style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {label}
+        </span>
+      </Tooltip>
       <FileStatusIndicator status={item.status} />
     </div>
   );

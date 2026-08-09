@@ -914,12 +914,12 @@ const Personalization = ({ onOpenImageSettings }) => {
   };
 
   const handleImageTargetChange = async (target) => {
-    setImageTarget(target);
     if (!isConfiguredImageTarget(target)) {
       const option = IMAGE_STORAGE_OPTIONS.find((item) => item.value === target);
       toast(<span>{option?.label || '该图床'}尚未配置，<a href={`/settings/image-storage?provider=${encodeURIComponent(target)}`} onClick={(event) => { event.preventDefault(); onOpenImageSettings?.(target); }} style={{ color: 'var(--accent)', textDecoration: 'underline' }}>前往图床设置</a></span>, 'warning');
       return;
     }
+    setImageTarget(target);
     if (savingImageTarget) return;
     setSavingImageTarget(true);
     try {
@@ -2083,10 +2083,10 @@ export function SettingsDialog({ open, section = 'model', conversationId = '', o
       showHeader
       maxWidth={1180}
       closeOnBackdrop={false}
-      bodyStyle={{ padding: 0, flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex' }}
-      dialogStyle={{ width: 'min(1180px, calc(100vw - 64px))', height: 'min(760px, calc(100vh - 64px))', margin: 0, display: 'flex', flexDirection: 'column' }}
+      bodyStyle={{ padding: 0, flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', background: 'var(--bg-secondary)' }}
+      dialogStyle={{ width: 'min(1180px, calc(100vw - 64px))', height: 'min(760px, calc(100vh - 64px))', margin: 0, display: 'flex', flexDirection: 'column', background: 'var(--bg-secondary)', border: '1px solid var(--border-primary)', overflow: 'hidden' }}
     >
-      <div className="notus-settings-layout" style={{ flex: 1, minHeight: 0, display: 'flex', overflow: 'hidden' }}>
+      <div className="notus-settings-layout" style={{ flex: 1, minHeight: 0, display: 'flex', overflow: 'hidden', background: 'var(--bg-primary)' }}>
         {mobileNavOpen ? <button type="button" className="notus-settings-nav-backdrop" aria-label="关闭设置菜单" onClick={() => setMobileNavOpen(false)} /> : null}
         <SettingsNav active={activeSection} mobileOpen={mobileNavOpen} onSelect={(nextSection) => { setActiveSection(nextSection); setMobileNavOpen(false); }} />
         <div className="notus-settings-content" style={{ flex: 1, overflow: 'auto', background: 'var(--bg-primary)', padding: 32, minWidth: 0 }}>

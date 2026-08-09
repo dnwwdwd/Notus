@@ -47,6 +47,7 @@ function mergeAgentMedia({ attachments = [], mediaItems = [], images = [] } = {}
   }).map(({ item }) => item);
 
   return {
+    media_items: ordered,
     attachments: ordered.filter((item) => !isImageMedia(item)),
     images: ordered.filter(isImageMedia),
   };

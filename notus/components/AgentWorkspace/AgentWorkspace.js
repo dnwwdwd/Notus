@@ -20,7 +20,7 @@ import { useSettingsDialog } from '../../contexts/SettingsDialogContext';
 import { SegmentedTabs } from '../ui/SegmentedTabs';
 import { readAgentInputPreference, writeAgentInputPreference } from '../../utils/agentInputPreferences';
 import { dedupeAgentMedia, getAgentImagePreviewUrl } from '../../utils/agentMedia';
-import { formatMessageTimestamp } from '../../utils/messageTimestamps';
+import { formatMessageTimestamp, parseMessageTimestamp } from '../../utils/messageTimestamps';
 import {
   clearAgentComposerDraft,
   readAgentComposerDraft,
@@ -582,8 +582,7 @@ function mergeInteractionStepsIntoTimeline(steps, interactionSteps) {
 }
 
 function traceTimestamp(value) {
-  const timestamp = new Date(value || '').getTime();
-  return Number.isFinite(timestamp) ? timestamp : 0;
+  return parseMessageTimestamp(value)?.getTime() || 0;
 }
 
 function formatTraceElapsed(milliseconds) {
@@ -745,11 +744,129 @@ function CopyMessageButton({ text, successMessage = '已复制消息', disabled 
   );
 }
 
+function timelineStepId(step = {}, index = 0) {
+  return String(step.id || step.label || index);
+}
+
+function groupTimelineStepsBySegment(steps = []) {
+  const groups = [];
+  const groupsByKey = new Map();
+  const getGroup = (step, index) => {
+    const segmentId = Number(step?.executionSegmentId || 0) || 0;
+    if (!segmentId) {
+      const key = `legacy-${index}`;
+      const group = { key, sequenceNo: 0, header: null, steps: [], legacy: true };
+      groups.push(group);
+      return group;
+    }
+    const key = `segment-${segmentId}`;
+    if (!groupsByKey.has(key)) {
+      const group = { key, sequenceNo: Number(step?.segmentSequenceNo || 0) || 0, header: null, steps: [], legacy: false };
+      groupsByKey.set(key, group);
+      groups.push(group);
+    }
+    const group = groupsByKey.get(key);
+    group.sequenceNo = Math.max(group.sequenceNo, Number(step?.segmentSequenceNo || 0) || 0);
+    return group;
+  };
+  (Array.isArray(steps) ? steps : []).forEach((step, index) => {
+    const group = getGroup(step, index);
+    if (step?.kind === 'segment') group.header = step;
+    else group.steps.push(step);
+  });
+  return groups;
+}
+
+function isActiveSegmentGroup(group = {}) {
+  return [group.header, ...(Array.isArray(group.steps) ? group.steps : [])]
+    .filter(Boolean)
+    .some((step) => ['running', 'waiting', 'action_required'].includes(step.status));
+}
+
+function segmentStageSummary(group = {}) {
+  const steps = Array.isArray(group.steps) ? group.steps : [];
+  const current = [...steps].reverse().find((step) => ['running', 'waiting', 'action_required', 'error'].includes(step?.status)) || steps.at(-1);
+  if (!current) {
+    return group.header?.status === 'done'
+      ? '本执行段已完成。'
+      : group.header?.detail || '正在等待模型响应。';
+  }
+  if (current.kind === 'llm_retry') return current.result ? `正在重试模型请求 · ${current.result}` : '正在重试模型请求';
+  if (current.kind === 'operation_batch' || current.kind === 'operation_confirmation') return current.detail || '等待确认文件修改。';
+  if (current.kind === 'tool' && current.status === 'running') return `正在执行：${current.label}`;
+  if (current.kind === 'tool' && current.status === 'error') return `${current.label} 执行失败`;
+  if (steps.length > 0) return `${steps.filter((step) => step.kind === 'tool').length} 项工具已完成`;
+  return group.header?.detail || '';
+}
+
+function ToolChainStep({ step, index, open, onToggle, onAction, onPreviewImages, sessionId }) {
+  const stepId = timelineStepId(step, index);
+  const hasDetails = Boolean(step.detail || step.tool || step.input || step.result || step.action || step.images?.length || step.questionAnswer);
+  return (
+    <div className="notus-agent-toolchain__step notus-agent-toolchain__step--enter" style={{ '--notus-step-index': Math.min(index, 6) }}>
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={`agent-step-${stepId}`}
+        disabled={!hasDetails}
+        onClick={() => onToggle(stepId)}
+        className={`notus-agent-tool-row notus-agent-toolchain__row${hasDetails ? '' : ' is-static'}`}
+      >
+        <span className="notus-agent-toolchain__icon">
+          <ToolTraceIcon step={step} size={14} />
+        </span>
+        <span className="notus-agent-toolchain__label">{step.label}</span>
+        {hasDetails ? <Icons.chevronRight size={14} className={open ? 'notus-agent-tool-chevron is-open' : 'notus-agent-tool-chevron'} /> : null}
+      </button>
+      {open ? (
+        <div id={`agent-step-${stepId}`} className="notus-agent-toolchain__detail">
+          {step.questionAnswer ? <div className="notus-agent-toolchain__question-answer">
+            <div className="notus-agent-toolchain__question-label">问题</div>
+            <div>{step.questionAnswer.question}</div>
+            {step.questionAnswer.answer ? <><div className="notus-agent-toolchain__question-label">回答</div><div>{step.questionAnswer.answer}</div></> : <div className="notus-agent-toolchain__question-saved">回答已保存</div>}
+            {step.questionAnswer.answeredAt ? <div className="notus-agent-toolchain__question-time">{step.questionAnswer.answeredAt}</div> : null}
+          </div> : null}
+          {step.detail ? <div className="notus-agent-toolchain__description">{step.detail}</div> : null}
+          {step.tool && !step.questionAnswer && step.errorType !== 'agent' ? <div className="notus-agent-toolchain__code">
+            <div className="notus-agent-toolchain__code-title"><Icons.code size={12} /> {step.tool}</div>
+            {step.input ? <ToolPayload label="调用参数" value={step.input} /> : null}
+            {step.result ? <ToolPayload label="调用结果" value={step.result} /> : null}
+          </div> : null}
+          {Array.isArray(step.images) && step.images.length > 0 ? (
+            <div className="notus-agent-toolchain__images" aria-label="已查看的图片">
+              {step.images.map((image, imageIndex) => image?.preview_url ? (
+                <button
+                  key={image.id || image.preview_url || imageIndex}
+                  type="button"
+                  className="notus-agent-toolchain__image-preview notus-agent-pressable"
+                  onClick={() => onPreviewImages?.(step.images, image)}
+                  aria-label={`预览已查看图片 ${imageIndex + 1}`}
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={image.preview_url} alt={image.alt || image.name || '已查看图片'} />
+                </button>
+              ) : null)}
+            </div>
+          ) : null}
+          {step.action && step.errorType !== 'agent' && typeof onAction === 'function' ? (
+            <div className="notus-agent-toolchain__actions">
+              <button type="button" onClick={() => onAction(step.action, step, sessionId)} className="notus-agent-pressable">
+                {step.actionLabel || '继续任务'}
+              </button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function ToolChain({ steps, loading, sessionStatus = '', sessionId = '', startedAt = '', finishedAt = '', errorMessage = '', onAction, onRetryMessage, retryMessage = null, onPreviewImages }) {
   // 只展示服务端已经确认的真实动作，内部循环、排队和推测性 loading 不进入执行记录。
   const visibleSteps = useMemo(() => (Array.isArray(steps) ? steps : []), [steps]);
   const agentErrorStep = [...visibleSteps].reverse().find((step) => step?.errorType === 'agent') || null;
   const renderedSteps = useMemo(() => visibleSteps.filter((step) => step?.errorType !== 'agent'), [visibleSteps]);
+  const segmentGroups = useMemo(() => groupTimelineStepsBySegment(renderedSteps), [renderedSteps]);
   const fallbackErrorStep = !agentErrorStep && String(errorMessage || '').trim()
     ? {
       label: '请求失败',
@@ -761,6 +878,7 @@ function ToolChain({ steps, loading, sessionStatus = '', sessionId = '', started
     : null;
   const displayedErrorStep = agentErrorStep || fallbackErrorStep;
   const [expanded, setExpanded] = useState({});
+  const [expandedSegments, setExpandedSegments] = useState({});
   const liveSession = Boolean(loading) || ['created', 'queued', 'running'].includes(sessionStatus);
   const tailStatus = visibleSteps[visibleSteps.length - 1]?.status || 'done';
   const hasActionRequired = Boolean(displayedErrorStep)
@@ -784,8 +902,19 @@ function ToolChain({ steps, loading, sessionStatus = '', sessionId = '', started
     });
   }, [stepKey, visibleSteps]);
 
+  useEffect(() => {
+    setExpandedSegments((previous) => {
+      const next = { ...previous };
+      segmentGroups.forEach((group) => {
+        if (!group.legacy && isActiveSegmentGroup(group)) next[group.key] = true;
+      });
+      return next;
+    });
+  }, [segmentGroups]);
+
   const hasRunning = liveSession || tailStatus === 'running';
-  const hasFailed = ['failed', 'error', 'stopped', 'cancelled'].includes(tailStatus);
+  const isCancelled = sessionStatus === 'cancelled' || tailStatus === 'cancelled';
+  const hasFailed = ['failed', 'error', 'stopped'].includes(tailStatus);
   const taskStartedAt = traceTimestamp(startedAt);
   const taskFinishedAt = traceTimestamp(finishedAt);
   const firstTimestamp = taskStartedAt
@@ -794,8 +923,10 @@ function ToolChain({ steps, loading, sessionStatus = '', sessionId = '', started
   const lastStepTimestamp = visibleSteps.map((step) => traceTimestamp(step.updatedAt || step.createdAt)).filter(Boolean).at(-1);
   const lastTimestamp = hasRunning ? now : taskFinishedAt || lastStepTimestamp || firstTimestamp;
   const elapsed = firstTimestamp ? formatTraceElapsed((hasRunning ? now : lastTimestamp) - firstTimestamp) : '';
-  const statusLabel = hasFailed || hasActionRequired
-    ? '需要处理'
+  const statusLabel = isCancelled
+    ? '已取消'
+    : hasFailed || hasActionRequired
+      ? '需要处理'
     : sessionStatus === 'queued'
       ? `任务已提交${elapsed ? ` · 已等待 ${elapsed}` : ''}`
       : hasRunning
@@ -825,71 +956,36 @@ function ToolChain({ steps, loading, sessionStatus = '', sessionId = '', started
       </div>
       {traceExpanded ? <>
         {renderedSteps.length > 0 ? <div className="notus-agent-toolchain__steps">
-          {renderedSteps.map((step, index) => {
-          const stepId = String(step.id || step.label || index);
-          const open = Boolean(expanded[stepId]);
-          const hasDetails = Boolean(step.detail || step.tool || step.input || step.result || step.action || step.images?.length || step.questionAnswer);
-          return (
-            <div key={stepId} className="notus-agent-toolchain__step notus-agent-toolchain__step--enter" style={{ '--notus-step-index': Math.min(index, 6) }}>
-              <button
-                type="button"
-                aria-expanded={open}
-                aria-controls={`agent-step-${stepId}`}
-                disabled={!hasDetails}
-                onClick={() => setExpanded((prev) => ({ ...prev, [stepId]: !prev[stepId] }))}
-                className={`notus-agent-tool-row notus-agent-toolchain__row${hasDetails ? '' : ' is-static'}`}
-              >
-                <span className="notus-agent-toolchain__icon">
-                  <ToolTraceIcon step={step} size={14} />
-                </span>
-                <span className="notus-agent-toolchain__label">{step.label}</span>
-                {hasDetails ? <Icons.chevronRight size={14} className={open ? 'notus-agent-tool-chevron is-open' : 'notus-agent-tool-chevron'} /> : null}
-              </button>
-              {open ? (
-                <div id={`agent-step-${stepId}`} className="notus-agent-toolchain__detail">
-                  {step.questionAnswer ? <div className="notus-agent-toolchain__question-answer">
-                    <div className="notus-agent-toolchain__question-label">问题</div>
-                    <div>{step.questionAnswer.question}</div>
-                    {step.questionAnswer.answer ? <><div className="notus-agent-toolchain__question-label">回答</div><div>{step.questionAnswer.answer}</div></> : <div className="notus-agent-toolchain__question-saved">回答已保存</div>}
-                    {step.questionAnswer.answeredAt ? <div className="notus-agent-toolchain__question-time">{step.questionAnswer.answeredAt}</div> : null}
-                  </div> : null}
-                  {step.detail ? <div className="notus-agent-toolchain__description">{step.detail}</div> : null}
-                  {step.tool && !step.questionAnswer && step.errorType !== 'agent' ? <div className="notus-agent-toolchain__code">
-                    <div className="notus-agent-toolchain__code-title"><Icons.code size={12} /> {step.tool}</div>
-                    {step.input ? <ToolPayload label="调用参数" value={step.input} /> : null}
-                    {step.result ? <ToolPayload label="调用结果" value={step.result} /> : null}
-                  </div> : null}
-                  {Array.isArray(step.images) && step.images.length > 0 ? (
-                    <div className="notus-agent-toolchain__images" aria-label="已查看的图片">
-                      {step.images.map((image, imageIndex) => image?.preview_url ? (
-                        <button
-                          key={image.id || image.preview_url || imageIndex}
-                          type="button"
-                          className="notus-agent-toolchain__image-preview notus-agent-pressable"
-                          onClick={() => onPreviewImages?.(step.images, image)}
-                          aria-label={`预览已查看图片 ${imageIndex + 1}`}
-                        >
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img src={image.preview_url} alt={image.alt || image.name || '已查看图片'} />
-                        </button>
-                      ) : null)}
-                    </div>
-                  ) : null}
-                  {step.action && step.errorType !== 'agent' && typeof onAction === 'function' ? (
-                    <div className="notus-agent-toolchain__actions">
-                      <button
-                        type="button"
-                        onClick={() => onAction(step.action, step, sessionId)}
-                        className="notus-agent-pressable"
-                      >
-                        {step.actionLabel || '继续任务'}
-                      </button>
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-          );
+          {segmentGroups.map((group) => {
+            const isOpen = group.legacy || Boolean(expandedSegments[group.key]);
+            const headerLabel = group.header?.label || (group.sequenceNo ? `第 ${group.sequenceNo} 个执行段` : '执行记录');
+            return (
+              <section key={group.key} className={group.legacy ? 'notus-agent-toolchain__segment is-legacy' : 'notus-agent-toolchain__segment'} aria-label={headerLabel}>
+                {!group.legacy ? <button
+                  type="button"
+                  className="notus-agent-toolchain__segment-toggle notus-agent-pressable"
+                  aria-expanded={isOpen}
+                  onClick={() => setExpandedSegments((previous) => ({ ...previous, [group.key]: !previous[group.key] }))}
+                >
+                  <span>{headerLabel}</span>
+                  <span className="notus-agent-toolchain__segment-stage">{segmentStageSummary(group)}</span>
+                  <Icons.chevronRight size={14} className={isOpen ? 'notus-agent-tool-chevron is-open' : 'notus-agent-tool-chevron'} />
+                </button> : null}
+                {isOpen ? group.steps.map((step, index) => {
+                  const stepId = timelineStepId(step, index);
+                  return <ToolChainStep
+                    key={stepId}
+                    step={step}
+                    index={index}
+                    open={Boolean(expanded[stepId])}
+                    onToggle={(id) => setExpanded((previous) => ({ ...previous, [id]: !previous[id] }))}
+                    onAction={onAction}
+                    onPreviewImages={onPreviewImages}
+                    sessionId={sessionId}
+                  />;
+                }) : null}
+              </section>
+            );
           })}
         </div> : null}
         {displayedErrorStep ? (
@@ -965,6 +1061,7 @@ function operationItems(operationSet) {
       status: patch.status || 'pending',
       handled_at: patch.handled_at || null,
       error: patch.error || '',
+      source_batches: Array.isArray(patch.source_batches) ? patch.source_batches : [],
       media_changes: (Array.isArray(operationSet.media_changes) ? operationSet.media_changes : [])
         .filter((change) => String(change?.file_path || '') === String(patch.file_path || '')),
     }));
@@ -1109,6 +1206,31 @@ function OperationSetCard({ operationSet, onOpenDetail }) {
   );
 }
 
+function TaskChangeSetCard({ changeSet, onOpenDetail }) {
+  if (!changeSet || Number(changeSet.file_count || 0) + Number(changeSet.directory_count || 0) === 0) return null;
+  const pendingCount = Number(changeSet.pending_count || 0);
+  const fileCount = Number(changeSet.file_count || 0);
+  const directoryCount = Number(changeSet.directory_count || 0);
+  const countLabel = [fileCount ? `${fileCount} 个文件` : '', directoryCount ? `${directoryCount} 个目录` : ''].filter(Boolean).join('、');
+  const statusText = pendingCount > 0
+    ? `${pendingCount} 项修改等待确认，确认后任务会继续`
+    : changeSet.status === 'failed'
+      ? '任务已中断，已完成的修改仍可查看'
+      : '汇总本任务从开始到当前的全部修改';
+  return (
+    <section aria-label="本任务累计修改" style={{ marginTop: 12, padding: 14, borderRadius: 12, background: C.soft, boxShadow: 'inset 0 0 0 1px rgba(229,227,216,0.72)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+        <span aria-hidden="true" style={{ width: 32, height: 32, borderRadius: 10, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: C.accent, background: '#fff', boxShadow: 'inset 0 0 0 1px rgba(229,227,216,0.95)' }}><Icons.edit size={15} /></span>
+        <div style={{ display: 'grid', gap: 3, minWidth: 0 }}>
+          <div style={{ fontSize: 13, fontWeight: 800, color: C.text }}>本任务累计修改 · {countLabel}</div>
+          <div style={{ fontSize: 11, color: C.tertiary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{statusText}</div>
+        </div>
+      </div>
+      <button type="button" className="notus-agent-pressable" onClick={() => onOpenDetail?.(changeSet)} style={transitionButton({ minWidth: 88, height: 34, padding: '0 14px', borderRadius: 8, background: C.accent, color: '#fff', fontSize: 12, fontWeight: 800, boxShadow: '0 1px 6px rgba(217, 119, 87, 0.24)' })}>查看详情</button>
+    </section>
+  );
+}
+
 function isDocumentPath(value) {
   return /\.md$/i.test(String(value || '').trim());
 }
@@ -1157,14 +1279,24 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
   const activePath = activeOperation.new_path || activeOperation.file_path || activeOperation.old_path || activeOperation.path || '全文';
   const diffLines = buildDiffLines(activeOperation);
   const mediaChanges = Array.isArray(activeOperation.media_changes) ? activeOperation.media_changes : [];
+  const sourceBatches = Array.isArray(activeOperation.source_batches) ? activeOperation.source_batches : [];
+  const sourceBatchLabel = sourceBatches.length > 0
+    ? sourceBatches.map((batch) => {
+      const segment = Number(batch.execution_segment_sequence_no || batch.execution_segment_id || 0);
+      const sequence = Number(batch.batch_sequence_no || 0);
+      return [segment ? `执行段 ${segment}` : '', sequence ? `批次 ${sequence}` : ''].filter(Boolean).join(' · ');
+    }).filter(Boolean).join('；')
+    : '';
   const activeStatus = patchStatusMeta(activeOperation.status);
   const pendingCount = operations.filter(isPatchPending).length;
   const isRevision = activeOperation.change_type === 'file_revision';
   const activeNormalizedStatus = String(activeOperation.status || 'pending');
-  const canApply = (isRevision ? activeNormalizedStatus === 'pending' : isPatchPending(activeOperation)) && typeof onApplyFile === 'function';
+  const taskCumulative = operationSet?.type === 'task_cumulative' || operationSet?.mode === 'task_cumulative';
+  const canApply = !taskCumulative && (isRevision ? activeNormalizedStatus === 'pending' : isPatchPending(activeOperation)) && typeof onApplyFile === 'function';
   const canApplyAll = pendingCount > 0 && typeof onApplyAll === 'function';
-  const canRollback = (isRevision ? ['applied', 'rollback_conflict'].includes(activeNormalizedStatus) : !['rolled_back', 'discarded'].includes(activeNormalizedStatus)) && typeof onRollbackFile === 'function';
-  const canDiscard = isRevision && ['pending', 'stale', 'apply_failed', 'rollback_conflict'].includes(activeNormalizedStatus) && typeof onDiscardFile === 'function';
+  const canRollback = !taskCumulative && (isRevision ? ['applied', 'rollback_conflict'].includes(activeNormalizedStatus) : !['rolled_back', 'discarded'].includes(activeNormalizedStatus)) && typeof onRollbackFile === 'function';
+  const canDiscard = !taskCumulative && isRevision && ['pending', 'stale', 'apply_failed', 'rollback_conflict'].includes(activeNormalizedStatus) && typeof onDiscardFile === 'function';
+  const canDiscardAll = taskCumulative && pendingCount > 0 && typeof onDiscardFile === 'function';
   const moveToNextPending = () => {
     const next = operations.findIndex((item, index) => index !== selectedIndex && isPatchPending(item));
     if (next >= 0) setSelectedIndex(next);
@@ -1176,6 +1308,7 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
       if (kind === 'apply') await onApplyFile?.(operationSet, activeOperation.patchIndex);
       else if (kind === 'discard') await onDiscardFile?.(operationSet, activeOperation.patchIndex);
       else await onRollbackFile?.(operationSet, activeOperation.patchIndex);
+      if (taskCumulative && kind === 'discard') onClose?.();
       moveToNextPending();
     } finally {
       setBusyKey('');
@@ -1201,7 +1334,7 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
       <div className="notus-diff-dialog" role="dialog" aria-modal="true" aria-label="修改详情">
         <div className="notus-diff-dialog__header" style={{ borderBottom: '1px solid ' + C.border, background: C.page }}>
           <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 15, fontWeight: 900, color: C.text }}>修改详情</div>
+            <div style={{ fontSize: 15, fontWeight: 900, color: C.text }}>{taskCumulative ? '本任务累计修改' : '修改详情'}</div>
             {pendingCount > 0 ? <div style={{ marginTop: 3, fontSize: 12, color: C.tertiary }}>{pendingCount} 个文件待确认</div> : null}
           </div>
           <div className="notus-diff-dialog__header-actions">
@@ -1231,7 +1364,10 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
           </nav>
           <div className="notus-diff-dialog__content" style={{ background: '#FAFAFA' }}>
             <div className="notus-diff-dialog__content-header" style={{ borderBottom: '1px solid ' + C.border, background: '#fff' }}>
-              <DiffFileLink path={activePath} onOpenFile={openDiffFile} style={{ minWidth: 0, fontSize: 12, color: isDocumentPath(activePath) ? C.accent : C.secondary, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} />
+              <div style={{ minWidth: 0, display: 'grid', gap: 2 }}>
+                <DiffFileLink path={activePath} onOpenFile={openDiffFile} style={{ minWidth: 0, fontSize: 12, color: isDocumentPath(activePath) ? C.accent : C.secondary, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} />
+                {taskCumulative && sourceBatchLabel ? <span title={sourceBatchLabel} style={{ minWidth: 0, color: C.tertiary, fontSize: 10.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>来源：{sourceBatchLabel}</span> : null}
+              </div>
               <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 800, color: activeStatus.color, background: activeStatus.bg, borderRadius: 999, padding: '4px 8px' }}>{activeStatus.label}</span>
             </div>
             <div className="notus-diff-dialog__scroll" style={{ overscrollBehavior: 'contain' }}>
@@ -1291,11 +1427,14 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
             <div className="notus-diff-dialog__footer" style={{ borderTop: '1px solid ' + C.border, background: '#fff' }}>
               <span style={{ flex: 1, minWidth: 0, fontSize: 12, lineHeight: 1.6, color: C.tertiary }}>仅当前对话可应用或回滚修改；新建/切换对话、预览已处理、会话权限过期或文件内容变化后，应用与回滚会失效。</span>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                {canDiscardAll ? (
+                  <button type="button" disabled={Boolean(busyKey)} onClick={() => runFileAction('discard')} style={transitionButton({ height: 32, padding: '0 11px', borderRadius: 9, background: C.muted, color: C.secondary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: busyKey ? 'not-allowed' : 'pointer' })}>废弃本批修改</button>
+                ) : null}
                 {canDiscard ? (
                   <button type="button" disabled={Boolean(busyKey)} onClick={() => runFileAction('discard')} style={transitionButton({ height: 32, padding: '0 11px', borderRadius: 9, background: C.muted, color: C.secondary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: busyKey ? 'not-allowed' : 'pointer' })}>废弃预览</button>
                 ) : null}
-                <button type="button" disabled={!canRollback || Boolean(busyKey)} onClick={() => runFileAction('rollback')} style={transitionButton({ height: 32, padding: '0 11px', borderRadius: 9, background: canRollback ? 'rgba(254,202,202,0.65)' : C.muted, color: canRollback ? '#991B1B' : C.tertiary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: (!canRollback || busyKey) ? 'not-allowed' : 'pointer' })}>回滚修改</button>
-                <button type="button" disabled={!canApply || Boolean(busyKey)} onClick={() => runFileAction('apply')} style={transitionButton({ height: 32, padding: '0 12px', borderRadius: 9, background: canApply ? '#16A34A' : C.muted, color: canApply ? '#fff' : C.tertiary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: (!canApply || busyKey) ? 'not-allowed' : 'pointer' })}>应用修改</button>
+                {!taskCumulative ? <button type="button" disabled={!canRollback || Boolean(busyKey)} onClick={() => runFileAction('rollback')} style={transitionButton({ height: 32, padding: '0 11px', borderRadius: 9, background: canRollback ? 'rgba(254,202,202,0.65)' : C.muted, color: canRollback ? '#991B1B' : C.tertiary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: (!canRollback || busyKey) ? 'not-allowed' : 'pointer' })}>回滚修改</button> : null}
+                {!taskCumulative ? <button type="button" disabled={!canApply || Boolean(busyKey)} onClick={() => runFileAction('apply')} style={transitionButton({ height: 32, padding: '0 12px', borderRadius: 9, background: canApply ? '#16A34A' : C.muted, color: canApply ? '#fff' : C.tertiary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: (!canApply || busyKey) ? 'not-allowed' : 'pointer' })}>应用修改</button> : null}
                 <button type="button" disabled={!canApplyAll || Boolean(busyKey)} onClick={runApplyAll} style={transitionButton({ height: 32, padding: '0 13px', borderRadius: 9, background: canApplyAll ? C.accent : C.muted, color: canApplyAll ? '#fff' : C.tertiary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: (!canApplyAll || busyKey) ? 'not-allowed' : 'pointer' })}>全部应用</button>
               </div>
             </div>
@@ -1483,7 +1622,7 @@ function TaskReceiptCards({ researchSummary, writeSummary }) {
   );
 }
 
-function AssistantMessageRow({ message, disabled, removing = false, onRetryMessage, previousUserMessage, onOpenOperationSet, onCitationClick, citationSelection, executionTrace = null }) {
+function AssistantMessageRow({ message, disabled, removing = false, onRetryMessage, previousUserMessage, onOpenOperationSet, onOpenTaskChangeSet, onCitationClick, citationSelection, executionTrace = null }) {
   const [retrying, setRetrying] = useState(false);
   const canRetry = Boolean(previousUserMessage?.content) && typeof onRetryMessage === 'function';
   const timestamp = formatMessageTimestamp(message.createdAt);
@@ -1526,7 +1665,9 @@ function AssistantMessageRow({ message, disabled, removing = false, onRetryMessa
           ))}
         </div>
       ) : null}
-      {message.operationSet ? <OperationSetCard operationSet={message.operationSet} onOpenDetail={onOpenOperationSet} /> : null}
+      {message.taskChangeSet
+        ? (!executionTrace ? <TaskChangeSetCard changeSet={message.taskChangeSet} onOpenDetail={onOpenTaskChangeSet} /> : null)
+        : message.operationSet ? <OperationSetCard operationSet={message.operationSet} onOpenDetail={onOpenOperationSet} /> : null}
       <TaskReceiptCards researchSummary={message.meta?.research_summary} writeSummary={message.meta?.write_summary} />
       <div aria-label="AI 回复操作" style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', gap: 8, marginTop: 10, minHeight: 30 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -1541,11 +1682,11 @@ function AssistantMessageRow({ message, disabled, removing = false, onRetryMessa
   );
 }
 
-function AgentTaskTimeline({ activeSteps, loading, streamText, sessionStatus = '', sessionId = '', startedAt = '', finishedAt = '', errorMessage = '', retryMessage = null, onRetryMessage, onAction, onPreviewImages }) {
+function AgentTaskTimeline({ activeSteps, loading, streamText, sessionStatus = '', sessionId = '', startedAt = '', finishedAt = '', errorMessage = '', retryMessage = null, taskChangeSet = null, onRetryMessage, onAction, onPreviewImages, onOpenTaskChangeSet }) {
   const hasSteps = Array.isArray(activeSteps) && activeSteps.length > 0;
   const isStarting = !hasSteps && !streamText && (loading || ['created', 'queued'].includes(sessionStatus));
   const hasTrace = hasSteps || Boolean(startedAt);
-  const hasActivity = hasTrace || Boolean(streamText) || Boolean(errorMessage) || isStarting;
+  const hasActivity = hasTrace || Boolean(streamText) || Boolean(errorMessage) || Boolean(taskChangeSet) || isStarting;
   if (!hasActivity) return null;
   return (
     <div className="notus-agent-task-timeline">
@@ -1557,11 +1698,23 @@ function AgentTaskTimeline({ activeSteps, loading, streamText, sessionStatus = '
           <StreamingText className="notus-agent-markdown" text={streamText} streaming={loading} style={{ fontSize: 15, lineHeight: 1.85, color: C.text }} />
         </div>
       ) : null}
+      {taskChangeSet ? <TaskChangeSetCard changeSet={taskChangeSet} onOpenDetail={onOpenTaskChangeSet} /> : null}
     </div>
   );
 }
 
-function MessageList({ messages, interactions = [], streamText, error = '', loading, activeSteps, activeSessionId = null, activeSessionStatus = '', sessionTimelines = {}, removingMessageIds, onOpenOperationSet, onCitationClick, citationSelection, actionDisabled = false, onResendMessage, onRetryMessage, onOpenAttachment, onPreviewMention, onPrefetchMention, onPreviewImages, onPreviewToolchainImages, onAgentStepAction }) {
+function mergeAgentTimelineSteps(restoredSteps = [], activeSteps = []) {
+  return (Array.isArray(activeSteps) ? activeSteps : []).reduce((steps, step) => {
+    const stepId = String(step?.id || '');
+    const index = stepId ? steps.findIndex((item) => String(item?.id || '') === stepId) : -1;
+    if (index < 0) return [...steps, step];
+    const next = [...steps];
+    next[index] = { ...next[index], ...step };
+    return next;
+  }, [...(Array.isArray(restoredSteps) ? restoredSteps : [])]);
+}
+
+function MessageList({ messages, interactions = [], streamText, error = '', loading, activeSteps, activeSessionId = null, activeSessionStatus = '', sessionTimelines = {}, taskChangeSetsBySession = {}, removingMessageIds, onOpenOperationSet, onOpenTaskChangeSet, onCitationClick, citationSelection, actionDisabled = false, onResendMessage, onRetryMessage, onOpenAttachment, onPreviewMention, onPrefetchMention, onPreviewImages, onPreviewToolchainImages, onAgentStepAction }) {
   const hasPersistedTimeline = Array.isArray(activeSteps) && activeSteps.length > 0;
   const hasAgentActivity = hasPersistedTimeline || Boolean(streamText) || Boolean(error) || Boolean(loading)
     || ['created', 'queued', 'running'].includes(activeSessionStatus);
@@ -1570,12 +1723,17 @@ function MessageList({ messages, interactions = [], streamText, error = '', load
   const assistantSessionIds = new Set((Array.isArray(messages) ? messages : [])
     .filter((message) => message?.role === 'assistant' && message?.meta?.session_id)
     .map((message) => String(message.meta.session_id)));
+  const latestAssistantIndexBySession = new Map();
+  (Array.isArray(messages) ? messages : []).forEach((message, index) => {
+    const sessionId = String(message?.meta?.session_id || '');
+    if (message?.role === 'assistant' && sessionId) latestAssistantIndexBySession.set(sessionId, index);
+  });
   const answeredInteractions = (Array.isArray(interactions) ? interactions : [])
     .filter((interaction) => interaction?.status === 'answered');
   const interactionStepsFor = (sessionId) => answeredInteractions
     .filter((interaction) => String(interaction?.payload?.agent_session_id || '') === String(sessionId || ''))
     .map(buildInteractionHistoryStep);
-  const traceFor = (timeline, key, retryMessage = null) => {
+  const traceFor = (timeline, key, retryMessage = null, showTaskChangeSet = true) => {
     if (!timeline) return null;
     const steps = mergeInteractionStepsIntoTimeline(
       Array.isArray(timeline.activeSteps) ? timeline.activeSteps : [],
@@ -1583,21 +1741,22 @@ function MessageList({ messages, interactions = [], streamText, error = '', load
     );
     const draft = String(timeline.streamText || '');
     const timelineError = String(timeline.errorMessage || '').trim();
-    if (steps.length === 0 && !draft && !timeline.loading && !timelineError && !timeline.startedAt) return null;
-    return <AgentTaskTimeline key={key} activeSteps={steps} loading={Boolean(timeline.loading)} streamText={draft} errorMessage={timelineError} retryMessage={retryMessage} onRetryMessage={onRetryMessage} sessionStatus={timeline.sessionStatus || ''} sessionId={timeline.sessionId || ''} startedAt={timeline.startedAt || ''} finishedAt={timeline.finishedAt || ''} onAction={onAgentStepAction} onPreviewImages={onPreviewToolchainImages} />;
+    if (steps.length === 0 && !draft && !timeline.loading && !timelineError && !timeline.startedAt && !(showTaskChangeSet && taskChangeSetsBySession[String(timeline.sessionId || '')])) return null;
+    return <AgentTaskTimeline key={key} activeSteps={steps} loading={Boolean(timeline.loading)} streamText={draft} errorMessage={timelineError} retryMessage={retryMessage} taskChangeSet={showTaskChangeSet ? (taskChangeSetsBySession[String(timeline.sessionId || '')] || null) : null} onRetryMessage={onRetryMessage} sessionStatus={timeline.sessionStatus || ''} sessionId={timeline.sessionId || ''} startedAt={timeline.startedAt || ''} finishedAt={timeline.finishedAt || ''} onAction={onAgentStepAction} onPreviewImages={onPreviewToolchainImages} onOpenTaskChangeSet={onOpenTaskChangeSet} />;
   };
   const currentTimelineSource = sessionTimelines?.[currentSessionKey] || null;
   const currentRetryMessage = currentTimelineSource?.userMessageId
     ? (messages.find((message) => String(message?.id || '') === String(currentTimelineSource.userMessageId)) || null)
     : ([...messages].reverse().find((message) => message?.role === 'user') || null);
-  const currentTimeline = hasAgentActivity ? {
-    sessionId: currentSessionKey,
+  const currentTimeline = currentTimelineSource || hasAgentActivity ? {
+    ...currentTimelineSource,
+    sessionId: currentSessionKey || currentTimelineSource?.sessionId || '',
     userMessageId: currentTimelineSource?.userMessageId || null,
-    activeSteps,
-    loading,
-    streamText,
-    errorMessage: error,
-    sessionStatus: activeSessionStatus,
+    activeSteps: mergeAgentTimelineSteps(currentTimelineSource?.activeSteps, activeSteps),
+    loading: Boolean(loading || currentTimelineSource?.loading),
+    streamText: streamText || currentTimelineSource?.streamText || '',
+    errorMessage: error || currentTimelineSource?.errorMessage || '',
+    sessionStatus: activeSessionStatus || currentTimelineSource?.sessionStatus || '',
     startedAt: currentTimelineSource?.startedAt || '',
     finishedAt: currentTimelineSource?.finishedAt || '',
   } : null;
@@ -1652,10 +1811,11 @@ function MessageList({ messages, interactions = [], streamText, error = '', load
             onRetryMessage={onRetryMessage}
             previousUserMessage={previousUserMessage}
             onOpenOperationSet={onOpenOperationSet}
+            onOpenTaskChangeSet={onOpenTaskChangeSet}
             onCitationClick={onCitationClick}
             citationSelection={citationSelection}
             executionTrace={messageTimeline
-              ? traceFor(messageSessionKey === currentSessionKey ? currentTimeline : messageTimeline, `assistant-${messageSessionKey}`, previousUserMessage)
+              ? traceFor(messageSessionKey === currentSessionKey ? currentTimeline : messageTimeline, `assistant-${messageSessionKey}`, previousUserMessage, latestAssistantIndexBySession.get(messageSessionKey) === index)
               : (index === lastMessageIndex && hasAgentActivity ? executionTrace : null)}
           />
         );
@@ -2938,7 +3098,7 @@ function SearchConfigView({ config, onSaved, onBack, selectProvider }) {
   );
 }
 
-export function AgentWorkspace({ messages, interactions = [], streamText, loading, error, activeSteps, activeSessionId = null, activeSessionStatus = '', sessionTimelines = {}, interruptibleSessionId = null, llmConfigs, selectedConfigId, onConfigChange, onSend, onStop, onResumeAgentTask, onConversationRewritten, onApplyOperationSet, onApplyOperationFile, onRollbackOperationFile, onDiscardOperationFile, onCitationClick, citationSelection, disabled, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [], fullWidth = false, onOpenDiffFile, restoringConversation = false }) {
+export function AgentWorkspace({ messages, interactions = [], streamText, loading, error, activeSteps, activeSessionId = null, activeSessionStatus = '', sessionTimelines = {}, taskChangeSetsBySession = {}, interruptibleSessionId = null, llmConfigs, selectedConfigId, onConfigChange, onSend, onStop, onResumeAgentTask, onConversationRewritten, onApplyOperationSet, onApplyOperationFile, onRollbackOperationFile, onDiscardOperationFile, onCitationClick, citationSelection, disabled, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [], fullWidth = false, onOpenDiffFile, restoringConversation = false }) {
   const { openSettings } = useSettingsDialog();
   const toast = useToast();
   const [searchConfig, setSearchConfig] = useState({ enabled: false, selected_provider: 'firecrawl', modes: {}, counts: {}, api_key_set: {}, providers: SEARCH_PROVIDER_FALLBACKS });
@@ -2948,8 +3108,33 @@ export function AgentWorkspace({ messages, interactions = [], streamText, loadin
   const [searchViewProvider, setSearchViewProvider] = useState('');
   const [searchPromptReason, setSearchPromptReason] = useState('disabled');
   const [detailOperationSet, setDetailOperationSet] = useState(null);
+  const [loadingTaskChangeSetId, setLoadingTaskChangeSetId] = useState(null);
   const [attachmentDetail, setAttachmentDetail] = useState(null);
   const [previewMention, setPreviewMention] = useState(null);
+
+  const openTaskChangeSet = useCallback(async (changeSet) => {
+    const sessionId = Number(changeSet?.session_id || 0);
+    if (!sessionId || loadingTaskChangeSetId) return;
+    setLoadingTaskChangeSetId(changeSet.id || sessionId);
+    try {
+      const response = await fetch(`/api/agent/sessions/${sessionId}/changes`, {
+        cache: 'no-store',
+        headers: {
+          ...(changeSet.read_control_ticket ? { 'x-agent-control-ticket': changeSet.read_control_ticket } : {}),
+          ...(!changeSet.read_control_ticket && changeSet.session_token ? { 'x-agent-session-token': changeSet.session_token } : {}),
+        },
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.task_change_set?.operation_set_view) {
+        throw new Error(payload.error || '读取累计修改失败');
+      }
+      setDetailOperationSet(payload.task_change_set.operation_set_view);
+    } catch (error) {
+      toast(error.message || '读取累计修改失败', 'error');
+    } finally {
+      setLoadingTaskChangeSetId(null);
+    }
+  }, [loadingTaskChangeSetId, toast]);
 
   useEffect(() => {
     setDetailOperationSet((current) => {
@@ -3311,8 +3496,10 @@ export function AgentWorkspace({ messages, interactions = [], streamText, loadin
             activeSessionId={activeSessionId}
             activeSessionStatus={activeSessionStatus}
             sessionTimelines={sessionTimelines}
+            taskChangeSetsBySession={taskChangeSetsBySession}
             removingMessageIds={removingMessageIds}
             onOpenOperationSet={setDetailOperationSet}
+            onOpenTaskChangeSet={openTaskChangeSet}
             onCitationClick={onCitationClick}
             citationSelection={citationSelection}
             actionDisabled={Boolean(disabled)}

@@ -9,6 +9,7 @@ import { ProgressBar } from '../ui/ProgressBar';
 import { Badge } from '../ui/Badge';
 import { Toggle } from '../ui/Toggle';
 import { useToast } from '../ui/Toast';
+import { formatFullTimestamp } from '../../utils/messageTimestamps';
 import { AgentLoopLogList } from '../AgentLoop/AgentLoopLogList';
 import { LlmConfigCardsSection } from './LlmConfigCardsSection';
 import packageMeta from '../../package.json';
@@ -679,19 +680,7 @@ const Logs = ({ agentConversationId: suppliedAgentConversationId = '' }) => {
   const agentConversationId = String(suppliedAgentConversationId || router.query.conversation_id || '').trim();
 
   const formatLogTimestamp = (value) => {
-    if (!value) return '—';
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return value;
-    return new Intl.DateTimeFormat('zh-CN', {
-      timeZone: 'Asia/Shanghai',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false,
-    }).format(date).replace(/\//g, '-');
+    return formatFullTimestamp(value);
   };
 
   const fetchLogs = async () => {

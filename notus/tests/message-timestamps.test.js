@@ -1,7 +1,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const { formatMessageTimestamp, parseMessageTimestamp } = require('../utils/messageTimestamps');
+const { formatFullTimestamp, formatMessageTimestamp, parseMessageTimestamp } = require('../utils/messageTimestamps');
 
 const root = path.resolve(__dirname, '..');
 const workspace = fs.readFileSync(path.join(root, 'components/AgentWorkspace/AgentWorkspace.js'), 'utf8');
@@ -37,7 +37,8 @@ assert.strictEqual(
 );
 assert.strictEqual(formatMessageTimestamp('invalid', { now }), '');
 assert.strictEqual(parseMessageTimestamp('2026-07-23 05:15:00').toISOString(), '2026-07-23T05:15:00.000Z');
-assert.ok(workspace.includes("import { formatMessageTimestamp } from '../../utils/messageTimestamps';"));
+assert.strictEqual(formatFullTimestamp('2026-08-09 13:10:00'), '2026-08-09 21:10:00', 'SQLite UTC 文本在日志页必须换算为东八区时间。');
+assert.ok(workspace.includes("import { formatMessageTimestamp, parseMessageTimestamp } from '../../utils/messageTimestamps';"));
 assert.ok(workspace.includes('function MessageTimestamp({ value, align = \'left\', inline = false })'));
 assert.ok(workspace.includes('<MessageTimestamp value={timestamp} align="left" inline />'));
 assert.ok(workspace.includes('<MessageTimestamp value={timestamp} align="right" inline />'));

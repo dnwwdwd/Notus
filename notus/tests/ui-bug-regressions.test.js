@@ -13,6 +13,10 @@ function runTests() {
   assert.ok(!findBar.includes('搜索当前文档内容，回车或按钮切换匹配项'));
   assert.ok(!findBar.includes('输入关键词'));
 
+  const wysiwygEditor = read('components/Editor/WysiwygEditor.js');
+  assert.ok(wysiwygEditor.includes('link: false,'), 'StarterKit 必须关闭内置 Link，避免与显式 Link 配置重复注册');
+  assert.ok(wysiwygEditor.includes('underline: false,'), 'StarterKit 必须关闭内置 Underline，避免与显式 Underline 重复注册');
+
   const unsavedDialog = read('components/ui/UnsavedChangesDialog.js');
   assert.ok(!unsavedDialog.includes('>取消</Button>'));
   assert.ok(unsavedDialog.includes('不保存离开'));

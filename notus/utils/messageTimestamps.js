@@ -17,6 +17,21 @@ function parseMessageTimestamp(value) {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+function formatFullTimestamp(value, { timeZone = 'Asia/Shanghai' } = {}) {
+  const timestamp = parseMessageTimestamp(value);
+  if (!timestamp) return value ? String(value) : '—';
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).format(timestamp).replace(/\//g, '-');
+}
+
 function formatMessageTimestamp(value, { now = new Date() } = {}) {
   const createdAt = parseMessageTimestamp(value);
   const reference = parseMessageTimestamp(now);
@@ -33,6 +48,7 @@ function formatMessageTimestamp(value, { now = new Date() } = {}) {
 }
 
 module.exports = {
+  formatFullTimestamp,
   formatMessageTimestamp,
   parseMessageTimestamp,
 };

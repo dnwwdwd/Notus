@@ -53,6 +53,23 @@ function upsertById(list = [], item = null) {
   return next;
 }
 
+function mergeSessionTimeline(restored = {}, live = {}) {
+  const restoredSteps = Array.isArray(restored?.activeSteps) ? restored.activeSteps : [];
+  const liveSteps = Array.isArray(live?.activeSteps) ? live.activeSteps : [];
+  let activeSteps = liveSteps.reduce((steps, step) => upsertById(steps, step), restoredSteps);
+  if (['completed', 'failed', 'cancelled'].includes(String(live?.sessionStatus || ''))) {
+    activeSteps = activeSteps.filter((step) => step?.id !== 'resume-interrupted-task');
+  }
+  return {
+    ...restored,
+    ...live,
+    userMessageId: live?.userMessageId || restored?.userMessageId || null,
+    startedAt: live?.startedAt || restored?.startedAt || '',
+    finishedAt: live?.finishedAt || restored?.finishedAt || '',
+    activeSteps,
+  };
+}
+
 function collectConversationOperationSets(payload = {}) {
   const sessionSets = (Array.isArray(payload?.agent_sessions) ? payload.agent_sessions : [])
     .flatMap((session) => Array.isArray(session?.operation_sets) ? session.operation_sets : []);
@@ -234,6 +251,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
   const [deletingConversationId, setDeletingConversationId] = useState(null);
   const [exportingConversationId, setExportingConversationId] = useState(null);
   const [pendingOperationSets, setPendingOperationSets] = useState([]);
+  const [taskChangeSetsBySession, setTaskChangeSetsBySession] = useState({});
   const [pendingInteractions, setPendingInteractions] = useState([]);
   const [agentResumeJobs, setAgentResumeJobs] = useState([]);
   const [restoredAgentSessions, setRestoredAgentSessions] = useState([]);
@@ -241,7 +259,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
   const [interactionSubmittingId, setInteractionSubmittingId] = useState(null);
   const [clarifyPhase, setClarifyPhase] = useState('expanded-question');
   const [selectedLlmConfigId, setSelectedLlmConfigId] = useState(null);
-  const [agentConfirmMode, setAgentConfirmMode] = useState(() => readConfirmMode());
+  const [agentConfirmMode, setAgentConfirmMode] = useState(AUTO_CONFIRM);
   const [skills, setSkills] = useState([]);
   const restoredConversationRef = useRef(false);
   const autoResumedJobRef = useRef(new Set());
@@ -250,6 +268,10 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
   const agentLoopRef = useRef(null);
   const [liveSessionTimelines, setLiveSessionTimelines] = useState({});
   const resumeAgentTaskInFlightRef = useRef(false);
+
+  useEffect(() => {
+    setAgentConfirmMode(readConfirmMode());
+  }, []);
 
   const aiState = deriveAiReadiness({
     appStatus,
@@ -344,6 +366,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     setPendingInteractions([]);
     setAgentResumeJobs([]);
     setRestoredAgentSessions([]);
+    setTaskChangeSetsBySession({});
     setLiveSessionTimelines({});
     subscribedSessionIdsRef.current.clear();
     try {
@@ -355,6 +378,14 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
       setPendingInteractions(Array.isArray(payload.pending_interactions) ? payload.pending_interactions : []);
       setAgentResumeJobs(Array.isArray(payload.agent_resume_jobs) ? payload.agent_resume_jobs : []);
       setRestoredAgentSessions(Array.isArray(payload.agent_sessions) ? payload.agent_sessions : []);
+      setTaskChangeSetsBySession(Object.fromEntries(
+        (Array.isArray(payload.agent_sessions) ? payload.agent_sessions : [])
+          .filter((session) => session?.task_change_set)
+          .map((session) => [String(session.id), {
+            ...session.task_change_set,
+            read_control_ticket: session?.control_tickets?.read || null,
+          }])
+      ));
       setPersistedActiveConversationId(conversationId);
       setHistoryDrawerOpen(false);
       return payload;
@@ -439,6 +470,15 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     )));
   }, []);
 
+  const handleTaskChangeSet = useCallback((changeSet) => {
+    const sessionId = String(changeSet?.session_id || '');
+    if (!sessionId) return;
+    setTaskChangeSetsBySession((previous) => ({
+      ...previous,
+      [sessionId]: { ...(previous[sessionId] || {}), ...changeSet },
+    }));
+  }, []);
+
   const handleSessionTimeline = useCallback((timeline) => {
     const sessionId = String(timeline?.sessionId || '');
     if (!sessionId) return;
@@ -471,6 +511,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
       if (conversationId) refreshConversationList(Number(conversationId)).catch(() => {});
     },
     onOperationSets: handleOperationSets,
+    onTaskChangeSet: handleTaskChangeSet,
     onOperationSetHandled: handleOperationSetHandled,
     onApplySuccess: notifyFilesChanged,
     onRollbackSuccess: notifyFilesChanged,
@@ -483,10 +524,13 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
   useEffect(() => {
     registerAgentSessions(restoredAgentSessions);
   }, [registerAgentSessions, restoredAgentSessions]);
-  const sessionTimelines = useMemo(() => ({
-    ...restoredSessionTimelines,
-    ...liveSessionTimelines,
-  }), [liveSessionTimelines, restoredSessionTimelines]);
+  const sessionTimelines = useMemo(() => {
+    const merged = { ...restoredSessionTimelines };
+    Object.entries(liveSessionTimelines).forEach(([sessionId, timeline]) => {
+      merged[sessionId] = mergeSessionTimeline(merged[sessionId], timeline);
+    });
+    return merged;
+  }, [liveSessionTimelines, restoredSessionTimelines]);
   const interruptibleSessionId = useMemo(() => {
     const activeConversationKey = String(activeConversationId || '');
     const candidates = [agentLoop.activeAgentSession, ...restoredAgentSessions]
@@ -541,7 +585,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
       || (Array.isArray(item?.run_logs) && item.run_logs.length > 0)
     );
     const session = reversedSessions.find((item) => (
-      ['created', 'running', 'waiting_interaction', 'queued_resume', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery'].includes(item.status)
+      ['created', 'running', 'waiting_interaction', 'waiting_operation_confirmation', 'queued_resume', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery'].includes(item.status)
     )) || reversedSessions.find((item) => ['failed', 'cancelled'].includes(item.status) && hasPersistedTimeline(item))
       || reversedSessions.find((item) => item.status === 'completed' && hasPersistedTimeline(item));
     // 历史详情只用于页面首次恢复。新消息启动后，旧 completed session 不能再把
@@ -714,6 +758,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     setPendingInteractions([]);
     setAgentResumeJobs([]);
     setRestoredAgentSessions([]);
+    setTaskChangeSetsBySession({});
     setLiveSessionTimelines({});
     subscribedSessionIdsRef.current.clear();
     setHistorySearchQuery('');
@@ -845,12 +890,25 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     } catch (error) { toast(error.message || '资源操作失败', 'error'); } finally { setInteractionSubmittingId(null); }
   }, [respondToInteraction, resumeInteraction, toast]);
 
-  const displayedMessages = useMemo(() => messages.map((message) => {
-    const operationSetId = String(message?.meta?.operation_set_id || message?.operationSet?.id || '');
-    const sessionId = String(message?.meta?.session_id || '');
-    const operationSet = operationSetById[operationSetId] || operationSetBySessionId[sessionId] || message?.operationSet || null;
-    return operationSet ? { ...message, operationSet } : message;
-  }), [messages, operationSetById, operationSetBySessionId]);
+  const displayedMessages = useMemo(() => {
+    const latestAssistantIndexBySession = new Map();
+    messages.forEach((message, index) => {
+      const sessionId = String(message?.meta?.session_id || '');
+      if (message?.role === 'assistant' && sessionId) latestAssistantIndexBySession.set(sessionId, index);
+    });
+    return messages.map((message, index) => {
+      const operationSetId = String(message?.meta?.operation_set_id || message?.operationSet?.id || '');
+      const sessionId = String(message?.meta?.session_id || '');
+      const operationSet = taskChangeSetsBySession[sessionId]
+        ? null
+        : operationSetById[operationSetId] || operationSetBySessionId[sessionId] || message?.operationSet || null;
+      const taskChangeSet = latestAssistantIndexBySession.get(sessionId) === index
+        ? (taskChangeSetsBySession[sessionId] || message?.taskChangeSet || null)
+        : null;
+      if (!operationSet && !taskChangeSet) return message;
+      return { ...message, operationSet, taskChangeSet };
+    });
+  }, [messages, operationSetById, operationSetBySessionId, taskChangeSetsBySession]);
   // 后台运行、暂停、失败和提问卡都不再锁住输入；新消息会以同会话 FIFO 入队。
   // 仅模型尚未就绪或输入组件自身正在上传时禁用。
   const inputDisabled = !aiUiState.ready;
@@ -874,6 +932,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
           activeSessionId={agentLoop.activeAgentSession?.id || null}
           activeSessionStatus={agentLoop.activeAgentSession?.status || ''}
           sessionTimelines={sessionTimelines}
+          taskChangeSetsBySession={taskChangeSetsBySession}
           interruptibleSessionId={interruptibleSessionId}
           llmConfigs={llmConfigs}
           selectedConfigId={selectedLlmConfigId}

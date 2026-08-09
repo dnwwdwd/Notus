@@ -64,11 +64,23 @@ async function readErrorResponse(response, fallback) {
   return `${fallback}${statusSuffix}`;
 }
 
+function finishRunningStep(step = {}) {
+  const finished = { ...step, status: 'done' };
+  if (step.kind === 'segment') {
+    return {
+      ...finished,
+      detail: '本执行段已完成。',
+      open: false,
+    };
+  }
+  return finished;
+}
+
 function upsertStep(list = [], step = null) {
   if (!step) return list;
   const next = Array.isArray(list) ? list.map((item) => (
     step.status === 'running' && item.status === 'running' && item.id !== step.id
-      ? { ...item, status: 'done' }
+      ? finishRunningStep(item)
       : item
   )) : [];
   const index = next.findIndex((item) => item.id === step.id);
@@ -90,10 +102,26 @@ function upsertStep(list = [], step = null) {
   return next;
 }
 
-function completeSteps(list = []) {
-  return (Array.isArray(list) ? list : []).map((step) => (
-    step.status === 'running' ? { ...step, status: 'done' } : step
-  ));
+function completeSteps(list = [], { resolveOperationConfirmations = false } = {}) {
+  return (Array.isArray(list) ? list : []).map((step) => {
+    if (step.status === 'running') return finishRunningStep(step);
+    if (
+      resolveOperationConfirmations
+      && step.status === 'waiting'
+      && (step.id?.startsWith('operation-confirmation-') || step.kind === 'operation_batch')
+    ) {
+      return {
+        ...step,
+        status: 'done',
+        label: step.kind === 'operation_batch' ? '修改批次已处理' : '已确认文件修改',
+        detail: step.kind === 'operation_batch'
+          ? '该批修改已处理，任务已继续。'
+          : '修改确认已处理，任务已继续。',
+        open: false,
+      };
+    }
+    return step;
+  });
 }
 
 function toolLabel(name = '') {
@@ -102,6 +130,20 @@ function toolLabel(name = '') {
 
 function reasonLabel(reason = '') {
   return getAgentLoopReasonLabel(reason);
+}
+
+function executionSegmentFields(event = {}) {
+  const executionSegmentId = toPositiveInt(event.execution_segment_id || event.executionSegmentId);
+  const sequenceNo = Number(event.segment_sequence_no || event.segmentSequenceNo || 0) || 0;
+  return {
+    executionSegmentId,
+    segmentSequenceNo: sequenceNo,
+  };
+}
+
+function executionSegmentLabel(event = {}) {
+  const { segmentSequenceNo } = executionSegmentFields(event);
+  return segmentSequenceNo ? `第 ${segmentSequenceNo} 个执行段` : '当前执行段';
 }
 
 function mediaKey(item = {}) {
@@ -158,11 +200,28 @@ function buildEventStep(event = {}) {
   if (event.type === 'artifact' && event.artifact_type === 'limit_confirmation') {
     return buildEventStep({ ...event, type: 'loop_done', reason: event.reason || 'hard_limit_reached' });
   }
+  if (event.type === 'artifact' && event.artifact_type === 'operation_confirmation') {
+    const segment = executionSegmentFields(event);
+    return {
+      id: `operation-confirmation-${event.execution_segment_id || event.loop_index || 'current'}`,
+      kind: 'operation_confirmation',
+      ...segment,
+      label: '等待确认文件修改',
+      status: 'waiting',
+      detail: event.text || '已保存这批修改预览，确认后任务会继续。',
+      tool: 'preview_patch_files',
+      result: event.operation_set_id ? `修改批次 #${event.operation_set_id}` : '修改预览已生成',
+      open: true,
+    };
+  }
   if (event.type === 'artifact' && event.artifact_type === 'run_error') {
+    const segment = executionSegmentFields(event);
     const actionRequired = event.error_category === 'action_required';
     const errorMessage = event.message || event.error || '模型请求失败，当前任务进度已保留。';
     return {
-      id: `llm-retry-${event.loop_index || 'current'}`,
+      id: `llm-retry-${event.execution_segment_id || event.segment_sequence_no || event.loop_index || 'current'}`,
+      kind: 'llm_error',
+      ...segment,
       label: actionRequired ? '模型服务需要处理' : '模型请求失败',
       status: 'error',
       detail: actionRequired ? '请处理模型服务配置后再继续，或重新发送这条任务。' : '任务进度已保留，可以重新发送这条任务。',
@@ -218,7 +277,28 @@ function buildEventStep(event = {}) {
     };
   }
   if (event.type === 'loop_start') {
-    return null;
+    const segment = executionSegmentFields(event);
+    return {
+      id: `segment-${segment.executionSegmentId || event.loop_index || 'current'}`,
+      kind: 'segment',
+      ...segment,
+      label: executionSegmentLabel(event),
+      status: 'running',
+      detail: '正在等待模型响应。',
+      open: true,
+    };
+  }
+  if (event.type === 'model_requesting') {
+    const segment = executionSegmentFields(event);
+    return {
+      id: `segment-${segment.executionSegmentId || event.loop_index || 'current'}`,
+      kind: 'segment',
+      ...segment,
+      label: executionSegmentLabel(event),
+      status: 'running',
+      detail: '正在等待模型响应。',
+      open: true,
+    };
   }
   if (event.type === 'image_view_start' || event.type === 'image_view_done' || event.type === 'image_recognition_done') {
     const count = Number(event.image_count || event.images?.length || 0);
@@ -236,8 +316,11 @@ function buildEventStep(event = {}) {
     };
   }
   if (event.type === 'llm_retry') {
+    const segment = executionSegmentFields(event);
     return {
-      id: `llm-retry-${loop || 'current'}`,
+      id: `llm-retry-${event.execution_segment_id || event.segment_sequence_no || loop || 'current'}`,
+      kind: 'llm_retry',
+      ...segment,
       label: '重试模型请求',
       status: 'running',
       detail: event.text || `正在进行第 ${event.retry_attempt || '?'} 次重试。`,
@@ -253,9 +336,12 @@ function buildEventStep(event = {}) {
     return null;
   }
   if (event.type === 'tool_start') {
-    const id = `tool-${loop || 'x'}-${event.tool_name || 'unknown'}`;
+    const segment = executionSegmentFields(event);
+    const id = `tool-${segment.executionSegmentId || loop || 'x'}-${Number(event.tool_index || 0)}`;
     return {
       id,
+      kind: 'tool',
+      ...segment,
       label: toolLabel(event.tool_name),
       status: 'running',
       detail: '正在执行工具调用。',
@@ -264,9 +350,12 @@ function buildEventStep(event = {}) {
     };
   }
   if (event.type === 'tool_done') {
-    const id = `tool-${loop || 'x'}-${event.tool_name || 'unknown'}`;
+    const segment = executionSegmentFields(event);
+    const id = `tool-${segment.executionSegmentId || loop || 'x'}-${Number(event.tool_index || 0)}`;
     return {
       id,
+      kind: 'tool',
+      ...segment,
       label: toolLabel(event.tool_name),
       status: event.failed ? 'error' : 'done',
       detail: event.failed ? '工具调用失败。' : '工具调用已完成。',
@@ -287,13 +376,34 @@ function buildEventStep(event = {}) {
     };
   }
   if (event.type === 'interaction_request') {
+    const segment = executionSegmentFields(event);
     return {
       id: `question-card-${event.interaction?.id || loop || 'current'}`,
+      kind: 'interaction',
+      ...segment,
       label: '等待回答提问卡片',
       status: 'waiting',
       detail: '已生成提问卡片，请回答后继续执行。',
       tool: 'ask_question_card',
       result: event.interaction?.id ? `提问卡片 #${event.interaction.id}` : '提问卡片已生成',
+    };
+  }
+  if (event.type === 'artifact' && event.artifact_type === 'operation_set') {
+    const segment = executionSegmentFields(event);
+    const fileCount = Number(event.change_file_count || 0);
+    const directoryCount = Number(event.change_directory_count || 0);
+    const countLabel = [fileCount ? `${fileCount} 个文件` : '', directoryCount ? `${directoryCount} 个目录` : ''].filter(Boolean).join('、') || '文件或目录修改';
+    const applied = event.status === 'applied';
+    return {
+      id: `operation-batch-${event.operation_set_id || segment.executionSegmentId || loop || 'current'}`,
+      kind: 'operation_batch',
+      ...segment,
+      label: applied ? '已应用修改批次' : '已生成修改批次',
+      status: applied ? 'done' : 'waiting',
+      detail: applied ? `已应用本批 ${countLabel}。` : `本批涉及 ${countLabel}，等待确认后继续。`,
+      tool: 'preview_patch_files',
+      result: event.operation_set_id ? `修改批次 #${event.operation_set_id}` : '修改批次已生成',
+      open: !applied,
     };
   }
   if (event.type === 'loop_done') {
@@ -366,8 +476,13 @@ export function buildRestoredAgentTimeline(session = {}) {
     return upsertStep(current, step ? { ...step, createdAt: event.created_at || undefined, updatedAt: event.created_at || undefined } : null);
   }, []);
   steps = steps.map((step) => step.status === 'running'
-    ? { ...step, status: 'stopped', detail: `${step.detail || '该步骤尚未完成。'}\n连接中断后已暂停。` }
+    ? (isCompleted
+      ? finishRunningStep(step)
+      : { ...step, status: 'stopped', detail: `${step.detail || '该步骤尚未完成。'}\n连接中断后已暂停。` })
     : step);
+  if (isCompleted) {
+    steps = completeSteps(steps, { resolveOperationConfirmations: true });
+  }
 
   const draftParts = persistedEvents
     .filter((event) => event.type === 'progress' && ['model_progress', 'thinking'].includes(event.stage))
@@ -436,7 +551,7 @@ export function applyAgentTimelineEvent(timeline = {}, event = {}) {
     loading = false;
   } else if (event.type === 'final') {
     sessionStatus = event.status || 'completed';
-    activeSteps = completeSteps(activeSteps);
+    activeSteps = completeSteps(activeSteps, { resolveOperationConfirmations: true });
     loading = false;
     streamText = '';
     finishedAt = event.created_at || event.createdAt || new Date().toISOString();
@@ -476,6 +591,7 @@ export function useAgentLoopController({
   onConversationId,
   onConversationSettled,
   onOperationSets,
+  onTaskChangeSet,
   onOperationSetHandled,
   onInteractionRequest,
   onApplySuccess,
@@ -601,8 +717,15 @@ export function useAgentLoopController({
     if (session && options.activate !== false) setActiveAgentSession(session);
     const operationSets = normalizeOperationSets(payload.operation_sets);
     if (operationSets.length > 0) onOperationSets?.(operationSets);
+    if (payload.task_change_set) {
+      onTaskChangeSet?.({
+        ...payload.task_change_set,
+        read_control_ticket: controlTicket || null,
+        session_token: controlTicket ? null : (token || null),
+      });
+    }
     return { ...payload, session, operation_sets: operationSets };
-  }, [onOperationSets, setActiveAgentSession]);
+  }, [onOperationSets, onTaskChangeSet, setActiveAgentSession]);
 
   const appendAssistant = useCallback((message) => {
     onAppendAssistantMessage?.({
@@ -683,6 +806,10 @@ export function useAgentLoopController({
     setSteps((steps) => (Array.isArray(steps) && steps.length === 0 ? steps : []));
     if (!isResume) setPendingAgentTask(null);
     let taskAccepted = false;
+    // 订阅建立前若请求链路异常，恢复逻辑仍可安全使用续跑任务的 ID，
+    // 不会触发尚未初始化的块级变量。
+    let acceptedSessionId = Number(resumeSessionId || 0);
+    let acceptedConversationId = Number(input?.conversation_id || 0) || null;
     let timeline = {
       sessionId: String(resumeSessionId || ''),
       userMessageId: null,
@@ -712,6 +839,68 @@ export function useAgentLoopController({
         sessionId: event.session_id || null,
         conversationId: event.conversation_id || null,
       });
+    };
+
+    const recoverPersistedSession = async () => {
+      const sessionId = Number(acceptedSessionId || resumeSessionId || 0);
+      if (!sessionId) return false;
+      try {
+        const detail = await fetchSessionDetails(sessionId, sessionAccess, { activate: false });
+        const persistedSession = detail?.session;
+        const persistedStatus = String(persistedSession?.status || '');
+        if (!persistedSession || ![
+          'waiting_operation_confirmation',
+          'waiting_interaction',
+          'waiting_retry',
+          'waiting_model_recovery',
+          'queued',
+          'queued_resume',
+          'running',
+          'completed',
+          'cancelled',
+          'failed',
+        ].includes(persistedStatus)) return false;
+        const restoredSession = {
+          ...persistedSession,
+          token: sessionAccess.token || persistedSession.token || '',
+          control_tickets: sessionRef.current?.control_tickets || persistedSession.control_tickets || {},
+          run_events: Array.isArray(detail?.run_events) ? detail.run_events : [],
+        };
+        const restored = buildRestoredAgentTimeline(restoredSession);
+        setActiveAgentSession(restoredSession);
+        setSteps(restored.steps);
+        setStreamText(restoredSession.status === 'completed' ? '' : restored.draft);
+        setError('');
+        setLoading(false);
+        publishTimeline(null, {
+          sessionId: String(restoredSession.id),
+          activeSteps: restored.steps,
+          streamText: restoredSession.status === 'completed' ? '' : restored.draft,
+          loading: false,
+          sessionStatus: restoredSession.status,
+          finishedAt: ['completed', 'cancelled', 'failed'].includes(restoredSession.status) ? new Date().toISOString() : '',
+        });
+        const finalEvent = [...restoredSession.run_events].reverse().find((row) => row?.payload?.type === 'final')?.payload;
+        if (restoredSession.status === 'completed' && finalEvent && isCurrentPresentation()) {
+          appendAssistant({
+            content: String(finalEvent.text || finalEvent.final_text || '').trim() || reasonLabel(finalEvent.reason),
+            meta: {
+              agent_loop: true,
+              session_id: restoredSession.id,
+              status: finalEvent.status || 'completed',
+              reason: finalEvent.reason || '',
+              operation_set_id: finalEvent.operation_set_id || null,
+              research_summary: finalEvent.research_summary || null,
+              write_summary: finalEvent.write_summary || null,
+              usage: finalEvent.usage || null,
+            },
+          });
+          onConversationSettled?.(restoredSession.conversation_id || acceptedConversationId || null);
+        }
+        return true;
+      } catch {
+        return false;
+      }
     };
 
     const appendUserMessage = (event = {}) => {
@@ -766,10 +955,10 @@ export function useAgentLoopController({
       const accepted = await response.json();
       if (!isResume) newTaskSubmitInFlightRef.current = false;
       if (!isSubscriptionActive()) return;
-      const acceptedSessionId = Number(accepted.session_id || resumeSessionId || 0);
+      acceptedSessionId = Number(accepted.session_id || resumeSessionId || 0);
       if (!acceptedSessionId) throw new Error('服务未返回 Agent 任务 ID');
       controller.agentSessionId = String(acceptedSessionId);
-      const acceptedConversationId = Number(accepted.conversation_id || input?.conversation_id || 0) || null;
+      acceptedConversationId = Number(accepted.conversation_id || input?.conversation_id || 0) || null;
       const acceptedToken = accepted.session_token || resumeToken;
       const suppliedTickets = input?.control_tickets || input?.controlTickets || {};
       const acceptedTickets = accepted.control_tickets || (isResume ? {
@@ -963,6 +1152,20 @@ export function useAgentLoopController({
             setLoading(false);
           } else if (event.artifact_type === 'operation_set' && event.operation_set_id) {
             filesMayHaveChangedRef.current = event.status === 'applied' || filesMayHaveChangedRef.current;
+            try {
+              await fetchSessionDetails(eventSessionId, sessionAccess, { activate: false });
+            } catch {}
+          } else if (event.artifact_type === 'operation_confirmation') {
+            setActiveAgentSession({
+              status: 'waiting_operation_confirmation',
+              reason: event.reason || 'operation_confirmation_required',
+              operation_set_id: event.operation_set_id || null,
+            });
+            try {
+              await fetchSessionDetails(eventSessionId, sessionAccess, { activate: false });
+            } catch {}
+            setStreamText('');
+            setLoading(false);
           } else if (event.artifact_type === 'limit_confirmation') {
             setActiveAgentSession({ status: 'waiting_limit_confirmation', reason: event.reason || 'hard_limit_reached' });
             setStreamText('');
@@ -1020,7 +1223,7 @@ export function useAgentLoopController({
             loop_count: Number(event.loop_index || current.loop_count || 0),
             reason: event.reason || '',
           });
-          setSteps((prev) => completeSteps(upsertStep(prev, buildEventStep(event))));
+          setSteps((prev) => completeSteps(upsertStep(prev, buildEventStep(event)), { resolveOperationConfirmations: true }));
           appendAssistant({
             content: finalText,
             meta: {
@@ -1198,6 +1401,7 @@ export function useAgentLoopController({
       if (isCurrentPresentation()) setLoading(false);
     } catch (nextError) {
       if (!isSubscriptionActive()) return;
+      if (nextError.name !== 'AbortError' && await recoverPersistedSession()) return;
       const failureEvent = nextError.name === 'AbortError'
         ? { type: 'cancelled' }
         : { type: 'error', error: nextError.message || 'Agent Loop 请求失败' };
@@ -1282,14 +1486,27 @@ export function useAgentLoopController({
       throw new Error(payload.error || payload.code || '处理修改失败');
     }
     onOperationSetHandled?.(operationSetId, action, payload.operation_set || null);
+    if (payload.task_change_set) onTaskChangeSet?.(payload.task_change_set);
     if (['apply', 'apply_all', 'apply_file'].includes(action)) {
       await onApplySuccess?.(payload, operationSet);
     } else if (action === 'rollback_file') {
       await onRollbackSuccess?.(payload, operationSet);
     }
     if (payload.session) setActiveAgentSession({ ...payload.session, token: session.token, control_tickets: session.control_tickets });
+    if (payload.task_resumed && !controllerRef.current) {
+      startAgentLoop({
+        session_id: session.id,
+        session_token: session.token,
+        read_ticket: session.control_tickets?.read || '',
+        control_ticket: session.control_tickets?.resume || undefined,
+        control_tickets: session.control_tickets || {},
+      }, { resume: true }).catch((resumeError) => {
+        setError(resumeError.message || '继续任务订阅失败');
+        onError?.(resumeError);
+      });
+    }
     return payload;
-  }, [onApplySuccess, onOperationSetHandled, onRollbackSuccess, setActiveAgentSession]);
+  }, [onApplySuccess, onError, onOperationSetHandled, onRollbackSuccess, onTaskChangeSet, setActiveAgentSession, startAgentLoop]);
 
   const applyOperationSet = useCallback((operationSet, options = {}) => (
     runOperationSetAction(operationSet, options.action || 'apply_all', options)

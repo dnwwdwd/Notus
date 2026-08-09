@@ -24,6 +24,8 @@ const merged = mergeAgentMedia({
 
 assert.strictEqual(merged.images.length, 1, '同一图片同时出现在 images 与 media_items 时只能保留一次');
 assert.strictEqual(merged.images[0].id, 'image-1');
+assert.strictEqual(merged.media_items.length, 1, '完整媒体列表需要保留用于历史消息重试');
+assert.strictEqual(merged.media_items[0].upload_order, 1);
 
 const aliasedImage = { ...image, id: 'server-image-1' };
 const mergedAliases = mergeAgentMedia({ attachments: [], mediaItems: [image], images: [aliasedImage] });

@@ -188,7 +188,7 @@ async function parseUploadedAttachment(conversationId, attachment = {}) {
       status: 'error',
       text: '',
       errorCode: 'UNSUPPORTED_FORMAT',
-      warning: `不支持的文件格式：${ext || '未知'}。当前支持 PDF、DOCX、MD、TXT。`,
+      warning: `不支持的文件格式：${ext || '未知'}。当前支持 PDF、DOCX、MD、TXT、CSV。`,
       parsedAt: new Date().toISOString(),
     };
   }

@@ -5,7 +5,7 @@ const { Readability } = require('@mozilla/readability');
 const { JSDOM } = require('jsdom');
 const cheerio = require('cheerio');
 
-const SUPPORTED_EXTENSIONS = new Set(['.pdf', '.docx', '.md', '.markdown', '.txt']);
+const SUPPORTED_EXTENSIONS = new Set(['.pdf', '.docx', '.md', '.markdown', '.txt', '.csv']);
 const WEB_DOWNLOAD_EXTENSIONS = new Set([
   '.pdf', '.doc', '.docx', '.ppt', '.pptx', '.xls', '.xlsx', '.zip', '.rar', '.7z',
   '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg',
@@ -158,7 +158,7 @@ function getDocumentTypeFromExtension(extension) {
 async function parseDocument(filePath, fileName) {
   const ext = path.extname(String(fileName || filePath || '')).toLowerCase();
   if (!SUPPORTED_EXTENSIONS.has(ext)) {
-    return parseError(fileName, 'plaintext', 'UNSUPPORTED_FORMAT', `不支持的文件格式：${ext || '未知'}。当前支持 PDF、DOCX、MD、TXT。`);
+    return parseError(fileName, 'plaintext', 'UNSUPPORTED_FORMAT', `不支持的文件格式：${ext || '未知'}。当前支持 PDF、DOCX、MD、TXT、CSV。`);
   }
   if (ext === '.pdf') return parsePdf(filePath, fileName);
   if (ext === '.docx') return parseDocx(filePath, fileName);

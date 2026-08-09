@@ -47,10 +47,12 @@ async function runTests() {
 
   const txtPath = path.join(tempDir, 'note.txt');
   const mdPath = path.join(tempDir, 'note.md');
+  const csvPath = path.join(tempDir, 'rows.csv');
   const emptyPath = path.join(tempDir, 'empty.txt');
   const unsupportedPath = path.join(tempDir, 'slides.pptx');
   fs.writeFileSync(txtPath, 'hello attachment', 'utf8');
   fs.writeFileSync(mdPath, '# 标题\n\nMarkdown 内容', 'utf8');
+  fs.writeFileSync(csvPath, 'name,count\nNotus,3\n', 'utf8');
   fs.writeFileSync(emptyPath, '', 'utf8');
   fs.writeFileSync(unsupportedPath, 'pptx', 'utf8');
 
@@ -62,6 +64,11 @@ async function runTests() {
   const md = await parseDocument(mdPath, 'note.md');
   assert.strictEqual(md.status, 'success');
   assert.strictEqual(md.type, 'markdown');
+
+  const csv = await parseDocument(csvPath, 'rows.csv');
+  assert.strictEqual(csv.status, 'success');
+  assert.strictEqual(csv.type, 'plaintext');
+  assert.ok(csv.text.includes('name,count'));
 
   const empty = await parseDocument(emptyPath, 'empty.txt');
   assert.strictEqual(empty.status, 'error');
@@ -101,6 +108,12 @@ async function runTests() {
   });
   assert.ok(results.some((item) => item.source === 'upload-note.txt' && item.status === 'success'));
   assert.ok(events.some((event) => event.type === 'attachment_parse_start'));
+
+  const unsupportedResults = await parseAgentInputSources({
+    conversationId: conversation.id,
+    attachments: [{ name: 'slides.pptx', stored_name: 'slides.pptx', type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' }],
+  });
+  assert.ok(unsupportedResults[0]?.warning?.includes('CSV'));
 
   const imageEvents = [];
   const imageResults = await parseAgentInputSources({

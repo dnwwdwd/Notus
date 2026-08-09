@@ -64,7 +64,9 @@ function timelineFromSession(session = {}) {
   const restored = buildRestoredAgentTimeline(session);
   const activeSteps = Array.isArray(restored.steps) ? restored.steps : [];
   const streamText = session.status === 'completed' ? '' : String(restored.draft || '');
-  if (activeSteps.length === 0 && !streamText) return null;
+  const startedAt = session?.task?.started_at || '';
+  const finishedAt = session?.task?.finished_at || session?.task?.updated_at || '';
+  if (activeSteps.length === 0 && !streamText && !startedAt) return null;
   const sessionId = String(session.id || '');
   if (!sessionId) return null;
   return {
@@ -74,6 +76,8 @@ function timelineFromSession(session = {}) {
     streamText,
     loading: false,
     sessionStatus: session.status || '',
+    startedAt,
+    finishedAt,
   };
 }
 
@@ -438,7 +442,10 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
   const handleSessionTimeline = useCallback((timeline) => {
     const sessionId = String(timeline?.sessionId || '');
     if (!sessionId) return;
-    setLiveSessionTimelines((previous) => ({ ...previous, [sessionId]: timeline }));
+    setLiveSessionTimelines((previous) => ({
+      ...previous,
+      [sessionId]: { ...(previous[sessionId] || {}), ...timeline },
+    }));
   }, []);
 
   const agentLoop = useAgentLoopController({
@@ -472,6 +479,10 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     onSessionTimeline: handleSessionTimeline,
   });
   agentLoopRef.current = agentLoop;
+  const registerAgentSessions = agentLoop.registerAgentSessions;
+  useEffect(() => {
+    registerAgentSessions(restoredAgentSessions);
+  }, [registerAgentSessions, restoredAgentSessions]);
   const sessionTimelines = useMemo(() => ({
     ...restoredSessionTimelines,
     ...liveSessionTimelines,

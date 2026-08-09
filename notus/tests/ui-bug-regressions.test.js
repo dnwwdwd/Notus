@@ -45,6 +45,9 @@ function runTests() {
   assert.ok(sidebar.includes('const isSidebarCollapsed = autoCollapsed || (isMobileViewport ? !mobileSidebarOpen : sidebarCollapsed);'));
   assert.ok(sidebar.includes('const [autoCollapsed, setAutoCollapsed] = useState(false);'));
   assert.ok(sidebar.includes('setMobileSidebarOpen((current) => !current);'));
+  assert.ok(sidebar.includes('function useTextOverflow(ref, value)'));
+  assert.ok(sidebar.includes('node.scrollWidth > node.clientWidth + 1'));
+  assert.ok(sidebar.includes('disabled={!labelTruncated}'));
   assert.ok(desktopMain.includes('minWidth: 390'));
   assert.ok(desktopMain.includes('minHeight: 640'));
   assert.ok(!appRoot.includes('PageTransitionOverlay'));
@@ -67,6 +70,7 @@ function runTests() {
   assert.ok(tooltip.includes("maxWidth: 'calc(100vw - 24px)'"));
   assert.ok(tooltip.includes("whiteSpace: 'nowrap'"));
   assert.ok(tooltip.includes("textOverflow: 'ellipsis'"));
+  assert.ok(tooltip.includes('triggerStyle'));
 
   const segmentedTabs = read('components/ui/SegmentedTabs.js');
   assert.ok(segmentedTabs.includes('export function SegmentedTabs'));
@@ -78,6 +82,7 @@ function runTests() {
   assert.ok(segmentedTabs.includes("maxWidth: '100%'"));
   assert.ok(segmentedTabs.includes('minWidth: 0'));
   assert.ok(segmentedTabs.includes("overflowX: 'auto'"));
+  assert.ok(segmentedTabs.includes('const tooltipContent = option.description || (responsiveLabels && option.compactLabel ? option.label : \'\');'));
 
   const settings = read('components/Settings/SettingsScreen.js');
   assert.ok(settings.includes('closeOnBackdrop={false}'));
@@ -119,6 +124,10 @@ function runTests() {
   assert.ok(globalStyles.includes('.notus-settings-nav.is-mobile-open'));
   assert.ok(globalStyles.includes('.notus-settings-nav-backdrop'));
   assert.ok(globalStyles.includes('transform: translateX(-104%)'));
+  assert.ok(settings.includes("background: 'var(--bg-secondary)'"), '设置弹窗外壳应有明确的暖色背景');
+  assert.ok(settings.includes("background: 'var(--bg-primary)'"), '设置弹窗内容层应有明确的背景色');
+  assert.ok(settings.includes("background: 'var(--bg-secondary)'"), '设置弹窗外壳应继承暖色背景');
+  assert.ok(settings.includes("border: '1px solid var(--border-primary)'"), '设置弹窗外壳应有明确边界');
   assert.ok(settings.includes('导入 ZIP'));
   assert.ok(settings.includes("fetch('/api/skills/install/zip', { method: 'POST', body: form })"));
   assert.ok(settings.includes('type="file" accept=".zip,application/zip,application/x-zip-compressed"'));
@@ -153,10 +162,23 @@ function runTests() {
   assert.ok(agentWorkspace.includes('<SegmentedTabs'));
   assert.ok(agentWorkspace.includes('function OperationSetCard'));
   assert.ok(agentWorkspace.includes('function DiffDialog'));
+  assert.ok(agentWorkspace.includes('createPortal(dialog, document.body)'), 'Diff 弹窗必须脱离工作区堆叠上下文');
+  assert.ok(agentWorkspace.includes('className="notus-diff-dialog__file-toggle notus-agent-pressable"'), '窄屏 Diff 必须提供文件列表抽屉入口');
+  assert.ok(agentWorkspace.includes('className="notus-diff-dialog__file-backdrop"'), '文件列表抽屉必须有独立遮罩关闭入口');
+  assert.ok(agentWorkspace.includes('className="notus-diff-dialog__scroll"'), 'Diff 内容必须在独立滚动区域内承载长行');
+  assert.ok(globalStyles.includes('.notus-diff-dialog__backdrop {\n  position: fixed;\n  inset: 0;\n  z-index: 2000;'), 'Diff 弹窗必须位于页面吸顶工具栏之上');
+  assert.ok(globalStyles.includes('@media (max-width: 960px)'), 'Diff 详情必须定义窄屏布局');
+  assert.ok(globalStyles.includes('.notus-diff-dialog__sidebar.is-mobile-open'), '窄屏文件列表必须使用悬浮抽屉状态');
+  assert.ok(agentWorkspace.includes('const renderedSteps = useMemo(() => visibleSteps.filter((step) => step?.errorType !== \'agent\')'), 'Agent 错误步骤不能进入带分隔线的普通工具步骤列表');
   assert.ok(agentWorkspace.includes("attachmentMode === 'parsed'"));
   assert.ok(agentWorkspace.includes('pasted-text-'));
   assert.ok(agentWorkspace.includes('const LONG_PASTE_ATTACHMENT_THRESHOLD = 100;'));
   assert.ok(agentWorkspace.includes('const MAX_PARSED_ATTACHMENTS = 10;'));
+  assert.ok(agentWorkspace.includes("const PARSED_ATTACHMENT_EXTENSIONS = new Set(['.pdf', '.docx', '.md', '.markdown', '.txt', '.csv']);"));
+  assert.ok(agentWorkspace.includes('text/csv'));
+  assert.ok(agentWorkspace.includes('return PARSED_ATTACHMENT_EXTENSIONS.has(fileExtension(file?.name));'));
+  assert.ok(agentWorkspace.includes('width: 240'));
+  assert.ok(agentWorkspace.includes('<Tooltip content={fileName} placement="top"'));
   assert.ok(agentWorkspace.includes('const MAX_IMAGES_PER_MESSAGE = 30;'));
   assert.ok(agentWorkspace.includes("aria-label=\"添加图片\""));
   assert.ok(agentWorkspace.includes('没有匹配的文件'));

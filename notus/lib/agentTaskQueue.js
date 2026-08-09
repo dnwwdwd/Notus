@@ -2,6 +2,8 @@ const { getDb } = require('./db');
 
 const TERMINAL = new Set(['completed', 'cancelled', 'failed']);
 const BLOCKING = new Set(['queued', 'running', 'waiting_interaction', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery']);
+const USER_ACTION_WAITING = ['waiting_interaction', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery'];
+const SUPERSEDEABLE_SESSION_STATUSES = ['created', 'queued', ...USER_ACTION_WAITING];
 
 function asId(value) {
   const id = Number(value);
@@ -81,7 +83,8 @@ function updateTask(sessionId, updates = {}) {
   if (updates.finished) sets.push("finished_at = datetime('now')");
   if (!sets.length) return getTaskBySession(sid);
   sets.push("updated_at = datetime('now')"); values.push(sid);
-  getDb().prepare(`UPDATE agent_task_queue SET ${sets.join(', ')} WHERE session_id = ?`).run(...values);
+  const statusGuard = updates.status === 'cancelled' ? '' : " AND status != 'cancelled'";
+  getDb().prepare(`UPDATE agent_task_queue SET ${sets.join(', ')} WHERE session_id = ?${statusGuard}`).run(...values);
   return getTaskBySession(sid);
 }
 
@@ -99,14 +102,99 @@ function cancelTask(sessionId) {
   return getTaskBySession(sid);
 }
 
+function supersedePendingUserActionTasks(conversationId) {
+  const cid = asId(conversationId);
+  if (!cid) return [];
+  const db = getDb();
+  return db.transaction(() => {
+    const rows = db.prepare(`
+      SELECT q.session_id
+      FROM agent_task_queue q
+      INNER JOIN agent_sessions s ON s.id = q.session_id
+      WHERE q.conversation_id = ?
+        AND q.status IN ('created', 'queued', 'waiting_interaction', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery')
+        AND s.status IN ('created', 'queued', 'waiting_interaction', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery')
+      ORDER BY q.queue_order ASC
+    `).all(cid);
+    const sessionIds = rows.map((row) => Number(row.session_id)).filter(Boolean);
+    if (sessionIds.length === 0) return [];
+    const placeholders = sessionIds.map(() => '?').join(', ');
+    db.prepare(`
+      UPDATE agent_sessions
+      SET status = 'cancelled',
+          cancel_requested_at = datetime('now'),
+          active_run_id = NULL,
+          lease_expires_at = NULL,
+          state_version = state_version + 1,
+          updated_at = datetime('now')
+      WHERE id IN (${placeholders})
+        AND status IN ('created', 'queued', 'waiting_interaction', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery')
+    `).run(...sessionIds);
+    db.prepare(`
+      UPDATE agent_task_queue
+      SET status = 'cancelled',
+          run_id = NULL,
+          finished_at = COALESCE(finished_at, datetime('now')),
+          updated_at = datetime('now')
+      WHERE session_id IN (${placeholders})
+        AND status IN ('created', 'queued', 'waiting_interaction', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery')
+    `).run(...sessionIds);
+    db.prepare(`
+      UPDATE conversation_interactions
+      SET status = 'cancelled', updated_at = datetime('now')
+      WHERE conversation_id = ?
+        AND status IN ('pending', 'failed', 'stale')
+    `).run(cid);
+    return sessionIds;
+  })();
+}
+
 function recoverOrphanedTasks() {
   const db = getDb();
-  const result = db.prepare("UPDATE agent_task_queue SET status = 'queued', run_id = NULL, updated_at = datetime('now') WHERE status = 'running'").run();
-  return Number(result.changes || 0);
+  return db.transaction(() => {
+    const missingSession = db.prepare(`
+      UPDATE agent_task_queue
+      SET status = 'cancelled',
+          run_id = NULL,
+          finished_at = COALESCE(finished_at, datetime('now')),
+          updated_at = datetime('now')
+      WHERE status NOT IN ('completed', 'cancelled', 'failed')
+        AND NOT EXISTS (
+          SELECT 1 FROM agent_sessions s WHERE s.id = agent_task_queue.session_id
+        )
+    `).run();
+    const reconciled = db.prepare(`
+      UPDATE agent_task_queue
+      SET status = CASE (
+            SELECT s.status
+            FROM agent_sessions s
+            WHERE s.id = agent_task_queue.session_id
+          )
+            WHEN 'rolled_back' THEN 'cancelled'
+            ELSE (
+              SELECT s.status
+              FROM agent_sessions s
+              WHERE s.id = agent_task_queue.session_id
+            )
+          END,
+          run_id = NULL,
+          finished_at = COALESCE(finished_at, datetime('now')),
+          updated_at = datetime('now')
+      WHERE status NOT IN ('completed', 'cancelled', 'failed')
+        AND EXISTS (
+          SELECT 1
+          FROM agent_sessions s
+          WHERE s.id = agent_task_queue.session_id
+            AND s.status IN ('completed', 'cancelled', 'failed', 'rolled_back')
+        )
+    `).run();
+    const recovered = db.prepare("UPDATE agent_task_queue SET status = 'queued', run_id = NULL, updated_at = datetime('now') WHERE status = 'running'").run();
+    return Number(missingSession.changes || 0) + Number(reconciled.changes || 0) + Number(recovered.changes || 0);
+  })();
 }
 
 function listTasksByConversation(conversationId) {
   return getDb().prepare('SELECT * FROM agent_task_queue WHERE conversation_id = ? ORDER BY queue_order ASC').all(asId(conversationId)).map(format);
 }
 
-module.exports = { TERMINAL, BLOCKING, createTask, getTaskBySession, getQueuePosition, claimRunnableTasks, updateTask, wakeTask, cancelTask, recoverOrphanedTasks, listTasksByConversation };
+module.exports = { TERMINAL, BLOCKING, USER_ACTION_WAITING, SUPERSEDEABLE_SESSION_STATUSES, createTask, getTaskBySession, getQueuePosition, claimRunnableTasks, updateTask, wakeTask, cancelTask, supersedePendingUserActionTasks, recoverOrphanedTasks, listTasksByConversation };

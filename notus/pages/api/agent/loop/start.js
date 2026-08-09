@@ -3,7 +3,7 @@ const { createLogger, createRequestContext } = require('../../../../lib/logger')
 const { createSession, getSession, getLatestRunEventId, validateSessionAccess } = require('../../../../lib/agentSession');
 const { appendConversationMessage, ensureConversation, getConversationMessageById, touchConversation } = require('../../../../lib/conversations');
 const { issueCapability, validateCapability } = require('../../../../lib/agentControlPlane');
-const { createTask, getQueuePosition, wakeTask } = require('../../../../lib/agentTaskQueue');
+const { createTask, getQueuePosition, wakeTask, supersedePendingUserActionTasks } = require('../../../../lib/agentTaskQueue');
 const { wakeAgentTaskWorker } = require('../../../../lib/agentTaskWorker');
 const { makeConversationImageReference } = require('../../../../lib/conversationImages');
 const { allowsLocalHttpMcp } = require('../../../../lib/directLoopbackRequest');
@@ -51,7 +51,11 @@ export default async function handler(req, res) {
     const displayQuery = String(body.display_query ?? body.displayQuery ?? body.user_query ?? body.userQuery ?? body.input_text ?? body.inputText ?? goal).trim();
     const userQuery = String(body.user_query ?? body.userQuery ?? body.input_text ?? body.inputText ?? displayQuery).trim();
     const conversation = ensureConversation({ conversationId: Number(body.conversation_id || 0) || null, kind: body.kind || 'agent', title: displayQuery || goal, fileId: body.active_file_id || null });
+    // “继续任务/重试”会恢复原 session；用户在输入框发起新 prompt 则明确放弃该对话
+    // 中等待决定的模型失败任务，避免 FIFO 永久停在等待态。
+    const supersededSessionIds = supersedePendingUserActionTasks(conversation.id);
     const media = splitMediaInputs(body);
+    const requestedMcpSelection = body.mcp_selection ?? body.mcpSelection ?? { mode: 'off' };
     const appendUserMessage = !Boolean(body.skip_user_message_append || body.skipUserMessageAppend);
     const existingUserMessageId = Number(body.existing_user_message_id || body.existingUserMessageId || 0) || null;
     const existingUserMessage = existingUserMessageId ? getConversationMessageById(existingUserMessageId) : null;
@@ -62,9 +66,8 @@ export default async function handler(req, res) {
       : null;
     const userMessageId = appendUserMessage ? appendConversationMessage({
       conversationId: conversation.id, role: 'user', content: displayQuery || goal,
-      meta: { agent_loop: true, agent_goal: goal, user_query: userQuery, attachments: media.attachments, images: media.images, mentions: Array.isArray(body.mentions) ? body.mentions : [], mention_segments: Array.isArray(body.mention_segments ?? body.mentionSegments) ? (body.mention_segments ?? body.mentionSegments) : [], web_search_enabled: Boolean(body.web_search_enabled ?? body.webSearchEnabled), search_provider: body.search_provider || body.searchProvider || null },
+      meta: { agent_loop: true, agent_goal: goal, user_query: userQuery, attachments: media.attachments, images: media.images, media_items: media.media_items, mentions: Array.isArray(body.mentions) ? body.mentions : [], mention_segments: Array.isArray(body.mention_segments ?? body.mentionSegments) ? (body.mention_segments ?? body.mentionSegments) : [], web_search_enabled: Boolean(body.web_search_enabled ?? body.webSearchEnabled), search_provider: body.search_provider || body.searchProvider || null, mcp_selection: requestedMcpSelection },
     }) : reusableUserMessageId;
-    const requestedMcpSelection = body.mcp_selection ?? body.mcpSelection ?? { mode: 'off' };
     const created = createSession({ goal, authorizedPaths: [''], authorizedOps: body.authorized_ops || ['modify', 'create'], conversationId: conversation.id, softLimit: body.soft_limit || 15, hardLimit: body.hard_limit || 30, searchKnowledgeLimit: body.search_knowledge_limit === undefined ? 5 : body.search_knowledge_limit, webSearchEnabled: Boolean(body.web_search_enabled ?? body.webSearchEnabled), webSearchProvider: String(body.search_provider || body.searchProvider || ''), toolProfile: String(body.tool_profile || body.toolProfile || '') === 'read_only' ? 'read_only' : 'default', skillMentions: Array.isArray(body.skill_mentions ?? body.skillMentions) ? (body.skill_mentions ?? body.skillMentions) : [], mcpSelection: requestedMcpSelection, mcpSessionPermissions: { allow_local_http: allowsLocalHttpMcp(req) } });
     const task = createTask({
       sessionId: created.sessionId,
@@ -72,11 +75,11 @@ export default async function handler(req, res) {
       userMessageId: userMessageId,
       llmConfigId: body.llm_config_id || null,
       approvalMode: body.approval_mode || body.approvalMode || 'auto_confirm',
-      input: { ...body, goal, user_query: userQuery, display_query: displayQuery, attachments: media.attachments, images: media.images, media_items: [] },
+      input: { ...body, goal, user_query: userQuery, display_query: displayQuery, attachments: media.attachments, images: media.images, media_items: media.media_items },
     });
     touchConversation(conversation.id);
     wakeAgentTaskWorker();
-    return res.status(202).json({ protocol_version: 3, session_id: created.sessionId, session_token: created.token, conversation_id: conversation.id, user_message_id: userMessageId, created_at: new Date().toISOString(), status: task.status, queue_position: getQueuePosition(created.sessionId), images: persistedImages(media.images, conversation.id, userMessageId), control_tickets: { read: issueCapability({ sessionId: created.sessionId, action: 'session_read' }), resume: issueCapability({ sessionId: created.sessionId, action: 'resume_session' }), cancel: issueCapability({ sessionId: created.sessionId, action: 'cancel' }) }, request_id: context.request_id });
+    return res.status(202).json({ protocol_version: 3, session_id: created.sessionId, session_token: created.token, conversation_id: conversation.id, user_message_id: userMessageId, created_at: new Date().toISOString(), status: task.status, queue_position: getQueuePosition(created.sessionId), superseded_session_ids: supersededSessionIds, images: persistedImages(media.images, conversation.id, userMessageId), control_tickets: { read: issueCapability({ sessionId: created.sessionId, action: 'session_read' }), resume: issueCapability({ sessionId: created.sessionId, action: 'resume_session' }), cancel: issueCapability({ sessionId: created.sessionId, action: 'cancel' }) }, request_id: context.request_id });
   } catch (error) {
     logger.error('agent.loop.start.enqueue_failed', { error });
     return res.status(500).json({ error: error.message || '创建 Agent 任务失败', code: error.code || 'AGENT_TASK_CREATE_FAILED', request_id: context.request_id });

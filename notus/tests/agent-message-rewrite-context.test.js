@@ -30,8 +30,8 @@ assert.ok(
 );
 assert.ok(
   workspace.includes('if (replacesConversation) {')
-    && workspace.includes('skipUserMessageAppend: replacesConversation')
-    && workspace.includes('rewriteUserMessageId: replacesConversation ? Number(sourceMessage?.id || 0) || null : null,'),
+    && workspace.includes('skipUserMessageAppend: replacesConversation && Number(sourceMessage?.id || 0) > 0')
+    && workspace.includes('rewriteUserMessageId: replacesConversation && Number(sourceMessage?.id || 0) > 0 ? Number(sourceMessage.id) : null,'),
   '重试必须复用被截断的真实用户消息，而不是新增相同用户消息'
 );
 assert.ok(workspace.includes('当前消息尚未完成服务端保存，无法改写。请稍后重试。'), '未持久化消息不得绕过服务端截断');
@@ -40,7 +40,7 @@ assert.ok(
   '改写后不能把旧消息的 Mention 文本当作新的 Agent 目标'
 );
 assert.ok(
-  workspace.includes('rewriteUserMessageId: replacesConversation ? Number(sourceMessage?.id || 0) || null : null,'),
+  workspace.includes('rewriteUserMessageId: replacesConversation && Number(sourceMessage?.id || 0) > 0 ? Number(sourceMessage.id) : null,'),
   '改写或重试任务必须携带被截断的真实用户消息 ID'
 );
 assert.ok(

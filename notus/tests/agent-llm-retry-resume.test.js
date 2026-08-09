@@ -15,7 +15,7 @@ require.cache[llmPath] = {
   exports: {
     completeToolChat: async () => {
       calls += 1;
-      if (mode === 'temporary' && calls < 4) {
+      if (mode === 'temporary' && calls < 6) {
         const error = new Error('temporary provider failure');
         error.code = 'LLM_API_ERROR';
         error.status = 503;
@@ -33,22 +33,23 @@ require.cache[llmPath] = {
   },
 };
 delete require.cache[loopPath];
-const { callLLMWithRetry, classifyLLMError } = require('../lib/agentLoop');
+const { callLLMWithRetry, classifyLLMError, DEFAULT_LLM_RETRY_LIMIT } = require('../lib/agentLoop');
 
 (async () => {
   const retries = [];
-  const response = await callLLMWithRetry({}, 3, {
+  assert.equal(DEFAULT_LLM_RETRY_LIMIT, 5, 'LLM 临时错误的默认自动重试上限应为 5 次');
+  const response = await callLLMWithRetry({}, DEFAULT_LLM_RETRY_LIMIT, {
     retryDelayMs: () => 0,
     onRetry: (event) => retries.push(event.attempt),
   });
-  assert.equal(calls, 4, '首次请求后应最多额外重试 3 次');
-  assert.deepEqual(retries, [1, 2, 3]);
+  assert.equal(calls, 6, '首次请求后应最多额外重试 5 次');
+  assert.deepEqual(retries, [1, 2, 3, 4, 5]);
   assert.equal(response.content[0].text, 'ok');
 
   mode = 'quota';
   calls = 0;
   await assert.rejects(
-    () => callLLMWithRetry({}, 3, { retryDelayMs: () => 0 }),
+    () => callLLMWithRetry({}, DEFAULT_LLM_RETRY_LIMIT, { retryDelayMs: () => 0 }),
     (error) => error.llmErrorCategory === 'action_required' && error.publicCode === 'LLM_ACTION_REQUIRED'
   );
   assert.equal(calls, 1, '余额不足不应盲目自动重试');
@@ -63,6 +64,9 @@ const { callLLMWithRetry, classifyLLMError } = require('../lib/agentLoop');
   const controlPlaneSource = fs.readFileSync(path.join(root, 'lib/agentControlPlane.js'), 'utf8');
   const controllerSource = fs.readFileSync(path.join(root, 'hooks/useAgentLoopController.js'), 'utf8');
   const workspaceSource = fs.readFileSync(path.join(root, 'components/AgentWorkspace/FileAgentWorkspace.js'), 'utf8');
+  assert.ok(loopSource.includes('const DEFAULT_LLM_RETRY_LIMIT = 5'), '主 LLM 自动重试上限必须集中定义为 5 次');
+  assert.ok(loopSource.includes('}, DEFAULT_LLM_RETRY_LIMIT, {'), 'Agent 主循环必须使用统一的 LLM 重试上限');
+  assert.ok(controllerSource.includes('event.retry_limit || 5'), '旧事件缺少上限时，工具链默认显示必须为 5 次');
   assert.ok(loopSource.includes('checkpointToCommit = saveMessagesCheckpoint(session.id, messages'), '每次 LLM 请求前必须保存 checkpoint');
   assert.ok(loopSource.includes('recordRunEvent({ sessionId, runId, event })'), 'SSE 语义事件必须先脱敏持久化');
   assert.ok(loopSource.includes("artifact_type: 'run_error'") && loopSource.includes("'waiting_model_recovery'") && loopSource.includes("'waiting_retry'"));
@@ -72,7 +76,14 @@ const { callLLMWithRetry, classifyLLMError } = require('../lib/agentLoop');
   assert.ok(routeSource.indexOf('releaseLeaseBeforeResumeEvent(event, sessionId)') < routeSource.indexOf("if (event.type === 'final')"), '普通续跑必须先释放 lease 再发送可恢复错误');
   assert.ok(interactionResumeSource.indexOf('releaseLeaseBeforeResumeEvent(event)') < interactionResumeSource.indexOf("if (event.type === 'final')"), 'interaction 续跑必须先释放 lease 再发送可恢复错误');
   assert.ok(controllerSource.includes("action: event.resumable ? 'resume_agent' : ''") && controllerSource.includes("artifact_type === 'run_error'"));
-  assert.ok(controllerSource.includes('if (!event.resumable) setLoading(false);'), '可恢复按钮必须等 SSE 收尾后才解除 loading');
+  assert.ok(
+    controllerSource.includes("sessionStatus = event.status || (event.resumable ? 'waiting_retry' : 'failed');\n    loading = false;"),
+    'run_error 事件到达后 SSE 可能继续保持心跳，但前端必须立即解除 loading，允许用户改写或发送新任务'
+  );
+  assert.ok(
+    !controllerSource.includes('if (!event.resumable) setLoading(false);'),
+    '可恢复错误不能继续把 loading 永久保持为 true'
+  );
   assert.ok(workspaceSource.includes('resumeAgentTaskInFlightRef.current'), '继续任务必须同步拦截重复点击');
   assert.ok(!loopSource.includes("type: 'final', text: '\u6a21\u578b\u670d\u52a1\u6682\u65f6\u4e0d\u53ef\u7528"), '可恢复 LLM 错误不应写成最终助手消息');
   assert.ok(routeSource.includes('getLatestRunEventId'), '继续任务必须记录恢复前的事件游标，不能从头回放历史终态');

@@ -160,16 +160,21 @@ function buildEventStep(event = {}) {
   }
   if (event.type === 'artifact' && event.artifact_type === 'run_error') {
     const actionRequired = event.error_category === 'action_required';
+    const errorMessage = event.message || event.error || '模型请求失败，当前任务进度已保留。';
     return {
       id: `llm-retry-${event.loop_index || 'current'}`,
       label: actionRequired ? '模型服务需要处理' : '模型请求失败',
       status: 'error',
-      detail: event.message || '模型请求失败，当前任务进度已保留。',
+      detail: actionRequired ? '请处理模型服务配置后再继续，或重新发送这条任务。' : '任务进度已保留，可以重新发送这条任务。',
       tool: 'llm_request',
       result: event.retry_attempts > 0 ? `已重试 ${event.retry_attempts} 次` : (event.error_code || ''),
       open: true,
       action: event.resumable ? 'resume_agent' : '',
       actionLabel: actionRequired ? '配置完成后继续' : '继续任务',
+      errorType: 'agent',
+      errorMessage,
+      errorCode: event.error_code || '',
+      requestId: event.request_id || event.requestId || '',
     };
   }
   if (event.type === 'final') {
@@ -237,7 +242,7 @@ function buildEventStep(event = {}) {
       status: 'running',
       detail: event.text || `正在进行第 ${event.retry_attempt || '?'} 次重试。`,
       tool: 'llm_request',
-      result: event.retry_attempt ? `${event.retry_attempt}/${event.retry_limit || 3}` : '',
+      result: event.retry_attempt ? `${event.retry_attempt}/${event.retry_limit || 5}` : '',
       open: true,
     };
   }
@@ -313,7 +318,11 @@ function buildEventStep(event = {}) {
       id: 'error',
       label: '请求失败',
       status: 'error',
-      detail: event.error || 'Agent Loop 请求失败',
+      detail: '请求未完成，详细信息见下方错误卡片。',
+      errorType: 'agent',
+      errorMessage: event.error || 'Agent Loop 请求失败',
+      errorCode: event.code || '',
+      requestId: event.request_id || event.requestId || '',
     };
   }
   return null;
@@ -389,6 +398,7 @@ export function applyAgentTimelineEvent(timeline = {}, event = {}) {
   let streamText = String(timeline.streamText || '');
   let sessionStatus = String(timeline.sessionStatus || '');
   let loading = Boolean(timeline.loading);
+  let finishedAt = String(timeline.finishedAt || '');
   if (step) activeSteps = upsertStep(activeSteps, step);
 
   if (event.type === 'task_state') {
@@ -423,12 +433,13 @@ export function applyAgentTimelineEvent(timeline = {}, event = {}) {
     streamText = '';
   } else if (event.type === 'artifact' && event.artifact_type === 'run_error') {
     sessionStatus = event.status || (event.resumable ? 'waiting_retry' : 'failed');
-    if (!event.resumable) loading = false;
+    loading = false;
   } else if (event.type === 'final') {
     sessionStatus = event.status || 'completed';
     activeSteps = completeSteps(activeSteps);
     loading = false;
     streamText = '';
+    finishedAt = event.created_at || event.createdAt || new Date().toISOString();
   } else if (event.type === 'loop_done') {
     const waiting = ['hard_limit_reached', 'question_card_requested', 'resource_approval_requested', 'waiting_preview_confirm'].includes(event.reason);
     const failed = ['consecutive_tool_failure', 'deadloop_detected', 'no_progress', 'preview_auto_apply_failed'].includes(event.reason);
@@ -436,17 +447,20 @@ export function applyAgentTimelineEvent(timeline = {}, event = {}) {
     activeSteps = completeSteps(activeSteps);
     loading = false;
     streamText = '';
+    if (!waiting) finishedAt = event.created_at || event.createdAt || new Date().toISOString();
   } else if (event.type === 'cancelled') {
     sessionStatus = 'cancelled';
     activeSteps = completeSteps(activeSteps);
     loading = false;
     streamText = '';
+    finishedAt = event.created_at || event.createdAt || new Date().toISOString();
   } else if (event.type === 'error') {
     sessionStatus = 'failed';
     loading = false;
+    finishedAt = event.created_at || event.createdAt || new Date().toISOString();
   }
 
-  return { ...timeline, activeSteps, streamText, sessionStatus, loading };
+  return { ...timeline, activeSteps, streamText, sessionStatus, loading, finishedAt };
 }
 
 const FILE_MUTATION_TOOL_NAMES = new Set([
@@ -485,6 +499,7 @@ export function useAgentLoopController({
   const stepsRef = useRef([]);
   const assistantTextRef = useRef('');
   const filesMayHaveChangedRef = useRef(false);
+  const newTaskSubmitInFlightRef = useRef(false);
 
   useEffect(() => () => {
     // 组件卸载或切换工作区时，先让当前 run 的后续事件失效，再断开本地 SSE。
@@ -551,6 +566,17 @@ export function useAgentLoopController({
     setError('');
   }, [setActiveAgentSession, setSteps]);
 
+  const registerAgentSessions = useCallback((sessions = []) => {
+    (Array.isArray(sessions) ? sessions : []).forEach((session) => {
+      const sessionId = String(session?.id || '');
+      if (!sessionId) return;
+      knownSessionsRef.current.set(sessionId, {
+        ...(knownSessionsRef.current.get(sessionId) || {}),
+        ...session,
+      });
+    });
+  }, []);
+
   const fetchSessionDetails = useCallback(async (sessionId, access = null, options = {}) => {
     const id = toPositiveInt(sessionId);
     if (!id) return null;
@@ -599,6 +625,8 @@ export function useAgentLoopController({
     const resumeToken = input?.session_token || input?.token || sessionRef.current?.token || '';
     const resumeReadTicket = input?.read_ticket || input?.readTicket || input?.control_tickets?.read || '';
     const isResume = Boolean(options.resume || resumeSessionId);
+    if (!isResume && newTaskSubmitInFlightRef.current) return;
+    if (!isResume) newTaskSubmitInFlightRef.current = true;
     const resumeJobId = input?.resume_job_id || input?.resumeJobId || '';
     const resumeTicket = input?.resume_ticket || input?.resumeTicket || '';
     const body = isResume
@@ -712,6 +740,8 @@ export function useAgentLoopController({
           mention_segments: input.mention_segments || input.mentionSegments || [],
           web_search_enabled: Boolean(input?.web_search_enabled ?? input?.webSearchEnabled),
           search_provider: input?.search_provider || input?.searchProvider || null,
+          media_items: input.media_items || input.mediaItems || [],
+          mcp_selection: input.mcp_selection || input.mcpSelection || { mode: 'off' },
         },
       });
     };
@@ -734,6 +764,7 @@ export function useAgentLoopController({
       }
 
       const accepted = await response.json();
+      if (!isResume) newTaskSubmitInFlightRef.current = false;
       if (!isSubscriptionActive()) return;
       const acceptedSessionId = Number(accepted.session_id || resumeSessionId || 0);
       if (!acceptedSessionId) throw new Error('服务未返回 Agent 任务 ID');
@@ -943,8 +974,9 @@ export function useAgentLoopController({
               error_category: event.error_category || '',
             });
             setStreamText(assistantTextRef.current);
-            // 可恢复错误要等服务端结束 SSE 并释放 run lease 后再开放继续入口。
-            if (!event.resumable) setLoading(false);
+            // SSE Route 会在等待态继续保持心跳，不会自然结束；服务端在发出
+            // run_error 前已经释放 run lease，因此这里必须立即解除 loading。
+            setLoading(false);
             window.notusDesktop?.notifyAgent?.({ title: 'Notus Agent 已暂停', body: event.message || '请检查模型配置后继续任务。' }).catch?.(() => {});
           } else if (event.artifact_type === 'resume_job' && event.resume_job?.status === 'completed') {
             setActiveAgentSession({ status: 'completed', reason: 'idempotent_replay' });
@@ -1189,6 +1221,7 @@ export function useAgentLoopController({
       if (nextError.name === 'AbortError') return;
       throw nextError;
     } finally {
+      if (!isResume) newTaskSubmitInFlightRef.current = false;
       controllersRef.current.delete(controller);
       if (controllerRef.current === controller) {
         controllerRef.current = null;
@@ -1356,32 +1389,79 @@ export function useAgentLoopController({
   const stopAgentLoop = useCallback(async (targetSessionId = null) => {
     const sessionId = String(targetSessionId || '');
     const session = sessionId ? knownSessionsRef.current.get(sessionId) : sessionRef.current;
-    const isCurrentSession = !sessionId || String(sessionRef.current?.id || '') === sessionId;
-    if (isCurrentSession) {
-      setLoading(false);
-      setStreamText('');
-      setSteps((prev) => upsertStep(completeSteps(prev), buildEventStep({ type: 'cancelled' })));
-      setActiveAgentSession((prev) => (prev ? { status: 'cancelling', reason: 'cancelling' } : prev));
-    }
+    const cancelConversationSessionIds = [...knownSessionsRef.current.values()]
+      .filter((item) => session?.conversation_id && String(item?.conversation_id || '') === String(session.conversation_id))
+      .filter((item) => ['created', 'queued', 'running'].includes(item.status))
+      .map((item) => String(item.id || ''))
+      .filter(Boolean);
+    const affectedSessionIds = [...new Set(cancelConversationSessionIds.length ? cancelConversationSessionIds : [String(session?.id || '')])];
+    const updateAffectedSessions = (status) => {
+      affectedSessionIds.forEach((affectedSessionId) => {
+        const affectedSession = knownSessionsRef.current.get(affectedSessionId);
+        if (!affectedSession) return;
+        const nextSession = { ...affectedSession, status, reason: status };
+        knownSessionsRef.current.set(affectedSessionId, nextSession);
+        onSessionTimeline?.({ sessionId: affectedSessionId, sessionStatus: status, loading: false });
+        if (String(sessionRef.current?.id || '') === affectedSessionId) setActiveAgentSession(nextSession);
+      });
+    };
+    if (!session?.id) return;
+    setLoading(false);
+    setStreamText('');
+    setSteps((prev) => upsertStep(completeSteps(prev), buildEventStep({ type: 'cancelled' })));
+    updateAffectedSessions('cancelling');
     const cancelTicket = session?.control_tickets?.cancel;
-    if (!session?.id || (!session?.token && !cancelTicket)) {
-      if (isCurrentSession) setActiveAgentSession((prev) => (prev ? { status: 'cancelled', reason: 'cancelled' } : prev));
+    if (!session?.token && !cancelTicket) {
+      updateAffectedSessions('running');
+      const accessError = new Error('缺少任务取消凭据，请刷新当前对话后重试');
+      setError(accessError.message);
+      onError?.(accessError);
       return;
     }
     try {
       const response = await fetch('/api/agent/loop/cancel', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: session.id, session_token: session.token, control_ticket: cancelTicket || undefined }),
+        body: JSON.stringify({
+          session_id: session.id,
+          session_token: session.token,
+          control_ticket: cancelTicket || undefined,
+          sessions: affectedSessionIds.map((affectedSessionId) => {
+            const affectedSession = knownSessionsRef.current.get(affectedSessionId) || {};
+            return {
+              session_id: affectedSession.id || affectedSessionId,
+              session_token: affectedSession.token || undefined,
+              control_ticket: affectedSession.control_tickets?.cancel || undefined,
+            };
+          }),
+        }),
       });
       if (!response.ok) throw new Error(await readErrorResponse(response, '中断 Agent 任务失败'));
-      if (isCurrentSession) setActiveAgentSession({ status: 'cancelled', reason: 'cancelled' });
+      const payload = await response.json().catch(() => ({}));
+      const cancelledSessionIds = Array.isArray(payload?.cancelled_session_ids) && payload.cancelled_session_ids.length
+        ? payload.cancelled_session_ids.map((id) => String(id || '')).filter(Boolean)
+        : affectedSessionIds;
+      cancelledSessionIds.forEach((cancelledSessionId) => {
+        const cancelledSession = knownSessionsRef.current.get(cancelledSessionId) || session;
+        knownSessionsRef.current.set(cancelledSessionId, { ...cancelledSession, status: 'cancelled', reason: 'cancelled' });
+        onSessionTimeline?.({ sessionId: cancelledSessionId, sessionStatus: 'cancelled', loading: false });
+        if (String(sessionRef.current?.id || '') === cancelledSessionId) {
+          setActiveAgentSession({ ...cancelledSession, status: 'cancelled', reason: 'cancelled' });
+        }
+      });
     } catch (error) {
-      if (isCurrentSession) setActiveAgentSession((prev) => (prev ? { status: 'running', reason: '' } : prev));
+      affectedSessionIds.forEach((affectedSessionId) => {
+        const affectedSession = knownSessionsRef.current.get(affectedSessionId);
+        if (!affectedSession) return;
+        const restoredSession = { ...affectedSession, status: 'running', reason: '' };
+        knownSessionsRef.current.set(affectedSessionId, restoredSession);
+        onSessionTimeline?.({ sessionId: affectedSessionId, sessionStatus: 'running', loading: false });
+        if (String(sessionRef.current?.id || '') === affectedSessionId) setActiveAgentSession(restoredSession);
+      });
       setError(error.message || '中断 Agent 任务失败');
       onError?.(error);
     }
-  }, [onError, setActiveAgentSession, setSteps]);
+  }, [onError, onSessionTimeline, setActiveAgentSession, setSteps]);
 
   const getAgentSession = useCallback((sessionId) => (
     knownSessionsRef.current.get(String(sessionId || '')) || null
@@ -1442,6 +1522,7 @@ export function useAgentLoopController({
     createAgentTask,
     cancelAgentTask,
     clearActiveAgentSession,
+    registerAgentSessions,
     confirmAgentTask,
     startAgentLoop,
     stopAgentLoop,

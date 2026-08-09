@@ -40,6 +40,8 @@ const {
   recordWriteReceipt,
 } = require('./agentResearch');
 
+const DEFAULT_LLM_RETRY_LIMIT = 5;
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -163,7 +165,7 @@ function classifyLLMError(error = {}) {
   };
 }
 
-async function callLLMWithRetry(request, maxRetries = 3, options = {}) {
+async function callLLMWithRetry(request, maxRetries = DEFAULT_LLM_RETRY_LIMIT, options = {}) {
   let lastError;
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     try {
@@ -493,7 +495,7 @@ async function runAgentLoop({ sessionId, runId = null, llmConfig, onStream, sign
           messages: compactMessages(requestMessages, Math.floor(budget.hardInputBudgetTokens * (mode === 'hard' ? 0.6 : 0.75))),
         }),
         maxRetries: 1,
-      }, 3, {
+      }, DEFAULT_LLM_RETRY_LIMIT, {
         onRetry: ({ attempt, maxRetries, delayMs }) => emit({
           type: 'progress',
           stage: 'llm_retry',
@@ -774,6 +776,7 @@ module.exports = {
   compactMessages,
   classifyLLMError,
   callLLMWithRetry,
+  DEFAULT_LLM_RETRY_LIMIT,
   parseResponse,
   runAgentLoop,
   sanitizeAssistantVisibleText,

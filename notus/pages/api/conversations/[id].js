@@ -43,7 +43,7 @@ export default function handler(req, res) {
     // 已过期的 running 收敛成可恢复状态，避免前端永久认为任务仍在执行。
     recoverStaleRunLeases({ conversationId: id });
     const agentSessions = listSessionsByConversation(id).map((session) => {
-      const active = ['created', 'running', 'waiting_interaction', 'queued_resume', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery'].includes(session.status);
+      const active = ['created', 'queued', 'running', 'waiting_interaction', 'queued_resume', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery'].includes(session.status);
       return {
         ...session,
         snapshots_count: countSnapshots(session.id),

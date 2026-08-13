@@ -47,6 +47,9 @@ function formatSummary(row, counts = {}) {
     directory_count: Number(counts.directory_count || 0),
     pending_count: Number(counts.pending_count || 0),
     applied_count: Number(counts.applied_count || 0),
+    rolled_back_count: Number(counts.rolled_back_count || 0),
+    discarded_count: Number(counts.discarded_count || 0),
+    media_change_count: Number(counts.media_change_count || 0),
     conflict_count: Number(counts.conflict_count || 0),
     created_at: row.created_at || null,
     updated_at: row.updated_at || null,
@@ -55,7 +58,7 @@ function formatSummary(row, counts = {}) {
 }
 
 function getCounts(changeSetId, db = getDb()) {
-  return db.prepare(`
+  const itemCounts = db.prepare(`
     SELECT
       SUM(CASE WHEN resource_kind = 'file' THEN 1 ELSE 0 END) AS file_count,
       SUM(CASE WHEN resource_kind = 'directory' THEN 1 ELSE 0 END) AS directory_count,
@@ -64,6 +67,40 @@ function getCounts(changeSetId, db = getDb()) {
       SUM(CASE WHEN status = 'conflict' THEN 1 ELSE 0 END) AS conflict_count
     FROM agent_task_change_items WHERE change_set_id = ?
   `).get(changeSetId) || {};
+  const operationSetIds = db.prepare(`
+    SELECT id FROM canvas_operation_sets WHERE task_change_set_id = ? ORDER BY batch_sequence_no ASC
+  `).all(changeSetId);
+  const statusPaths = {
+    applied: new Set(),
+    rolled_back: new Set(),
+    discarded: new Set(),
+  };
+  let mediaChangeCount = 0;
+  operationSetIds.forEach((row) => {
+    const operationSet = getOperationSetById(row.id);
+    if (!operationSet) return;
+    mediaChangeCount += Array.isArray(operationSet.media_changes) ? operationSet.media_changes.length : 0;
+    const entries = operationSet.revision_type === 'file_revision'
+      ? [{
+        status: operationSet.status,
+        file_path: operationSet.revision?.file_path || operationSet.revision_file_path,
+      }]
+      : (Array.isArray(operationSet.patches) ? operationSet.patches : []);
+    entries.forEach((entry, index) => {
+      const status = String(entry?.status || '').trim();
+      const pathKey = String(entry?.file_path || entry?.new_path || entry?.old_path || `${row.id}:${index}`);
+      if (['applied', 'auto_applied'].includes(status)) statusPaths.applied.add(pathKey);
+      if (status === 'rolled_back') statusPaths.rolled_back.add(pathKey);
+      if (status === 'discarded') statusPaths.discarded.add(pathKey);
+    });
+  });
+  return {
+    ...itemCounts,
+    applied_count: Math.max(Number(itemCounts.applied_count || 0), statusPaths.applied.size),
+    rolled_back_count: statusPaths.rolled_back.size,
+    discarded_count: statusPaths.discarded.size,
+    media_change_count: mediaChangeCount,
+  };
 }
 
 function getTaskChangeSetBySession(sessionId) {
@@ -441,7 +478,7 @@ function resolveOperationSet(options = {}) {
   return db.transaction(() => resolveOperationSetInDb(db, options))();
 }
 
-function completeOperationConfirmation({ operationSetId, sessionId, resolution, toolResult = {} } = {}) {
+function resumeNonManualOperationConfirmation({ operationSetId, sessionId, resolution, toolResult = {} } = {}) {
   const setId = normalizePositiveInt(operationSetId);
   const sid = normalizePositiveInt(sessionId);
   if (!setId || !sid) return { resumed: false, changeSet: null };
@@ -549,6 +586,7 @@ function getTaskChangeSetDetail(sessionId) {
       ...summary,
       revision_file_path: operationSet?.revision?.file_path || operationSet?.revision_file_path || '',
       patches: Array.isArray(operationSet?.patches) ? operationSet.patches : [],
+      media_changes: Array.isArray(operationSet?.media_changes) ? operationSet.media_changes : [],
     };
   });
   const segmentSequences = new Map(db.prepare(
@@ -595,7 +633,7 @@ function getTaskChangeSetDetail(sessionId) {
       status: summary.status,
       operations: [],
       patches,
-      media_changes: [],
+      media_changes: operationSetSources.flatMap((batch) => batch.media_changes || []),
       created_at: summary.created_at,
       updated_at: summary.updated_at,
     },
@@ -606,8 +644,8 @@ module.exports = {
   ensureTaskChangeSet,
   getTaskChangeSetBySession,
   getTaskChangeSetDetail,
-  completeOperationConfirmation,
   markTaskChangeSetFinished,
   registerOperationSet,
+  resumeNonManualOperationConfirmation,
   resolveOperationSet,
 };

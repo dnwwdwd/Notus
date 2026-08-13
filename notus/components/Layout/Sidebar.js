@@ -935,6 +935,51 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
     }
   };
 
+  const downloadExport = async (query, successMessage) => {
+    try {
+      const response = await fetch(`/api/files/export?${query.toString()}`);
+      if (!response.ok) throw new Error(await parseErrorResponse(response, '下载失败'));
+      const blob = await response.blob();
+      const filename = parseDownloadFilename(response.headers.get('content-disposition'));
+      const url = window.URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.URL.revokeObjectURL(url);
+      toast(successMessage, 'success');
+    } catch (error) {
+      toast(error.message || '下载失败', 'warning');
+    }
+  };
+
+  const handleContextImportMarkdown = () => {
+    if (contextMenu?.node?.type !== 'folder') return;
+    clearImportRunState();
+    clearImportInputs();
+    setSelectedImportFiles([]);
+    setImportParentPath(contextMenu.node.path);
+    setConflictPolicy('skip');
+    setContextMenu(null);
+    setImportOpen(true);
+  };
+
+  const handleContextDownloadFolder = () => {
+    if (contextMenu?.node?.type !== 'folder') return;
+    const query = new URLSearchParams({ folder: contextMenu.node.path });
+    setContextMenu(null);
+    void downloadExport(query, '目录已导出为 ZIP');
+  };
+
+  const handleContextDownloadFile = () => {
+    if (contextMenu?.node?.type !== 'file') return;
+    const query = new URLSearchParams({ paths: contextMenu.node.path, mode: 'file' });
+    setContextMenu(null);
+    void downloadExport(query, '文件已下载');
+  };
+
   return (
     <div className={`notus-sidebar${isMobileViewport ? ' is-mobile' : ''}${mobileSidebarOpen ? ' is-mobile-open' : ''}${isSidebarCollapsed ? ' is-collapsed' : ''}`} style={{
       width: isSidebarCollapsed ? 40 : width,
@@ -1737,7 +1782,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
           style={{
             position: 'fixed',
             left: Math.min(contextMenu.x, window.innerWidth - 160),
-            top: Math.min(contextMenu.y, window.innerHeight - 180),
+            top: Math.min(contextMenu.y, window.innerHeight - (contextMenu.node.type === 'folder' ? 240 : 208)),
             zIndex: 60,
             background: 'var(--bg-elevated)',
             border: '1px solid var(--border-primary)',
@@ -1754,12 +1799,15 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
               { label: '移动目录', icon: <Icons.folderOpen size={13} />, action: handleContextMove },
               { label: '重命名目录', icon: <Icons.edit size={13} />, action: handleContextRename },
               { label: '删除目录', icon: <Icons.trash size={13} />, action: handleContextDelete, danger: true },
+              { label: '上传文件', icon: <Icons.upload size={13} />, action: handleContextImportMarkdown },
+              { label: '下载目录', icon: <Icons.download size={13} />, action: handleContextDownloadFolder },
             ]
             : [
               { label: '新建文件', icon: <Icons.filePlus size={13} />, action: handleContextCreateFile },
               { label: '移动文件', icon: <Icons.folderOpen size={13} />, action: handleContextMove },
               { label: '重命名', icon: <Icons.edit size={13} />, action: handleContextRename },
               { label: '删除', icon: <Icons.x size={13} />, action: handleContextDelete, danger: true },
+              { label: '下载文件', icon: <Icons.download size={13} />, action: handleContextDownloadFile },
             ]
           ).map((item) => (
             <button

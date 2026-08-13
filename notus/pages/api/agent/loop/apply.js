@@ -13,13 +13,13 @@ const {
   extendHardLimit,
   extendTokenBudget,
   getSession,
-  loadMessagesCheckpoint,
   updateSessionStatus,
   validateSessionAccess,
 } = require('../../../../lib/agentSession');
 const { validateCapability } = require('../../../../lib/agentControlPlane');
 const { getOperationSetById, markOperationSetStatus } = require('../../../../lib/canvasOperationSets');
-const { completeOperationConfirmation } = require('../../../../lib/agentTaskChangeSets');
+const { markTaskChangeSetFinished, resolveOperationSet, resumeNonManualOperationConfirmation } = require('../../../../lib/agentTaskChangeSets');
+const { getTaskBySession, settleTaskRun } = require('../../../../lib/agentTaskQueue');
 const { wakeAgentTaskWorker } = require('../../../../lib/agentTaskWorker');
 
 function normalizePositiveInt(value) {
@@ -144,33 +144,37 @@ export default async function handler(req, res) {
   if (result.conflict) return res.status(409).json(result);
   if (!result.success) return res.status(400).json(result);
   const latestOperationSet = getOperationSetById(operationSetId);
-  let resumed = false;
+  const task = getTaskBySession(sessionId);
+  const isManualDiff = String(task?.approval_mode || '') === 'manual_confirm';
   let changeSet = null;
-  const checkpoint = loadMessagesCheckpoint(sessionId);
-  if (
-    getSession(sessionId)?.status === 'waiting_operation_confirmation'
-    && Number(checkpoint?.pendingOperationSetId || 0) === Number(operationSetId)
-    && isOperationSetResolved(latestOperationSet)
-  ) {
+  let resumed = false;
+  const resolvesManualPreview = ['apply', 'apply_all', 'apply_file', 'discard_file', 'discard_pending'].includes(action)
+    && isOperationSetResolved(latestOperationSet);
+  if (resolvesManualPreview) {
     const resolution = ['applied', 'partial'].includes(String(latestOperationSet.status || '')) ? 'applied' : 'discarded';
-    const resumePayload = {
+    const toolResult = {
       ...result,
       operation_set_id: Number(operationSetId),
       applied: resolution === 'applied',
       discarded: resolution === 'discarded',
-      approval_mode: approvalMode || 'manual_confirm',
+      approval_mode: task?.approval_mode || approvalMode || 'manual_confirm',
     };
-    const completion = completeOperationConfirmation({
-      operationSetId,
-      sessionId,
-      resolution,
-      toolResult: resumePayload,
-    });
-    changeSet = completion.changeSet;
-    if (completion.resumed) {
-      wakeAgentTaskWorker();
-      resumed = true;
+    if (isManualDiff) {
+      changeSet = resolveOperationSet({ operationSetId, sessionId, resolution, toolResult });
+    } else {
+      const completion = resumeNonManualOperationConfirmation({ operationSetId, sessionId, resolution, toolResult });
+      changeSet = completion.changeSet;
+      if (completion.resumed) {
+        wakeAgentTaskWorker();
+        resumed = true;
+      }
     }
+  }
+  // 兼容旧版本遗留的等待确认会话：用户处理完 Diff 后直接收口，绝不再唤醒模型。
+  if (isManualDiff && getSession(sessionId)?.status === 'waiting_operation_confirmation' && isOperationSetResolved(latestOperationSet)) {
+    updateSessionStatus(sessionId, 'completed');
+    changeSet = markTaskChangeSetFinished(sessionId, 'completed') || changeSet;
+    settleTaskRun(sessionId, 'completed', { finished: true });
   }
   return res.status(200).json({
     ...result,

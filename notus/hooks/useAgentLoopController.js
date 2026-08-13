@@ -121,8 +121,8 @@ function completeSteps(list = [], { resolveOperationConfirmations = false } = {}
         status: 'done',
         label: step.kind === 'operation_batch' ? '修改批次已处理' : '已确认文件修改',
         detail: step.kind === 'operation_batch'
-          ? '该批修改已处理，任务已继续。'
-          : '修改确认已处理，任务已继续。',
+          ? '该批修改已处理。'
+          : '修改确认已处理。',
         open: false,
       };
     }
@@ -214,7 +214,7 @@ function buildEventStep(event = {}) {
       ...segment,
       label: '等待确认文件修改',
       status: 'waiting',
-      detail: event.text || '已保存这批修改预览，确认后任务会继续。',
+      detail: event.text || '已保存这批修改预览，可手动应用或废弃。',
       tool: 'preview_patch_files',
       result: event.operation_set_id ? `修改批次 #${event.operation_set_id}` : '修改预览已生成',
       open: true,
@@ -389,7 +389,7 @@ function buildEventStep(event = {}) {
       id: 'waiting-preview',
       label: '等待确认修改预览',
       status: 'waiting',
-      detail: '已生成文件修改预览，请确认后继续执行。',
+      detail: '已生成文件修改预览，可手动应用或废弃。',
       tool: 'preview_patch_files',
       result: event.operation_set_id ? `预览 #${event.operation_set_id}` : '预览已生成',
     };
@@ -419,7 +419,7 @@ function buildEventStep(event = {}) {
       ...segment,
       label: applied ? '已应用修改批次' : '已生成修改批次',
       status: applied ? 'done' : 'waiting',
-      detail: applied ? `已应用本批 ${countLabel}。` : `本批涉及 ${countLabel}，等待确认后继续。`,
+      detail: applied ? `已应用本批 ${countLabel}。` : `本批涉及 ${countLabel}，等待你决定是否应用。`,
       tool: 'preview_patch_files',
       result: event.operation_set_id ? `修改批次 #${event.operation_set_id}` : '修改批次已生成',
       open: !applied,
@@ -803,6 +803,7 @@ export function useAgentLoopController({
         search_provider: input?.search_provider || input?.searchProvider || undefined,
         mcp_selection: input?.mcp_selection ?? input?.mcpSelection ?? { mode: 'off' },
         tool_profile: input?.tool_profile || input?.toolProfile || undefined,
+        hide_user_message_bubble: Boolean(input?.hide_user_message_bubble ?? input?.hideUserMessageBubble),
         skip_user_message_append: Boolean(input?.skip_user_message_append || input?.skipUserMessageAppend),
         existing_user_message_id: input?.rewriteUserMessageId || undefined,
       };
@@ -950,6 +951,7 @@ export function useAgentLoopController({
           search_provider: input?.search_provider || input?.searchProvider || null,
           media_items: input.media_items || input.mediaItems || [],
           mcp_selection: input.mcp_selection || input.mcpSelection || { mode: 'off' },
+          hide_user_message_bubble: Boolean(input?.hide_user_message_bubble ?? input?.hideUserMessageBubble),
         },
       });
     };
@@ -1512,6 +1514,8 @@ export function useAgentLoopController({
       await onRollbackSuccess?.(payload, operationSet);
     }
     if (payload.session) setActiveAgentSession({ ...payload.session, token: session.token, control_tickets: session.control_tickets });
+    // 仅自动确认模式下的高风险批次会返回 task_resumed；手动 Diff 始终为 false，
+    // 因此不会在应用后重新订阅或请求无意义的模型收尾。
     if (payload.task_resumed && !controllerRef.current) {
       startAgentLoop({
         session_id: session.id,

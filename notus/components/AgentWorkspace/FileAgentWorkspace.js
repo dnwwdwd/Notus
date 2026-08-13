@@ -722,6 +722,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     search_provider: options.searchProvider || undefined,
     mcp_selection: options.mcpSelection || { mode: 'off' },
     route_reason: 'files_agent_input',
+    hide_user_message_bubble: Boolean(options.hideUserMessageBubble),
     skip_user_message_append: Boolean(options.skipUserMessageAppend),
     rewriteUserMessageId: Number(options.rewriteUserMessageId || 0) || null,
     onTaskAccepted: (accepted) => {

@@ -65,6 +65,11 @@ function runTests() {
   assert.ok(sidebar.includes("change_type: moveNode.type === 'folder' ? 'move_folder' : 'move_file'"));
   assert.ok(sidebar.includes('isSameOrChildPath(option.value, moveNode.path)'));
   assert.ok(!sidebar.includes("renameNode?.type === 'folder' ? '生成预览' : '确认'"));
+  assert.ok(sidebar.includes("{ label: '上传文件'"), '目录右键菜单必须提供上传文件入口');
+  assert.ok(sidebar.includes("{ label: '下载目录'"), '目录右键菜单必须提供目录 ZIP 下载入口');
+  assert.ok(sidebar.includes("{ label: '下载文件'"), '文件右键菜单必须提供文件下载入口');
+  assert.ok(sidebar.indexOf("{ label: '删除目录'") < sidebar.indexOf("{ label: '上传文件'"), '目录右键原有操作顺序不得变化，新入口仅追加到末尾');
+  assert.ok(sidebar.indexOf("{ label: '删除',") < sidebar.indexOf("{ label: '下载文件'"), '文件右键原有操作顺序不得变化，新入口仅追加到末尾');
 
   const dropdownSelect = read('components/ui/DropdownSelect.js');
   assert.ok(dropdownSelect.includes('menuZIndex = 2100'));

@@ -32,19 +32,58 @@ function formatFullTimestamp(value, { timeZone = 'Asia/Shanghai' } = {}) {
   }).format(timestamp).replace(/\//g, '-');
 }
 
-function formatMessageTimestamp(value, { now = new Date() } = {}) {
+function getCalendarParts(value, timeZone) {
+  if (!timeZone) {
+    return {
+      year: value.getFullYear(),
+      month: value.getMonth() + 1,
+      day: value.getDate(),
+      hour: value.getHours(),
+      minute: value.getMinutes(),
+      weekday: value.getDay(),
+    };
+  }
+
+  const values = Object.create(null);
+  new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    weekday: 'short',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(value).forEach((part) => {
+    if (part.type !== 'literal') values[part.type] = part.value;
+  });
+
+  const weekday = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(values.weekday);
+  return {
+    year: Number(values.year),
+    month: Number(values.month),
+    day: Number(values.day),
+    hour: Number(values.hour),
+    minute: Number(values.minute),
+    weekday,
+  };
+}
+
+function formatMessageTimestamp(value, { now = new Date(), timeZone } = {}) {
   const createdAt = parseMessageTimestamp(value);
   const reference = parseMessageTimestamp(now);
   if (!createdAt || !reference) return '';
 
-  const time = `${pad(createdAt.getHours())}:${pad(createdAt.getMinutes())}`;
-  const createdDay = new Date(createdAt.getFullYear(), createdAt.getMonth(), createdAt.getDate()).getTime();
-  const referenceDay = new Date(reference.getFullYear(), reference.getMonth(), reference.getDate()).getTime();
+  const created = getCalendarParts(createdAt, timeZone);
+  const current = getCalendarParts(reference, timeZone);
+  const time = `${pad(created.hour)}:${pad(created.minute)}`;
+  const createdDay = Date.UTC(created.year, created.month - 1, created.day);
+  const referenceDay = Date.UTC(current.year, current.month - 1, current.day);
   const dayDistance = Math.floor((referenceDay - createdDay) / DAY_IN_MS);
   if (dayDistance === 0) return time;
   if (dayDistance === 1) return `昨天 ${time}`;
-  if (dayDistance > 0 && dayDistance < 7) return `${WEEKDAY_LABELS[createdAt.getDay()]} ${time}`;
-  return `${createdAt.getFullYear()}-${pad(createdAt.getMonth() + 1)}-${pad(createdAt.getDate())} ${time}`;
+  if (dayDistance > 0 && dayDistance < 7) return `${WEEKDAY_LABELS[created.weekday]} ${time}`;
+  return `${created.year}-${pad(created.month)}-${pad(created.day)} ${time}`;
 }
 
 module.exports = {

@@ -39,7 +39,7 @@ const {
   resolveOperationSet,
 } = require('./agentTaskChangeSets');
 const { estimateChatRequestTokens, trimTextToTokenBudget } = require('./llmBudget');
-const { getSessionUsage, isCancellationRequested, issueCapability, recordRunUsage } = require('./agentControlPlane');
+const { getSessionUsage, isCancellationRequested, recordRunUsage } = require('./agentControlPlane');
 const { sha256 } = require('./files');
 const {
   buildInteractionAnswerSummary,
@@ -889,13 +889,11 @@ async function runAgentLoop({ sessionId, runId = null, llmConfig, onStream, sign
         });
         updateExecutionSegment(activeExecutionSegment.id, { status: 'completed', completed: true });
         updateSessionStatus(session.id, 'waiting_interaction');
-        const resumeTicket = issueCapability({ sessionId: session.id, interactionId: result.interaction_id, action: 'respond' });
         emit({
           type: 'artifact',
           artifact_type: 'interaction',
           loop_index: loopIndex,
           interaction: result.interaction,
-          resume_ticket: resumeTicket,
           reason: toolUse.name === 'ask_question_card' ? 'question_card_requested' : 'resource_approval_requested',
           execution_segment_id: activeExecutionSegment.id,
           segment_sequence_no: activeExecutionSegment.sequence_no,

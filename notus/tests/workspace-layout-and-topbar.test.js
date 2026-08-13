@@ -51,15 +51,17 @@ assert.ok(agentWorkspace.includes('AGENT_INPUT_TEXTAREA_DEFAULT_ROWS = 3'), 'age
 assert.ok(agentWorkspace.includes("const AGENT_CHAT_CONTENT_WIDTH = 'min(860px, calc(100% - 32px))'"), 'agent input and messages should share the agreed responsive content width');
 assert.ok(agentWorkspace.includes('width: AGENT_CHAT_CONTENT_WIDTH'), 'agent input and messages should use the shared content width');
 assert.ok(agentWorkspace.includes("maxWidth: '80%'"), 'user message bubbles should retain their right-aligned content width');
-assert.ok(agentWorkspace.includes('const CHAT_JUMP_BUTTON_OFFSET = 240'), 'jump-to-bottom button should clear the taller agent input');
+assert.ok(agentWorkspace.includes('className="notus-agent-composer__jump-to-bottom notus-agent-pressable"'), 'jump-to-bottom button should use the composer dock positioning class');
 assert.ok(agentWorkspace.includes('className="notus-agent-workspace"'), 'Agent 面板应建立独立的容器查询边界');
 assert.ok(agentWorkspace.includes('className="notus-agent-workspace__scroll"'), 'Agent 消息区应使用可按面板宽度调整的间距');
 
 const globalStyles = read('styles/globals.css');
+assert.ok(globalStyles.includes('.notus-agent-composer__jump-to-bottom {\n  display: flex !important;\n  margin: 0 12px 8px auto !important;'), 'jump-to-bottom button should stay in the composer dock flow and clear the taller input');
 assert.ok(globalStyles.includes('container-name: notus-agent-workspace;'), '窄 AI 面板必须按自身宽度而非整个窗口切换布局');
 assert.ok(globalStyles.includes('@container notus-agent-workspace (max-width: 560px)'), '窄 AI 面板应在容器宽度不足时切换工具条布局');
 assert.ok(globalStyles.includes('@container notus-agent-workspace (max-width: 680px)'), '确认方式应先于联网和 MCP 收敛为图标');
-assert.ok(globalStyles.includes('.notus-agent-composer__network-tools {\n    flex-basis: 100%;'), '仅在最窄宽度让联网和 MCP 成组换行');
+assert.ok(globalStyles.includes("grid-template-areas:\n      'attachments network'\n      'confirm confirm';"), '仅在最窄宽度让确认方式单独换行，联网和 MCP 保持在首行');
+assert.ok(globalStyles.includes('.notus-agent-composer__network-tools {\n    grid-area: network;'), '最窄宽度的联网和 MCP 必须保持在首行网络区域');
 assert.ok(globalStyles.includes('.notus-agent-composer__model {\n    max-width: 96px;'), '窄 AI 面板中的模型选择应使用容器内固定上限，不能引用窗口宽度');
 assert.ok(globalStyles.includes('.notus-resizable-layout:not(.is-left-collapsed) .notus-resizable-layout__panel--left,'), '收起编辑器后不得保留 1200px 断点的左栏最小宽度');
 assert.ok(globalStyles.includes('.notus-resizable-layout:not(.is-right-collapsed) .notus-resizable-layout__panel--right {'), '收起 AI 面板后不得保留 1200px 断点的右栏最小宽度');

@@ -610,7 +610,9 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
         subscribedSessionIdsRef.current.add(sessionId);
         resumeAgentLoop({
           session_id: item.id,
-          control_ticket: item.control_tickets?.resume,
+          // 恢复历史运行中的任务只需要接回事件流。不得以会话恢复票据重新
+          // 调度队列，否则迟到的页面恢复可能跳过后续的确认卡片。
+          subscribe_only: true,
           read_ticket: item.control_tickets?.read,
           control_tickets: item.control_tickets,
           llm_config_id: selectedLlmConfigId || undefined,
@@ -626,7 +628,10 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
         || {})
       : null;
     const queuedControlTicket = queuedSession?.control_tickets?.resume;
-    if (!queuedJob || !queuedControlTicket || autoResumedJobRef.current.has(queuedJob.id)) return;
+    const queuedSessionCanResume = ['created', 'queued', 'queued_resume', 'waiting_retry', 'waiting_model_recovery']
+      .includes(String(queuedSession?.status || ''));
+    // 旧 job 绝不能在下一张卡片的 waiting_interaction 状态下自动续跑。
+    if (!queuedJob || !queuedControlTicket || !queuedSessionCanResume || autoResumedJobRef.current.has(queuedJob.id)) return;
     autoResumedJobRef.current.add(queuedJob.id);
     resumeAgentLoop({
       session_id: queuedJob.session_id,
@@ -823,28 +828,38 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     return payload;
   }, []);
 
-  const resumeInteraction = useCallback(async (interaction, resume = {}) => {
+  const resumeInteraction = useCallback(async (interaction, resume = {}, options = {}) => {
     const session = agentLoop.activeAgentSession || {};
     const sessionId = Number(interaction?.payload?.agent_session_id || session.id || 0);
     const targetSession = agentLoop.getAgentSession?.(sessionId)
       || restoredAgentSessions.find((item) => Number(item?.id) === sessionId)
       || session;
+    const subscribeOnly = Boolean(options.subscribeOnly);
     const resumeJob = resume.resume_job || agentResumeJobs.find((job) => Number(job.interaction_id) === Number(interaction?.id));
     const resumeTicket = resume.resume_ticket || resumeJob?.resume_ticket;
-    if (!sessionId || !resumeJob?.id || !resumeTicket) {
+    const readTicket = targetSession.control_tickets?.read || targetSession.control_ticket;
+    if (!sessionId || (!subscribeOnly && (!resumeJob?.id || !resumeTicket)) || (subscribeOnly && !readTicket)) {
       toast('当前 Agent 任务状态已失效，请重新发起任务', 'warning');
       return;
     }
     await agentLoop.startAgentLoop({
       session_id: sessionId,
-      resume_job_id: resumeJob.id,
-      resume_ticket: resumeTicket,
+      ...(subscribeOnly ? { subscribe_only: true } : {
+        resume_job_id: resumeJob.id,
+        resume_ticket: resumeTicket,
+      }),
+      event_cursor: resume.event_cursor,
       control_ticket: targetSession.control_tickets?.resume,
-      read_ticket: targetSession.control_tickets?.read,
+      read_ticket: readTicket,
       control_tickets: targetSession.control_tickets,
       llm_config_id: selectedLlmConfigId || undefined,
     }, { resume: true });
   }, [agentLoop, agentResumeJobs, restoredAgentSessions, selectedLlmConfigId, toast]);
+
+  const shouldReconnectInteractionSession = useCallback((interaction) => {
+    const sessionId = Number(interaction?.payload?.agent_session_id || 0);
+    return Boolean(sessionId && !agentLoop.hasActiveSessionSubscription?.(sessionId));
+  }, [agentLoop]);
 
   const handleInteractionSubmit = useCallback(async (interaction, answers) => {
     setInteractionSubmittingId(interaction.id);
@@ -857,13 +872,18 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
           return next;
         });
       }
-      if (payload.should_continue) await resumeInteraction(payload.interaction || interaction, payload);
+      // 回答接口已经唤醒同一 session 的后台 Worker。当前 SSE 订阅继续接收
+      // 后续事件，避免为同一 session 增加第二个订阅；刷新后没有订阅时只补建
+      // SSE，不会再次调度任务。卡片的“重试”仍使用实际 resume job。
+      if (payload.should_continue && shouldReconnectInteractionSession(payload.interaction || interaction)) {
+        await resumeInteraction(payload.interaction || interaction, payload, { subscribeOnly: true });
+      }
     } catch (error) {
       toast(error.message || '回答提问卡片失败', 'error');
     } finally {
       setInteractionSubmittingId(null);
     }
-  }, [respondToInteraction, resumeInteraction, toast]);
+  }, [respondToInteraction, resumeInteraction, shouldReconnectInteractionSession, toast]);
 
   const handleInteractionAnswerDraftChange = useCallback((interactionId, answers) => {
     if (!interactionId) return;
@@ -874,22 +894,26 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     setInteractionSubmittingId(interaction.id);
     try {
       const payload = await respondToInteraction(interaction, { action: decision });
-      if (payload.should_continue) await resumeInteraction(payload.interaction || interaction, payload);
+      if (payload.should_continue && shouldReconnectInteractionSession(payload.interaction || interaction)) {
+        await resumeInteraction(payload.interaction || interaction, payload, { subscribeOnly: true });
+      }
     } catch (error) {
       toast(error.message || 'MCP 授权失败', 'error');
     } finally {
       setInteractionSubmittingId(null);
     }
-  }, [respondToInteraction, resumeInteraction, toast]);
+  }, [respondToInteraction, resumeInteraction, shouldReconnectInteractionSession, toast]);
 
   const handleResourceApproval = useCallback(async (interaction, decision) => {
     setInteractionSubmittingId(interaction.id);
     try {
       const payload = await respondToInteraction(interaction, { action: decision });
       if (payload.resolution_status === 'resolved') dispatchAgentResourceChange(interaction?.payload?.action);
-      if (payload.should_continue) await resumeInteraction(payload.interaction || interaction, payload);
+      if (payload.should_continue && shouldReconnectInteractionSession(payload.interaction || interaction)) {
+        await resumeInteraction(payload.interaction || interaction, payload, { subscribeOnly: true });
+      }
     } catch (error) { toast(error.message || '资源操作失败', 'error'); } finally { setInteractionSubmittingId(null); }
-  }, [respondToInteraction, resumeInteraction, toast]);
+  }, [respondToInteraction, resumeInteraction, shouldReconnectInteractionSession, toast]);
 
   const displayedMessages = useMemo(() => {
     const latestAssistantIndexBySession = new Map();

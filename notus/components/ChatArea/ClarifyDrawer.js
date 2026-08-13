@@ -7,6 +7,10 @@ const STATUS_META = {
     label: '待确认',
     tone: 'accent',
   },
+  processing: {
+    label: '正在处理',
+    tone: 'default',
+  },
   stale: {
     label: '已失效',
     tone: 'default',

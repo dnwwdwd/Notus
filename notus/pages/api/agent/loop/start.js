@@ -2,16 +2,16 @@ const { ensureRuntime } = require('../../../../lib/runtime');
 const { createLogger, createRequestContext } = require('../../../../lib/logger');
 const { createSession, getSession, getLatestRunEventId, validateSessionAccess } = require('../../../../lib/agentSession');
 const { appendConversationMessage, ensureConversation, getConversationMessageById, touchConversation } = require('../../../../lib/conversations');
-const { issueCapability, validateCapability } = require('../../../../lib/agentControlPlane');
+const { getResumeJob, issueCapability, validateCapability } = require('../../../../lib/agentControlPlane');
 const { createTask, getQueuePosition, wakeTask, supersedePendingUserActionTasks } = require('../../../../lib/agentTaskQueue');
 const { wakeAgentTaskWorker } = require('../../../../lib/agentTaskWorker');
 const { makeConversationImageReference } = require('../../../../lib/conversationImages');
 const { allowsLocalHttpMcp } = require('../../../../lib/directLoopbackRequest');
 const { mergeAgentMedia } = require('../../../../lib/agentMedia');
 
-// 与既有恢复协议保持兼容：waiting_retry、waiting_model_recovery 均可由“继续任务”
-// 唤醒，但实际 lease 的接管已经移到后台 Worker，HTTP Route 不再持有运行 lease。
-const RESUMABLE_WAITING_STATUSES = ['waiting_retry', 'waiting_model_recovery'];
+// 与既有恢复协议保持兼容：模型重试和已确认的轮次上限均可由“继续任务”唤醒。
+// 提问卡、资源确认、文件修改确认必须各自走确认接口，不能用通用会话票据绕过。
+const RESUMABLE_WAITING_STATUSES = ['waiting_retry', 'waiting_model_recovery', 'waiting_limit_confirmation'];
 function releaseLeaseBeforeResumeEvent(event, sessionId) { return { event, sessionId }; }
 function splitMediaInputs(body = {}) {
   const attachments = Array.isArray(body.attachments) ? body.attachments : [];
@@ -34,15 +34,83 @@ export default async function handler(req, res) {
     const body = req.body || {};
     const resumeSessionId = Number(body.session_id || 0) || null;
     if (resumeSessionId) {
-      const ticket = body.control_ticket || req.headers['x-agent-control-ticket'];
-      const access = ticket ? validateCapability(ticket, { sessionId: resumeSessionId, action: 'resume_session' }) : validateSessionAccess(resumeSessionId, body.session_token || req.headers['x-agent-session-token']);
+      const subscribeOnly = Boolean(body.subscribe_only || body.subscribeOnly);
+      const readTicket = body.read_ticket || body.readTicket || req.headers['x-agent-read-ticket'];
+      const controlTicket = body.control_ticket || req.headers['x-agent-control-ticket'];
+      const ticket = subscribeOnly ? (readTicket || controlTicket) : controlTicket;
+      const access = ticket
+        ? validateCapability(ticket, {
+          sessionId: resumeSessionId,
+          action: subscribeOnly && readTicket ? 'session_read' : 'resume_session',
+        })
+        : validateSessionAccess(resumeSessionId, body.session_token || req.headers['x-agent-session-token']);
       if (!access.valid) return res.status(403).json({ error: access.reason, code: access.reason, request_id: context.request_id });
       const session = getSession(resumeSessionId);
-      if (['completed', 'cancelled', 'failed'].includes(session.status)) return res.status(409).json({ error: 'SESSION_NOT_RESUMABLE', code: 'SESSION_NOT_RESUMABLE', request_id: context.request_id });
+      if (!subscribeOnly && ['completed', 'cancelled', 'failed'].includes(session.status)) return res.status(409).json({ error: 'SESSION_NOT_RESUMABLE', code: 'SESSION_NOT_RESUMABLE', request_id: context.request_id });
       // releaseLeaseBeforeResumeEvent(event, sessionId) 在 Worker 发布事件前完成；
       // if (event.type === 'final') 任务已由 Worker 以幂等方式落库。
       const eventCursor = getLatestRunEventId(resumeSessionId);
-      const task = wakeTask(resumeSessionId, { llmConfigId: body.llm_config_id || null });
+      if (subscribeOnly) {
+        // 页面刷新后提交卡片只需要重新接收 SSE。任务已由回答接口唤醒；这里绝不
+        // 调队列，避免续跑已经停在下一张提问卡片时被错误地再次唤醒。
+        return res.status(202).json({
+          protocol_version: 3,
+          session_id: resumeSessionId,
+          conversation_id: session.conversation_id,
+          status: session.status,
+          queue_position: getQueuePosition(resumeSessionId),
+          event_cursor: eventCursor,
+          subscribe_only: true,
+          request_id: context.request_id,
+        });
+      }
+
+      const resumeJobId = String(body.resume_job_id || body.resumeJobId || '').trim();
+      let resumeJob = null;
+      if (resumeJobId) {
+        resumeJob = getResumeJob(resumeJobId);
+        if (!resumeJob || Number(resumeJob.session_id) !== resumeSessionId) {
+          return res.status(404).json({ error: 'RESUME_JOB_NOT_FOUND', code: 'RESUME_JOB_NOT_FOUND', request_id: context.request_id });
+        }
+        const resumeCapability = validateCapability(body.resume_ticket || body.resumeTicket || req.headers['x-agent-resume-ticket'], {
+          sessionId: resumeSessionId,
+          interactionId: resumeJob.interaction_id,
+          resumeJobId: resumeJob.id,
+          action: 'resume',
+        }, { consume: true });
+        if (!resumeCapability.valid) {
+          return res.status(403).json({ error: resumeCapability.reason, code: resumeCapability.reason, request_id: context.request_id });
+        }
+        // 同一 job 已被别的连接接管时只返回当前状态，不再把 session 重新入队。
+        if (resumeCapability.consumed || resumeJob.status !== 'queued') {
+          return res.status(202).json({
+            protocol_version: 3,
+            session_id: resumeSessionId,
+            conversation_id: session.conversation_id,
+            status: session.status,
+            queue_position: getQueuePosition(resumeSessionId),
+            event_cursor: eventCursor,
+            idempotent_replay: true,
+            request_id: context.request_id,
+          });
+        }
+        if (session.status !== 'queued_resume') {
+          return res.status(409).json({ error: 'RESUME_JOB_STATE_CONFLICT', code: 'RESUME_JOB_STATE_CONFLICT', request_id: context.request_id });
+        }
+      } else if (!RESUMABLE_WAITING_STATUSES.includes(session.status)) {
+        // 普通会话恢复票据只能处理模型重试等待态。提问卡、资源确认和文件
+        // 修改确认都必须走各自的确认接口；否则持有会话票据即可跳过用户决定。
+        return res.status(409).json({
+          error: '当前任务需要先完成确认，不能直接继续执行',
+          code: 'INTERACTION_RESPONSE_REQUIRED',
+          request_id: context.request_id,
+        });
+      }
+
+      const task = wakeTask(resumeSessionId, {
+        llmConfigId: body.llm_config_id || null,
+        ...(resumeJob ? { resumeJobId: resumeJob.id } : {}),
+      });
       wakeAgentTaskWorker();
       return res.status(202).json({ protocol_version: 3, session_id: resumeSessionId, conversation_id: session.conversation_id, status: task?.status || session.status, queue_position: getQueuePosition(resumeSessionId), event_cursor: eventCursor, request_id: context.request_id });
     }

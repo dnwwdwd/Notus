@@ -8,7 +8,7 @@ const { loadAttachments } = require('./parsedAttachmentStore');
 const { recognizeConversationImages } = require('./imageRecognition');
 const { buildResearchSummary, buildWriteSummary, correctConflictingSourceClaims, registerParsedInputSources } = require('./agentResearch');
 const { updateInteraction } = require('./conversationInteractions');
-const { acquireRunLease, registerActiveRun, releaseRunLease, renewRunLease, recordRunUsage, recoverStaleRunLeases } = require('./agentControlPlane');
+const { acquireRunLease, registerActiveRun, releaseRunLease, renewRunLease, recordRunUsage, recoverStaleRunLeases, settleResumeJob } = require('./agentControlPlane');
 const { assertAttachmentLimits, assertImageContextSize, assertImageLimits, getImageInputBlocks, MAX_ANTHROPIC_IMAGE_CONTEXT_BYTES } = require('./conversationImages');
 const { claimRunnableTasks, updateTask, settleTaskRun, recoverOrphanedTasks, getTaskBySession } = require('./agentTaskQueue');
 const { publish } = require('./agentRunEventBus');
@@ -54,6 +54,27 @@ async function execute(task) {
   const sessionId = task.session_id;
   const session = getSession(sessionId);
   const conversationId = task.conversation_id || session.conversation_id;
+  const requestedResumeJobId = String(task.resume_job_id || '').trim();
+  let resumeJob = null;
+  if (requestedResumeJobId) {
+    resumeJob = getDb().prepare(`
+      SELECT * FROM agent_resume_jobs
+      WHERE id = ? AND session_id = ? AND status = 'queued'
+    `).get(requestedResumeJobId, sessionId);
+    if (!resumeJob) {
+      updateSessionStatus(sessionId, 'failed');
+      updateTask(sessionId, {
+        status: 'failed',
+        resumeJobId: null,
+        lastError: {
+          code: 'RESUME_JOB_NOT_QUEUED',
+          message: 'Agent 恢复任务状态已失效，请刷新后重新确认。',
+        },
+        finished: true,
+      });
+      return;
+    }
+  }
   const controller = new AbortController();
   const lease = acquireRunLease(sessionId, { allowedStatuses: ['created', 'queued_resume', 'running', 'waiting_retry', 'waiting_model_recovery'] });
   if (!lease.acquired) {
@@ -69,8 +90,29 @@ async function execute(task) {
   }, 20_000);
   let assistantText = '';
   let finalEvent = null;
-  const resumeJob = getDb().prepare("SELECT * FROM agent_resume_jobs WHERE session_id = ? AND status = 'queued' ORDER BY created_at ASC LIMIT 1").get(sessionId);
-  if (resumeJob) updateResumeJob(resumeJob.id, { status: 'running', runId, incrementAttempt: true, started: true });
+  if (resumeJob) {
+    const claimedResumeJob = getDb().prepare(`
+      UPDATE agent_resume_jobs
+      SET status = 'running', run_id = ?, attempt_count = attempt_count + 1,
+          started_at = COALESCE(started_at, datetime('now')), updated_at = datetime('now')
+      WHERE id = ? AND status = 'queued'
+    `).run(runId, resumeJob.id);
+    if (!claimedResumeJob.changes) {
+      clearInterval(leaseTimer);
+      releaseRunLease(sessionId, runId);
+      updateTask(sessionId, {
+        status: 'failed',
+        resumeJobId: null,
+        lastError: {
+          code: 'RESUME_JOB_STATE_CONFLICT',
+          message: 'Agent 恢复任务状态发生冲突，请刷新后重新确认。',
+        },
+        finished: true,
+      });
+      return;
+    }
+    resumeJob = getDb().prepare('SELECT * FROM agent_resume_jobs WHERE id = ?').get(resumeJob.id);
+  }
   try {
     const media = splitMedia(input);
     const attachments = assertAttachmentLimits(conversationId, media.attachments);
@@ -138,7 +180,12 @@ async function execute(task) {
     }
     touchConversation(conversationId);
     settleTaskRun(sessionId, status, { finished: ['completed', 'failed', 'cancelled'].includes(status) });
-    if (resumeJob) updateResumeJob(resumeJob.id, { status: ['waiting_interaction', 'waiting_operation_confirmation', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery'].includes(status) ? 'queued' : status === 'completed' ? 'completed' : 'failed', result: { status }, finished: ['completed', 'failed', 'cancelled'].includes(status) });
+    if (resumeJob) {
+      // 一张卡片的 resume job 在实际进入 Loop 后已经被消费。即使续跑过程中
+      // 又生成了下一张卡片，也不能把旧 job 重新排队，否则刷新会跳过新卡片。
+      const settledResumeJob = settleResumeJob(resumeJob.id, status);
+      if (settledResumeJob?.status !== 'queued') updateTask(sessionId, { resumeJobId: null });
+    }
   } catch (error) {
     const cancelled = controller.signal.aborted && controller.signal.reason === 'cancel';
     const interrupted = controller.signal.aborted && !cancelled;
@@ -150,7 +197,10 @@ async function execute(task) {
     updateTask(sessionId, { status, lastError: { code: error.code || 'AGENT_TASK_FAILED', message: error.message || '任务执行失败' }, finished: !interrupted });
     emit(sessionId, runId, { type: 'artifact', artifact_type: 'run_error', status: interrupted ? 'queued_resume' : 'failed', error_category: interrupted ? 'interrupted' : 'fatal', error_code: interrupted ? 'WORKER_INTERRUPTED' : (error.code || 'AGENT_TASK_FAILED'), message: interrupted ? '任务已保存，将在服务恢复后继续执行。' : 'Agent 执行异常，执行记录已保留。', resumable: interrupted });
     logger.error('agent.task.failed', { session_id: sessionId, error });
-    if (resumeJob) updateResumeJob(resumeJob.id, { status: interrupted ? 'queued' : 'failed', errorCode: error.code || 'AGENT_TASK_FAILED', finished: !interrupted });
+    if (resumeJob) {
+      updateResumeJob(resumeJob.id, { status: interrupted ? 'queued' : 'failed', errorCode: error.code || 'AGENT_TASK_FAILED', finished: !interrupted });
+      if (!interrupted) updateTask(sessionId, { resumeJobId: null });
+    }
   } finally {
     clearInterval(leaseTimer);
     try { releaseRunLease(sessionId, runId); } catch {}

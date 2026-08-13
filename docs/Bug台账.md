@@ -14,6 +14,16 @@
 
 ## 当前记录
 
+### BUG-20260810-001｜最窄 AI 面板的确认方式 Tab 排序与收敛规则错误
+
+- 状态：已修复（2026-08-10，自动化、构建与本地 Web 长工具链回归通过）。
+- 现象：AI 面板收窄后，“自动应用 / 手动应用”一度被移动到附件操作之前的最上方；当前回归又在最窄宽度恢复了两项文字。确认方式恢复为 icon 后，最窄面板仍把附件、确认方式、联网/MCP 拆成三行，且居中的“滚动到最新消息”按钮压住长工具名称。正确行为是确认方式从 680px 起收缩为 icon，390px 时在附件与联网工具所在首行之后换到独立行，不恢复文字，也不遮挡工具链内容。
+- 影响范围：文件工作区 Web、Electron、懒猫共用的 `AgentWorkspace` 输入工具栏；不影响确认模式值、任务提交、文件写入或服务端状态。
+- 根因：首次实现的 `order: -1` 确实会把控件整体前移；之后的热修错误地移除了 680px 的 icon 收缩规则，又在 `notus/styles/globals.css` 的 390px 容器规则将 `.notus-segmented-tabs__label` 改成 `display: inline`。`agent-workspace-controls.test.js` 也错误地把“文字必须可见”设成回归标准，因此页面与测试共同偏离实际口径。最新回归则来自结构和定位：`AgentInput` 把确认方式与联网/MCP 包在同一 `.notus-agent-composer__task-controls` 中，而 390px 规则依次把该容器、确认方式和联网组设为整行，导致三行串行排列；回底按钮由 `AgentWorkspace` 以 `left: 50%` 和固定 `bottom: 240` 绝对定位在滚动区上方，长工具链滚动时必然遮住中部文字。
+- 已检查关联流程：`AgentInput` 的 DOM 顺序、`SegmentedTabs` 标签渲染及 icon Tooltip、390px 容器查询、联网/MCP 图标收敛、模型与发送按钮定位、工具链长列表滚动和回底交互。修复只调整视觉布局和按钮承载层，不改变确认模式、MCP、联网、模型、滚动语义或任务状态。
+- 修复：确认方式改为工具栏直接子项；390px 下用 Grid 固定为“附件与联网/MCP 首行、确认方式紧凑 icon Tab 次行”，不使用 `order` 前移，也不恢复标签文字。回底按钮移入输入停靠区的正常文档流并靠右显示，最窄面板的消息区补足停靠区安全留白。
+- 验证：`node notus/tests/agent-workspace-controls.test.js`、`node notus/tests/ui-bug-regressions.test.js`、`npm run lint:web`、`npm run build:web` 与 `git diff --check` 通过。Browser 在 `http://127.0.0.1:3014/files` 展开长工具链并滚动后，回底按钮父级为 `.notus-agent-composer-dock`，其与所有工具动作名称的几何重叠检测为 `false`，点击后按钮隐藏并回到最新消息；固定 456px AI 面板下确认方式只显示两个 icon。Browser 390px 视口检查确认两个确认方式 Tab 的标签均为 `display: none`、控件宽度为 28px。Lint 仅保留既有 `FileAgentWorkspace` Hook 依赖 warning；构建编译与页面生成完成，但 standalone trace 复制外部 Codex skill 路径时输出环境既有 ENOENT warning。
+
 ### BUG-20260809-011｜Agent 日志时间、内部元数据与运行状态展示错误
 
 - 状态：已修复（2026-08-09，本地自动化、构建与 Browser 回归通过；真实 Provider、Electron、懒猫待实机回归）。

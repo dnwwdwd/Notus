@@ -805,6 +805,84 @@ function sanitizeViewedImages(images = [], conversationId = null) {
   }, []).slice(0, 30);
 }
 
+function sanitizeInteractionQuestion(question = {}) {
+  const dependsOn = question?.depends_on || question?.dependsOn || null;
+  const dependentQuestionId = truncateTimelineText(dependsOn?.question_id || dependsOn?.questionId || '', 256);
+  const dependentValues = Array.isArray(dependsOn?.values)
+    ? dependsOn.values.map((value) => truncateTimelineText(value, 512)).filter(Boolean).slice(0, 5)
+    : [];
+  return {
+    id: truncateTimelineText(question?.id || '', 256),
+    slot: truncateTimelineText(question?.slot || question?.id || '', 256),
+    label: truncateTimelineText(question?.label || question?.question || question?.title || '', 4096),
+    type: String(question?.type || 'text_input') === 'single_select' ? 'single_select' : 'text_input',
+    required: question?.required !== false,
+    options: (Array.isArray(question?.options) ? question.options : []).slice(0, 5).map((option) => ({
+      id: truncateTimelineText(option?.id || '', 256),
+      label: truncateTimelineText(option?.label || option?.text || '', 4096),
+      description: truncateTimelineText(option?.description || option?.hint || '', 4096),
+      answer_value: truncateTimelineText(option?.answer_value || option?.answerValue || '', 4096),
+    })).filter((option) => option.id && option.label),
+    allow_custom: question?.allow_custom !== false,
+    custom_placeholder: truncateTimelineText(question?.custom_placeholder || question?.placeholder || '', 1024),
+    recommended_option_ids: Array.isArray(question?.recommended_option_ids)
+      ? question.recommended_option_ids.map((value) => truncateTimelineText(value, 256)).filter(Boolean).slice(0, 3)
+      : [],
+    ...(dependentQuestionId && dependentValues.length > 0 ? {
+      depends_on: { question_id: dependentQuestionId, values: dependentValues },
+    } : {}),
+  };
+}
+
+function sanitizeInteractionPayload(interaction = {}) {
+  const payload = interaction?.payload && typeof interaction.payload === 'object' ? interaction.payload : {};
+  const common = {
+    title: truncateTimelineText(payload.title || '', 1024),
+    kicker: truncateTimelineText(payload.kicker || '', 1024),
+    submit_label: truncateTimelineText(payload.submit_label || '', 512),
+    footer_hint: truncateTimelineText(payload.footer_hint || '', 2048),
+    collapsed_summary: truncateTimelineText(payload.collapsed_summary || '', 2048),
+    clarify_reason: truncateTimelineText(payload.clarify_reason || '', 512),
+    agent_session_id: normalizePositiveInt(payload.agent_session_id || payload.agentSessionId),
+  };
+  if (String(interaction?.kind || '') === 'resource_approval') {
+    return {
+      ...common,
+      action: truncateTimelineText(payload.action || '', 512),
+      target: truncateTimelineText(payload.target || '', 4096),
+      files: (Array.isArray(payload.files) ? payload.files : [])
+        .map((filePath) => truncateTimelineText(filePath, 4096))
+        .filter(Boolean)
+        .slice(0, 100),
+    };
+  }
+  return {
+    ...common,
+    questions: (Array.isArray(payload.questions) ? payload.questions : [])
+      .slice(0, 3)
+      .map(sanitizeInteractionQuestion)
+      .filter((question) => question.id && question.label),
+  };
+}
+
+function sanitizeInteractionForRunEvent(interaction = {}) {
+  if (!interaction || typeof interaction !== 'object') return null;
+  const id = normalizePositiveInt(interaction.id);
+  if (!id) return null;
+  const schemaVersion = Number(interaction.schema_version || interaction.schemaVersion || 1);
+  return {
+    id,
+    conversation_id: normalizePositiveInt(interaction.conversation_id || interaction.conversationId),
+    message_id: normalizePositiveInt(interaction.message_id || interaction.messageId),
+    kind: truncateTimelineText(interaction.kind || 'clarify_card', 128),
+    source: truncateTimelineText(interaction.source || '', 128),
+    status: truncateTimelineText(interaction.status || 'pending', 64),
+    schema_version: Number.isFinite(schemaVersion) ? Math.max(1, schemaVersion) : 1,
+    reason_code: truncateTimelineText(interaction.reason_code || interaction.reasonCode || '', 512),
+    payload: sanitizeInteractionPayload(interaction),
+  };
+}
+
 function sanitizeRunEvent(event = {}) {
   const type = String(event.type || '').trim();
   if (!['progress', 'artifact', 'final'].includes(type)) return null;
@@ -814,6 +892,9 @@ function sanitizeRunEvent(event = {}) {
   const sourceKind = isAttachmentParseEvent ? normalizeAttachmentSourceKind(event.source_kind) : '';
   const conversationId = normalizePositiveInt(event.conversation_id || event.conversationId);
   const viewedImages = isImageViewEvent ? sanitizeViewedImages(event.images, conversationId) : [];
+  const interaction = type === 'artifact' && String(event.artifact_type || '').trim() === 'interaction'
+    ? sanitizeInteractionForRunEvent(event.interaction)
+    : null;
   const payload = {
     type,
     stage,
@@ -844,7 +925,8 @@ function sanitizeRunEvent(event = {}) {
     tool_index: Math.max(0, Number(event.tool_index || 0)),
     change_file_count: Math.max(0, Number(event.change_file_count || 0)),
     change_directory_count: Math.max(0, Number(event.change_directory_count || 0)),
-    interaction_id: normalizePositiveInt(event.interaction?.id || event.interaction_id),
+    interaction_id: normalizePositiveInt(interaction?.id || event.interaction_id),
+    interaction,
     conversation_id: isImageViewEvent ? conversationId : null,
     message_id: isImageViewEvent ? normalizePositiveInt(event.message_id) : null,
     image_count: isImageViewEvent ? (viewedImages.length || Math.min(30, Math.max(0, Number(event.image_count || 0)))) : 0,

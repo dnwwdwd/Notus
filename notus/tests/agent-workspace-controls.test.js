@@ -50,7 +50,8 @@ assert.ok(drawer.includes("replace(/\\s+/g, ' ')"), '历史搜索摘要必须合
 const fileWorkspace = read('components/AgentWorkspace/FileAgentWorkspace.js');
 assert.ok(fileWorkspace.includes('control_ticket: targetSession.control_tickets?.resume'), '提问卡回答后的续跑必须携带目标 session 的 resume_session 控制票据');
 assert.ok(fileWorkspace.includes('const queuedControlTicket = queuedSession?.control_tickets?.resume;'), '恢复历史 resume job 前必须取得所属 session 的 resume_session 控制票据');
-assert.ok(fileWorkspace.includes('if (!queuedJob || !queuedControlTicket || autoResumedJobRef.current.has(queuedJob.id)) return;'), '缺少 resume_session 控制票据时不得误用 read 或 resume job 票据发起续跑');
+assert.ok(fileWorkspace.includes('if (!queuedJob || !queuedControlTicket || !queuedSessionCanResume || autoResumedJobRef.current.has(queuedJob.id)) return;'), '缺少 resume_session 控制票据或 session 正在等待新卡片时不得误用 read 或旧 resume job 票据发起续跑');
+assert.ok(fileWorkspace.includes("const queuedSessionCanResume = ['created', 'queued', 'queued_resume', 'waiting_retry', 'waiting_model_recovery']"), '旧 resume job 不得在 waiting_interaction 状态下自动续跑');
 assert.ok(fileWorkspace.includes('const [historySearchQuery, setHistorySearchQuery]'));
 assert.ok(fileWorkspace.includes('const [restoringConversation, setRestoringConversation] = useState(false);'), '恢复状态首屏必须与服务端一致，避免 hydration 不匹配');
 assert.ok(fileWorkspace.includes('if (savedId) setRestoringConversation(true);'), '客户端挂载后有保存会话时必须显示恢复提示');

@@ -2,10 +2,10 @@ const { getDb } = require('./db');
 const { sha256 } = require('./files');
 
 const DEFAULT_EXPIRE_DAYS = 7;
-const ACTIVE_STATUSES = ['pending', 'stale', 'failed'];
+const ACTIVE_STATUSES = ['pending', 'processing', 'stale', 'failed'];
 const TERMINAL_STATUSES = ['answered', 'cancelled'];
 // 已回答卡片也属于对话历史：重新打开会话时需按时间线展示其问题、答案与时间。
-const DISPLAYABLE_STATUSES = ['pending', 'stale', 'failed', 'answered'];
+const DISPLAYABLE_STATUSES = ['pending', 'processing', 'stale', 'failed', 'answered'];
 const STRUCTURED_REASON_CODES = [
   'missing_target_location',
   'ambiguous_content_reference',
@@ -66,9 +66,18 @@ function cleanupExpiredInteractions(database = getDb()) {
   database.prepare(`
     UPDATE conversation_interactions
     SET status = 'cancelled', updated_at = datetime('now')
-    WHERE status IN ('pending', 'stale', 'failed')
+    WHERE status IN ('pending', 'processing', 'stale', 'failed')
       AND expires_at IS NOT NULL
       AND expires_at <= datetime('now')
+  `).run();
+
+  // 资源确认的外部操作会先占用 interaction，防止两个连接重复执行安装、删除
+  // 或 MCP 移除。进程在操作期间异常退出时，旧占用不能永久卡住这张卡片。
+  database.prepare(`
+    UPDATE conversation_interactions
+    SET status = 'failed', updated_at = datetime('now')
+    WHERE status = 'processing'
+      AND updated_at <= datetime('now', '-5 minutes')
   `).run();
 }
 
@@ -183,10 +192,7 @@ function createInteraction({
   return getInteractionById(result.lastInsertRowid, database);
 }
 
-function updateInteraction(id, updates = {}, database = getDb()) {
-  const normalizedId = normalizeNullablePositiveInt(id);
-  if (!normalizedId) return null;
-
+function buildInteractionUpdate(updates = {}) {
   const sets = [];
   const params = [];
 
@@ -222,15 +228,38 @@ function updateInteraction(id, updates = {}, database = getDb()) {
     sets.push('reason_code = ?');
     params.push(String(updates.reasonCode || ''));
   }
+
+  return { sets, params };
+}
+
+function updateInteractionWhen(id, expectedStatuses = null, updates = {}, database = getDb()) {
+  const normalizedId = normalizeNullablePositiveInt(id);
+  if (!normalizedId) return null;
+
+  const { sets, params } = buildInteractionUpdate(updates);
   if (sets.length === 0) return getInteractionById(normalizedId, database);
 
   sets.push("updated_at = datetime('now')");
-  database.prepare(`
+  const expected = Array.isArray(expectedStatuses)
+    ? expectedStatuses.map((status) => normalizeStatus(status)).filter(Boolean)
+    : [];
+  const whereStatus = expected.length > 0
+    ? ` AND status IN (${expected.map(() => '?').join(', ')})`
+    : '';
+  const result = database.prepare(`
     UPDATE conversation_interactions
     SET ${sets.join(', ')}
-    WHERE id = ?
-  `).run(...params, normalizedId);
-  return getInteractionById(normalizedId, database);
+    WHERE id = ?${whereStatus}
+  `).run(...params, normalizedId, ...expected);
+  return result.changes ? getInteractionById(normalizedId, database) : null;
+}
+
+function updateInteraction(id, updates = {}, database = getDb()) {
+  return updateInteractionWhen(id, null, updates, database);
+}
+
+function claimInteractionProcessing(id, database = getDb()) {
+  return updateInteractionWhen(id, ['pending'], { status: 'processing' }, database);
 }
 
 function markInteractionStatus(id, status, database = getDb()) {
@@ -990,6 +1019,7 @@ module.exports = {
   SLOT_ORDER,
   buildInteractionAnswerSummary,
   buildResumePlanFromInteraction,
+  claimInteractionProcessing,
   cleanupExpiredInteractions,
   computeTextDigest,
   createInteraction,
@@ -1000,5 +1030,6 @@ module.exports = {
   markInteractionStatus,
   normalizeInteractionResponse,
   updateInteraction,
+  updateInteractionWhen,
   validateInteractionSourceDigest,
 };

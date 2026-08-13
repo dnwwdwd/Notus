@@ -425,43 +425,6 @@ a {
   border-bottom: 1px solid var(--border-subtle);
 }
 
-.notus-agent-toolchain__segment + .notus-agent-toolchain__segment {
-  border-top: 1px solid var(--border-subtle);
-}
-
-.notus-agent-toolchain__segment-toggle {
-  width: 100%;
-  min-height: 34px;
-  display: grid;
-  grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 3px;
-  border: 0;
-  background: var(--bg-secondary);
-  color: var(--text-secondary);
-  font: inherit;
-  font-size: 12px;
-  font-weight: 650;
-  text-align: left;
-  cursor: pointer;
-}
-
-.notus-agent-toolchain__segment-toggle:hover {
-  color: var(--text-primary);
-}
-
-.notus-agent-toolchain__segment-stage {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--text-tertiary);
-  font-size: 11px;
-  font-weight: 500;
-  text-align: right;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .notus-agent-toolchain__step + .notus-agent-toolchain__step {
   border-top: 1px solid var(--border-subtle);
 }
@@ -1279,6 +1242,11 @@ a {
   padding: 24px 12px 18px;
 }
 
+.notus-agent-composer__jump-to-bottom {
+  display: flex !important;
+  margin: 0 12px 8px auto !important;
+}
+
 .notus-agent-workspace {
   container-name: notus-agent-workspace;
   container-type: inline-size;
@@ -1315,16 +1283,11 @@ a {
 }
 
 .notus-agent-composer__attachments,
-.notus-agent-composer__task-controls,
 .notus-agent-composer__network-tools {
   display: flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
-}
-
-.notus-agent-composer__task-controls {
-  flex-wrap: nowrap;
 }
 
 .notus-agent-composer__network-tools {
@@ -1509,10 +1472,6 @@ a {
 }
 
 @container notus-agent-workspace (max-width: 680px) {
-  .notus-agent-composer__task-controls {
-    flex-wrap: nowrap;
-  }
-
   .notus-agent-confirm-mode button {
     min-width: 28px !important;
     padding-inline: 6px !important;
@@ -1555,12 +1514,6 @@ a {
     flex: 0 0 auto;
   }
 
-  .notus-agent-composer__task-controls {
-    flex-wrap: nowrap;
-    justify-content: flex-start;
-    gap: 4px;
-  }
-
   .notus-agent-composer__actions {
     justify-content: flex-end;
     flex: 0 0 auto;
@@ -1572,7 +1525,6 @@ a {
     max-width: 96px;
   }
 
-  .notus-agent-confirm-mode .notus-segmented-tabs__label,
   .notus-agent-control-label {
     display: none;
   }
@@ -1604,20 +1556,46 @@ a {
 }
 
 @container notus-agent-workspace (max-width: 390px) {
-  .notus-agent-composer__tools {
-    align-items: flex-end;
-    max-width: calc(100% - 86px);
-    overflow: visible;
+  .notus-agent-workspace__scroll {
+    padding-bottom: 278px;
   }
 
-  .notus-agent-composer__task-controls {
-    flex: 1 1 auto;
-    flex-wrap: wrap;
+  .notus-agent-composer__tools {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas:
+      'attachments network'
+      'confirm confirm';
+    align-items: center;
+    max-width: calc(100% - 86px);
+    overflow: visible;
+    gap: 6px 4px;
+  }
+
+  .notus-agent-composer__attachments {
+    grid-area: attachments;
+  }
+
+  .notus-agent-confirm-mode {
+    grid-area: confirm;
+    justify-self: start;
+    width: fit-content;
+    max-width: 100%;
+    overflow-x: hidden !important;
+  }
+
+  .notus-agent-confirm-mode button {
+    min-width: 28px !important;
+    flex: 0 0 28px;
+    padding-inline: 6px !important;
+    gap: 0 !important;
+    white-space: nowrap;
   }
 
   .notus-agent-composer__network-tools {
-    flex-basis: 100%;
-    width: 100%;
+    grid-area: network;
+    justify-self: start;
+    width: auto;
     gap: 4px;
   }
 

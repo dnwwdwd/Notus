@@ -14,8 +14,11 @@ assert.ok(loop.includes('tool_index: toolIndex'), '同一执行段内重复调�
 assert.ok(controller.includes("if (event.type === 'loop_start')"), '前端必须把执行段开始事件还原为可见记录。');
 assert.ok(controller.includes("if (event.type === 'model_requesting')"), '前端必须显示等待模型响应，而非只显示笼统运行状态。');
 assert.ok(controller.includes("kind: 'operation_batch'"), '文件变更批次必须归入触发它的执行段。');
-assert.ok(workspace.includes('groupTimelineStepsBySegment'), '工具链必须按执行段分组，而不是按工具平铺。');
-assert.ok(workspace.includes('正在等待模型响应。'), '执行段起始状态必须明确说明模型响应等待。');
+assert.ok(!workspace.includes('groupTimelineStepsBySegment'), '工具链不得向用户显示内部执行段分组。');
+assert.ok(workspace.includes("step?.kind !== 'segment'"), '工具链必须隐藏内部执行段步骤，只保留真实工具与可见状态。');
+assert.ok(controller.includes("if (event.type === 'model_progress')"), '模型可见执行说明必须作为独立的持久化时间线步骤。');
+assert.ok(controller.includes("label: '正在思考'"), '模型可见执行说明在工具链中必须显示为“正在思考”。');
+assert.ok(workspace.includes('正在思考'), '工具链必须提供可展开的“正在思考”步骤。');
 assert.ok(controller.includes('本执行段已完成。'), '任务结束后，最后一个执行段不能继续显示等待模型响应。');
 assert.ok(controller.includes('recoverPersistedSession'), '订阅中断后必须以持久化任务状态恢复界面，不能直接标记任务失败。');
 assert.ok(controller.includes('payload.task_resumed && !controllerRef.current'), '手动确认后的任务在订阅已断开时必须重新订阅继续过程。');

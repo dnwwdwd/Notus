@@ -12,6 +12,7 @@ const {
   getSession,
   loadMessagesCheckpoint,
   recordRunEvent,
+  sanitizeRunEvent,
   logToolCall,
   recordToolFail,
   resetToolFail,
@@ -317,11 +318,13 @@ async function runAgentLoop({ sessionId, runId = null, llmConfig, onStream, sign
   const emit = (event) => {
     // 时间线写入失败不能掩盖主任务结果；正常路径下每个用户可见的 v2 事件
     // 都会先脱敏落库，再交给 SSE。断线后可用同一批事件重建工具链。
+    const safeEvent = sanitizeRunEvent(event);
+    if (!safeEvent) return;
     try {
-      const eventId = recordRunEvent({ sessionId, runId, event });
-      broadcastRunEvent({ sessionId, runId, event, eventId });
+      const eventId = recordRunEvent({ sessionId, runId, event: safeEvent });
+      broadcastRunEvent({ sessionId, runId, event: safeEvent, eventId });
     } catch {}
-    rawEmit(event);
+    rawEmit(safeEvent);
   };
   const normalizedApprovalMode = normalizeApprovalMode(approvalMode);
 
@@ -502,6 +505,7 @@ async function runAgentLoop({ sessionId, runId = null, llmConfig, onStream, sign
     session = getSession(session.id);
     const isResumingDispatch = Boolean(pendingDispatch);
     let response;
+    let receivedVisibleModelText = false;
     if (isResumingDispatch) {
       activeExecutionSegment = getExecutionSegment(pendingDispatch.executionSegmentId)
         || beginExecutionSegment(session.id, loopIndex, { reuseOpen: true });
@@ -595,6 +599,20 @@ async function runAgentLoop({ sessionId, runId = null, llmConfig, onStream, sign
           messages: compactMessages(requestMessages, Math.floor(budget.hardInputBudgetTokens * (mode === 'hard' ? 0.6 : 0.75))),
         }),
         maxRetries: 1,
+        onVisibleText: (text) => {
+          const visibleText = sanitizeAssistantVisibleText(text);
+          if (!visibleText) return;
+          receivedVisibleModelText = true;
+          emit({
+            type: 'progress',
+            stage: 'model_progress',
+            text: visibleText,
+            loop_index: loopIndex,
+            execution_segment_id: activeExecutionSegment.id,
+            segment_sequence_no: activeExecutionSegment.sequence_no,
+            request_window_no: activeRequestWindow.window_no,
+          });
+        },
       }, DEFAULT_LLM_RETRY_LIMIT, {
         onRetry: ({ attempt, maxRetries, delayMs, classification }) => {
           recordRequestRetry(activeRequestWindow.id, attempt, classification);
@@ -709,10 +727,21 @@ async function runAgentLoop({ sessionId, runId = null, llmConfig, onStream, sign
       completed: toolUseBlocks.length === 0,
     });
 
-    textBlocks.forEach((block) => {
-      const visibleText = sanitizeAssistantVisibleText(block.text);
-      if (visibleText && toolUseBlocks.length > 0) emit({ type: 'progress', stage: 'model_progress', text: visibleText, loop_index: loopIndex });
-    });
+    if (!isResumingDispatch && !receivedVisibleModelText && toolUseBlocks.length > 0) {
+      textBlocks.forEach((block) => {
+        const visibleText = sanitizeAssistantVisibleText(block.text);
+        if (!visibleText) return;
+        emit({
+          type: 'progress',
+          stage: 'model_progress',
+          text: visibleText,
+          loop_index: loopIndex,
+          execution_segment_id: activeExecutionSegment.id,
+          segment_sequence_no: activeExecutionSegment.sequence_no,
+          request_window_no: activeRequestWindow?.window_no || 0,
+        });
+      });
+    }
 
     if (isGoalAchieved(stopReason, toolUseBlocks)) {
       logToolCall({ sessionId: session.id, loopIndex, toolName: null, toolInput: null, toolResult: null, thinking, status: 'success', durationMs: 0 });

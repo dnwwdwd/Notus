@@ -174,7 +174,7 @@ assert.ok(settings.includes("{ id: 'global-agent', label: 'Agent 个性', icon: 
   assert.ok(globalStyles.includes('.notus-diff-dialog__backdrop {\n  position: fixed;\n  inset: 0;\n  z-index: 2000;'), 'Diff 弹窗必须位于页面吸顶工具栏之上');
   assert.ok(globalStyles.includes('@media (max-width: 960px)'), 'Diff 详情必须定义窄屏布局');
   assert.ok(globalStyles.includes('.notus-diff-dialog__sidebar.is-mobile-open'), '窄屏文件列表必须使用悬浮抽屉状态');
-  assert.ok(agentWorkspace.includes('const renderedSteps = useMemo(() => visibleSteps.filter((step) => step?.errorType !== \'agent\')'), 'Agent 错误步骤不能进入带分隔线的普通工具步骤列表');
+  assert.ok(agentWorkspace.includes("step?.errorType !== 'agent' && step?.kind !== 'segment'"), 'Agent 错误和内部执行段都不能进入普通工具步骤列表');
   assert.ok(agentWorkspace.includes("attachmentMode === 'parsed'"));
   assert.ok(agentWorkspace.includes('pasted-text-'));
   assert.ok(agentWorkspace.includes('const LONG_PASTE_ATTACHMENT_THRESHOLD = 100;'));

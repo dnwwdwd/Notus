@@ -86,9 +86,15 @@ function upsertStep(list = [], step = null) {
   const index = next.findIndex((item) => item.id === step.id);
   const now = new Date().toISOString();
   if (index >= 0) {
+    const previous = next[index];
+    const appendDetail = Boolean(step.appendDetail);
+    const nextDetail = appendDetail
+      ? `${String(previous.detail || '')}${String(step.detail || '')}`
+      : step.detail;
     next[index] = {
-      ...next[index],
+      ...previous,
       ...step,
+      ...(appendDetail ? { detail: nextDetail } : {}),
       createdAt: next[index].createdAt || step.createdAt || now,
       updatedAt: step.updatedAt || now,
     };
@@ -332,6 +338,19 @@ function buildEventStep(event = {}) {
   if (event.type === 'soft_limit_notice') {
     return null;
   }
+  if (event.type === 'model_progress') {
+    const segment = executionSegmentFields(event);
+    return {
+      id: `model-progress-${segment.executionSegmentId || loop || 'current'}`,
+      kind: 'model_progress',
+      ...segment,
+      label: '正在思考',
+      status: 'running',
+      detail: String(event.text || ''),
+      appendDetail: true,
+      open: true,
+    };
+  }
   if (event.type === 'thinking') {
     return null;
   }
@@ -485,7 +504,7 @@ export function buildRestoredAgentTimeline(session = {}) {
   }
 
   const draftParts = persistedEvents
-    .filter((event) => event.type === 'progress' && ['model_progress', 'thinking'].includes(event.stage))
+    .filter((event) => event.type === 'progress' && event.stage === 'thinking')
     .map((event) => String(event.text || '').trim())
     .filter((text, index, rows) => Boolean(text) && text !== rows[index - 1]);
   // 旧 run_logs 的 thinking 没有统一脱敏协议，不能作为“中断前回复”展示。
@@ -525,7 +544,7 @@ export function applyAgentTimelineEvent(timeline = {}, event = {}) {
   } else if (event.type === 'progress') {
     sessionStatus = 'running';
     loading = true;
-    if (['model_progress', 'thinking'].includes(event.stage)) {
+    if (event.stage === 'thinking') {
       const text = String(event.text || '').trim();
       if (text && text !== streamText.split('\n\n').pop()) streamText = streamText ? `${streamText}\n\n${text}` : text;
     }
@@ -1129,7 +1148,7 @@ export function useAgentLoopController({
             loop_count: Number(event.loop_index || prev?.loop_count || 0),
             reason: '',
           }));
-          if (['model_progress', 'thinking'].includes(event.stage)) {
+          if (event.stage === 'thinking') {
             const text = String(event.text || '').trim();
             if (text && text !== assistantTextRef.current.split('\n\n').pop()) {
               assistantTextRef.current = assistantTextRef.current

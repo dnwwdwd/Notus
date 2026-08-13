@@ -3,7 +3,13 @@ const path = require('path');
 const archiver = require('archiver');
 const { ensureRuntime } = require('../../../lib/runtime');
 const { getEffectiveConfig } = require('../../../lib/config');
-const { listFilesByIds, listFilesByPaths, resolveInside } = require('../../../lib/files');
+const {
+  getAllFiles,
+  listFilesByIds,
+  listFilesByPaths,
+  normalizeRelativePath,
+  resolveInside,
+} = require('../../../lib/files');
 
 function encodeContentDispositionFilename(filename = '') {
   const original = String(filename || '').trim() || 'notus-export.zip';
@@ -28,6 +34,16 @@ function uniqueFiles(files) {
   });
 }
 
+function listFilesByFolder(folderPath = '') {
+  const folder = normalizeRelativePath(folderPath);
+  const prefix = `${folder}/`;
+  return getAllFiles().filter((file) => String(file?.path || '').startsWith(prefix));
+}
+
+function singleDownloadFilename(file = {}) {
+  return path.posix.basename(String(file.path || 'notus-export.md')) || 'notus-export.md';
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method not allowed', code: 'METHOD_NOT_ALLOWED' });
@@ -44,17 +60,37 @@ export default async function handler(req, res) {
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean);
+  const folder = String(req.query.folder || '').trim();
+  const mode = String(req.query.mode || '').trim();
 
   const files = uniqueFiles([
     ...listFilesByIds(ids),
     ...listFilesByPaths(paths),
+    ...(folder ? listFilesByFolder(folder) : []),
   ]);
 
   if (files.length === 0) {
     return res.status(400).json({ error: '至少选择一个文件', code: 'NO_FILES_SELECTED' });
   }
 
-  const filename = `notus-export-${new Date().toISOString().replace(/[:.]/g, '-')}.zip`;
+  if (mode === 'file') {
+    if (files.length !== 1 || folder) {
+      return res.status(400).json({ error: '单文件下载只能选择一个 Markdown 文件', code: 'INVALID_SINGLE_FILE_EXPORT' });
+    }
+    const file = files[0];
+    const target = resolveInside(getEffectiveConfig().notesDir, file.path);
+    if (!fs.existsSync(target.absolutePath)) {
+      return res.status(404).json({ error: '文件不存在', code: 'FILE_NOT_FOUND' });
+    }
+    res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+    res.setHeader('Content-Disposition', encodeContentDispositionFilename(singleDownloadFilename(file)));
+    return res.status(200).send(fs.readFileSync(target.absolutePath));
+  }
+
+  const folderName = folder ? path.posix.basename(normalizeRelativePath(folder)) : '';
+  const filename = folderName
+    ? `${folderName}.zip`
+    : `notus-export-${new Date().toISOString().replace(/[:.]/g, '-')}.zip`;
   res.setHeader('Content-Type', 'application/zip');
   res.setHeader('Content-Disposition', encodeContentDispositionFilename(filename));
 

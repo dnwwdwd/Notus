@@ -51,6 +51,8 @@ async function runTests() {
   assert.ok(mixedItem);
   assert.ok(mixedItem.applied_content.includes('beta'));
   assert.ok(!mixedItem.applied_content.includes('gamma'));
+  assert.strictEqual(detail.applied_count, 1, '累计摘要必须统计已应用的文件修订');
+  assert.strictEqual(detail.discarded_count, 1, '累计摘要必须统计已废弃的文件修订');
 
   const conflictSet = createOperationSet({
     conversationId: conversation.id,
@@ -84,6 +86,7 @@ async function runTests() {
   assert.strictEqual(moveItem.resource_kind, 'file');
   assert.strictEqual(moveItem.applied_path, 'new.md');
   assert.ok(moveItem.applied_content.includes('content'));
+  assert.ok(detail.operation_set_view, '累计详情必须返回可直接渲染的 Diff 视图');
 
   console.log('agent task change composition tests passed');
 }

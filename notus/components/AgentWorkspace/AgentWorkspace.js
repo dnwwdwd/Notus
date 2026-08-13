@@ -1092,10 +1092,7 @@ function operationSetSummary(operationSet) {
   const revisionMode = operations.some((item) => item.change_type === 'file_revision');
   const fileSystemMode = operations.some((item) => isFileSystemOperation(item));
   const mediaCount = operations.reduce((total, item) => total + (Array.isArray(item.media_changes) ? item.media_changes.length : 0), 0);
-  let detail = revisionMode ? '本次任务的全文修订预览已生成' : fileSystemMode ? '本次任务的文件/目录操作预览已生成' : '本次任务的文件修改预览已生成';
-  if (pendingCount > 0) detail = `${pendingCount} 个文件待确认`;
-  else if (autoAppliedCount === operations.length && operations.length > 0) detail = '已自动应用，可查看详情或逐文件回滚';
-  else if (appliedCount > 0 || rolledBackCount > 0 || discardedCount > 0) detail = `已应用 ${appliedCount} 个，已回滚 ${rolledBackCount} 个，已废弃 ${discardedCount} 个`;
+  let detail = `已应用 ${appliedCount} 个，已回滚 ${rolledBackCount} 个，已废弃 ${discardedCount} 个`;
   if (failedCount > 0) detail = `${detail}，${failedCount} 个处理失败`;
   if (staleCount > 0) detail = `${staleCount} 个文件已变化，需要重新生成`;
   if (applyFailedCount > 0) detail = `${applyFailedCount} 个文件应用失败`;
@@ -1127,7 +1124,7 @@ function OperationSetCard({ operationSet, onOpenDetail }) {
           <Icons.edit size={15} />
         </span>
         <div style={{ display: 'grid', gap: 3, minWidth: 0 }}>
-          <div style={{ fontSize: 13, fontWeight: 800, color: C.text }}>{summary.fileCount} {summary.revisionMode ? '个文件全文修订' : summary.fileSystemMode ? '项文件/目录操作' : '个文件发生变更'}</div>
+          <div style={{ fontSize: 13, fontWeight: 800, color: C.text }}>{summary.fileCount} 个文件修订</div>
           <div style={{ fontSize: 11, color: C.tertiary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{summary.detail}</div>
         </div>
       </div>
@@ -1138,21 +1135,22 @@ function OperationSetCard({ operationSet, onOpenDetail }) {
 
 function TaskChangeSetCard({ changeSet, onOpenDetail }) {
   if (!changeSet || Number(changeSet.file_count || 0) + Number(changeSet.directory_count || 0) === 0) return null;
-  const pendingCount = Number(changeSet.pending_count || 0);
   const fileCount = Number(changeSet.file_count || 0);
   const directoryCount = Number(changeSet.directory_count || 0);
-  const countLabel = [fileCount ? `${fileCount} 个文件` : '', directoryCount ? `${directoryCount} 个目录` : ''].filter(Boolean).join('、');
-  const statusText = pendingCount > 0
-    ? `${pendingCount} 项修改等待确认，确认后任务会继续`
-    : changeSet.status === 'failed'
-      ? '任务已中断，已完成的修改仍可查看'
-      : '汇总本任务从开始到当前的全部修改';
+  const revisionCount = fileCount + directoryCount;
+  const appliedCount = Number(changeSet.applied_count || 0);
+  const rolledBackCount = Number(changeSet.rolled_back_count || 0);
+  const discardedCount = Number(changeSet.discarded_count || 0);
+  const mediaChangeCount = Number(changeSet.media_change_count || 0);
+  const statusText = [`已应用 ${appliedCount} 个`, `已回滚 ${rolledBackCount} 个`, `已废弃 ${discardedCount} 个`]
+    .concat(mediaChangeCount > 0 ? [`包含 ${mediaChangeCount} 项图片变更`] : [])
+    .join('，');
   return (
     <section aria-label="本任务累计修改" style={{ marginTop: 12, padding: 14, borderRadius: 12, background: C.soft, boxShadow: 'inset 0 0 0 1px rgba(229,227,216,0.72)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-        <span aria-hidden="true" style={{ width: 32, height: 32, borderRadius: 10, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: C.accent, background: '#fff', boxShadow: 'inset 0 0 0 1px rgba(229,227,216,0.95)' }}><Icons.edit size={15} /></span>
+        <span aria-hidden="true" style={{ width: 32, height: 32, borderRadius: '50%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: C.accent, background: '#fff', boxShadow: 'inset 0 0 0 1px rgba(229,227,216,0.95)' }}><Icons.edit size={15} /></span>
         <div style={{ display: 'grid', gap: 3, minWidth: 0 }}>
-          <div style={{ fontSize: 13, fontWeight: 800, color: C.text }}>本任务累计修改 · {countLabel}</div>
+          <div style={{ fontSize: 13, fontWeight: 800, color: C.text }}>{revisionCount} 个文件修订</div>
           <div style={{ fontSize: 11, color: C.tertiary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{statusText}</div>
         </div>
       </div>
@@ -1381,7 +1379,8 @@ function UserMessageRow({ message, disabled, removing = false, onResendMessage, 
   const [draft, setDraft] = useState(String(message.content || ''));
   const [sending, setSending] = useState(false);
   const [submittedContent, setSubmittedContent] = useState(null);
-  const canEdit = Boolean(String(message.content || '').trim()) && typeof onResendMessage === 'function';
+  const hideUserMessageBubble = Boolean(message?.meta?.hide_user_message_bubble);
+  const canEdit = !hideUserMessageBubble && Boolean(String(message.content || '').trim()) && typeof onResendMessage === 'function';
   const displayContent = submittedContent === null ? String(message.content || '') : submittedContent;
 
   useEffect(() => {
@@ -1411,7 +1410,10 @@ function UserMessageRow({ message, disabled, removing = false, onResendMessage, 
   const messageMedia = dedupeAgentMedia(message.attachments);
   const messageImages = messageMedia.filter(isImageMedia);
   const messageAttachments = messageMedia.filter((file) => !isImageMedia(file));
-  const hasTextContent = Boolean(String(message.content || '').trim() || (Array.isArray(message.mentions) && message.mentions.length > 0));
+  const hasTextContent = !hideUserMessageBubble && Boolean(
+    String(message.content || '').trim()
+    || (Array.isArray(message.mentions) && message.mentions.length > 0),
+  );
   const timestamp = formatMessageTimestamp(message.createdAt);
 
   return (
@@ -2436,7 +2438,13 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
         ? '请读取并分析已上传的文件。'
         : '';
     const currentComposer = serializeComposer();
-    const text = String(forcedText || currentComposer.content || fallbackText || '').trim();
+    const explicitText = String(forcedText || currentComposer.content || '').trim();
+    const hideUserMessageBubble = Boolean(
+      !explicitText
+      && currentComposer.mentions.length === 0
+      && files.length > 0,
+    );
+    const text = String(explicitText || fallbackText || '').trim();
     if ((!text && files.length === 0 && currentComposer.mentions.length === 0) || busy || disabled || !selectedConfig) return;
     if (webSearchSelected && !searchConfig.enabled) {
       onRequireSearchConfig?.({ reason: 'disabled', selectProvider: selectedSearchProvider || preferredSearchProvider });
@@ -2477,6 +2485,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
         mediaItems,
         mentions: currentComposer.mentions,
         mentionSegments,
+        hideUserMessageBubble,
         webSearchEnabled: webSearchSelected,
         searchProvider: selectedSearchProvider || null,
         searchProviders: searchProviderList,

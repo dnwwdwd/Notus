@@ -1006,6 +1006,36 @@ async function runAgentLoop({ sessionId, runId = null, llmConfig, onStream, sign
           change_file_count: fileChangeCount,
           change_directory_count: directoryChangeCount,
         });
+        if (!actualApplied && normalizedApprovalMode === 'manual_confirm') {
+          // 手动模式的边界是生成 Diff，而不是用户应用后的下一轮模型调用。
+          // 保留 operation set 与任务变更集供用户随时应用、废弃或回滚，但不再保存
+          // 可恢复 checkpoint 或阻塞同会话队列，避免应用后再额外请求模型生成收尾总结。
+          updateExecutionSegment(activeExecutionSegment.id, { status: 'completed', completed: true });
+          updateSessionStatus(session.id, 'completed');
+          markTaskChangeSetFinished(session.id, 'completed');
+          if (checkpointToCommit) clearMessagesCheckpoint(session.id, checkpointToCommit);
+          checkpointToCommit = null;
+          const usage = getSessionUsage(session.id);
+          emit({
+            type: 'final',
+            text: finalThinking,
+            status: 'completed',
+            reason: 'manual_preview_generated',
+            loop_index: loopIndex,
+            operation_set_id: result.operation_set_id,
+            task_change_set_id: changeSet.id,
+            task_change_set_version: changeSet.version,
+            usage,
+          });
+          return {
+            status: 'completed',
+            reason: 'manual_preview_generated',
+            operation_set_id: result.operation_set_id,
+            task_change_set_id: changeSet.id,
+            final_text: finalThinking,
+            usage,
+          };
+        }
         if (!actualApplied) {
           saveMessagesCheckpoint(session.id, messages, content, toolUse.id, runId, {
             phase: 'waiting_operation_confirmation',

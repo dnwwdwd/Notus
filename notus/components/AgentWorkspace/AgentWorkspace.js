@@ -74,9 +74,16 @@ const AGENT_INPUT_TEXTAREA_DEFAULT_ROWS = 3;
 const AGENT_INPUT_LINE_HEIGHT = 22;
 const AGENT_CHAT_CONTENT_WIDTH = 'min(860px, calc(100% - 32px))';
 const CHAT_STICKY_BOTTOM_THRESHOLD = 56;
-const CHAT_JUMP_BUTTON_OFFSET = 240;
 const MCP_SELECTION_STORAGE_KEY = 'notus-agent-mcp-selection';
 const AGENT_TASK_RECEIPTS_ENABLED = false;
+const FILE_READ_TOOL_NAMES = new Set(['read_file', 'read_global_agent_file']);
+const FILE_WRITE_TOOL_NAMES = new Set([
+  'create_note',
+  'preview_patch_files',
+  'preview_file_revision',
+  'preview_file_operations',
+  'update_global_agent_file',
+]);
 const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
 
 function readMcpSelectionPreference() {
@@ -528,12 +535,16 @@ function ToolStatusIcon({ status, size = 14 }) {
 
 function ToolTraceIcon({ step, size = 15 }) {
   const status = String(step?.status || 'done');
+  const toolName = String(step?.tool || '').toLowerCase();
   const source = `${step?.tool || ''} ${step?.label || ''}`.toLowerCase();
   if (['failed', 'error'].includes(status)) return <Icons.warn size={size} />;
   if (['waiting', 'action_required'].includes(status)) return <Icons.warn size={size} />;
   if (['stopped', 'cancelled'].includes(status)) return <Icons.square size={Math.max(10, size - 2)} />;
   if (source.includes('mcp')) return <Icons.mcp size={size} />;
   if (source.includes('skill')) return <Icons.skill size={size} />;
+  if (FILE_READ_TOOL_NAMES.has(toolName)) return <Icons.fileText size={size} />;
+  if (FILE_WRITE_TOOL_NAMES.has(toolName)) return <Icons.fileEdit size={size} />;
+  if (source.includes('正在思考')) return <Icons.brain size={size} />;
   if (source.includes('image') || source.includes('图片')) return <Icons.image size={size} />;
   if (source.includes('search') || source.includes('检索') || source.includes('搜索')) return <Icons.search size={size} />;
   if (source.includes('folder') || source.includes('目录')) return <Icons.folderOpen size={size} />;
@@ -587,7 +598,7 @@ function traceTimestamp(value) {
 
 function formatTraceElapsed(milliseconds) {
   const duration = Number(milliseconds);
-  if (!Number.isFinite(duration) || duration < 1000) return '不到 1 秒';
+  if (!Number.isFinite(duration) || duration < 1000) return '1 秒';
   const seconds = Math.max(1, Math.round(duration / 1000));
   if (seconds < 60) return `${seconds} 秒`;
   const minutes = Math.floor(seconds / 60);
@@ -748,57 +759,6 @@ function timelineStepId(step = {}, index = 0) {
   return String(step.id || step.label || index);
 }
 
-function groupTimelineStepsBySegment(steps = []) {
-  const groups = [];
-  const groupsByKey = new Map();
-  const getGroup = (step, index) => {
-    const segmentId = Number(step?.executionSegmentId || 0) || 0;
-    if (!segmentId) {
-      const key = `legacy-${index}`;
-      const group = { key, sequenceNo: 0, header: null, steps: [], legacy: true };
-      groups.push(group);
-      return group;
-    }
-    const key = `segment-${segmentId}`;
-    if (!groupsByKey.has(key)) {
-      const group = { key, sequenceNo: Number(step?.segmentSequenceNo || 0) || 0, header: null, steps: [], legacy: false };
-      groupsByKey.set(key, group);
-      groups.push(group);
-    }
-    const group = groupsByKey.get(key);
-    group.sequenceNo = Math.max(group.sequenceNo, Number(step?.segmentSequenceNo || 0) || 0);
-    return group;
-  };
-  (Array.isArray(steps) ? steps : []).forEach((step, index) => {
-    const group = getGroup(step, index);
-    if (step?.kind === 'segment') group.header = step;
-    else group.steps.push(step);
-  });
-  return groups;
-}
-
-function isActiveSegmentGroup(group = {}) {
-  return [group.header, ...(Array.isArray(group.steps) ? group.steps : [])]
-    .filter(Boolean)
-    .some((step) => ['running', 'waiting', 'action_required'].includes(step.status));
-}
-
-function segmentStageSummary(group = {}) {
-  const steps = Array.isArray(group.steps) ? group.steps : [];
-  const current = [...steps].reverse().find((step) => ['running', 'waiting', 'action_required', 'error'].includes(step?.status)) || steps.at(-1);
-  if (!current) {
-    return group.header?.status === 'done'
-      ? '本执行段已完成。'
-      : group.header?.detail || '正在等待模型响应。';
-  }
-  if (current.kind === 'llm_retry') return current.result ? `正在重试模型请求 · ${current.result}` : '正在重试模型请求';
-  if (current.kind === 'operation_batch' || current.kind === 'operation_confirmation') return current.detail || '等待确认文件修改。';
-  if (current.kind === 'tool' && current.status === 'running') return `正在执行：${current.label}`;
-  if (current.kind === 'tool' && current.status === 'error') return `${current.label} 执行失败`;
-  if (steps.length > 0) return `${steps.filter((step) => step.kind === 'tool').length} 项工具已完成`;
-  return group.header?.detail || '';
-}
-
 function ToolChainStep({ step, index, open, onToggle, onAction, onPreviewImages, sessionId }) {
   const stepId = timelineStepId(step, index);
   const hasDetails = Boolean(step.detail || step.tool || step.input || step.result || step.action || step.images?.length || step.questionAnswer);
@@ -865,8 +825,7 @@ function ToolChain({ steps, loading, sessionStatus = '', sessionId = '', started
   // 只展示服务端已经确认的真实动作，内部循环、排队和推测性 loading 不进入执行记录。
   const visibleSteps = useMemo(() => (Array.isArray(steps) ? steps : []), [steps]);
   const agentErrorStep = [...visibleSteps].reverse().find((step) => step?.errorType === 'agent') || null;
-  const renderedSteps = useMemo(() => visibleSteps.filter((step) => step?.errorType !== 'agent'), [visibleSteps]);
-  const segmentGroups = useMemo(() => groupTimelineStepsBySegment(renderedSteps), [renderedSteps]);
+  const renderedSteps = useMemo(() => visibleSteps.filter((step) => step?.errorType !== 'agent' && step?.kind !== 'segment'), [visibleSteps]);
   const fallbackErrorStep = !agentErrorStep && String(errorMessage || '').trim()
     ? {
       label: '请求失败',
@@ -878,9 +837,8 @@ function ToolChain({ steps, loading, sessionStatus = '', sessionId = '', started
     : null;
   const displayedErrorStep = agentErrorStep || fallbackErrorStep;
   const [expanded, setExpanded] = useState({});
-  const [expandedSegments, setExpandedSegments] = useState({});
   const liveSession = Boolean(loading) || ['created', 'queued', 'running'].includes(sessionStatus);
-  const tailStatus = visibleSteps[visibleSteps.length - 1]?.status || 'done';
+  const tailStatus = renderedSteps[renderedSteps.length - 1]?.status || 'done';
   const hasActionRequired = Boolean(displayedErrorStep)
     || ['waiting', 'action_required'].includes(tailStatus)
     || ['waiting_confirm', 'waiting_interaction', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery'].includes(sessionStatus);
@@ -901,16 +859,6 @@ function ToolChain({ steps, loading, sessionStatus = '', sessionId = '', started
       return next;
     });
   }, [stepKey, visibleSteps]);
-
-  useEffect(() => {
-    setExpandedSegments((previous) => {
-      const next = { ...previous };
-      segmentGroups.forEach((group) => {
-        if (!group.legacy && isActiveSegmentGroup(group)) next[group.key] = true;
-      });
-      return next;
-    });
-  }, [segmentGroups]);
 
   const hasRunning = liveSession || tailStatus === 'running';
   const isCancelled = sessionStatus === 'cancelled' || tailStatus === 'cancelled';
@@ -956,36 +904,18 @@ function ToolChain({ steps, loading, sessionStatus = '', sessionId = '', started
       </div>
       {traceExpanded ? <>
         {renderedSteps.length > 0 ? <div className="notus-agent-toolchain__steps">
-          {segmentGroups.map((group) => {
-            const isOpen = group.legacy || Boolean(expandedSegments[group.key]);
-            const headerLabel = group.header?.label || (group.sequenceNo ? `第 ${group.sequenceNo} 个执行段` : '执行记录');
-            return (
-              <section key={group.key} className={group.legacy ? 'notus-agent-toolchain__segment is-legacy' : 'notus-agent-toolchain__segment'} aria-label={headerLabel}>
-                {!group.legacy ? <button
-                  type="button"
-                  className="notus-agent-toolchain__segment-toggle notus-agent-pressable"
-                  aria-expanded={isOpen}
-                  onClick={() => setExpandedSegments((previous) => ({ ...previous, [group.key]: !previous[group.key] }))}
-                >
-                  <span>{headerLabel}</span>
-                  <span className="notus-agent-toolchain__segment-stage">{segmentStageSummary(group)}</span>
-                  <Icons.chevronRight size={14} className={isOpen ? 'notus-agent-tool-chevron is-open' : 'notus-agent-tool-chevron'} />
-                </button> : null}
-                {isOpen ? group.steps.map((step, index) => {
-                  const stepId = timelineStepId(step, index);
-                  return <ToolChainStep
-                    key={stepId}
-                    step={step}
-                    index={index}
-                    open={Boolean(expanded[stepId])}
-                    onToggle={(id) => setExpanded((previous) => ({ ...previous, [id]: !previous[id] }))}
-                    onAction={onAction}
-                    onPreviewImages={onPreviewImages}
-                    sessionId={sessionId}
-                  />;
-                }) : null}
-              </section>
-            );
+          {renderedSteps.map((step, index) => {
+            const stepId = timelineStepId(step, index);
+            return <ToolChainStep
+              key={stepId}
+              step={step}
+              index={index}
+              open={Boolean(expanded[stepId])}
+              onToggle={(id) => setExpanded((previous) => ({ ...previous, [id]: !previous[id] }))}
+              onAction={onAction}
+              onPreviewImages={onPreviewImages}
+              sessionId={sessionId}
+            />;
           })}
         </div> : null}
         {displayedErrorStep ? (
@@ -1622,7 +1552,7 @@ function TaskReceiptCards({ researchSummary, writeSummary }) {
   );
 }
 
-function AssistantMessageRow({ message, disabled, removing = false, onRetryMessage, previousUserMessage, onOpenOperationSet, onOpenTaskChangeSet, onCitationClick, citationSelection, executionTrace = null }) {
+function AssistantMessageRow({ message, taskChangeSet = null, disabled, removing = false, onRetryMessage, previousUserMessage, onOpenOperationSet, onOpenTaskChangeSet, onCitationClick, citationSelection, executionTrace = null }) {
   const [retrying, setRetrying] = useState(false);
   const canRetry = Boolean(previousUserMessage?.content) && typeof onRetryMessage === 'function';
   const timestamp = formatMessageTimestamp(message.createdAt);
@@ -1665,9 +1595,6 @@ function AssistantMessageRow({ message, disabled, removing = false, onRetryMessa
           ))}
         </div>
       ) : null}
-      {message.taskChangeSet
-        ? (!executionTrace ? <TaskChangeSetCard changeSet={message.taskChangeSet} onOpenDetail={onOpenTaskChangeSet} /> : null)
-        : message.operationSet ? <OperationSetCard operationSet={message.operationSet} onOpenDetail={onOpenOperationSet} /> : null}
       <TaskReceiptCards researchSummary={message.meta?.research_summary} writeSummary={message.meta?.write_summary} />
       <div aria-label="AI 回复操作" style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', gap: 8, marginTop: 10, minHeight: 30 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -1678,15 +1605,17 @@ function AssistantMessageRow({ message, disabled, removing = false, onRetryMessa
         </div>
         <MessageTimestamp value={timestamp} align="right" inline />
       </div>
+      {taskChangeSet || message.taskChangeSet ? <TaskChangeSetCard changeSet={taskChangeSet || message.taskChangeSet} onOpenDetail={onOpenTaskChangeSet} /> : null}
+      {!taskChangeSet && !message.taskChangeSet && message.operationSet ? <OperationSetCard operationSet={message.operationSet} onOpenDetail={onOpenOperationSet} /> : null}
     </div>
   );
 }
 
-function AgentTaskTimeline({ activeSteps, loading, streamText, sessionStatus = '', sessionId = '', startedAt = '', finishedAt = '', errorMessage = '', retryMessage = null, taskChangeSet = null, onRetryMessage, onAction, onPreviewImages, onOpenTaskChangeSet }) {
+function AgentTaskTimeline({ activeSteps, loading, streamText, sessionStatus = '', sessionId = '', startedAt = '', finishedAt = '', errorMessage = '', retryMessage = null, onRetryMessage, onAction, onPreviewImages }) {
   const hasSteps = Array.isArray(activeSteps) && activeSteps.length > 0;
   const isStarting = !hasSteps && !streamText && (loading || ['created', 'queued'].includes(sessionStatus));
   const hasTrace = hasSteps || Boolean(startedAt);
-  const hasActivity = hasTrace || Boolean(streamText) || Boolean(errorMessage) || Boolean(taskChangeSet) || isStarting;
+  const hasActivity = hasTrace || Boolean(streamText) || Boolean(errorMessage) || isStarting;
   if (!hasActivity) return null;
   return (
     <div className="notus-agent-task-timeline">
@@ -1698,7 +1627,6 @@ function AgentTaskTimeline({ activeSteps, loading, streamText, sessionStatus = '
           <StreamingText className="notus-agent-markdown" text={streamText} streaming={loading} style={{ fontSize: 15, lineHeight: 1.85, color: C.text }} />
         </div>
       ) : null}
-      {taskChangeSet ? <TaskChangeSetCard changeSet={taskChangeSet} onOpenDetail={onOpenTaskChangeSet} /> : null}
     </div>
   );
 }
@@ -1723,17 +1651,12 @@ function MessageList({ messages, interactions = [], streamText, error = '', load
   const assistantSessionIds = new Set((Array.isArray(messages) ? messages : [])
     .filter((message) => message?.role === 'assistant' && message?.meta?.session_id)
     .map((message) => String(message.meta.session_id)));
-  const latestAssistantIndexBySession = new Map();
-  (Array.isArray(messages) ? messages : []).forEach((message, index) => {
-    const sessionId = String(message?.meta?.session_id || '');
-    if (message?.role === 'assistant' && sessionId) latestAssistantIndexBySession.set(sessionId, index);
-  });
   const answeredInteractions = (Array.isArray(interactions) ? interactions : [])
     .filter((interaction) => interaction?.status === 'answered');
   const interactionStepsFor = (sessionId) => answeredInteractions
     .filter((interaction) => String(interaction?.payload?.agent_session_id || '') === String(sessionId || ''))
     .map(buildInteractionHistoryStep);
-  const traceFor = (timeline, key, retryMessage = null, showTaskChangeSet = true) => {
+  const traceFor = (timeline, key, retryMessage = null) => {
     if (!timeline) return null;
     const steps = mergeInteractionStepsIntoTimeline(
       Array.isArray(timeline.activeSteps) ? timeline.activeSteps : [],
@@ -1741,8 +1664,8 @@ function MessageList({ messages, interactions = [], streamText, error = '', load
     );
     const draft = String(timeline.streamText || '');
     const timelineError = String(timeline.errorMessage || '').trim();
-    if (steps.length === 0 && !draft && !timeline.loading && !timelineError && !timeline.startedAt && !(showTaskChangeSet && taskChangeSetsBySession[String(timeline.sessionId || '')])) return null;
-    return <AgentTaskTimeline key={key} activeSteps={steps} loading={Boolean(timeline.loading)} streamText={draft} errorMessage={timelineError} retryMessage={retryMessage} taskChangeSet={showTaskChangeSet ? (taskChangeSetsBySession[String(timeline.sessionId || '')] || null) : null} onRetryMessage={onRetryMessage} sessionStatus={timeline.sessionStatus || ''} sessionId={timeline.sessionId || ''} startedAt={timeline.startedAt || ''} finishedAt={timeline.finishedAt || ''} onAction={onAgentStepAction} onPreviewImages={onPreviewToolchainImages} onOpenTaskChangeSet={onOpenTaskChangeSet} />;
+    if (steps.length === 0 && !draft && !timeline.loading && !timelineError && !timeline.startedAt) return null;
+    return <AgentTaskTimeline key={key} activeSteps={steps} loading={Boolean(timeline.loading)} streamText={draft} errorMessage={timelineError} retryMessage={retryMessage} onRetryMessage={onRetryMessage} sessionStatus={timeline.sessionStatus || ''} sessionId={timeline.sessionId || ''} startedAt={timeline.startedAt || ''} finishedAt={timeline.finishedAt || ''} onAction={onAgentStepAction} onPreviewImages={onPreviewToolchainImages} />;
   };
   const currentTimelineSource = sessionTimelines?.[currentSessionKey] || null;
   const currentRetryMessage = currentTimelineSource?.userMessageId
@@ -1783,6 +1706,9 @@ function MessageList({ messages, interactions = [], streamText, error = '', load
           const userTrace = userTimeline && !assistantSessionIds.has(userSessionKey)
             ? traceFor(userSessionKey && userSessionKey === currentSessionKey ? currentTimeline : userTimeline, `user-${userSessionKey}`, message)
             : (index === lastMessageIndex && hasAgentActivity ? executionTrace : null);
+          const userTaskChangeSet = userSessionKey && !assistantSessionIds.has(userSessionKey)
+            ? taskChangeSetsBySession[userSessionKey]
+            : null;
           return (
             <Fragment key={message.id}>
               <UserMessageRow
@@ -1796,6 +1722,7 @@ function MessageList({ messages, interactions = [], streamText, error = '', load
                 onPreviewImages={onPreviewImages}
               />
               {userTrace}
+              {userTaskChangeSet ? <TaskChangeSetCard changeSet={userTaskChangeSet} onOpenDetail={onOpenTaskChangeSet} /> : null}
             </Fragment>
           );
         }
@@ -1806,6 +1733,7 @@ function MessageList({ messages, interactions = [], streamText, error = '', load
           <AssistantMessageRow
             key={message.id}
             message={message}
+            taskChangeSet={taskChangeSetsBySession[messageSessionKey] || message.taskChangeSet || null}
             disabled={actionDisabled}
             removing={removing}
             onRetryMessage={onRetryMessage}
@@ -1815,7 +1743,7 @@ function MessageList({ messages, interactions = [], streamText, error = '', load
             onCitationClick={onCitationClick}
             citationSelection={citationSelection}
             executionTrace={messageTimeline
-              ? traceFor(messageSessionKey === currentSessionKey ? currentTimeline : messageTimeline, `assistant-${messageSessionKey}`, previousUserMessage, latestAssistantIndexBySession.get(messageSessionKey) === index)
+              ? traceFor(messageSessionKey === currentSessionKey ? currentTimeline : messageTimeline, `assistant-${messageSessionKey}`, previousUserMessage)
               : (index === lastMessageIndex && hasAgentActivity ? executionTrace : null)}
           />
         );
@@ -1841,7 +1769,7 @@ function AgentConfirmModeSelect({ value, onChange, disabled }) {
   );
 }
 
-function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigChange, onSend, onInterrupt, interruptibleSessionId = null, searchConfig, searchPreference, onSearchPreferenceChange, onRequireSearchConfig, onRequireMcpConfig, mcpSelection = { mode: 'off' }, onMcpSelectionChange, mcpAvailable = false, mcpAvailabilityChecked = false, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [], onPreviewMention, onPrefetchMention }) {
+function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigChange, onSend, onInterrupt, interruptibleSessionId = null, searchConfig, searchPreference, onSearchPreferenceChange, onRequireSearchConfig, onRequireMcpConfig, mcpSelection = { mode: 'off' }, onMcpSelectionChange, mcpAvailable = false, mcpAvailabilityChecked = false, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [], onPreviewMention, onPrefetchMention, showJumpToBottom = false, onJumpToBottom }) {
   const [composerState, setComposerState] = useState({ content: '', mentions: [], segments: [] });
   const [files, setFiles] = useState([]);
   const [imagePreview, setImagePreview] = useState(null);
@@ -2715,6 +2643,29 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
   return (
     <div className="notus-agent-composer-dock" style={{ position: 'absolute', left: 0, right: 0, bottom: 0, background: 'linear-gradient(0deg, ' + C.page + ' 0%, ' + C.page + ' 68%, rgba(253,252,251,0) 100%)', zIndex: 6 }}>
       {imagePreview ? <ImagePreviewOverlay preview={imagePreview} onClose={() => setImagePreview(null)} onMove={moveImagePreview} /> : null}
+      {showJumpToBottom ? (
+        <button
+          type="button"
+          aria-label="滚动到最新消息"
+          onClick={onJumpToBottom}
+          className="notus-agent-composer__jump-to-bottom notus-agent-pressable"
+          style={transitionButton({
+            width: 34,
+            height: 34,
+            margin: '0 auto 8px',
+            padding: 0,
+            borderRadius: 999,
+            background: '#fff',
+            color: C.secondary,
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            boxShadow: '0 10px 28px rgba(45,45,45,0.12), inset 0 0 0 1px rgba(229,227,216,0.95)',
+          })}
+        >
+          <Icons.chevronDown size={14} />
+        </button>
+      ) : null}
       <div className="notus-agent-composer-shell" aria-busy={loading || undefined} style={{ width: AGENT_CHAT_CONTENT_WIDTH, maxWidth: 'none', margin: '0 auto', background: '#fff', boxShadow: focused ? '0 4px 24px rgba(217,119,87,0.08), inset 0 0 0 1px rgba(217,119,87,0.30)' : '0 2px 12px rgba(0,0,0,0.03), inset 0 0 0 1px rgba(229,227,216,0.95)', transitionProperty: 'box-shadow', transitionDuration: '180ms', transitionTimingFunction: 'cubic-bezier(0.16,1,0.3,1)', overflow: 'visible' }}>
         <input ref={fileInputRef} type="file" multiple accept={parsedAttachmentMode ? `${PARSED_ATTACHMENT_ACCEPT},${IMAGE_ACCEPT}` : undefined} style={{ display: 'none' }} onChange={(event) => { addFiles(event.target.files, { mediaKind: 'attachment' }); event.target.value = ''; }} />
         <input ref={imageInputRef} type="file" multiple accept={IMAGE_ACCEPT} style={{ display: 'none' }} onChange={(event) => { addFiles(event.target.files, { mediaKind: 'image' }); event.target.value = ''; }} />
@@ -2824,9 +2775,8 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
               <button type="button" aria-label="添加附件" onClick={() => fileInputRef.current?.click()} disabled={busy || disabled} style={transitionButton({ width: 30, height: 30, borderRadius: 10, background: 'transparent', color: C.tertiary, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, opacity: busy || disabled ? 0.5 : 1 })}><Icons.paperclip size={18} /></button>
               <button type="button" aria-label="添加图片" onClick={() => imageInputRef.current?.click()} disabled={busy || disabled} style={transitionButton({ width: 30, height: 30, borderRadius: 10, background: 'transparent', color: C.tertiary, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, opacity: busy || disabled ? 0.5 : 1 })}><Icons.image size={18} /></button>
             </div>
-            <div className="notus-agent-composer__task-controls">
-              {showAgentConfirmMode ? <AgentConfirmModeSelect value={agentConfirmMode} onChange={onAgentConfirmModeChange} disabled={busy || disabled} /> : null}
-              <div className="notus-agent-composer__network-tools">
+            {showAgentConfirmMode ? <AgentConfirmModeSelect value={agentConfirmMode} onChange={onAgentConfirmModeChange} disabled={busy || disabled} /> : null}
+            <div className="notus-agent-composer__network-tools">
               <div style={{ position: 'relative' }}>
                 <Tooltip content="联网搜索">
                   <span style={{ display: 'inline-flex' }}>
@@ -2862,7 +2812,6 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
                     </div>
                   </>
                 ) : null}
-              </div>
               </div>
             </div>
           </div>
@@ -3518,40 +3467,13 @@ export function AgentWorkspace({ messages, interactions = [], streamText, loadin
           <div style={{ height: 12 }} />
         </div>
       </main>
-      {showJumpToBottom && (visibleMessages.length > 0 || loading) ? (
-        <button
-          type="button"
-          aria-label="滚动到最新消息"
-          onClick={() => {
-            const container = scrollContainerRef.current;
-            if (!container) return;
-            scrollContainerToBottom(container, 'smooth');
-            shouldStickToBottomRef.current = true;
-            setShowJumpToBottom(false);
-          }}
-          className="notus-agent-pressable"
-          style={transitionButton({
-            position: 'absolute',
-            left: '50%',
-            bottom: CHAT_JUMP_BUTTON_OFFSET,
-            transform: 'translateX(-50%)',
-            width: 34,
-            height: 34,
-            padding: 0,
-            borderRadius: 999,
-            background: '#fff',
-            color: C.secondary,
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            boxShadow: '0 10px 28px rgba(45,45,45,0.12), inset 0 0 0 1px rgba(229,227,216,0.95)',
-            zIndex: 9,
-          })}
-        >
-          <Icons.chevronDown size={14} />
-        </button>
-      ) : null}
-      <AgentInput loading={Boolean(loading)} disabled={Boolean(disabled)} llmConfigs={llmConfigs || []} selectedConfigId={selectedConfigId} onConfigChange={onConfigChange} onSend={onSend} onInterrupt={onStop} interruptibleSessionId={interruptibleSessionId} searchConfig={searchConfig} searchPreference={searchPreference} onSearchPreferenceChange={handleSearchPreferenceChange} onRequireSearchConfig={requireSearchConfig} onRequireMcpConfig={() => setMcpPromptOpen(true)} mcpSelection={mcpSelection} onMcpSelectionChange={handleMcpSelectionChange} mcpAvailable={mcpAvailable} mcpAvailabilityChecked={mcpAvailabilityChecked} placeholder={placeholder} agentConfirmMode={agentConfirmMode} onAgentConfirmModeChange={onAgentConfirmModeChange} attachmentMode={attachmentMode} mentionOptions={mentionOptions} onPreviewMention={setPreviewMention} onPrefetchMention={handlePrefetchMention} />
+      <AgentInput loading={Boolean(loading)} disabled={Boolean(disabled)} llmConfigs={llmConfigs || []} selectedConfigId={selectedConfigId} onConfigChange={onConfigChange} onSend={onSend} onInterrupt={onStop} interruptibleSessionId={interruptibleSessionId} searchConfig={searchConfig} searchPreference={searchPreference} onSearchPreferenceChange={handleSearchPreferenceChange} onRequireSearchConfig={requireSearchConfig} onRequireMcpConfig={() => setMcpPromptOpen(true)} mcpSelection={mcpSelection} onMcpSelectionChange={handleMcpSelectionChange} mcpAvailable={mcpAvailable} mcpAvailabilityChecked={mcpAvailabilityChecked} placeholder={placeholder} agentConfirmMode={agentConfirmMode} onAgentConfirmModeChange={onAgentConfirmModeChange} attachmentMode={attachmentMode} mentionOptions={mentionOptions} onPreviewMention={setPreviewMention} onPrefetchMention={handlePrefetchMention} showJumpToBottom={showJumpToBottom && (visibleMessages.length > 0 || loading)} onJumpToBottom={() => {
+        const container = scrollContainerRef.current;
+        if (!container) return;
+        scrollContainerToBottom(container, 'smooth');
+        shouldStickToBottomRef.current = true;
+        setShowJumpToBottom(false);
+      }} />
       <MentionPreviewDialog mention={previewMention} onClose={() => setPreviewMention(null)} onOpenDocument={onOpenDiffFile} />
       <Dialog open={searchPromptOpen} onClose={() => setSearchPromptOpen(false)} title={promptTitle} maxWidth={420} footer={<><Button variant="ghost" onClick={() => setSearchPromptOpen(false)}>取消</Button><Button variant="primary" onClick={() => { setSearchPromptOpen(false); openSettings('search', { provider: promptProvider?.id }); }}>前往设置</Button></>}>
         <div style={{ fontSize: 14, color: C.secondary, lineHeight: 1.8 }}>{promptMessage}</div>

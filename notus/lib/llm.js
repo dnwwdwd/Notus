@@ -143,6 +143,160 @@ function parseAnthropicSseChunk(chunk, handlers = {}) {
   });
 }
 
+function parseSseEvent(chunk = '') {
+  const lines = String(chunk || '').split(/\r?\n/);
+  let event = '';
+  const data = [];
+  lines.forEach((line) => {
+    if (line.startsWith('event:')) event = line.slice(6).trim();
+    if (line.startsWith('data:')) data.push(line.slice(5).trim());
+  });
+  return { event, data: data.join('\n') };
+}
+
+function mergeStreamUsage(previous = null, next = null, protocol = 'openai') {
+  if (!next || typeof next !== 'object') return previous;
+  const normalized = protocol === 'anthropic' ? normalizeAnthropicUsage(next) : normalizeUsage(next);
+  if (!normalized) return previous;
+  return normalizeUsage({
+    prompt_tokens: normalized.prompt_tokens || previous?.prompt_tokens || 0,
+    completion_tokens: normalized.completion_tokens || previous?.completion_tokens || 0,
+    total_tokens: normalized.total_tokens || ((normalized.prompt_tokens || previous?.prompt_tokens || 0) + (normalized.completion_tokens || previous?.completion_tokens || 0)),
+  });
+}
+
+function createVisibleTextStream() {
+  let raw = '';
+  let visible = '';
+  const reveal = () => {
+    let source = raw;
+    const lower = source.toLowerCase();
+    const lastTagStart = source.lastIndexOf('<');
+    if (lastTagStart >= 0) {
+      const tail = lower.slice(lastTagStart);
+      if (['<thinking>', '</thinking>'].some((tag) => tag.startsWith(tail))) {
+        source = source.slice(0, lastTagStart);
+      }
+    }
+    const visibleLower = source.toLowerCase();
+    const lastOpen = visibleLower.lastIndexOf('<thinking>');
+    const lastClose = visibleLower.lastIndexOf('</thinking>');
+    if (lastOpen > lastClose) source = source.slice(0, lastOpen);
+    return source
+      .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
+      .replace(/<\/thinking>/gi, '');
+  };
+  return {
+    push(chunk = '') {
+      raw += String(chunk || '');
+      const next = reveal();
+      const delta = next.startsWith(visible) ? next.slice(visible.length) : next;
+      visible = next;
+      return delta;
+    },
+    text() {
+      return visible;
+    },
+  };
+}
+
+function toolStreamEntry(store, index = 0) {
+  const key = Number.isFinite(Number(index)) ? Number(index) : 0;
+  if (!store.has(key)) store.set(key, { index: key, id: '', name: '', input: '', initialInput: null });
+  return store.get(key);
+}
+
+async function consumeToolStream(response, { apiProtocol, onVisibleText } = {}) {
+  if (!response.body) throw createAppError('LLM_STREAM_MISSING', 'LLM API 未返回可读取的流');
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const visibleText = createVisibleTextStream();
+  const toolCalls = new Map();
+  let pending = '';
+  let usage = null;
+  let stopReason = '';
+
+  const emitText = (text) => {
+    const delta = visibleText.push(text);
+    if (delta && typeof onVisibleText === 'function') onVisibleText(delta);
+  };
+  const handleOpenAi = (payload) => {
+    usage = mergeStreamUsage(usage, payload?.usage, 'openai');
+    const choice = payload?.choices?.[0] || {};
+    const delta = choice.delta || {};
+    if (delta.content) emitText(delta.content);
+    (Array.isArray(delta.tool_calls) ? delta.tool_calls : []).forEach((call, fallbackIndex) => {
+      const entry = toolStreamEntry(toolCalls, call.index ?? fallbackIndex);
+      entry.id = call.id || entry.id;
+      entry.name += String(call.function?.name || call.name || '');
+      entry.input += String(call.function?.arguments || call.arguments || '');
+    });
+    if (choice.finish_reason) stopReason = choice.finish_reason;
+  };
+  const handleAnthropic = (eventName, payload) => {
+    usage = mergeStreamUsage(usage, payload?.usage, 'anthropic');
+    if (eventName === 'content_block_start') {
+      const block = payload?.content_block || {};
+      if (block.type === 'text' && block.text) emitText(block.text);
+      if (block.type === 'tool_use') {
+        const entry = toolStreamEntry(toolCalls, payload.index);
+        entry.id = block.id || entry.id;
+        entry.name = block.name || entry.name;
+        entry.initialInput = block.input || entry.initialInput;
+      }
+    }
+    if (eventName === 'content_block_delta') {
+      const delta = payload?.delta || {};
+      if (delta.type === 'text_delta' && delta.text) emitText(delta.text);
+      if (delta.type === 'input_json_delta') {
+        const entry = toolStreamEntry(toolCalls, payload.index);
+        entry.input += String(delta.partial_json || '');
+      }
+    }
+    if (eventName === 'message_delta' && payload?.delta?.stop_reason) stopReason = payload.delta.stop_reason;
+  };
+  const handlePart = (part) => {
+    const { event, data } = parseSseEvent(part);
+    if (!data || data === '[DONE]') return;
+    try {
+      const payload = JSON.parse(data);
+      if (apiProtocol === 'anthropic') handleAnthropic(event, payload);
+      else handleOpenAi(payload);
+    } catch {
+      // 忽略 Provider 的 keep-alive 与不完整 SSE 事件。
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    pending += decoder.decode(value, { stream: true });
+    const parts = pending.split(/\r?\n\r?\n/);
+    pending = parts.pop() || '';
+    parts.forEach(handlePart);
+  }
+  pending += decoder.decode();
+  if (pending.trim()) handlePart(pending);
+
+  const content = [];
+  const text = visibleText.text();
+  if (text) content.push({ type: 'text', text });
+  [...toolCalls.values()].sort((left, right) => left.index - right.index).forEach((call) => {
+    const serializedInput = call.input || (call.initialInput ? JSON.stringify(call.initialInput) : '');
+    if (call.name) content.push({
+      type: 'tool_use',
+      id: call.id || `stream-tool-${call.index}`,
+      name: call.name,
+      input: serializedInput ? parseToolInput(serializedInput) : (call.initialInput || {}),
+    });
+  });
+  return {
+    content,
+    stopReason: stopReason || (toolCalls.size > 0 ? 'tool_use' : 'end_turn'),
+    usage,
+  };
+}
+
 function normalizeApiProtocol(value) {
   const normalized = String(value || '').trim().toLowerCase();
   return normalized === 'anthropic' ? 'anthropic' : 'openai';
@@ -416,6 +570,7 @@ async function completeToolChat({
   signal,
   requestTimeoutMs,
   maxRetries = 1,
+  onVisibleText,
 } = {}) {
   const config = resolveLlmConfig(llmConfig);
   const apiProtocol = normalizeApiProtocol(config.llmApiProtocol);
@@ -471,13 +626,19 @@ async function completeToolChat({
       response = apiProtocol === 'anthropic'
         ? await fetch(buildAnthropicRequestUrl(config.llmBaseUrl, '/messages'), {
           method: 'POST', headers: buildAnthropicHeaders(config), signal: scopedSignal.signal,
-          body: JSON.stringify(buildAnthropicToolRequestBody({ system, messages: currentMessages, tools: currentTools, model, temperature }, budget, config)),
+          body: JSON.stringify({
+            ...buildAnthropicToolRequestBody({ system, messages: currentMessages, tools: currentTools, model, temperature }, budget, config),
+            ...(typeof onVisibleText === 'function' ? { stream: true } : {}),
+          }),
         })
         : await fetch(`${config.llmBaseUrl.replace(/\/+$/, '')}/chat/completions`, {
           method: 'POST', headers: buildOpenAiHeaders(config), signal: scopedSignal.signal,
-          body: JSON.stringify(buildBaseRequestBody(requestMessages, {
-            model, tools: toOpenAiTools(currentTools), temperature,
-          }, budget, config)),
+          body: JSON.stringify({
+            ...buildBaseRequestBody(requestMessages, {
+              model, tools: toOpenAiTools(currentTools), temperature,
+            }, budget, config),
+            ...(typeof onVisibleText === 'function' ? { stream: true, stream_options: { include_usage: true } } : {}),
+          }),
         });
     } catch (error) {
       if (scopedSignal.signal.aborted) {
@@ -504,9 +665,12 @@ async function completeToolChat({
       });
     }
 
-    const payload = await response.json();
-    const usage = apiProtocol === 'anthropic' ? normalizeAnthropicUsage(payload.usage) : normalizeUsage(payload.usage);
-    const parsed = apiProtocol === 'anthropic' ? parseAnthropicToolResponse(payload) : parseOpenAiToolResponse(payload);
+    const streamed = typeof onVisibleText === 'function'
+      ? await consumeToolStream(response, { apiProtocol, onVisibleText })
+      : null;
+    const payload = streamed ? null : await response.json();
+    const usage = streamed?.usage || (apiProtocol === 'anthropic' ? normalizeAnthropicUsage(payload.usage) : normalizeUsage(payload.usage));
+    const parsed = streamed || (apiProtocol === 'anthropic' ? parseAnthropicToolResponse(payload) : parseOpenAiToolResponse(payload));
     return {
       role: 'assistant', content: parsed.content, stopReason: parsed.stopReason, usage,
       budget: buildBudgetPayload(budget, estimatedPromptTokens, retryCount), raw: payload,
@@ -776,6 +940,8 @@ module.exports = {
   completeChat,
   streamChat,
   completeToolChat,
+  consumeToolStream,
+  createVisibleTextStream,
   toAnthropicMessages,
   toOpenAiMessages,
 };

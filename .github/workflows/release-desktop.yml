@@ -1,0 +1,145 @@
+name: Release desktop installers
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag, for example v0.1.15'
+        required: true
+        type: string
+      publish:
+        description: 'Publish the release after all assets upload'
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  # Keep CI on the same supported major/minor line declared by the app.
+  NODE_VERSION: '20.19.3'
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  verify:
+    name: Verify source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            notus/package-lock.json
+      - name: Install root dependencies
+        run: npm ci
+      - name: Install web dependencies
+        run: npm --prefix notus ci
+      - name: Check release version alignment
+        shell: bash
+        run: |
+          node -e "const root = require('./package.json').version; const web = require('./notus/package.json').version; const expected = process.env.RELEASE_TAG.replace(/^v/, ''); if (root !== web || root !== expected) { console.error({ root, web, expected }); process.exit(1); }"
+      - name: Lint web app
+        run: npm run lint:web
+      - name: Run web test suite
+        run: npm run test:all
+
+  build:
+    name: Build ${{ matrix.label }}
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: mac-x64
+            label: macOS Intel (x64)
+            runner: macos-15-intel
+            script: dist:desktop:mac:x64
+            asset: Notus-mac-x64.dmg
+          - id: mac-arm64
+            label: macOS Apple Silicon (arm64)
+            runner: macos-15
+            script: dist:desktop:mac:arm64
+            asset: Notus-mac-arm64.dmg
+          - id: win-x64
+            label: Windows x64
+            runner: windows-2025
+            script: dist:desktop:win:x64
+            asset: Notus-win-x64-setup.exe
+          - id: win-arm64
+            label: Windows ARM64
+            runner: windows-11-arm
+            script: dist:desktop:win:arm64
+            asset: Notus-win-arm64-setup.exe
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            notus/package-lock.json
+      - name: Install root dependencies
+        run: npm ci
+      - name: Install web dependencies
+        run: npm --prefix notus ci
+      - name: Build installer
+        run: npm run ${{ matrix.script }}
+      - name: Verify named installer
+        shell: bash
+        run: test -f "desktop/dist/${{ matrix.asset }}"
+      - name: Upload installer for release assembly
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.id }}
+          path: desktop/dist/${{ matrix.asset }}
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      SHOULD_PUBLISH: ${{ github.event_name == 'push' || github.event.inputs.publish == 'true' }}
+    steps:
+      - name: Download desktop installers
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: desktop-*
+          merge-multiple: true
+      - name: Create checksums
+        shell: bash
+        run: |
+          cd release-assets
+          sha256sum Notus-* > SHA256SUMS.txt
+      - name: Create or update draft release with GitHub CLI
+        shell: bash
+        run: |
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --draft \
+              --title "Notus $RELEASE_TAG" \
+              --generate-notes
+          fi
+          gh release upload "$RELEASE_TAG" release-assets/* --repo "$GITHUB_REPOSITORY" --clobber
+          if [ "$SHOULD_PUBLISH" = "true" ]; then
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+          fi

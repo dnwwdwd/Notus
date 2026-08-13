@@ -1,7 +1,11 @@
 # 文件工作区 Agent 全流程业务文档
 
-> 更新时间：2026-08-09
+> 更新时间：2026-08-13
 > 适用范围：`/files`、`FileAgentWorkspace`、Agent Loop、文件 Mention 和预览应用。
+
+## 2026-08-13 仅媒体任务回显
+
+用户只上传解析附件或图片、未输入文字或 Mention 时，前端仍生成默认任务文本供 Agent 处理，并照常上传媒体、创建用户消息、session 和队列任务。该默认文本带 `hide_user_message_bubble` 元数据：消息流只显示媒体 chip、时间与后续工具链，不显示该默认文本气泡，也不允许将其作为可改写的用户指令。乐观回显、`session_created` 校正和历史恢复均使用同一元数据。
 
 ## 1. 入口
 
@@ -148,7 +152,7 @@ Agent 通过 `list/get/create/validate/install/update/set/uninstall Skill` 和 M
 
 1. 每次主 LLM 根据当前工具结果决定下一步时，服务端创建或恢复一个执行段。该段内的网络、429 和临时 5xx 重试共用计数与一条工具链记录；进入下一次决策后创建新段并重新计数。
 2. 创建、修改、重命名或移动文件和目录时，每个预览工具调用形成独立批次，但同一 session 的批次都写入一个任务变更集。界面只显示一张“本任务累计修改”卡，详情展示任务首次触及状态到当前 applied / pending 状态的净变化。
-3. 自动确认模式安全应用当前批次后继续 Loop。手动确认模式把 session 与 queue task 置为 `waiting_operation_confirmation`；“全部应用”或“废弃本批修改”写回原 Tool Result，唤醒原 queue task，不能创建新 session 或新用户消息。
+3. 自动确认模式安全应用当前批次后继续 Loop。手动确认模式生成首个文件或目录 Diff 时即完成 session 与 queue task；“全部应用”“废弃本批修改”或回滚只更新 operation set、任务变更集和文件树，不能创建新 session、新用户消息、恢复 Worker 或发起新的模型调用。旧版本遗留的 `waiting_operation_confirmation` session 在用户处理 Diff 后同样直接收口为完成态。
 4. LLM 失败、连接中断、显式取消或任务完成都不会删除任务变更集。只要存在净文件或目录变化，最终助手消息存在时累计卡位于该消息气泡及操作区之后；尚无最终消息时才位于该 session 的用户消息执行记录下方。历史旧任务没有变更集时仍按单个 operation set 显示。
 5. 主 LLM 请求发出前持久化“正在等待模型响应”，模型返回的可见执行文字以 `model_progress` 片段持久化后再流式推送。工具开始、结果和产生的批次均携带所属执行段；界面不展示执行段标题，而按到达顺序平铺真实工具、“正在思考”、重试和确认。累计 Diff 的每个资源仍显示其执行段和批次来源。
 
@@ -158,5 +162,5 @@ Agent 通过 `list/get/create/validate/install/update/set/uninstall Skill` 和 M
 2. 服务端感知 SSE 断线后将未完成任务保留为 `queued_resume`。用户返回原对话时，可恢复卡和 scoped ticket 从会话详情重新加载。
 3. 若 Electron 或服务进程被直接关闭，旧进程可能来不及执行 lease 释放。新进程读取会话时检查 `active_run_id`：lease 已过期或当前控制面没有对应活动 run，就以乐观锁改为 `queued_resume`，保留 checkpoint。
 4. 运行、排队和 `queued_resume / waiting_retry / waiting_model_recovery` 都不禁用输入框；同一对话的后续不同消息创建新的 FIFO 任务。输入框中断会从全部已恢复 session 中取得每条 `created / queued / running` 任务的控制票据，服务端逐项验证后同时停止这些任务，并把返回的每个 session 从可中断候选中移除；用户点击工具链的继续操作仍只恢复原 session。新 prompt 入队前还会清理同一对话遗留的 `created / queued` 和等待用户决定任务，避免 FIFO 被旧任务占用。Worker 启动时还会清理历史上 session 已终态但队列仍等待的记录。
-5. `progress / artifact / final` 在发送 SSE 前写入 session timeline。返回原对话时，前端按时间线重建模型等待、重试、工具开始/完成、变更确认、错误和中断前回复；同一对话内每个仍订阅的 session 也实时写入自身时间线。订阅读取异常时先读取会话详情中的同一份持久化事件，恢复真实等待或终态，不直接把任务标为失败；手动确认导致原订阅已断开时，应用操作重新订阅原 session 的后续事件。旧任务没有 timeline 时读取 run logs 作为兼容，但只显示工具名称和隐私保护摘要。回复草稿只用于说明中断前进度，不写成 final 消息。
+5. `progress / artifact / final` 在发送 SSE 前写入 session timeline。返回原对话时，前端按时间线重建模型等待、重试、工具开始/完成、变更确认、错误和中断前回复；同一对话内每个仍订阅的 session 也实时写入自身时间线。订阅读取异常时先读取会话详情中的同一份持久化事件，恢复真实等待或终态，不直接把任务标为失败；手动 Diff 的完成态无需在应用操作后重新订阅原 session，前端只刷新 Diff 与文件树。旧任务没有 timeline 时读取 run logs 作为兼容，但只显示工具名称和隐私保护摘要。回复草稿只用于说明中断前进度，不写成 final 消息。
 5. 刷新或重开应用后，会话详情为上述等待状态重新签发短期恢复票据，前端重建同一工具链错误卡。

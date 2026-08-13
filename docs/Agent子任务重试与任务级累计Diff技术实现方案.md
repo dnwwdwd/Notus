@@ -1,6 +1,6 @@
 # Agent 子任务重试与任务级累计 Diff 技术实现方案
 
-> 实现状态（2026-08-09）：迁移、执行段、请求窗口、工具分发游标、任务变更集、手动确认事务化续跑、累计详情接口、前端单卡展示和核心自动化已落地。当前实现复用现有 DiffDialog，并通过原任务队列恢复手动确认任务；`agent_resume_jobs` 不承载文件确认。文件系统写入后、元数据提交前的 `applying` 崩溃核对，终态任务的 `apply_only / discard_only`、逐资源分页详情和真实进程退出故障注入仍列为后续可靠性工作，不应写成已经验证。
+> 实现状态（2026-08-13）：迁移、执行段、请求窗口、工具分发游标、任务变更集、手动 Diff 终态收口、累计详情接口、前端单卡展示和核心自动化已落地。当前实现复用现有 DiffDialog；手动模式首次生成 Diff 即完成原任务，后续应用或废弃只更新 Diff 与文件状态，`agent_resume_jobs` 不承载文件确认。文件系统写入后、元数据提交前的 `applying` 崩溃核对，逐资源分页详情和真实进程退出故障注入仍列为后续可靠性工作，不应写成已经验证。
 
 > 状态：代码已实现，自动化验证通过，待 Web / Electron / 懒猫实机回归。
 > 对应需求：`Requirements/Agent子任务重试与任务级累计Diff.md`。
@@ -25,7 +25,7 @@
 
 SQLite 事务只包住短时间的元数据写入，不包住 LLM、图片上传或文件系统操作。SQLite 同时只能执行一个写事务，长事务会阻塞其他任务；文件系统也无法参加 SQLite 事务。数据库与文件写入之间使用“两阶段状态 + Hash/路径核对”恢复。SQLite 的事务和唯一约束分别用于原子元数据更新与重复请求去重，依据为 [SQLite Transaction](https://www.sqlite.org/lang_transaction.html) 和 [SQLite UPSERT](https://sqlite.org/lang_upsert.html)。
 
-不引入临时工作区副本。手动模式每一批确认完成后写入正式工作区，随后恢复原 session。这样 `read_file`、`analyze_folder`、索引和文件监听继续读取同一份真实数据。
+不引入临时工作区副本。手动模式的 Diff 在生成后由用户独立决定是否写入正式工作区，原 session 已完成且不会恢复。这样 `read_file`、`analyze_folder`、索引和文件监听继续读取同一份真实数据。
 
 ## 3. 组件与数据流
 
@@ -136,7 +136,7 @@ session state   queue state                task change-set service
 
 ### 4.5 `agent_operation_resolutions`
 
-该表保存手动批次的最终决定，并保证同一 operation set 只唤醒一次 Worker。
+该表保存手动批次的最终决定，供 Diff 与任务变更集汇总读取；它不唤醒 Worker。
 
 | 字段 | 类型与约束 | 用途 |
 |---|---|---|
@@ -144,11 +144,11 @@ session state   queue state                task change-set service
 | `session_id` | FK，非空 | 所属 session。 |
 | `operation_set_id` | FK，UNIQUE，非空 | 一个批次只形成一次最终决定。 |
 | `resolution` | TEXT，非空 | `applied / discarded / partial`。 |
-| `tool_result_json` | TEXT，非空 | 恢复模型时注入的受控工具结果。 |
-| `status` | TEXT，非空 | `resolved / resume_queued / resumed / failed`。 |
-| `resume_dispatched_at / created_at / updated_at` | DATETIME | 防止重复继续。 |
+| `tool_result_json` | TEXT，非空 | 应用或废弃的受控结果，供历史审计与兼容读取。 |
+| `status` | TEXT，非空 | `resolved`；旧数据可保留既有状态。 |
+| `created_at / updated_at` | DATETIME | 记录决定时间并支持幂等读取。 |
 
-用户逐文件应用或废弃时继续使用 operation set 内的 patch status。全部 patch 均不再是 pending 后，才创建 resolution。整批“应用并继续”和“废弃并继续”会在一次请求内完成相同过程。
+用户逐文件应用或废弃时继续使用 operation set 内的 patch status。全部 patch 均不再是 pending 后，才创建 resolution。整批“全部应用”和“废弃本批修改”会在一次请求内完成相同过程，不写回模型工具结果，也不恢复原 session。
 
 ### 4.6 现有表的增量字段
 
@@ -165,12 +165,11 @@ operation set 与 patch 状态已允许读取 `applying`，为后续文件写入
 
 `agent_checkpoints` 增加以下字段：
 
-- `phase`：`before_llm / dispatching_tools / waiting_operation_confirmation / after_tools`。
+- `phase`：`before_llm / dispatching_tools / after_tools`；历史记录中的 `waiting_operation_confirmation` 只作兼容读取，新手动 Diff 不再写入。
 - `execution_segment_id`、`llm_request_window_id`。
 - `tool_results_json`：已经完成的工具结果，按 `tool_use_id` 保存。
 - `next_tool_index`：下一条待执行工具的位置。
-- `pending_operation_set_id`：手动等待批次。
-- `resume_tool_result_json`：用户决定后待注入的工具结果。
+- `pending_operation_set_id`、`resume_tool_result_json`：仅用于读取旧版等待确认记录；新手动 Diff 不写入或消费这两个字段。
 
 主 LLM 返回的完整结构化 content 复用现有 `last_response_content_json`，不再增加同义字段。
 
@@ -237,11 +236,13 @@ SSE `llm_retry` 事件增加以下白名单字段：
 
 ### 6.4 手动确认
 
-手动预览生成后保存 `waiting_operation_confirmation` checkpoint，内容包括模型 response、`tool_use_id`、operation set 和尚未注入模型的工具结果位置。session 与任务队列都进入 `waiting_operation_confirmation`，Worker 释放 lease。
+手动预览生成后，写入 operation set 与任务变更集快照，并以 `manual_preview_generated` final 事件完成当前执行段、session 和队列任务。不会保存 `waiting_operation_confirmation` checkpoint，不会把应用结果再注入模型，也不会请求额外的收尾总结。
 
-用户处理完当前批次后，API 将 resolution 的 `tool_result_json` 写入 `resume_tool_result_json`，把 checkpoint 改为 `after_tools`，再把 session 改为 `queued_resume`、任务队列改为 `queued`。这组数据库更新在同一事务内完成。Worker 恢复后注入准确的 applied、discarded 或 partial 结果，不使用通用“修改已写入文件”文本。
+用户处理完当前批次后，API 只把 applied、discarded 或 partial 结果写入 operation set、任务变更集和 resolution 记录；不改写模型消息、checkpoint、执行段或队列状态。为兼容升级前的 `waiting_operation_confirmation` session，用户决定落库后直接收口为 `completed`，同样不唤醒 Worker。
 
 `agent_resume_jobs` 保持 interaction 专用。文件确认不创建伪 interaction，也不修改现有提问卡恢复规则。
+
+自动确认模式因高风险检查而临时要求确认时，仍沿用既有 checkpoint 恢复链路；该分支由任务队列保存的 `approval_mode` 区分，不属于手动模式生成 Diff 即结束任务的规则。
 
 ## 7. 任务变更集聚合算法
 
@@ -313,15 +314,14 @@ Diff 主列表按逻辑资源展示，不按 operation set 展示。详情中的
 
 ## 9. session 与队列状态机
 
-新增 `waiting_operation_confirmation`，作为非终态且阻塞同会话 FIFO 的状态。
+手动 Diff 不再引入新的等待状态，也不会阻塞同会话 FIFO；它生成后立即终止当前任务。
 
 ```text
 running
   ├─ LLM 临时失败 ───────────────→ waiting_retry ───────→ queued_resume → running
   ├─ 模型配置问题 ───────────────→ waiting_model_recovery → queued_resume → running
-  ├─ 手动文件批次 ───────────────→ waiting_operation_confirmation
-  │                                      ├─ 应用/废弃完成 → queued_resume → running
-  │                                      └─ 显式停止 ───→ cancelled
+  ├─ 手动文件批次 ───────────────→ completed（保留待处理 Diff）
+  │                                      └─ 应用/废弃 → 仅更新 Diff 与文件状态
   ├─ 不可恢复错误 ───────────────→ failed
   └─ 全部完成 ───────────────────→ completed
 ```
@@ -338,7 +338,7 @@ running
 - 前端恢复、停止和输入按钮判断
 - `markStaleWaitingSessions()`
 
-一般“继续任务”不能越过未处理的手动批次。`waiting_operation_confirmation` 只接受文件决定接口；批次 resolved 后由服务端排队恢复。
+手动 Diff 生成后的“全部应用”“废弃本批修改”和逐文件操作只作用于对应 Diff。新的 completed session 不会因这些操作重新入队；遗留的 `waiting_operation_confirmation` session 仅接受文件决定接口，决定完成后直接转为 `completed`。
 
 ## 10. API 设计
 
@@ -365,12 +365,12 @@ running
 
 | action | 行为 |
 |---|---|
-| `apply_all / apply` | 应用当前批次全部 pending 项；批次全部解决后写入 resolution 并恢复原 session。 |
-| `discard_pending` | 废弃当前批次剩余 pending 项；批次全部解决后恢复原 session。 |
-| `apply_file / discard_file / rollback_file` | 保留现有逐文件处理；仍有 pending、applying 或 failed 时不恢复。 |
+| `apply_all / apply` | 应用当前批次全部 pending 项；批次全部解决后更新 resolution 与任务变更集，不恢复原 session。 |
+| `discard_pending` | 废弃当前批次剩余 pending 项；批次全部解决后更新 resolution 与任务变更集，不恢复原 session。 |
+| `apply_file / discard_file / rollback_file` | 保留现有逐文件处理；仍有 pending、applying 或 failed 时不改变任务终态。 |
 | 累计卡“全部应用 / 废弃本批修改” | 调用上述现有批次动作，不在浏览器中直接改文件。 |
 
-所有操作同时校验 session 与 operation set 所属 conversation，使用 `operate` capability 或 session token。批次解决、checkpoint 工具结果、execution segment、session 状态和队列续跑标记在同一 SQLite 事务中更新；事务提交后再唤醒 Worker。终态任务的 `apply_only / discard_only` 与任务级逆序回滚尚未实现。
+所有操作同时校验 session 与 operation set 所属 conversation，使用 `operate` capability 或 session token。批次解决、任务变更集摘要与 resolution 在同一 SQLite 事务中更新；事务提交后只刷新前端 Diff 和文件树，不唤醒 Worker。旧版等待确认 session 额外收口 session 与队列终态。任务级逆序回滚仍按既有安全检查执行。
 
 ### 10.4 SSE
 
@@ -422,21 +422,21 @@ SSE 不传全文、完整 diff 或目录清单。前端看到更高 version 后�
 | 文件 | 职责 |
 |---|---|
 | `notus/lib/migrations/010_agent_execution_changes.js` | 增量数据库结构。 |
-| `notus/lib/migrations/011_agent_queue_resume_request.js` | 队列快速确认竞态使用的续跑标记。 |
+| `notus/lib/migrations/011_agent_queue_resume_request.js` | 交互与历史等待会话的队列恢复兼容字段；新手动 Diff 不使用。 |
 | `notus/lib/agentExecutionSegments.js` | 执行段、请求窗口及重试状态。 |
 | `notus/lib/agentTaskChangeSets.js` | 任务变更集、资源快照、聚合、核对和摘要；不执行文件写入。 |
 | `notus/pages/api/agent/sessions/[id]/changes.js` | 按需读取累计 Diff。 |
 | `notus/tests/agent-subtask-retry.test.js` | 分段重试与窗口恢复。 |
 | `notus/tests/agent-task-change-composition.test.js` | 混合应用/废弃、累计快照和文件移动类型。 |
 | `notus/tests/agent-tool-dispatch-resume.test.js` | 工具 content、结果和游标的中断恢复。 |
-| `notus/tests/agent-loop-preview-completion.test.js` | 手动确认事务化续跑和队列竞态。 |
+| `notus/tests/agent-loop-preview-completion.test.js` | 手动 Diff 生成即完成、应用后不续跑和队列终态。 |
 
 ### 12.2 修改文件
 
 | 文件 | 计划修改 |
 |---|---|
 | `notus/lib/db.js` | 注册迁移 010。 |
-| `notus/lib/agentLoop.js` | 创建执行段、持久化请求窗口、三阶段 checkpoint、写入工具幂等和手动等待。 |
+| `notus/lib/agentLoop.js` | 创建执行段、持久化请求窗口、三阶段 checkpoint、写入工具幂等和手动 Diff 终态收口。 |
 | `notus/lib/agentSession.js` | 扩展 checkpoint、SSE 白名单、session 读取和等待状态。 |
 | `notus/lib/agentRunEventBus.js` | 支持元数据事务提交后广播已持久化事件，避免重复写事件。 |
 | `notus/lib/agentTaskWorker.js` | 恢复 staged checkpoint、变更集关联、终态消息不再只带最近 operation set。 |
@@ -447,7 +447,7 @@ SSE 不传全文、完整 diff 或目录清单。前端看到更高 version 后�
 | `notus/lib/fileRevisions.js` | revision 应用后的 Hash 核对和 change item 同步。 |
 | `notus/lib/fileSystemPatches.js` | 目录清单、路径核对和恢复判定。 |
 | `notus/pages/api/agent/loop/start.js` | 新恢复状态和 event cursor 行为。 |
-| `notus/pages/api/agent/loop/apply.js` | 批次解决、apply-only、唯一恢复和累计回滚。 |
+| `notus/pages/api/agent/loop/apply.js` | 批次解决、任务变更集更新、旧等待会话收口和累计回滚。 |
 | `notus/pages/api/agent/sessions/[id].js` | 返回执行段与 change set 摘要。 |
 | `notus/pages/api/agent/sessions/[id]/events.js` | 协议字段透传不变，依赖新的事件白名单。 |
 | `notus/pages/api/agent/sessions/[id]/rollback.js` | 委托任务变更集逆序回滚并回写版本。 |
@@ -465,7 +465,7 @@ SSE 不传全文、完整 diff 或目录清单。前端看到更高 version 后�
 3. 接入执行段和请求窗口，让现有 LLM 重试测试按 segment/window 断言。
 4. 为写入工具增加 `tool_use_id` 幂等、完整候选快照和文件状态核对。
 5. 接入自动模式多批 change set，验证成功、冲突、进程中断和逆序回滚。
-6. 增加 `waiting_operation_confirmation`，完成整批和逐文件手动处理后的唯一恢复。
+6. 手动 Diff 生成后直接完成任务；完成整批和逐文件处理时只更新 Diff 与文件状态，并兼容收口旧等待会话。
 7. 扩展 session、conversation、changes API 和 SSE 摘要。
 8. 接入前端执行段重试记录和单张累计 Diff 卡，保留旧会话兼容。
 9. 更新产品、技术、业务流程、界面和项目进度文档，执行完整自动化与实机回归。
@@ -483,7 +483,7 @@ SSE 不传全文、完整 diff 或目录清单。前端看到更高 version 后�
 ### 14.2 文件批次
 
 - 自动模式连续创建、修改、移动，Loop 不提前完成。
-- 手动模式整批应用、整批废弃、逐文件混合处理后继续。
+- 手动模式首个 Diff 生成后立即完成；整批应用、整批废弃、逐文件混合处理均不再请求模型或恢复队列。
 - 同一文件多次修改只显示一条净 Diff。
 - 创建后移动、移动后修改、目录连续移动得到稳定初始路径和最终路径。
 - 图片写入失败不提升 applied 快照。
@@ -495,7 +495,7 @@ SSE 不传全文、完整 diff 或目录清单。前端看到更高 version 后�
 - LLM 成功、`dispatching_tools` checkpoint 提交后退出。
 - 文件已经写入、operation set 尚未完成状态更新时退出。
 - operation set 与 change set 已完成、`next_tool_index` 尚未推进时退出。
-- 手动决定已经落库、任务尚未改为 queued 时退出。
+- 手动决定已经落库、旧等待会话尚未收口为 completed 时退出。
 - change set SSE 已落库、浏览器尚未收到时断开。
 
 每个时点都验证工具不重复执行、文件状态与 change set 一致、SSE 游标不重复追加卡片。
@@ -531,7 +531,7 @@ SSE 不传全文、完整 diff 或目录清单。前端看到更高 version 后�
 - 新 session 写入的 operation set 仍保持原格式字段，旧 `listOperationSetsBySession()` 可以读取。
 - 前端在没有 change set 摘要或详情请求失败时，回退到旧 `OperationSetCard`。
 - 执行段功能停用时，LLM 重试仍可按原 `loop_index` 显示，不影响模型调用。
-- 手动确认功能回退时，已有 `waiting_operation_confirmation` session 转为 `queued_resume` 前必须先检查当前批次；有 pending 批次的任务保持等待并提示升级版本处理，不能直接跳过。
+- 手动 Diff 终态逻辑回退时，新 session 仍保持 completed；历史 `waiting_operation_confirmation` session 只能在用户处理当前批次后收口为 completed，不能转为 `queued_resume` 以避免额外模型调用。
 - 回退不需要改写用户 Markdown，也不需要删除任务数据。
 
 ## 16. 外部依赖与凭据

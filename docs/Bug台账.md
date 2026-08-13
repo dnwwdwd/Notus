@@ -14,6 +14,16 @@
 
 ## 当前记录
 
+### BUG-20260813-001｜Agent 累计 Diff 详情请求缺少服务端路由
+
+- 状态：已修复（2026-08-13，本地 Web Browser 与自动化验证通过）。
+- 现象：当 Agent 新增或修改文件后，点击累计 Diff 卡的“查看详情”会提示“读取累计修改失败”，无法打开文件修订详情。
+- 影响范围：文件工作区的 Web、Electron 与懒猫 Agent 会话；不影响任务文件写入、批次落库、累计变更集聚合或历史会话摘要恢复。
+- 根因：`notus/components/AgentWorkspace/AgentWorkspace.js` 已向 `/api/agent/sessions/:id/changes` 发起按需详情请求，并携带 `session_read` capability 或 session token；技术文档也已定义该接口，但 `notus/pages/api/agent/sessions/[id]/changes.js` 实际缺失，Next 返回 404，前端以通用错误文案兜底。
+- 已检查的相关流程：会话详情、历史会话恢复、`session_read` scoped ticket、任务变更集 `getTaskChangeSetDetail()`、SSE 摘要、旧单批 operation set 卡和回滚接口。只有按需累计详情 API 缺失；既有前端请求和聚合服务均可复用。
+- 修复：新增受 `session_read` capability 或 session token 校验保护的详情路由，读取 `getTaskChangeSetDetail()` 并返回受控累计 Diff；补充路由与页面回归。
+- 验证：本地 `http://127.0.0.1:3000/files` 中让真实 Agent 在受限临时目录新建文件后，累计卡显示“1 个文件修订 / 已应用 1 个，已回滚 0 个，已废弃 0 个”；点击“查看详情”正常打开新增文件 Diff，不再显示“读取累计修改失败”。`node notus/tests/agent-task-changes-route.test.js`、`node notus/tests/agent-task-change-composition.test.js` 通过。临时目录、文件和测试对话均已删除。
+
 ### BUG-20260810-001｜最窄 AI 面板的确认方式 Tab 排序与收敛规则错误
 
 - 状态：已修复（2026-08-10，自动化、构建与本地 Web 长工具链回归通过）。

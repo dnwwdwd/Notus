@@ -27,7 +27,7 @@
 - 主 LLM 自动重试的执行段归属、计数、持久化事件和历史恢复。
 - 每个执行段一条模型重试记录；同一执行段内更新次数，不覆盖其他执行段。
 - 同一 session 内创建、修改、重命名、移动文件，以及新建、重命名、移动目录的分批执行与累计展示。
-- 自动模式逐批安全应用，手动模式逐批确认并从原 checkpoint 继续。
+- 自动模式逐批安全应用并继续；手动模式在首个 Diff 生成时结束任务，Diff 由用户独立应用、废弃或回滚。
 - 完成、可恢复失败、不可恢复失败、中断和取消后的累计 Diff 可见性。
 - 继续任务时复用已完成工具结果、已应用批次和未完成执行段，避免重复写入。
 
@@ -48,7 +48,7 @@
 - 工作量：中。
 - 风险：中高。刷新与继续后 Loop 轮次不能完整表达未完成执行段；手动模式仍会在首个预览后结束；工具已写入但 checkpoint 尚未提交时仍可能重放。
 - 复用内容：现有 `agent_run_events`、`listOperationSetsBySession()` 和 DiffDialog。
-- 结论：可快速改善显示，无法可靠处理手动续跑和中断幂等，不建议作为最终方案。
+- 结论：可快速改善显示，无法可靠处理手动 Diff 的独立应用和中断幂等，不建议作为最终方案。
 
 ### 方案二：持久化执行段 + 任务变更集，分批 operation set 保持不变
 
@@ -56,7 +56,7 @@
 - 工作量：大。
 - 风险：中。需要同时调整状态机、checkpoint、应用接口、SSE 和历史恢复，但可以沿用现有安全写入与 Diff 组件。
 - 复用内容：现有 session、run lease、checkpoint、operation set、文件修订、应用/回滚和 DiffDialog。
-- 结论：推荐。它能满足分段重试、分批写入、手动续跑、失败可审查和单卡累计展示，数据迁移也可以保持增量兼容。
+- 结论：推荐。它能满足分段重试、分批写入、手动 Diff 终态收口、失败可审查和单卡累计展示，数据迁移也可以保持增量兼容。
 
 ### 方案三：为每个 Agent 任务创建隔离的临时工作区
 
@@ -106,18 +106,17 @@ Agent session
 
 ### 手动模式
 
-- 新批次生成后，session 进入新的 `waiting_operation_confirmation` 状态，不再写成 `completed`。
-- 同一张累计 Diff 卡显示历史已应用批次与当前待确认批次。用户“应用并继续”后，服务端应用当前批次、写入工具结果、提交 checkpoint 并唤醒原队列任务；Agent 从原 session 继续。`agent_resume_jobs` 仍只处理 interaction。
-- 用户“废弃并继续”后，服务端把废弃结果写回原工具调用，Agent 可调整方案或结束任务。用户显式停止后不自动续跑。
-- 任务因模型或其他问题暂停时，累计 Diff 仍可打开。已经存在的待确认批次可以手动应用或废弃；应用操作本身不绕过文件 Hash、路径和图片安全检查。
+- 首个文件或目录 Diff 生成后，当前执行段完成，session 与 queue task 直接进入 `completed`；不保存可恢复 checkpoint，也不发起模型收尾总结。
+- 同一张累计 Diff 卡显示待处理批次。用户“全部应用”或“废弃本批修改”只更新 operation set 与任务变更集，不恢复原 session、Worker 或同会话 FIFO；`agent_resume_jobs` 仍只处理 interaction。
+- 应用操作本身不绕过文件 Hash、路径和图片安全检查。旧版本遗留的 `waiting_operation_confirmation` session 在用户处理 Diff 后直接收口为完成态。
 
 ## 影响分析
 
 | 维度 | 已确认内容 |
 |---|---|
-| 写入入口 | Agent Worker、主 LLM 请求前的执行段创建、预览工具创建批次、自动应用、手动“应用并继续 / 废弃并继续”、取消与回滚。 |
+| 写入入口 | Agent Worker、主 LLM 请求前的执行段创建、预览工具创建批次、自动应用、手动 Diff 的应用/废弃、取消与回滚。 |
 | 读取方与状态传播 | Agent Loop、checkpoint、run lease、任务队列、session 详情、SSE 时间线、历史会话恢复、工具链重试记录、累计 Diff 卡和文件树刷新。 |
-| 失败与取消边界 | LLM 失败前保存执行段和 checkpoint；工具应用后先提交批次结果再继续；显式取消不自动恢复，但累计 Diff 保留查看，手动模式的待确认变更仍须用户明确操作。 |
+| 失败与取消边界 | LLM 失败前保存执行段和 checkpoint；自动模式工具应用后先提交批次结果再继续；手动模式生成 Diff 即完成，后续变更仍须用户明确操作且不恢复模型。 |
 | 幂等边界 | 以 `session_id + execution_segment_id + tool_use_id` 作为写入幂等键。已成功或已确认的批次重复到达时返回原结果，不再次创建文件、移动路径或重复修改正文。 |
 | 冲突与回滚 | 每批继续使用 expected hash、原文匹配和路径校验；累计回滚按已应用批次逆序执行。外部编辑造成冲突时停止相关资源的后续应用，不覆盖用户文件。 |
 | 平台与安全边界 | Web、Electron 和懒猫共用服务端数据模型；不增加浏览器文件权限，不记录密钥、完整 Prompt 或不受控绝对路径。 |
@@ -131,8 +130,8 @@ Agent session
 | 每个执行段独立重试 | 两次不同主 LLM 决策请求都遇到临时错误 | 运行同一 Agent 任务 | 两个执行段各自从 `1/5` 计数，工具链显示两条独立重试记录。 | 自动化与 Web Browser 通过 |
 | 同一执行段继续 | 第一个请求窗口耗尽并进入 `waiting_retry` | 点击继续任务 | 恢复同一执行段，新请求窗口从 `1/5` 开始；旧失败次数在该执行段详情中保留。 | 代码完成，待真实 Provider |
 | 自动模式多批写入 | 任务依次修改两个文件并移动一个目录 | 等待任务完成 | 三个批次依次安全应用，Loop 不提前结束，最终只有一个累计 Diff 卡。 | 双文件自动化与 Web Browser 通过；目录路径待实机 |
-| 手动模式多批写入 | 第一批预览已生成 | 点击“应用并继续” | 第一批写入后原 session 续跑；后续批次继续更新同一累计 Diff 卡，不新增消息级 Diff 卡。 | 自动化与 Web Browser 通过 |
-| 手动废弃后续跑 | 当前批次不符合预期 | 点击“废弃并继续” | 当前批次不写入，废弃结果进入 checkpoint，Agent 可调整后生成新批次。 | 代码完成，待界面回归 |
+| 手动生成 Diff 即完成 | 第一批预览已生成 | 等待任务收口 | session 与队列任务完成，保留待处理累计 Diff；只发生一次模型调用。 | 自动化通过 |
+| 手动应用或废弃 Diff | 已完成任务存在待处理批次 | 点击“全部应用”或“废弃本批修改” | 只更新文件与累计 Diff，不恢复 session、Worker 或模型，也不追加收尾总结。 | 自动化与路由逻辑通过 |
 | LLM 失败后查看 Diff | 已有一个或多个已应用/待确认批次 | Provider 返回可恢复或不可恢复错误 | 错误卡与累计 Diff 同时可见；Diff 状态与实际文件一致。 | Web Browser 模拟故障通过；待真实 Provider |
 | 中断后继续 | 工具批次已经提交，下一次 LLM 请求前断线或进程退出 | 重开会话并点击继续 | 不重复执行已提交工具；累计 Diff 不重复项目；Agent 从未完成执行段继续。 | 工具 content、最终结果、游标与预览工具 ID 去重自动化通过，含自动应用后立即断线；真实进程退出故障注入待补 |
 | 显式取消 | 已有部分自动应用或手动待确认变更 | 停止任务 | session 保持取消；累计 Diff 继续可查看。待确认批次只有用户明确应用时才写入，应用后也不自动恢复已取消任务。 | 自动应用后取消与累计查看已通过 Web Browser；手动待确认取消待实机 |
@@ -146,7 +145,7 @@ Agent session
 
 1. 增加增量数据库迁移，建立执行段、任务变更集、批次关联和写入幂等约束；旧 operation set 保持可读。
 2. 调整 Agent Loop 与 checkpoint，在主 LLM 请求前创建/恢复执行段，在每个工具结果和批次状态落库后提交可恢复进度。
-3. 调整手动确认状态机和任务队列唤醒，使“应用并继续 / 废弃并继续”恢复原 session；`agent_resume_jobs` 继续只用于 interaction；自动模式继续逐批应用。
+3. 调整手动确认状态机，使 Diff 生成直接收口 session 和队列任务；应用/废弃只更新 operation set，`agent_resume_jobs` 继续只用于 interaction；自动模式继续逐批应用。
 4. 增加任务变更集聚合服务，维护首次快照、最新快照、路径演变、批次状态和逆序回滚顺序。
 5. 扩展 session 详情与 SSE 白名单，只传执行段标识、重试摘要、变更集摘要和按需详情入口。
 6. 前端工具链按执行段渲染模型重试；消息和错误状态按 session 关联同一张累计 Diff 卡，去除“只取最近 operation set”的主路径。
@@ -177,7 +176,7 @@ Agent session
 
 ## 实现与验证
 
-- 代码与配置：已增加迁移 010、执行段与请求窗口服务、任务变更集服务、手动确认续跑、累计 Diff 接口和前端单卡展示；旧 operation set 保持兼容。
-- 已执行命令及结果：`npm run lint:web` 通过（保留一条原有 Hook dependency warning）；`npm --prefix notus run test:agent-control-plane` 通过，覆盖分段重试、手动确认队列竞态、混合应用/废弃、文件移动和工具游标续跑；`npm run test:all`、`npm run build:web`、`npm run build:desktop` 与 `git diff --check` 均通过。
+- 代码与配置：已增加迁移 010、执行段与请求窗口服务、任务变更集服务、手动 Diff 终态收口、累计 Diff 接口和前端单卡展示；旧 operation set 保持兼容。
+- 已执行命令及结果：`npm run lint:web` 通过（保留一条原有 Hook dependency warning）；`npm --prefix notus run test:agent-control-plane` 覆盖分段重试、混合应用/废弃、文件移动和工具游标续跑；本次手动 Diff 终态调整另执行 `node notus/tests/agent-loop-preview-completion.test.js` 与 `node notus/tests/agent-execution-segment-timeline.test.js`，均通过；`npm run test:all`、`npm run build:web`、`npm run build:desktop` 与 `git diff --check` 均通过。
 - 本地 Web Browser 回归：自动与手动多批文件修改、分段重试、重试耗尽、显式取消、运行中刷新、历史恢复、累计 Diff 和 841×720 窄屏文件列表均通过。
 - 待实机回归：真实 Provider 错误恢复、目录连续移动、文件系统写入与元数据提交之间的进程退出，以及 Electron / 懒猫历史恢复和视觉表现。

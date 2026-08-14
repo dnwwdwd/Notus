@@ -1,8 +1,15 @@
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { spawn } = require('child_process');
 
 const ELECTRON_VERSION = require('../../node_modules/electron/package.json').version;
+const SQLITE_VEC_VERSION = '0.1.9';
+const SQLITE_VEC_AMALGAMATION = {
+  name: `sqlite-vec-${SQLITE_VEC_VERSION}-amalgamation.zip`,
+  url: `https://github.com/asg017/sqlite-vec/releases/download/v${SQLITE_VEC_VERSION}/sqlite-vec-${SQLITE_VEC_VERSION}-amalgamation.zip`,
+  sha256: 'b87cdda12112657ba5ab8842f0088a4090982eaf41f22b2bd6d495b81765a8c9',
+};
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -174,7 +181,109 @@ async function ensureBetterSqliteBinary(resourcesRoot, targetPlatform, targetArc
   });
 }
 
+function shouldCompileSqliteVecFromSource(targetPlatform, targetArch) {
+  return targetPlatform === 'win32' && targetArch === 'arm64';
+}
+
+function getWindowsArm64VecExtensionPath(resourcesRoot) {
+  return path.join(resourcesRoot, 'native', 'sqlite-vec', 'win32-arm64', 'vec0.dll');
+}
+
+async function downloadVerifiedFile({ url, sha256, outputPath }) {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Unable to download ${url}: ${response.status} ${response.statusText}`);
+  }
+
+  const contents = Buffer.from(await response.arrayBuffer());
+  const actualSha256 = crypto.createHash('sha256').update(contents).digest('hex');
+  if (actualSha256 !== sha256) {
+    throw new Error(`Checksum mismatch for ${url}: expected ${sha256}, received ${actualSha256}`);
+  }
+
+  await fs.promises.writeFile(outputPath, contents);
+}
+
+async function assertWindowsArm64Dll(extensionPath) {
+  const contents = await fs.promises.readFile(extensionPath);
+  if (contents.length < 0x40 || contents.toString('ascii', 0, 2) !== 'MZ') {
+    throw new Error(`sqlite-vec did not produce a valid Windows DLL: ${extensionPath}`);
+  }
+
+  const peOffset = contents.readUInt32LE(0x3c);
+  if (peOffset + 6 > contents.length || contents.toString('ascii', peOffset, peOffset + 4) !== 'PE\0\0') {
+    throw new Error(`sqlite-vec DLL is missing its PE header: ${extensionPath}`);
+  }
+
+  const machine = contents.readUInt16LE(peOffset + 4);
+  if (machine !== 0xaa64) {
+    throw new Error(`sqlite-vec DLL is not ARM64 (machine 0x${machine.toString(16)}): ${extensionPath}`);
+  }
+}
+
+async function compileWindowsArm64SqliteVec(resourcesRoot) {
+  const sourceRoot = path.join(resourcesRoot, '.native-build', `sqlite-vec-${SQLITE_VEC_VERSION}`);
+  const sqliteIncludeRoot = path.join(resourcesRoot, 'node_modules', 'better-sqlite3', 'deps', 'sqlite3');
+  const extensionPath = getWindowsArm64VecExtensionPath(resourcesRoot);
+  const extensionOutputBase = extensionPath.slice(0, -path.extname(extensionPath).length);
+  const sourcePath = path.join(sourceRoot, 'sqlite-vec.c');
+
+  if (!fs.existsSync(path.join(sqliteIncludeRoot, 'sqlite3.h')) || !fs.existsSync(path.join(sqliteIncludeRoot, 'sqlite3ext.h'))) {
+    throw new Error(`Missing better-sqlite3 SQLite headers required for Windows ARM64 sqlite-vec: ${sqliteIncludeRoot}`);
+  }
+
+  await fs.promises.rm(sourceRoot, { recursive: true, force: true });
+  await fs.promises.mkdir(sourceRoot, { recursive: true });
+  const sourceArchivePath = path.join(sourceRoot, SQLITE_VEC_AMALGAMATION.name);
+  await downloadVerifiedFile({
+    ...SQLITE_VEC_AMALGAMATION,
+    outputPath: sourceArchivePath,
+  });
+  await run('tar', ['-xf', sourceArchivePath, '-C', sourceRoot], {
+    cwd: sourceRoot,
+    env: buildInstallEnv('win32', 'arm64'),
+  });
+  if (!fs.existsSync(sourcePath) || !fs.existsSync(path.join(sourceRoot, 'sqlite-vec.h'))) {
+    throw new Error(`sqlite-vec amalgamation did not contain the required source files: ${sourceArchivePath}`);
+  }
+
+  await fs.promises.mkdir(path.dirname(extensionPath), { recursive: true });
+  await Promise.all([
+    extensionPath,
+    `${extensionOutputBase}.exp`,
+    `${extensionOutputBase}.lib`,
+    `${extensionOutputBase}.pdb`,
+  ].map((filePath) => fs.promises.rm(filePath, { force: true })));
+
+  try {
+    await run('cl', [
+      '/nologo',
+      '/LD',
+      '/O2',
+      `/I${sqliteIncludeRoot}`,
+      `/Fe:${extensionPath}`,
+      sourcePath,
+    ], {
+      cwd: sourceRoot,
+      env: buildInstallEnv('win32', 'arm64'),
+    });
+    await assertWindowsArm64Dll(extensionPath);
+  } finally {
+    await fs.promises.rm(sourceRoot, { recursive: true, force: true });
+    await Promise.all([
+      `${extensionOutputBase}.exp`,
+      `${extensionOutputBase}.lib`,
+      `${extensionOutputBase}.pdb`,
+    ].map((filePath) => fs.promises.rm(filePath, { force: true })));
+  }
+}
+
 async function ensureSqliteVecPackage(resourcesRoot, targetPlatform, targetArch) {
+  if (shouldCompileSqliteVecFromSource(targetPlatform, targetArch)) {
+    await compileWindowsArm64SqliteVec(resourcesRoot);
+    return;
+  }
+
   const platformPackageNameMap = {
     win32: 'windows',
     darwin: 'darwin',
@@ -186,7 +295,7 @@ async function ensureSqliteVecPackage(resourcesRoot, targetPlatform, targetArch)
     return;
   }
 
-  const packageName = `sqlite-vec-${packagePlatform}-${targetArch}@0.1.9`;
+  const packageName = `sqlite-vec-${packagePlatform}-${targetArch}@${SQLITE_VEC_VERSION}`;
   await run(
     'npm',
     ['install', '--no-save', '--force', packageName],
@@ -208,7 +317,16 @@ async function main() {
   await ensureSqliteVecPackage(resourcesRoot, targetPlatform, targetArch);
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  SQLITE_VEC_AMALGAMATION,
+  assertWindowsArm64Dll,
+  getWindowsArm64VecExtensionPath,
+  shouldCompileSqliteVecFromSource,
+};

@@ -27,8 +27,23 @@ function ensureParentDir(filePath) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
 }
 
+function getBundledWindowsArm64VecExtensionPath({
+  platform = process.platform,
+  arch = process.arch,
+  cwd = process.cwd(),
+} = {}) {
+  if (platform !== 'win32' || arch !== 'arm64') return null;
+  const extensionPath = path.join(cwd, 'native', 'sqlite-vec', 'win32-arm64', 'vec0.dll');
+  return fs.existsSync(extensionPath) ? extensionPath : null;
+}
+
 function loadVecExtension(database) {
-  sqliteVec.load(database);
+  const bundledWindowsArm64Extension = getBundledWindowsArm64VecExtensionPath();
+  if (bundledWindowsArm64Extension) {
+    database.loadExtension(bundledWindowsArm64Extension, 'sqlite3_vec_init');
+  } else {
+    sqliteVec.load(database);
+  }
   database.prepare('SELECT vec_version() AS version').get();
   vecAvailable = true;
 }
@@ -1015,4 +1030,5 @@ module.exports = {
   setSetting,
   setSettings,
   removeSettings,
+  getBundledWindowsArm64VecExtensionPath,
 };

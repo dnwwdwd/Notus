@@ -18,11 +18,11 @@
     "dev:desktop": "node desktop/scripts/dev-electron.js",
     "dev:desktop:all": "node desktop/scripts/dev-all.js",
     "build:desktop": "node desktop/scripts/build-desktop.js",
-    "dist:desktop": "npm run build:desktop && electron-builder",
-    "dist:desktop:mac:x64": "node desktop/scripts/build-desktop.js --platform=darwin --arch=x64 && electron-builder --mac dmg --x64",
-    "dist:desktop:mac:arm64": "node desktop/scripts/build-desktop.js --platform=darwin --arch=arm64 && electron-builder --mac dmg --arm64",
-    "dist:desktop:win:x64": "node desktop/scripts/build-desktop.js --platform=win32 --arch=x64 && electron-builder --win nsis --x64",
-    "dist:desktop:win:arm64": "node desktop/scripts/build-desktop.js --platform=win32 --arch=arm64 && electron-builder --win nsis --arm64",
+    "dist:desktop": "npm run build:desktop && electron-builder --publish never",
+    "dist:desktop:mac:x64": "node desktop/scripts/build-desktop.js --platform=darwin --arch=x64 && electron-builder --mac dmg --x64 --publish never",
+    "dist:desktop:mac:arm64": "node desktop/scripts/build-desktop.js --platform=darwin --arch=arm64 && electron-builder --mac dmg --arm64 --publish never",
+    "dist:desktop:win:x64": "node desktop/scripts/build-desktop.js --platform=win32 --arch=x64 && electron-builder --win nsis --x64 --publish never",
+    "dist:desktop:win:arm64": "node desktop/scripts/build-desktop.js --platform=win32 --arch=arm64 && electron-builder --win nsis --arm64 --publish never",
     "dist:lpk": "node desktop/scripts/build-lpk.js"
   },
   "devDependencies": {

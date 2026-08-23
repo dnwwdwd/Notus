@@ -1,5 +1,7 @@
 const assert = require('assert');
 const { renderAgentLoopPrompt } = require('../lib/prompt/agent-loop/render');
+const { formatAttachmentsForPrompt } = require('../lib/parsedAttachmentStore');
+const { estimateTextTokens } = require('../lib/llmBudget');
 
 const session = {
   id: 1,
@@ -43,5 +45,17 @@ assert.throws(() => renderAgentLoopPrompt(session, {
   contextWindowTokens: 4_096,
   taskMaterials: [{ sourceType: 'web', sourceId: 'oversized', content: '材料'.repeat(20_000) }],
 }), (error) => ['PROMPT_DYNAMIC_MATERIAL_EXCEEDED', 'PROMPT_MODULE_BUDGET_EXCEEDED'].includes(error.code));
+
+const largeAttachments = Array.from({ length: 8 }, (_, index) => ({
+  source: `资料-${index + 1}.docx`,
+  contentType: 'docx',
+  text: '中文附件正文。'.repeat(12_000),
+}));
+const boundedAttachmentContext = formatAttachmentsForPrompt(largeAttachments, { maxTotalTokens: 2_400 });
+assert.ok(estimateTextTokens(boundedAttachmentContext) <= 2_400, '附件上下文必须按 token 预算裁剪，而不是只按字符数裁剪');
+assert.doesNotThrow(() => renderAgentLoopPrompt(session, {
+  contextWindowTokens: 12_000,
+  taskMaterials: [{ sourceType: 'attachment', sourceId: 'large-attachments', content: boundedAttachmentContext }],
+}), '多份中文 Word 附件在已分配预算内不能触发 Prompt 模块预算异常');
 
 console.log('agent prompt registry tests passed');

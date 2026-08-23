@@ -25,7 +25,9 @@ assert.ok(fileWorkspace.includes('interactionAnswerDrafts'), '提问卡答案应
 assert.ok(fileWorkspace.includes('agentPanelLocked'), '提交提问卡答案时应短暂锁定 AI 面板');
 assert.ok(fileWorkspace.includes('正在保存提问卡片回答，请稍候。'), '锁定 AI 面板时应给出友善提示');
 assert.ok(fileWorkspace.includes("onViewAgentLogs={(conversationId) => openSettings('logs', { conversationId })}"), '历史对话中的日志入口必须把对应会话传给日志面板');
-assert.ok(clarifyDrawer.includes('answerDraftRef'), '提问卡重渲染时应从内存草稿恢复答案');
+assert.ok(clarifyDrawer.includes('buildInitialAnswers(interaction, answerDraftRef.current)'), '第一版提问卡应从 interaction 初始答案恢复');
+assert.ok(fileWorkspace.includes('answerDraft={interactionAnswerDrafts[String(activeInteraction.id)]}'), '提问卡草稿应在面板重挂载后恢复');
+assert.ok(fileWorkspace.includes('onAnswerDraftChange={(answers) => handleInteractionAnswerDraftChange(activeInteraction.id, answers)}'), '提问卡草稿应随用户输入保存');
 assert.ok(controller.includes('runSequenceRef'), '恢复任务应隔离过期 SSE 事件');
 assert.ok(controller.includes('subscriptionEpochRef'), '切换对话或卸载后必须使旧 SSE 订阅失效');
 assert.ok(controller.includes('const isCurrentPresentation = () => isSubscriptionActive() && runSequence === runSequenceRef.current;'), '后发任务只能更新自身的主展示，不能覆盖早先任务');

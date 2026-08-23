@@ -828,6 +828,8 @@ const Logs = ({ agentConversationId: suppliedAgentConversationId = '' }) => {
                   {item.message ? <div>消息：{item.message}</div> : null}
                   {item.error ? <div>错误：{item.error}</div> : null}
                   {item.error_code ? <div>错误码：{item.error_code}</div> : null}
+                  {item.error_location ? <div>调用位置：{item.error_location}</div> : null}
+                  {item.error_stack ? <details style={{ marginTop: 6 }}><summary style={{ cursor: 'pointer' }}>查看错误调用位置</summary><pre style={{ margin: '8px 0 0', padding: 10, maxHeight: 220, overflow: 'auto', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', borderRadius: 8, background: 'var(--bg-secondary)', color: 'var(--text-secondary)' }}>{item.error_stack}</pre></details> : null}
                 </div>
               </div>
             ))}
@@ -1455,6 +1457,10 @@ const ShortcutsSettings = () => {
   );
 };
 
+function SkillListSkeleton() {
+  return <div aria-label="正在读取 Skill 列表" role="status" style={{ display: 'grid', gap: 8 }}>{Array.from({ length: 3 }, (_, index) => <div key={index} aria-hidden="true" style={{ ...SETTINGS_RESOURCE_ROW_STYLE, minHeight: 66, opacity: 0.72, background: 'linear-gradient(90deg, #F4F1E9 25%, #FBF9F4 42%, #F4F1E9 58%)', backgroundSize: '220% 100%', animation: 'shimmer 1.2s ease-in-out infinite' }}><span style={{ width: 34, height: 34, borderRadius: 10, background: '#ECE8DE', flexShrink: 0 }} /><span style={{ display: 'grid', gap: 8, flex: 1 }}><span style={{ width: '30%', height: 12, borderRadius: 6, background: '#E7E3D9' }} /><span style={{ width: '72%', height: 10, borderRadius: 6, background: '#EEEAE1' }} /></span></div>)}</div>;
+}
+
 const SkillsSettings = () => {
   const toast = useToast();
   const [skills, setSkills] = useState([]);
@@ -1590,7 +1596,7 @@ const SkillsSettings = () => {
         </div>
         <section style={{ ...SETTINGS_SURFACE_STYLE, display: 'grid', gap: 8, padding: 14 }}>
           <div style={{ display: 'grid', gap: 8 }}>
-            {skills.map((skill) => (
+            {loading ? <SkillListSkeleton /> : skills.map((skill) => (
               <div key={skill.id} style={{ ...SETTINGS_RESOURCE_ROW_STYLE, flexWrap: 'wrap' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 11, minWidth: 0, flex: '1 1 340px' }}>
                   <div style={SETTINGS_RESOURCE_ICON_STYLE}><Icons.skill size={17} /></div>

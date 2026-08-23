@@ -94,6 +94,15 @@ function getBindingTitleFromContent(content = '') {
   return normalizeFileNameBase(extractVisiblePrimaryHeading(content));
 }
 
+function getBindingTitleForFile(content = '') {
+  const visibleHeading = getBindingTitleFromContent(content);
+  if (visibleHeading) return visibleHeading;
+
+  const frontmatter = parseFrontmatter(content).data || {};
+  if (String(frontmatter.created_by || '').trim() !== 'notus_agent') return '';
+  return normalizeFileNameBase(frontmatter.title || '');
+}
+
 function pathExists(relativePath) {
   const config = getEffectiveConfig();
   const target = resolveInside(config.notesDir, ensureMarkdownPath(relativePath));
@@ -343,28 +352,52 @@ function syncFilesFromDisk() {
   const seen = new Set(paths);
 
   paths.forEach((relativePath) => {
-    const content = readMarkdownFile(relativePath);
-    let existing = db.prepare('SELECT * FROM files WHERE path = ?').get(relativePath);
-    let payload = buildFileRecordPayload(db, relativePath, content, existing);
+    let currentPath = relativePath;
+    let content = readMarkdownFile(relativePath);
+
+    if (isTitleFilenameBindingEnabled()) {
+      const nextBaseName = getBindingTitleForFile(content);
+      const currentBaseName = getBaseName(relativePath).replace(/\.md$/i, '');
+      if (nextBaseName && nextBaseName !== currentBaseName) {
+        const nextPath = buildRenamedPath(relativePath, nextBaseName);
+        if (!pathExists(nextPath)) {
+          const hasVisibleHeading = Boolean(getBindingTitleFromContent(content));
+          if (!hasVisibleHeading) {
+            content = applyVisibleTitleBinding(content, nextBaseName);
+            writeMarkdownFile(relativePath, content);
+          }
+          const config = getEffectiveConfig();
+          const oldTarget = resolveInside(config.notesDir, relativePath);
+          const newTarget = resolveInside(config.notesDir, nextPath);
+          fs.mkdirSync(path.dirname(newTarget.absolutePath), { recursive: true });
+          fs.renameSync(oldTarget.absolutePath, newTarget.absolutePath);
+          seen.delete(relativePath);
+          seen.add(nextPath);
+          currentPath = nextPath;
+        }
+      }
+    }
+
+    let existing = db.prepare('SELECT * FROM files WHERE path = ?').get(currentPath);
+    let payload = buildFileRecordPayload(db, currentPath, content, existing);
 
     if (!existing && payload.frontmatterId) {
       const renamed = db.prepare(`
         SELECT *
         FROM files
-        WHERE stable_id = ?
-          AND path != ?
+        WHERE stable_id = ? AND path != ?
         ORDER BY updated_at DESC, id DESC
         LIMIT 1
-      `).get(payload.frontmatterId, relativePath);
+      `).get(payload.frontmatterId, currentPath);
       if (renamed && !seen.has(renamed.path)) {
         db.prepare('UPDATE files SET path = ?, updated_at = datetime(\'now\') WHERE id = ?')
-          .run(relativePath, renamed.id);
-        existing = { ...renamed, path: relativePath };
-        payload = buildFileRecordPayload(db, relativePath, content, existing);
+          .run(currentPath, renamed.id);
+        existing = { ...renamed, path: currentPath };
+        payload = buildFileRecordPayload(db, currentPath, content, existing);
       }
     }
 
-    const updatedAt = getFileUpdatedAt(relativePath);
+    const updatedAt = getFileUpdatedAt(currentPath);
     db.prepare(`
       INSERT INTO files (
         path, stable_id, title, hash, size, mtime, char_count, token_count,
@@ -386,7 +419,7 @@ function syncFilesFromDisk() {
         heading_outline = excluded.heading_outline,
         updated_at = excluded.updated_at
     `).run(
-      relativePath,
+      currentPath,
       payload.stableId,
       payload.title,
       payload.size,
@@ -573,7 +606,11 @@ function createFile(filePath, content = '', options = {}) {
       title_binding_warning: '',
     };
   }
-  return updateFile(createdFile.id, createdFile.content, { titleFilenameBindingEnabled: true });
+  const boundFile = updateFile(createdFile.id, createdFile.content, { titleFilenameBindingEnabled: true });
+  return {
+    ...boundFile,
+    title_binding_applied: boundFile.title_binding_applied || boundFile.path !== finalPath,
+  };
 }
 
 function saveFileByPath(filePath, content = '', options = {}) {

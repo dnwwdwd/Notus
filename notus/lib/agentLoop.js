@@ -278,6 +278,17 @@ function buildQuestionCardToolResult(interactionId, sessionId) {
       content: JSON.stringify({ error: 'INTERACTION_SESSION_MISMATCH', message: '交互不属于当前 Agent 任务' }),
     };
   }
+  if (interaction.status === 'cancelled') {
+    return {
+      isError: false,
+      content: JSON.stringify({
+        answered: false,
+        cancelled: true,
+        action: 'cancel',
+        interaction_id: interaction.id,
+      }),
+    };
+  }
   if (interaction.status !== 'answered') {
     return {
       isError: true,
@@ -340,7 +351,11 @@ async function runAgentLoop({ sessionId, runId = null, llmConfig, onStream, sign
     tokenBudgetTotal: Number(llmConfig?.llmContextWindowTokens || config.llmContextWindowTokens || 60000),
   });
   const attachmentContext = session.conversation_id
-    ? formatAttachmentsForPrompt(loadAttachments(session.conversation_id))
+    ? formatAttachmentsForPrompt(loadAttachments(session.conversation_id), {
+      // 动态资料与工作区上下文、检索结果共享总预算。附件占用固定份额，避免
+      // 多份中文 Word 在模块级检查前把 resources 模块撑满。
+      maxTotalTokens: Math.min(9_000, Math.max(768, Math.floor(Number(llmConfig?.llmContextWindowTokens || config.llmContextWindowTokens || 60_000) * 0.15))),
+    })
     : '';
   const webSearchContext = session.conversation_id && session.web_search_enabled
     ? formatWebSearchContextsForPrompt(session.conversation_id)

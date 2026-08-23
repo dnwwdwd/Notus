@@ -214,6 +214,10 @@ async function runTests() {
   assert.strictEqual(interaction.source, 'agent_loop');
   assert.strictEqual(interaction.payload.title, '提问卡片');
   assert.strictEqual(interaction.payload.questions.length, 2);
+  interaction.payload.questions.forEach((question) => {
+    assert.ok(question.options.length >= 2, `问题 ${question.id} 必须有至少两个候选项`);
+    assert.strictEqual(question.type, 'single_select');
+  });
 
   console.log('agent tools canvas block tests passed');
 }

@@ -16,6 +16,7 @@ const { getDb } = require('./db');
 const { updateResumeJob } = require('./agentControlPlane');
 const { mergeAgentMedia } = require('./agentMedia');
 const { markTaskChangeSetFinished } = require('./agentTaskChangeSets');
+const { ensureError } = require('./errors');
 
 const logger = createLogger({ subsystem: 'agent-task-worker' });
 const WORKER_STATE_KEY = '__notus_agent_task_worker_state__';
@@ -187,6 +188,7 @@ async function execute(task) {
       if (settledResumeJob?.status !== 'queued') updateTask(sessionId, { resumeJobId: null });
     }
   } catch (error) {
+    const normalizedError = ensureError(error, 'AGENT_TASK_FAILED', 'Agent 任务执行失败');
     const cancelled = controller.signal.aborted && controller.signal.reason === 'cancel';
     const interrupted = controller.signal.aborted && !cancelled;
     const status = cancelled ? 'cancelled' : interrupted ? 'queued' : 'failed';
@@ -194,11 +196,18 @@ async function execute(task) {
     if (!interrupted) {
       try { markTaskChangeSetFinished(sessionId, cancelled ? 'cancelled' : 'failed'); } catch {}
     }
-    updateTask(sessionId, { status, lastError: { code: error.code || 'AGENT_TASK_FAILED', message: error.message || '任务执行失败' }, finished: !interrupted });
-    emit(sessionId, runId, { type: 'artifact', artifact_type: 'run_error', status: interrupted ? 'queued_resume' : 'failed', error_category: interrupted ? 'interrupted' : 'fatal', error_code: interrupted ? 'WORKER_INTERRUPTED' : (error.code || 'AGENT_TASK_FAILED'), message: interrupted ? '任务已保存，将在服务恢复后继续执行。' : 'Agent 执行异常，执行记录已保留。', resumable: interrupted });
-    logger.error('agent.task.failed', { session_id: sessionId, error });
+    const diagnostics = {
+      module_id: normalizedError.module_id || null,
+      tokens: Number(normalizedError.tokens || 0) || null,
+      module_budget: Number(normalizedError.module_budget || 0) || null,
+      dynamic_tokens: Number(normalizedError.dynamic_tokens || 0) || null,
+      dynamic_budget: Number(normalizedError.dynamic_budget || 0) || null,
+    };
+    updateTask(sessionId, { status, lastError: { code: normalizedError.code || 'AGENT_TASK_FAILED', message: normalizedError.message || '任务执行失败' }, finished: !interrupted });
+    emit(sessionId, runId, { type: 'artifact', artifact_type: 'run_error', status: interrupted ? 'queued_resume' : 'failed', error_category: interrupted ? 'interrupted' : 'fatal', error_code: interrupted ? 'WORKER_INTERRUPTED' : (normalizedError.code || 'AGENT_TASK_FAILED'), message: interrupted ? '任务已保存，将在服务恢复后继续执行。' : normalizedError.code === 'PROMPT_MODULE_BUDGET_EXCEEDED' ? '任务材料超过 Prompt 预算；已记录模块和预算信息，请减少附件范围后重试。' : 'Agent 执行异常，执行记录已保留。', diagnostics, resumable: interrupted });
+    logger.error('agent.task.failed', { session_id: sessionId, diagnostics, error: normalizedError });
     if (resumeJob) {
-      updateResumeJob(resumeJob.id, { status: interrupted ? 'queued' : 'failed', errorCode: error.code || 'AGENT_TASK_FAILED', finished: !interrupted });
+      updateResumeJob(resumeJob.id, { status: interrupted ? 'queued' : 'failed', errorCode: normalizedError.code || 'AGENT_TASK_FAILED', finished: !interrupted });
       if (!interrupted) updateTask(sessionId, { resumeJobId: null });
     }
   } finally {

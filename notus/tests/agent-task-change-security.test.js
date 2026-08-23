@@ -24,7 +24,7 @@ assert.ok(
   '累计 Diff 详情接口必须验证 session token。'
 );
 assert.ok(
-  workspaceSource.includes("'x-agent-control-ticket': changeSet.read_control_ticket"),
+  workspaceSource.includes("'x-agent-control-ticket': access.read_control_ticket"),
   '累计 Diff 卡读取详情时必须携带只读 control ticket。'
 );
 

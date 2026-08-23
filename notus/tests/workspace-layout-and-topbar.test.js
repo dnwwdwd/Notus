@@ -62,7 +62,7 @@ assert.ok(globalStyles.includes('@container notus-agent-workspace (max-width: 56
 assert.ok(globalStyles.includes('@container notus-agent-workspace (max-width: 680px)'), '确认方式应先于联网和 MCP 收敛为图标');
 assert.ok(globalStyles.includes("grid-template-areas:\n      'attachments network'\n      'confirm confirm';"), '仅在最窄宽度让确认方式单独换行，联网和 MCP 保持在首行');
 assert.ok(globalStyles.includes('.notus-agent-composer__network-tools {\n    grid-area: network;'), '最窄宽度的联网和 MCP 必须保持在首行网络区域');
-assert.ok(globalStyles.includes('.notus-agent-composer__model {\n    max-width: 96px;'), '窄 AI 面板中的模型选择应使用容器内固定上限，不能引用窗口宽度');
+assert.ok(globalStyles.includes('max-width: min(var(--notus-model-name-max-width, 96px), 96px);'), '窄 AI 面板中的模型选择应继续使用容器内 96px 上限，不能引用窗口宽度');
 assert.ok(globalStyles.includes('.notus-resizable-layout:not(.is-left-collapsed) .notus-resizable-layout__panel--left,'), '收起编辑器后不得保留 1200px 断点的左栏最小宽度');
 assert.ok(globalStyles.includes('.notus-resizable-layout:not(.is-right-collapsed) .notus-resizable-layout__panel--right {'), '收起 AI 面板后不得保留 1200px 断点的右栏最小宽度');
 

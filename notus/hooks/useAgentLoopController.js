@@ -240,6 +240,7 @@ function buildEventStep(event = {}) {
       errorMessage,
       errorCode: event.error_code || '',
       requestId: event.request_id || event.requestId || '',
+      diagnostics: event.diagnostics || null,
     };
   }
   if (event.type === 'final') {
@@ -612,6 +613,7 @@ export function useAgentLoopController({
   onOperationSets,
   onTaskChangeSet,
   onOperationSetHandled,
+  onOperationConfirmation,
   onInteractionRequest,
   onApplySuccess,
   onRollbackSuccess,
@@ -739,6 +741,7 @@ export function useAgentLoopController({
     if (payload.task_change_set) {
       onTaskChangeSet?.({
         ...payload.task_change_set,
+        session_status: session?.status || '',
         read_control_ticket: controlTicket || null,
         session_token: controlTicket ? null : (token || null),
       });
@@ -1189,9 +1192,28 @@ export function useAgentLoopController({
               reason: event.reason || 'operation_confirmation_required',
               operation_set_id: event.operation_set_id || null,
             });
+            let operationSet = null;
             try {
-              await fetchSessionDetails(eventSessionId, sessionAccess, { activate: false });
+              const detail = await fetchSessionDetails(eventSessionId, sessionAccess, { activate: false });
+              operationSet = normalizeOperationSets(detail?.operation_sets).find((item) => (
+                Number(item.id) === Number(event.operation_set_id)
+              )) || null;
             } catch {}
+            if (!isSubscriptionActive()) return;
+            if (operationSet) {
+              appendAssistant({
+                content: event.text || '已生成文件修改预览，请检查后决定是否应用。',
+                meta: {
+                  agent_loop: true,
+                  session_id: eventSessionId,
+                  status: 'waiting_operation_confirmation',
+                  reason: event.reason || 'operation_confirmation_required',
+                  operation_set_id: operationSet.id,
+                },
+                operationSet,
+              });
+              onOperationConfirmation?.(operationSet);
+            }
             setStreamText('');
             setLoading(false);
           } else if (event.artifact_type === 'limit_confirmation') {
@@ -1470,6 +1492,7 @@ export function useAgentLoopController({
     onConversationSettled,
     onError,
     onInteractionRequest,
+    onOperationConfirmation,
     onSessionTimeline,
     setActiveAgentSession,
     setSteps,
@@ -1634,6 +1657,24 @@ export function useAgentLoopController({
     }
   }, [onError, onRollbackSuccess, setActiveAgentSession]);
 
+  const markAgentSessionStatus = useCallback((sessionId, status, reason = status) => {
+    const id = String(sessionId || '');
+    if (!id) return;
+    const known = knownSessionsRef.current.get(id)
+      || (String(sessionRef.current?.id || '') === id ? sessionRef.current : null);
+    const nextSession = { ...(known || { id: Number(id) || id }), status, reason };
+    knownSessionsRef.current.set(id, nextSession);
+    onSessionTimeline?.({ sessionId: id, sessionStatus: status, loading: false });
+    if (String(sessionRef.current?.id || '') !== id) return;
+    setActiveAgentSession(nextSession);
+    setSteps((prev) => upsertStep(completeSteps(prev), buildEventStep({
+      type: status === 'cancelled' ? 'cancelled' : 'loop_done',
+      reason,
+    })));
+    setStreamText('');
+    setLoading(false);
+  }, [onSessionTimeline, setActiveAgentSession, setSteps]);
+
   const stopAgentLoop = useCallback(async (targetSessionId = null) => {
     const sessionId = String(targetSessionId || '');
     const session = sessionId ? knownSessionsRef.current.get(sessionId) : sessionRef.current;
@@ -1793,6 +1834,7 @@ export function useAgentLoopController({
     rejectOperationSet,
     extendAgentSession,
     rollbackAgentSession,
+    markAgentSessionStatus,
     fetchSessionDetails,
     restoreAgentSession,
     hasActiveSessionSubscription,

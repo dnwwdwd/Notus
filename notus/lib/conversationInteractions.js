@@ -2,6 +2,7 @@ const { getDb } = require('./db');
 const { sha256 } = require('./files');
 
 const DEFAULT_EXPIRE_DAYS = 7;
+const NONE_OF_THE_ABOVE_OPTION_ID = '__none_of_the_above__';
 const ACTIVE_STATUSES = ['pending', 'processing', 'stale', 'failed'];
 const TERMINAL_STATUSES = ['answered', 'cancelled'];
 // 已回答卡片也属于对话历史：重新打开会话时需按时间线展示其问题、答案与时间。
@@ -310,6 +311,29 @@ function buildAnswer(optionId, question, extra = {}) {
   };
 }
 
+function buildSkippedAnswer(question) {
+  return {
+    question_id: question?.id || '',
+    slot: question?.slot || question?.id || '',
+    type: question?.type || 'single_select',
+    value: '',
+    selected_option_id: '',
+    label: '未回答',
+    text: '',
+    skipped: true,
+  };
+}
+
+function buildNoneOfTheAboveAnswer(question) {
+  return {
+    ...buildAnswer(NONE_OF_THE_ABOVE_OPTION_ID, question, { label: '以上选项都不是' }),
+    value: NONE_OF_THE_ABOVE_OPTION_ID,
+    selected_option_id: NONE_OF_THE_ABOVE_OPTION_ID,
+    label: '以上选项都不是',
+    none_of_the_above: true,
+  };
+}
+
 function isQuestionActive(question = {}, answers = {}) {
   const dependency = question?.depends_on || question?.dependsOn;
   if (!dependency?.question_id || !Array.isArray(dependency.values) || dependency.values.length === 0) return true;
@@ -400,20 +424,26 @@ function parseStructuredSourceAnswer(question, answer = {}, interaction = {}) {
   if (optionId) {
     const option = (question.options || []).find((item) => item.id === optionId) || null;
     if (optionId === 'previous_assistant_message') {
+      const candidate = interaction?.payload?.source_candidates?.find((item) => item.source_kind === 'assistant_message') || null;
+      const snapshot = String(interaction?.payload?.source_content_snapshot || candidate?.content || '');
       return {
         ...buildAnswer(optionId, question, {
-          label: option?.label || '上一条助手回复',
-          source_message_id: normalizeNullablePositiveInt(interaction?.payload?.source_message_id),
-          source_content_type: interaction?.payload?.source_content_type || 'general_chat',
+          label: option?.label || candidate?.label || '上一条助手回复',
+          source_message_id: normalizeNullablePositiveInt(interaction?.payload?.source_message_id || candidate?.message_id),
+          source_content_type: interaction?.payload?.source_content_type || candidate?.source_content_type || 'general_chat',
         }),
-        source_kind: interaction?.payload?.source_kind || 'assistant_message',
-        source_content_snapshot: String(interaction?.payload?.source_content_snapshot || ''),
-        source_content_digest: String(interaction?.payload?.source_content_digest || ''),
-        source_content_type: interaction?.payload?.source_content_type || 'general_chat',
+        source_kind: interaction?.payload?.source_kind || candidate?.source_kind || 'assistant_message',
+        source_content_snapshot: snapshot,
+        source_content_digest: String(interaction?.payload?.source_content_digest || (snapshot ? computeTextDigest(snapshot) : '')),
+        source_content_type: interaction?.payload?.source_content_type || candidate?.source_content_type || 'general_chat',
       };
     }
-    if (optionId === 'recent_user_message' || optionId.includes(':')) {
-      const candidate = interaction?.payload?.source_candidates?.find((item) => item.id === optionId) || null;
+    if (['recent_user_message', 'previous_user_message'].includes(optionId) || optionId.includes(':')) {
+      const candidate = interaction?.payload?.source_candidates?.find((item) => (
+        item.id === optionId
+        || (optionId === 'recent_user_message' && item.source_kind === 'user_message')
+        || (optionId === 'previous_user_message' && item.source_kind === 'user_message' && item.id !== 'recent_user_message')
+      )) || null;
       if (candidate) {
         return {
           ...buildAnswer(optionId, question, {
@@ -509,6 +539,13 @@ function parseStructuredTargetAnswer(question, answer = {}, interaction = {}) {
         label: (question.options || []).find((item) => item.id === optionId)?.label || optionId,
         position_relation: optionId === 'document_start' ? 'document_start' : 'document_end',
         relation_hint: optionId === 'document_start' ? 'document_start' : 'document_end',
+      });
+    }
+    if (optionId === 'after_target') {
+      return buildAnswer(optionId, question, {
+        label: (question.options || []).find((item) => item.id === optionId)?.label || '指定段落之后',
+        position_relation: 'after_anchor',
+        relation_hint: 'after_anchor',
       });
     }
   }
@@ -611,6 +648,7 @@ function parseRawPrimaryIntentAnswer(question, rawText = '') {
 }
 
 function parseStructuredGenericAnswer(question, answer = {}) {
+  if (answer?.skipped) return buildSkippedAnswer(question);
   const optionId = String(answer.option_id || answer.value || '').trim();
   const customText = String(answer.custom_text || answer.text || '').trim();
   if (question.type === 'text_input') {
@@ -631,6 +669,7 @@ function parseStructuredGenericAnswer(question, answer = {}) {
     });
   }
   if (!optionId) return null;
+  if (optionId === NONE_OF_THE_ABOVE_OPTION_ID) return buildNoneOfTheAboveAnswer(question);
   const option = (question.options || []).find((item) => item.id === optionId) || null;
   return buildAnswer(optionId, question, {
     label: option?.label || optionId,
@@ -647,6 +686,9 @@ function textToOrdinalBlockId(articleBlocks = [], text = '') {
 
 function normalizeSingleQuestionAnswer(question, answer, interaction, rawText) {
   if (!question) return null;
+  if (answer?.skipped) return buildSkippedAnswer(question);
+  const optionId = String(answer?.option_id || answer?.value || '').trim();
+  if (optionId === NONE_OF_THE_ABOVE_OPTION_ID) return buildNoneOfTheAboveAnswer(question);
   if (question.id === 'primary_intent') {
     return answer ? parseStructuredPrimaryIntentAnswer(question, answer) : parseRawPrimaryIntentAnswer(question, rawText);
   }
@@ -676,11 +718,16 @@ function normalizeInteractionResponse(interaction, input = {}) {
     questions.forEach((question) => {
       const normalized = normalizeSingleQuestionAnswer(question, structuredAnswers[question.id], interaction, '');
       if (normalized) nextAnswers[question.id] = normalized;
+      else if (!nextAnswers[question.id]) nextAnswers[question.id] = buildSkippedAnswer(question);
     });
   } else if (rawText) {
     questions.forEach((question) => {
       const normalized = normalizeSingleQuestionAnswer(question, null, interaction, rawText);
       if (normalized) nextAnswers[question.id] = normalized;
+    });
+  } else {
+    questions.forEach((question) => {
+      if (!nextAnswers[question.id]) nextAnswers[question.id] = buildSkippedAnswer(question);
     });
   }
 
@@ -699,6 +746,7 @@ function normalizeInteractionResponse(interaction, input = {}) {
       }
       const answer = nextAnswers[question.id];
       if (!answer) return true;
+      if (answer.skipped || answer.none_of_the_above || answer.value === NONE_OF_THE_ABOVE_OPTION_ID) return false;
       if (answer.unresolved_custom) return true;
       if (question.id === 'source_content_ref') {
         return !String(answer.source_content_snapshot || '').trim();
@@ -874,6 +922,22 @@ function buildResumePlanFromInteraction(interaction, article) {
   const positionRelation = derivePositionRelation(targetAnswer, writeMode);
   const writeAction = deriveWriteAction(writeMode);
 
+  // 允许用户跳过问题，但不能把“未回答/以上选项都不是”当成编辑上下文，
+  // 再依赖默认位置、默认写入方式继续修改文件。
+  const criticalEditSlots = ['primary_intent', 'source_content_ref', 'target_location', 'write_mode'];
+  const skippedCriticalSlots = criticalEditSlots.filter((slot) => {
+    const answer = answers[slot];
+    return Boolean(
+      answer?.skipped
+      || answer?.none_of_the_above
+      || answer?.value === NONE_OF_THE_ABOVE_OPTION_ID
+    );
+  });
+  const supportedPrimaryIntents = new Set(['edit', 'text', 'analyze', 'draft_text']);
+  if (answers.primary_intent && !supportedPrimaryIntents.has(primaryIntent) && !skippedCriticalSlots.includes('primary_intent')) {
+    skippedCriticalSlots.unshift('primary_intent');
+  }
+
   if (primaryIntent === 'text') {
     return {
       intent: 'text',
@@ -917,6 +981,55 @@ function buildResumePlanFromInteraction(interaction, article) {
       decision_summary: decisionSummary,
       correction_state: correctionState,
       risk_level: 'low',
+      ai_arbitration_mode: 'resume',
+      show_decision_summary: true,
+    };
+  }
+
+  if (skippedCriticalSlots.length > 0) {
+    return {
+      intent: 'edit',
+      primary_intent: 'edit',
+      scope_mode: 'none',
+      target_block_ids: [],
+      candidate_block_ids: filteredCandidateBlockIds,
+      target_candidates: [],
+      operation_kind: 'discuss',
+      needs_style: false,
+      needs_knowledge: false,
+      clarify_needed: true,
+      helper_used: false,
+      clarify_reason: 'skipped_edit_context',
+      clarify_question: '写入所需的信息未回答，Agent 不会直接修改文件。',
+      clarify_render_mode: 'card',
+      missing_slots: skippedCriticalSlots,
+      answer_slots: {
+        primary_intent: answers.primary_intent || null,
+        source_content_ref: answers.source_content_ref || null,
+        target_location: targetAnswer || null,
+        write_mode: writeModeAnswer || null,
+      },
+      prefilled_answers: {
+        primary_intent: answers.primary_intent || null,
+        source_content_ref: answers.source_content_ref || null,
+        target_location: targetAnswer || null,
+        write_mode: writeModeAnswer || null,
+      },
+      target_location: null,
+      target_anchor: null,
+      position_relation: '',
+      write_action: '',
+      write_mode: '',
+      original_user_input: String(payload.original_user_input || ''),
+      source_message_id: source.source_message_id,
+      source_kind: source.source_kind,
+      source_content_snapshot: source.source_content_snapshot,
+      source_content_digest: source.source_content_digest,
+      source_content_type: source.source_content_type || payload.source_content_type || '',
+      summary_instruction: String(answers.additional_note?.text || ''),
+      decision_summary: '写入所需的信息未回答，未执行文件修改。',
+      correction_state: correctionState,
+      risk_level: 'medium',
       ai_arbitration_mode: 'resume',
       show_decision_summary: true,
     };
@@ -1015,6 +1128,7 @@ function buildResumePlanFromInteraction(interaction, article) {
 module.exports = {
   ACTIVE_STATUSES,
   DISPLAYABLE_STATUSES,
+  NONE_OF_THE_ABOVE_OPTION_ID,
   STRUCTURED_REASON_CODES,
   SLOT_ORDER,
   buildInteractionAnswerSummary,

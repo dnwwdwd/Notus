@@ -30,6 +30,11 @@ const CONFIRM_MODE_STORAGE_KEY = 'notus-files-agent-confirm-mode';
 const AUTO_CONFIRM = 'auto_confirm';
 const MANUAL_CONFIRM = 'manual_confirm';
 const INTERRUPTIBLE_AGENT_SESSION_STATUSES = new Set(['created', 'queued', 'running']);
+const TERMINAL_AGENT_SESSION_STATUSES = new Set(['completed', 'failed', 'cancelled', 'rolled_back']);
+
+function isTerminalAgentSessionStatus(status) {
+  return TERMINAL_AGENT_SESSION_STATUSES.has(String(status || '').trim());
+}
 
 function readConfirmMode() {
   if (typeof window === 'undefined') return AUTO_CONFIRM;
@@ -75,6 +80,46 @@ function collectConversationOperationSets(payload = {}) {
     .flatMap((session) => Array.isArray(session?.operation_sets) ? session.operation_sets : []);
   return [...(Array.isArray(payload?.pending_operation_sets) ? payload.pending_operation_sets : []), ...sessionSets]
     .reduce((items, operationSet) => upsertById(items, operationSet), []);
+}
+
+function collectTaskChangeSets(payload = {}) {
+  return Object.fromEntries(
+    (Array.isArray(payload.agent_sessions) ? payload.agent_sessions : [])
+      .filter((session) => session?.task_change_set)
+      .map((session) => [String(session.id), {
+        ...session.task_change_set,
+        session_status: session.status || '',
+        read_control_ticket: session?.control_tickets?.read || null,
+      }])
+  );
+}
+
+function buildOperationConfirmationMessage(operationSet = {}) {
+  const operationSetId = Number(operationSet?.id || operationSet?.operation_set_id || 0);
+  if (!operationSetId) return null;
+  return {
+    id: `agent-operation-confirmation-${operationSetId}`,
+    role: 'assistant',
+    content: operationSet?.revision?.error_message || operationSet?.revision_error || '已生成文件修改预览，请检查后决定是否应用。',
+    createdAt: operationSet?.updated_at || operationSet?.created_at || new Date().toISOString(),
+    meta: {
+      agent_loop: true,
+      session_id: operationSet?.agent_session_id || operationSet?.session_id || null,
+      status: 'waiting_operation_confirmation',
+      reason: 'operation_confirmation_required',
+      operation_set_id: operationSetId,
+    },
+    operationSet,
+  };
+}
+
+function mergeTaskChangeSetState(previous = {}, changeSet = {}) {
+  // operation_set 事件可能在 final 之后才完成会话详情读取。终态一经确认就不应被
+  // 较晚返回的 running 快照降级，否则最终回复出现时累计 Diff 会被错误隐藏。
+  const retainedStatus = isTerminalAgentSessionStatus(previous?.session_status)
+    ? previous.session_status
+    : (changeSet?.session_status || previous?.session_status || '');
+  return { ...previous, ...changeSet, session_status: retainedStatus };
 }
 
 function timelineFromSession(session = {}) {
@@ -233,7 +278,7 @@ function ResourceApprovalDrawer({ interaction, submitting, onDecision, onPhaseCh
       questions: [{ id: 'resource_decision', label: detail || '是否继续执行该操作？', type: 'single_select', required: true, allow_custom: false, options: [{ id: 'confirm', label: '确认执行', description: '执行这项资源操作。', answer_value: 'confirm' }, { id: 'cancel', label: '取消', description: '不执行，保留草稿。', answer_value: 'cancel' }] }],
     },
   };
-  return <ClarifyDrawer interaction={cardInteraction} submitting={submitting} submitLabel="确认执行" onPhaseChange={onPhaseChange} onSubmit={(_, answers) => onDecision?.(answers?.resource_decision?.option_id === 'confirm' ? 'confirm' : 'cancel')} onRetry={() => {}} onCancel={() => onDecision?.('cancel')} />;
+  return <ClarifyDrawer interaction={cardInteraction} collapsible={false} submitting={submitting} submitLabel="确认执行" onPhaseChange={onPhaseChange} onSubmit={(_, answers) => onDecision?.(answers?.resource_decision?.option_id === 'confirm' ? 'confirm' : 'cancel')} onRetry={() => {}} onCancel={() => onDecision?.('cancel')} />;
 }
 
 export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles, onFilesChanged, onAgentPanelLockChange, beforeAgentRun, fullWidth = false, onOpenDiffFile }) {
@@ -246,11 +291,11 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
   const [activeConversationId, setActiveConversationId] = useState(null);
   const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
   const [historySearchQuery, setHistorySearchQuery] = useState('');
-  const [conversationListLoading, setConversationListLoading] = useState(false);
   const [restoringConversation, setRestoringConversation] = useState(false);
   const [deletingConversationId, setDeletingConversationId] = useState(null);
   const [exportingConversationId, setExportingConversationId] = useState(null);
   const [pendingOperationSets, setPendingOperationSets] = useState([]);
+  const [operationSetToOpen, setOperationSetToOpen] = useState(null);
   const [taskChangeSetsBySession, setTaskChangeSetsBySession] = useState({});
   const [pendingInteractions, setPendingInteractions] = useState([]);
   const [agentResumeJobs, setAgentResumeJobs] = useState([]);
@@ -368,24 +413,27 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     setRestoredAgentSessions([]);
     setTaskChangeSetsBySession({});
     setLiveSessionTimelines({});
+    setOperationSetToOpen(null);
     subscribedSessionIdsRef.current.clear();
     try {
       const response = await fetch(`/api/conversations/${conversationId}`, { cache: 'no-store' });
       const payload = await readApiResponse(response, '读取对话详情失败');
       if (loadSequence !== conversationLoadSequenceRef.current) return null;
-      setMessages(mapConversationMessages(payload.messages, 'canvas'));
-      setPendingOperationSets(collectConversationOperationSets(payload));
+      const operationSets = collectConversationOperationSets(payload);
+      const waitingSessionIds = new Set((Array.isArray(payload.agent_sessions) ? payload.agent_sessions : [])
+        .filter((session) => session?.status === 'waiting_operation_confirmation')
+        .map((session) => String(session.id)));
+      const confirmationMessages = operationSets
+        .filter((operationSet) => waitingSessionIds.has(String(operationSet?.agent_session_id || operationSet?.session_id || '')) && operationSet?.status === 'pending')
+        .map(buildOperationConfirmationMessage)
+        .filter(Boolean);
+      setMessages([...mapConversationMessages(payload.messages, 'canvas'), ...confirmationMessages]);
+      setPendingOperationSets(operationSets);
+      if (confirmationMessages[0]?.operationSet) setOperationSetToOpen(confirmationMessages[0].operationSet);
       setPendingInteractions(Array.isArray(payload.pending_interactions) ? payload.pending_interactions : []);
       setAgentResumeJobs(Array.isArray(payload.agent_resume_jobs) ? payload.agent_resume_jobs : []);
       setRestoredAgentSessions(Array.isArray(payload.agent_sessions) ? payload.agent_sessions : []);
-      setTaskChangeSetsBySession(Object.fromEntries(
-        (Array.isArray(payload.agent_sessions) ? payload.agent_sessions : [])
-          .filter((session) => session?.task_change_set)
-          .map((session) => [String(session.id), {
-            ...session.task_change_set,
-            read_control_ticket: session?.control_tickets?.read || null,
-          }])
-      ));
+      setTaskChangeSetsBySession(collectTaskChangeSets(payload));
       setPersistedActiveConversationId(conversationId);
       setHistoryDrawerOpen(false);
       return payload;
@@ -398,7 +446,6 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     let cancelled = false;
     const savedId = readActiveConversationId();
     if (savedId) setRestoringConversation(true);
-    setConversationListLoading(true);
     fetchConversationList()
       .then(async (rows) => {
         if (cancelled) return;
@@ -421,7 +468,6 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
       })
       .finally(() => {
         if (!cancelled) {
-          setConversationListLoading(false);
           setRestoringConversation(false);
         }
       });
@@ -431,11 +477,9 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
   useEffect(() => {
     if (!historyDrawerOpen) return undefined;
     const timer = window.setTimeout(() => {
-      setConversationListLoading(true);
       fetchConversationList(historySearchQuery)
         .then((rows) => setConversationList(rows))
-        .catch(() => setConversationList([]))
-        .finally(() => setConversationListLoading(false));
+        .catch(() => setConversationList([]));
     }, 180);
     return () => window.clearTimeout(timer);
   }, [fetchConversationList, historyDrawerOpen, historySearchQuery]);
@@ -470,14 +514,32 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     )));
   }, []);
 
+  const handleOperationConfirmation = useCallback((operationSet) => {
+    const operationSetId = Number(operationSet?.id || operationSet?.operation_set_id || 0);
+    if (!operationSetId) return;
+    setOperationSetToOpen((current) => (
+      Number(current?.id || current?.operation_set_id || 0) === operationSetId ? current : operationSet
+    ));
+  }, []);
+
   const handleTaskChangeSet = useCallback((changeSet) => {
     const sessionId = String(changeSet?.session_id || '');
     if (!sessionId) return;
     setTaskChangeSetsBySession((previous) => ({
       ...previous,
-      [sessionId]: { ...(previous[sessionId] || {}), ...changeSet },
+      [sessionId]: mergeTaskChangeSetState(previous[sessionId], changeSet),
     }));
   }, []);
+
+  const refreshTaskChangeSetAccess = useCallback(async (targetSessionId) => {
+    const conversationId = Number(activeConversationId || 0);
+    if (!conversationId) return null;
+    const response = await fetch(`/api/conversations/${conversationId}`, { cache: 'no-store' });
+    const payload = await readApiResponse(response, '刷新累计修改访问权限失败');
+    const nextChangeSets = collectTaskChangeSets(payload);
+    setTaskChangeSetsBySession(nextChangeSets);
+    return nextChangeSets[String(targetSessionId)] || null;
+  }, [activeConversationId]);
 
   const handleSessionTimeline = useCallback((timeline) => {
     const sessionId = String(timeline?.sessionId || '');
@@ -513,6 +575,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     onOperationSets: handleOperationSets,
     onTaskChangeSet: handleTaskChangeSet,
     onOperationSetHandled: handleOperationSetHandled,
+    onOperationConfirmation: handleOperationConfirmation,
     onApplySuccess: notifyFilesChanged,
     onRollbackSuccess: notifyFilesChanged,
     onFilesMayHaveChanged: notifyFilesChanged,
@@ -761,6 +824,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     setPersistedActiveConversationId(null);
     setMessages([]);
     setPendingOperationSets([]);
+    setOperationSetToOpen(null);
     setPendingInteractions([]);
     setAgentResumeJobs([]);
     setRestoredAgentSessions([]);
@@ -885,6 +949,30 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     }
   }, [respondToInteraction, resumeInteraction, shouldReconnectInteractionSession, toast]);
 
+  const handleInteractionCancel = useCallback(async (interaction) => {
+    setInteractionSubmittingId(interaction.id);
+    try {
+      const payload = await respondToInteraction(interaction, { action: 'cancel' });
+      setInteractionAnswerDrafts((previous) => {
+        const next = { ...previous };
+        delete next[String(interaction.id)];
+        return next;
+      });
+      if (!payload.should_continue) {
+        const cancelledSessionId = payload.interaction?.payload?.agent_session_id
+          || interaction?.payload?.agent_session_id;
+        agentLoop.markAgentSessionStatus?.(cancelledSessionId, 'cancelled', 'cancelled');
+      }
+      if (payload.should_continue && shouldReconnectInteractionSession(payload.interaction || interaction)) {
+        await resumeInteraction(payload.interaction || interaction, payload, { subscribeOnly: true });
+      }
+    } catch (error) {
+      toast(error.message || '取消提问卡片失败', 'error');
+    } finally {
+      setInteractionSubmittingId(null);
+    }
+  }, [agentLoop, respondToInteraction, resumeInteraction, shouldReconnectInteractionSession, toast]);
+
   const handleInteractionAnswerDraftChange = useCallback((interactionId, answers) => {
     if (!interactionId) return;
     setInteractionAnswerDrafts((previous) => ({ ...previous, [String(interactionId)]: answers }));
@@ -924,7 +1012,8 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     return messages.map((message, index) => {
       const operationSetId = String(message?.meta?.operation_set_id || message?.operationSet?.id || '');
       const sessionId = String(message?.meta?.session_id || '');
-      const operationSet = taskChangeSetsBySession[sessionId]
+      const sessionChangeSet = taskChangeSetsBySession[sessionId] || null;
+      const operationSet = sessionChangeSet && isTerminalAgentSessionStatus(sessionChangeSet.session_status)
         ? null
         : operationSetById[operationSetId] || operationSetBySessionId[sessionId] || message?.operationSet || null;
       const taskChangeSet = latestAssistantIndexBySession.get(sessionId) === index
@@ -934,19 +1023,19 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
       return { ...message, operationSet, taskChangeSet };
     });
   }, [messages, operationSetById, operationSetBySessionId, taskChangeSetsBySession]);
-  // 后台运行、暂停、失败和提问卡都不再锁住输入；新消息会以同会话 FIFO 入队。
-  // 仅模型尚未就绪或输入组件自身正在上传时禁用。
+  // 待回答、失败或失效的 interaction 由专用 Drawer 接管并隐藏输入区；提交后恢复。
+  // 其他后台运行状态不锁住输入，新消息会以同会话 FIFO 入队。
   const inputDisabled = !aiUiState.ready;
 
   return (
-    <div className="notus-file-agent-workspace" style={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative', background: 'var(--bg-primary)' }}>
+    <div className={`notus-file-agent-workspace${activeInteraction ? ' has-interaction' : ''}`} style={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative', background: 'var(--bg-primary)' }}>
       <div className="notus-file-agent-workspace__header" style={{ height: 48, padding: '0 12px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', flexShrink: 0 }}>
         <div style={{ display: 'flex', gap: 4 }}>
           <Tooltip content="查看历史对话"><span><IconButton label="查看历史对话" size={30} active={historyDrawerOpen} onClick={() => setHistoryDrawerOpen(true)}><Icons.clock size={14} /></IconButton></span></Tooltip>
           <Tooltip content="新建对话"><span><IconButton label="新建对话" size={30} onClick={handleNewConversation}><Icons.plus size={14} /></IconButton></span></Tooltip>
         </div>
       </div>
-      <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+      <div className="notus-file-agent-workspace__content" style={{ flex: 1, minHeight: 0, position: 'relative' }}>
         <AgentWorkspace
           messages={displayedMessages}
           interactions={pendingInteractions}
@@ -958,6 +1047,8 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
           activeSessionStatus={agentLoop.activeAgentSession?.status || ''}
           sessionTimelines={sessionTimelines}
           taskChangeSetsBySession={taskChangeSetsBySession}
+          operationSetToOpen={operationSetToOpen}
+          onRefreshTaskChangeSet={refreshTaskChangeSetAccess}
           interruptibleSessionId={interruptibleSessionId}
           llmConfigs={llmConfigs}
           selectedConfigId={selectedLlmConfigId}
@@ -981,18 +1072,20 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
           restoringConversation={restoringConversation}
         />
         {aiUiState.showLockedState ? <AiLockedState compact variant="panel" onAction={() => openSettings('model')} /> : null}
+        {activeInteraction ? (
+          <div className="notus-file-agent-workspace__interaction-layer">
+            <div className="notus-file-agent-workspace__interaction-drawer">
+              {activeInteraction.kind === 'mcp_approval' ? <McpApprovalDrawer interaction={activeInteraction} submitting={interactionSubmittingId === activeInteraction.id} onDecision={(decision) => handleMcpApproval(activeInteraction, decision)} /> : activeInteraction.kind === 'resource_approval' ? <ResourceApprovalDrawer interaction={activeInteraction} submitting={interactionSubmittingId === activeInteraction.id} onPhaseChange={setClarifyPhase} onDecision={(decision) => handleResourceApproval(activeInteraction, decision)} /> : <ClarifyDrawer interaction={activeInteraction} collapsible={false} answerDraft={interactionAnswerDrafts[String(activeInteraction.id)]} onAnswerDraftChange={(answers) => handleInteractionAnswerDraftChange(activeInteraction.id, answers)} submitting={interactionSubmittingId === activeInteraction.id} submitLabel="提交" onPhaseChange={setClarifyPhase} onSubmit={handleInteractionSubmit} onRetry={resumeInteraction} onCancel={handleInteractionCancel} />}
+            </div>
+          </div>
+        ) : null}
       </div>
-      {activeInteraction ? (
-        <div className="notus-agent-interaction-timeline" style={{ position: 'relative', zIndex: 2, padding: '0 12px 12px' }}>
-          {activeInteraction.kind === 'mcp_approval' ? <McpApprovalDrawer interaction={activeInteraction} submitting={interactionSubmittingId === activeInteraction.id} onDecision={(decision) => handleMcpApproval(activeInteraction, decision)} /> : activeInteraction.kind === 'resource_approval' ? <ResourceApprovalDrawer interaction={activeInteraction} submitting={interactionSubmittingId === activeInteraction.id} onPhaseChange={setClarifyPhase} onDecision={(decision) => handleResourceApproval(activeInteraction, decision)} /> : <ClarifyDrawer interaction={activeInteraction} answerDraft={interactionAnswerDrafts[String(activeInteraction.id)]} onAnswerDraftChange={(answers) => handleInteractionAnswerDraftChange(activeInteraction.id, answers)} submitting={interactionSubmittingId === activeInteraction.id} submitLabel="继续执行" onPhaseChange={setClarifyPhase} onSubmit={handleInteractionSubmit} onRetry={resumeInteraction} onCancel={(interaction) => respondToInteraction(interaction, { action: 'cancel' }).catch(() => {})} />}
-        </div>
-      ) : null}
       <ConversationDrawer
         open={historyDrawerOpen}
         onClose={() => { setHistoryDrawerOpen(false); setHistorySearchQuery(''); }}
         conversations={conversationList}
         activeConversationId={activeConversationId}
-        loading={conversationListLoading}
+        loading={false}
         searchQuery={historySearchQuery}
         onSearchQueryChange={setHistorySearchQuery}
         emptyText={historySearchQuery.trim() ? '没有匹配的历史对话' : '暂无历史对话'}

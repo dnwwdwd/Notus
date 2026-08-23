@@ -892,6 +892,13 @@ function sanitizeRunEvent(event = {}) {
   const sourceKind = isAttachmentParseEvent ? normalizeAttachmentSourceKind(event.source_kind) : '';
   const conversationId = normalizePositiveInt(event.conversation_id || event.conversationId);
   const viewedImages = isImageViewEvent ? sanitizeViewedImages(event.images, conversationId) : [];
+  const diagnostics = event?.diagnostics && typeof event.diagnostics === 'object' ? {
+    module_id: truncateTimelineText(event.diagnostics.module_id || '', 160),
+    tokens: Math.max(0, Number(event.diagnostics.tokens || 0)),
+    module_budget: Math.max(0, Number(event.diagnostics.module_budget || 0)),
+    dynamic_tokens: Math.max(0, Number(event.diagnostics.dynamic_tokens || 0)),
+    dynamic_budget: Math.max(0, Number(event.diagnostics.dynamic_budget || 0)),
+  } : null;
   const interaction = type === 'artifact' && String(event.artifact_type || '').trim() === 'interaction'
     ? sanitizeInteractionForRunEvent(event.interaction)
     : null;
@@ -915,6 +922,7 @@ function sanitizeRunEvent(event = {}) {
     error: isImageViewEvent ? truncateTimelineText(event.error || '', 512) : '',
     message: truncateTimelineText(event.message || '', 8 * 1024),
     retry_attempts: Math.max(0, Number(event.retry_attempts || 0)),
+    diagnostics,
     resumable: Boolean(event.resumable),
     operation_set_id: normalizePositiveInt(event.operation_set_id),
     task_change_set_id: normalizePositiveInt(event.task_change_set_id),

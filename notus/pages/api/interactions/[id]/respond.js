@@ -18,9 +18,10 @@ const { getDb } = require('../../../../lib/db');
 const {
   createOrGetResumeJob,
   getResumeJobByInteraction,
+  requestCancellation,
   validateCapability,
 } = require('../../../../lib/agentControlPlane');
-const { wakeTask } = require('../../../../lib/agentTaskQueue');
+const { cancelTask, wakeTask } = require('../../../../lib/agentTaskQueue');
 const { wakeAgentTaskWorker } = require('../../../../lib/agentTaskWorker');
 
 function getAgentSessionId(interaction) {
@@ -38,7 +39,7 @@ function responseError(code, message = code, status = 409) {
 
 function buildResumeResult(interaction, { resumeJob = null, eventCursor = null } = {}) {
   const sessionId = getAgentSessionId(interaction);
-  if (!sessionId || interaction?.status !== 'answered') return null;
+  if (!sessionId || !['answered', 'cancelled'].includes(interaction?.status)) return null;
   const cursor = Number(eventCursor);
   return {
     resume_job: resumeJob || getResumeJobByInteraction(interaction.id),
@@ -278,12 +279,18 @@ export default async function handler(req, res) {
         const processing = claimInteractionProcessing(interaction.id);
         if (!processing) return null;
         assertConsumedAnswerCapability({ interaction: processing, resumeTicket, ownerId });
-        return updateInteractionWhen(interaction.id, ['processing'], { status: 'cancelled', answeredAt: null });
+        return updateInteractionWhen(interaction.id, ['processing'], {
+          status: 'cancelled',
+          response: { action: 'cancel' },
+          answeredAt: null,
+        });
       })();
     } catch (error) {
       return res.status(error.status || 409).json({ error: error.message, code: error.code || 'INTERACTION_RESPONSE_FAILED', request_id: context.request_id });
     }
     if (!cancelled) return respondWithCurrentInteraction(res, interaction.id, context.request_id);
+    if (agentSessionId) requestCancellation(agentSessionId);
+    if (agentSessionId) cancelTask(agentSessionId);
     return res.status(200).json({
       interaction: cancelled,
       answer_message: null,

@@ -129,7 +129,7 @@ function runTests() {
   assert.ok(settings.includes('aria-label="关闭设置菜单"'));
   assert.ok(settings.includes('mobileOpen={mobileNavOpen}'));
   assert.ok(!settings.includes('activeSectionMeta.label'));
-  assert.ok(settings.includes("{ id: 'global-agent', label: 'Agent 档案'"));
+assert.ok(settings.includes("{ id: 'global-agent', label: 'Agent 个性', icon: <Icons.brain"));
 
   assert.ok(globalStyles.includes('.notus-settings-nav.is-mobile-open'));
   assert.ok(globalStyles.includes('.notus-settings-nav-backdrop'));

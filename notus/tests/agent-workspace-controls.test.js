@@ -333,7 +333,7 @@ assert.ok(sidebar.includes('const isSidebarCollapsed = autoCollapsed ||'));
 
 const settings = read('components/Settings/SettingsScreen.js');
 assert.ok(settings.includes("new Event('notus-mcp-servers-changed')"));
-assert.ok(settings.includes("{ id: 'global-agent', label: 'Agent 档案'"));
+assert.ok(settings.includes("{ id: 'global-agent', label: 'Agent 个性', icon: <Icons.brain"));
 assert.ok(settings.includes("{ id: 'skills', label: 'Skill', icon: <Icons.skill"));
 assert.ok(resourceEvents.includes("'install_skill_from_git'"));
 assert.ok(resourceEvents.includes("'skill_uninstall'"));

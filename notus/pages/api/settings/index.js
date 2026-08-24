@@ -1,0 +1,460 @@
+const { ensureRuntime } = require('../../../lib/runtime');
+const { getEffectiveConfig, applySettings, readEnvConfig } = require('../../../lib/config');
+const { getSettingsMap, resetVec, setSettings, removeSettings } = require('../../../lib/db');
+const { createLogger, createRequestContext } = require('../../../lib/logger');
+const { clearIndex } = require('../../../lib/indexer');
+const { getActiveLlmConfig, listLlmConfigs } = require('../../../lib/llmConfigs');
+const { deriveLlmConfigBudgetFields } = require('../../../lib/llmBudget');
+const { normalizeObjectStorageConfig } = require('../../../lib/objectStorage');
+const {
+  IMAGE_STORAGE_PROVIDERS,
+  PROFILE_FIELDS,
+  isImageStorageProvider,
+  imageStorageProfileKey,
+  hasStoredImageStorageProfile,
+  readImageStorageProfile,
+  isImageStorageProfileConfigured,
+  profileToObjectStorage,
+} = require('../../../lib/imageStorageProfiles');
+const {
+  buildEmbeddingFingerprint,
+  consumeConnectivityVerificationToken,
+} = require('../../../lib/connectivityVerification');
+
+const LAYOUT_SETTINGS = {
+  knowledge_left_percent: {
+    key: 'knowledge_layout_left_percent',
+    min: 32,
+    max: 64,
+  },
+  canvas_left_percent: {
+    key: 'canvas_layout_left_percent',
+    min: 48,
+    max: 64,
+  },
+};
+
+function normalizeLayoutPercent(value, { min, max }) {
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed)) return null;
+  return Math.min(Math.max(parsed, min), max);
+}
+
+function readLayoutSettings(stored = {}) {
+  return Object.fromEntries(
+    Object.entries(LAYOUT_SETTINGS).map(([field, definition]) => [
+      field,
+      normalizeLayoutPercent(stored[definition.key], definition),
+    ])
+  );
+}
+
+function publicImageSettings(config, stored) {
+  const objectStorage = config.objectStorage || {};
+  const providerConfigs = Object.fromEntries(
+    IMAGE_STORAGE_PROVIDERS.map((provider) => {
+      const profile = readImageStorageProfile(stored, provider, objectStorage);
+      return [provider, {
+        provider,
+        bucket: profile.bucket,
+        region: profile.region,
+        endpoint: profile.endpoint,
+        prefix: profile.prefix,
+        public_base_url: profile.public_base_url,
+        access_key_id_set: profile.access_key_id_set,
+        secret_access_key_set: profile.secret_access_key_set,
+        configured: isImageStorageProfileConfigured(profile),
+      }];
+    })
+  );
+  return {
+    storage_mode: config.imageStorageMode === 'object_storage' ? 'object_storage' : 'local',
+    object_storage: {
+      provider: objectStorage.provider || '',
+      bucket: objectStorage.bucket || '',
+      region: objectStorage.region || '',
+      endpoint: objectStorage.endpoint || '',
+      prefix: objectStorage.prefix || '',
+      public_base_url: objectStorage.publicBaseUrl || '',
+      access_key_id_set: Boolean(objectStorage.accessKeyId),
+      secret_access_key_set: Boolean(objectStorage.secretAccessKey),
+    },
+    provider_configs: providerConfigs,
+  };
+}
+
+function materializeLegacyImageStorageProfile(current, nextValues, config) {
+  const objectStorage = config.objectStorage || {};
+  const provider = String(objectStorage.provider || '').trim().toLowerCase();
+  if (!isImageStorageProvider(provider) || hasStoredImageStorageProfile({ ...current, ...nextValues }, provider)) return;
+
+  const profile = readImageStorageProfile(current, provider, objectStorage);
+  Object.keys(PROFILE_FIELDS).forEach((field) => {
+    const value = String(profile[field] || '').trim();
+    if (value) nextValues[imageStorageProfileKey(provider, field)] = value;
+  });
+}
+
+function publicSettings() {
+  const stored = getSettingsMap();
+  const config = getEffectiveConfig();
+  const activeLlmConfig = getActiveLlmConfig();
+  return {
+    runtime_target: config.runtimeTarget,
+    storage_mode: config.storageMode,
+    data_root: config.dataRoot,
+    capabilities: config.capabilities,
+    can_auto_purge_on_uninstall: config.canAutoPurgeOnUninstall,
+    notes_dir: config.notesDir,
+    assets_dir: config.assetsDir,
+    db_path: config.dbPath,
+    log_dir: config.logDir,
+    session_dir: config.sessionDir,
+    setup_completed: stored.setup_completed === 'true',
+    embedding: {
+      provider: config.embeddingProvider,
+      model: config.embeddingModel,
+      dim: config.embeddingDim,
+      multimodal_enabled: Boolean(config.embeddingMultimodalEnabled),
+      base_url: config.embeddingBaseUrl,
+      api_key_set: Boolean(config.embeddingApiKey),
+    },
+    llm: {
+      provider: config.llmProvider,
+      api_protocol: config.llmApiProtocol,
+      model: config.llmModel,
+      base_url: config.llmBaseUrl,
+      context_window_tokens: config.llmContextWindowTokens,
+      max_output_tokens: config.llmMaxOutputTokens,
+      api_key_set: Boolean(config.llmApiKey),
+    },
+    llm_configs: listLlmConfigs(),
+    active_llm_config_id: activeLlmConfig?.id || null,
+    knowledge: {
+      enable_clarify: Boolean(config.knowledgeEnableClarify),
+      enable_conditional_rerank: Boolean(config.knowledgeEnableConditionalRerank),
+      enable_weak_evidence_supplement: Boolean(config.knowledgeEnableWeakEvidenceSupplement),
+      enable_conflict_mode: Boolean(config.knowledgeEnableConflictMode),
+    },
+    canvas: {
+      enable_style_extraction: Boolean(config.canvasEnableStyleExtraction),
+      enable_article_analysis: Boolean(config.canvasEnableArticleAnalysis),
+      global_edit_soft_max_blocks: Number(config.canvasGlobalEditSoftMaxBlocks || 12),
+      global_edit_hard_max_blocks: Number(config.canvasGlobalEditHardMaxBlocks || 20),
+      style_extraction_model: String(config.styleExtractionModel || ''),
+    },
+    editor: {
+      title_filename_binding_enabled: stored.editor_title_filename_binding_enabled === 'true',
+      default_editor_open: stored.editor_default_open !== 'false',
+      default_agent_open: stored.editor_default_agent_open !== 'false',
+    },
+    images: publicImageSettings(config, stored),
+    layout: readLayoutSettings(stored),
+  };
+}
+
+export default function handler(req, res) {
+  const context = createRequestContext(req, res, '/api/settings');
+  const logger = createLogger(context);
+  const runtime = ensureRuntime();
+  if (!runtime.ok) {
+    logger.error('settings.runtime.failed', { error: runtime.error });
+    return res.status(500).json({ error: runtime.error.message, code: 'RUNTIME_ERROR', request_id: context.request_id });
+  }
+
+  if (req.method === 'GET') {
+    return res.status(200).json({ ...publicSettings(), request_id: context.request_id });
+  }
+
+  if (req.method === 'PUT') {
+    const body = req.body || {};
+    const previousConfig = getEffectiveConfig();
+    const current = getSettingsMap();
+    const nextValues = {};
+    const removeKeys = [];
+
+    if (body.notes_dir) nextValues.notes_dir = body.notes_dir;
+    if (body.assets_dir) nextValues.assets_dir = body.assets_dir;
+    if (body.setup_completed !== undefined) nextValues.setup_completed = body.setup_completed ? 'true' : 'false';
+    if (body.knowledge) {
+      if (body.knowledge.enable_clarify !== undefined) {
+        nextValues.knowledge_enable_clarify = body.knowledge.enable_clarify ? 'true' : 'false';
+      }
+      if (body.knowledge.enable_conditional_rerank !== undefined) {
+        nextValues.knowledge_enable_conditional_rerank = body.knowledge.enable_conditional_rerank ? 'true' : 'false';
+      }
+      if (body.knowledge.enable_weak_evidence_supplement !== undefined) {
+        nextValues.knowledge_enable_weak_evidence_supplement = body.knowledge.enable_weak_evidence_supplement ? 'true' : 'false';
+      }
+      if (body.knowledge.enable_conflict_mode !== undefined) {
+        nextValues.knowledge_enable_conflict_mode = body.knowledge.enable_conflict_mode ? 'true' : 'false';
+      }
+    }
+
+    if (body.canvas) {
+      if (body.canvas.enable_style_extraction !== undefined) {
+        nextValues.canvas_enable_style_extraction = body.canvas.enable_style_extraction ? 'true' : 'false';
+      }
+      if (body.canvas.enable_article_analysis !== undefined) {
+        nextValues.canvas_enable_article_analysis = body.canvas.enable_article_analysis ? 'true' : 'false';
+      }
+      if (body.canvas.global_edit_soft_max_blocks !== undefined) {
+        nextValues.canvas_global_edit_soft_max_blocks = String(body.canvas.global_edit_soft_max_blocks);
+      }
+      if (body.canvas.global_edit_hard_max_blocks !== undefined) {
+        nextValues.canvas_global_edit_hard_max_blocks = String(body.canvas.global_edit_hard_max_blocks);
+      }
+      if (body.canvas.style_extraction_model !== undefined) {
+        nextValues.style_extraction_model = String(body.canvas.style_extraction_model || '').trim();
+      }
+    }
+
+    if (body.editor) {
+      if (body.editor.title_filename_binding_enabled !== undefined) {
+        nextValues.editor_title_filename_binding_enabled = body.editor.title_filename_binding_enabled ? 'true' : 'false';
+      }
+      if (body.editor.default_editor_open !== undefined) {
+        nextValues.editor_default_open = body.editor.default_editor_open ? 'true' : 'false';
+      }
+      if (body.editor.default_agent_open !== undefined) {
+        nextValues.editor_default_agent_open = body.editor.default_agent_open ? 'true' : 'false';
+      }
+    }
+
+    if (body.images) {
+      if (body.images.provider_config || body.images.active_provider !== undefined) {
+        materializeLegacyImageStorageProfile(current, nextValues, previousConfig);
+      }
+
+      if (body.images.storage_mode !== undefined) {
+        const storageMode = String(body.images.storage_mode || '').trim().toLowerCase();
+        if (!['local', 'object_storage'].includes(storageMode)) {
+          return res.status(400).json({ error: '图片存储位置无效', code: 'INVALID_SETTINGS', request_id: context.request_id });
+        }
+        nextValues.image_storage_mode = storageMode;
+      }
+
+      if (body.images.object_storage) {
+        const objectStorage = body.images.object_storage;
+        const textFields = {
+          provider: 'object_storage_provider',
+          bucket: 'object_storage_bucket',
+          region: 'object_storage_region',
+          endpoint: 'object_storage_endpoint',
+          prefix: 'object_storage_prefix',
+          public_base_url: 'object_storage_public_base_url',
+        };
+        Object.entries(textFields).forEach(([field, settingKey]) => {
+          if (objectStorage[field] === undefined) return;
+          const value = String(objectStorage[field] || '').trim();
+          if (value) nextValues[settingKey] = value;
+          else removeKeys.push(settingKey);
+        });
+
+        if (objectStorage.clear_access_key_id) {
+          removeKeys.push('object_storage_access_key_id');
+        } else if (objectStorage.access_key_id !== undefined && String(objectStorage.access_key_id).trim()) {
+          nextValues.object_storage_access_key_id = String(objectStorage.access_key_id).trim();
+        }
+
+        if (objectStorage.clear_secret_access_key) {
+          removeKeys.push('object_storage_secret_access_key');
+        } else if (objectStorage.secret_access_key !== undefined && String(objectStorage.secret_access_key).trim()) {
+          nextValues.object_storage_secret_access_key = String(objectStorage.secret_access_key).trim();
+        }
+      }
+
+      if (body.images.provider_config) {
+        const providerConfig = body.images.provider_config;
+        const provider = String(providerConfig.provider || '').trim().toLowerCase();
+        if (!isImageStorageProvider(provider)) {
+          return res.status(400).json({ error: '请选择腾讯云 COS、阿里云 OSS 或 Cloudflare R2', code: 'INVALID_SETTINGS', request_id: context.request_id });
+        }
+        Object.keys(PROFILE_FIELDS).forEach((field) => {
+          const settingKey = imageStorageProfileKey(provider, field);
+          const sourceField = field;
+          if (field === 'access_key_id' || field === 'secret_access_key') return;
+          if (providerConfig[sourceField] === undefined) return;
+          const value = String(providerConfig[sourceField] || '').trim();
+          if (value) nextValues[settingKey] = value;
+          else removeKeys.push(settingKey);
+        });
+
+        const accessKeySetting = imageStorageProfileKey(provider, 'access_key_id');
+        if (providerConfig.clear_access_key_id) {
+          removeKeys.push(accessKeySetting);
+        } else if (providerConfig.access_key_id !== undefined && String(providerConfig.access_key_id).trim()) {
+          nextValues[accessKeySetting] = String(providerConfig.access_key_id).trim();
+        }
+
+        const secretKeySetting = imageStorageProfileKey(provider, 'secret_access_key');
+        if (providerConfig.clear_secret_access_key) {
+          removeKeys.push(secretKeySetting);
+        } else if (providerConfig.secret_access_key !== undefined && String(providerConfig.secret_access_key).trim()) {
+          nextValues[secretKeySetting] = String(providerConfig.secret_access_key).trim();
+        }
+      }
+
+      if (body.images.active_provider !== undefined) {
+        const provider = String(body.images.active_provider || '').trim().toLowerCase();
+        if (!isImageStorageProvider(provider)) {
+          return res.status(400).json({ error: '图片上传位置无效', code: 'INVALID_SETTINGS', request_id: context.request_id });
+        }
+        const candidateProfileSettings = { ...current, ...nextValues };
+        removeKeys.forEach((key) => delete candidateProfileSettings[key]);
+        const profile = readImageStorageProfile(candidateProfileSettings, provider, previousConfig.objectStorage);
+        if (!isImageStorageProfileConfigured(profile)) {
+          return res.status(400).json({ error: '请先完成该图床的配置', code: 'INVALID_OBJECT_STORAGE_CONFIG', request_id: context.request_id });
+        }
+        const activeStorage = profileToObjectStorage(profile);
+        nextValues.image_storage_mode = 'object_storage';
+        nextValues.object_storage_provider = activeStorage.provider;
+        nextValues.object_storage_bucket = activeStorage.bucket;
+        nextValues.object_storage_region = activeStorage.region;
+        nextValues.object_storage_endpoint = activeStorage.endpoint;
+        nextValues.object_storage_prefix = activeStorage.prefix;
+        nextValues.object_storage_public_base_url = activeStorage.publicBaseUrl;
+        nextValues.object_storage_access_key_id = activeStorage.accessKeyId;
+        nextValues.object_storage_secret_access_key = activeStorage.secretAccessKey;
+      } else if (body.images.provider_config) {
+        const provider = String(body.images.provider_config.provider || '').trim().toLowerCase();
+        const activeProvider = String(previousConfig.objectStorage?.provider || '').trim().toLowerCase();
+        if (previousConfig.imageStorageMode === 'object_storage' && provider === activeProvider) {
+          const candidateProfileSettings = { ...current, ...nextValues };
+          removeKeys.forEach((key) => delete candidateProfileSettings[key]);
+          const profile = readImageStorageProfile(candidateProfileSettings, provider, previousConfig.objectStorage);
+          const activeStorage = profileToObjectStorage(profile);
+          nextValues.object_storage_provider = activeStorage.provider;
+          nextValues.object_storage_bucket = activeStorage.bucket;
+          nextValues.object_storage_region = activeStorage.region;
+          nextValues.object_storage_endpoint = activeStorage.endpoint;
+          nextValues.object_storage_prefix = activeStorage.prefix;
+          nextValues.object_storage_public_base_url = activeStorage.publicBaseUrl;
+          if (activeStorage.accessKeyId) nextValues.object_storage_access_key_id = activeStorage.accessKeyId;
+          else removeKeys.push('object_storage_access_key_id');
+          if (activeStorage.secretAccessKey) nextValues.object_storage_secret_access_key = activeStorage.secretAccessKey;
+          else removeKeys.push('object_storage_secret_access_key');
+        }
+      }
+    }
+
+    if (body.layout) {
+      for (const [field, definition] of Object.entries(LAYOUT_SETTINGS)) {
+        if (body.layout[field] === undefined) continue;
+        const normalized = normalizeLayoutPercent(body.layout[field], definition);
+        if (normalized === null) {
+          return res.status(400).json({
+            error: `${field} 必须是有效数字`,
+            code: 'INVALID_SETTINGS',
+            request_id: context.request_id,
+          });
+        }
+        nextValues[definition.key] = String(normalized);
+      }
+    }
+
+    if (body.embedding) {
+      const embeddingFingerprint = buildEmbeddingFingerprint({
+        provider: body.embedding.provider || previousConfig.embeddingProvider,
+        model: body.embedding.model || previousConfig.embeddingModel,
+        base_url: body.embedding.base_url !== undefined ? body.embedding.base_url : previousConfig.embeddingBaseUrl,
+        api_key: body.embedding.api_key || previousConfig.embeddingApiKey,
+        multimodal_enabled: body.embedding.multimodal_enabled !== undefined
+          ? body.embedding.multimodal_enabled
+          : previousConfig.embeddingMultimodalEnabled,
+        dim: body.embedding.dim || previousConfig.embeddingDim,
+      });
+      const embeddingVerified = consumeConnectivityVerificationToken({
+        token: body.embedding.verification_token,
+        kind: 'embedding',
+        fingerprint: embeddingFingerprint,
+      });
+      if (!embeddingVerified) {
+        return res.status(400).json({
+          error: 'Embedding 配置必须先测试连通性并使用当前测试结果保存',
+          code: 'CONNECTIVITY_TEST_REQUIRED',
+          request_id: context.request_id,
+        });
+      }
+      if (body.embedding.provider) nextValues.embedding_provider = body.embedding.provider;
+      if (body.embedding.model) nextValues.embedding_model = body.embedding.model;
+      if (body.embedding.dim) nextValues.embedding_dim = body.embedding.dim;
+      if (body.embedding.multimodal_enabled !== undefined) {
+        nextValues.embedding_multimodal_enabled = body.embedding.multimodal_enabled ? 'true' : 'false';
+      }
+      if (body.embedding.base_url !== undefined) nextValues.embedding_base_url = body.embedding.base_url;
+      if (body.embedding.api_key) nextValues.embedding_api_key = body.embedding.api_key;
+    }
+
+    if (body.llm) {
+      const nextLlmModel = body.llm.model || previousConfig.llmModel;
+      const derivedBudget = deriveLlmConfigBudgetFields({
+        model: nextLlmModel,
+      });
+      if (body.llm.provider) nextValues.llm_provider = body.llm.provider;
+      if (body.llm.api_protocol) nextValues.llm_api_protocol = body.llm.api_protocol;
+      if (body.llm.model) nextValues.llm_model = body.llm.model;
+      if (body.llm.base_url !== undefined) nextValues.llm_base_url = body.llm.base_url;
+      if (body.llm.api_key) nextValues.llm_api_key = body.llm.api_key;
+      nextValues.llm_context_window_tokens = String(derivedBudget.context_window_tokens);
+      nextValues.llm_max_output_tokens = String(derivedBudget.max_output_tokens);
+    }
+
+    const candidateSettings = { ...current, ...nextValues };
+    removeKeys.forEach((key) => delete candidateSettings[key]);
+    const candidate = applySettings(readEnvConfig(), candidateSettings);
+    if (!candidate.embeddingModel || !candidate.llmModel) {
+      return res.status(400).json({ error: '模型配置不完整', code: 'INVALID_SETTINGS', request_id: context.request_id });
+    }
+    if (candidate.imageStorageMode === 'object_storage') {
+      try {
+        normalizeObjectStorageConfig(candidate.objectStorage);
+      } catch (error) {
+        return res.status(400).json({
+          error: error.message || '对象存储配置不完整',
+          code: error.code || 'INVALID_OBJECT_STORAGE_CONFIG',
+          request_id: context.request_id,
+        });
+      }
+    }
+
+    setSettings(nextValues);
+    removeSettings(removeKeys);
+    const embeddingChanged =
+      candidate.embeddingProvider !== previousConfig.embeddingProvider ||
+      candidate.embeddingModel !== previousConfig.embeddingModel ||
+      Number(candidate.embeddingDim) !== Number(previousConfig.embeddingDim) ||
+      Boolean(candidate.embeddingMultimodalEnabled) !== Boolean(previousConfig.embeddingMultimodalEnabled);
+
+    if (embeddingChanged) {
+      clearIndex();
+      if (Number(candidate.embeddingDim) !== Number(previousConfig.embeddingDim)) {
+        resetVec(Number(candidate.embeddingDim));
+      }
+      logger.warn('settings.embedding_changed.reindex_required', {
+        previous_model: previousConfig.embeddingModel,
+        next_model: candidate.embeddingModel,
+        previous_dim: previousConfig.embeddingDim,
+        next_dim: candidate.embeddingDim,
+      });
+    }
+
+    logger.info('settings.updated', {
+      embedding_provider: nextValues.embedding_provider || null,
+      llm_provider: nextValues.llm_provider || null,
+      notes_dir: nextValues.notes_dir || null,
+      canvas_style_extraction: nextValues.canvas_enable_style_extraction || null,
+      canvas_article_analysis: nextValues.canvas_enable_article_analysis || null,
+      editor_title_filename_binding_enabled: nextValues.editor_title_filename_binding_enabled || null,
+      editor_default_open: nextValues.editor_default_open || null,
+      editor_default_agent_open: nextValues.editor_default_agent_open || null,
+      image_storage_mode: nextValues.image_storage_mode || null,
+      object_storage_provider: nextValues.object_storage_provider || null,
+      knowledge_layout_left_percent: nextValues[LAYOUT_SETTINGS.knowledge_left_percent.key] || null,
+      canvas_layout_left_percent: nextValues[LAYOUT_SETTINGS.canvas_left_percent.key] || null,
+    });
+    return res.status(200).json({ ...publicSettings(), request_id: context.request_id });
+  }
+
+  return res.status(405).json({ error: 'Method not allowed', code: 'METHOD_NOT_ALLOWED', request_id: context.request_id });
+}

@@ -1,0 +1,57 @@
+const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+
+const root = path.resolve(__dirname, '..');
+const read = (relativePath) => fs.readFileSync(path.join(root, relativePath), 'utf8');
+
+const filesPage = read('pages/files/index.js');
+const layout = read('components/ui/ResizableLayout.js');
+const fileWorkspace = read('components/AgentWorkspace/FileAgentWorkspace.js');
+const clarifyDrawer = read('components/ChatArea/ClarifyDrawer.js');
+const controller = read('hooks/useAgentLoopController.js');
+const startRoute = read('pages/api/agent/loop/start.js');
+const taskWorker = read('lib/agentTaskWorker.js');
+const eventBus = read('lib/agentRunEventBus.js');
+const agentWorkspace = read('components/AgentWorkspace/AgentWorkspace.js');
+const icons = read('components/ui/Icons.js');
+
+assert.ok(filesPage.includes('const expandEditorForFile'), '所有打开文件入口都应复用编辑器展开逻辑');
+assert.ok(filesPage.includes('expandEditorForFile();\n    if (Number(activeFileId)'), 'Diff 打开当前文件时也应展开编辑器');
+assert.ok(filesPage.includes('onAgentPanelLockChange={setAgentPanelLock}'), '文件页应接收 Agent 面板锁定状态');
+assert.ok(filesPage.includes("beforeAgentRun={() => (activeFile && saveState === 'dirty' ? handleSave() : true)}"), '未打开文件时不能因残留的保存状态阻断 Agent 发送');
+assert.ok(layout.includes('collapseRight = false'), '双栏布局应支持隐藏右侧面板而不卸载子树');
+assert.ok(fileWorkspace.includes('interactionAnswerDrafts'), '提问卡答案应保存在文件工作区内存');
+assert.ok(fileWorkspace.includes('agentPanelLocked'), '提交提问卡答案时应短暂锁定 AI 面板');
+assert.ok(fileWorkspace.includes('正在保存提问卡片回答，请稍候。'), '锁定 AI 面板时应给出友善提示');
+assert.ok(fileWorkspace.includes("onViewAgentLogs={(conversationId) => openSettings('logs', { conversationId })}"), '历史对话中的日志入口必须把对应会话传给日志面板');
+assert.ok(clarifyDrawer.includes('answerDraftRef'), '提问卡重渲染时应从内存草稿恢复答案');
+assert.ok(controller.includes('runSequenceRef'), '恢复任务应隔离过期 SSE 事件');
+assert.ok(controller.includes('subscriptionEpochRef'), '切换对话或卸载后必须使旧 SSE 订阅失效');
+assert.ok(controller.includes('const isCurrentPresentation = () => isSubscriptionActive() && runSequence === runSequenceRef.current;'), '后发任务只能更新自身的主展示，不能覆盖早先任务');
+assert.ok(controller.includes('if (!isCurrentPresentation()) {'), '早先任务在同一对话内仍需持续写入独立时间线');
+assert.ok(fileWorkspace.includes('const subscribedSessionIdsRef = useRef(new Set());'), '返回历史对话时每个活动 session 只应建立一次订阅');
+assert.ok(fileWorkspace.includes('if (!activeAgentSessionId) {'), '新任务已经创建后不能再次自动恢复旧 session');
+assert.ok(fileWorkspace.includes('read_ticket: item.control_tickets?.read'), '恢复多个 session 时必须使用各自的只读 ticket 订阅事件');
+assert.ok(fileWorkspace.includes('control_tickets: item.control_tickets'), '恢复多个 session 时必须保留停止、继续和预览所需的全部 scoped ticket');
+assert.ok(controller.includes('const resumeReadTicket = input?.read_ticket'), '控制器不能把当前 session 的 ticket 误用于另一 session 的事件订阅');
+assert.ok(controller.includes('if (isCurrentPresentation()) setActiveAgentSession(acceptedSession);'), '后台订阅的延迟回执不能覆盖当前 session 展示');
+assert.ok(controller.includes("{ activate: false }"), '后台 session 读取详情时不能覆盖当前 session 的展示状态');
+assert.ok(controller.includes("await notifyFilesMayHaveChanged({ reason: event.reason || 'final', event });\n          controller.abort();"), 'final 写入并渲染后必须释放该 session 的 SSE 订阅');
+assert.ok(controller.includes('if (!waiting) controller.abort();'), '后台 session 的终态写入后也必须释放自己的 SSE 订阅');
+assert.ok(controller.includes("if (event.type === 'cancelled') controller.abort();"), '后台已取消 session 也必须释放订阅');
+assert.ok(controller.includes('if (!hardLimit && !waitingQuestionCard && !waitingResourceApproval && !waitingPreview) controller.abort();'), '等待用户处理的 session 不能误断订阅，其他 loop_done 必须释放');
+assert.ok((controller.match(/if \(!isSubscriptionActive\(\)\) return;/g) || []).length >= 5, '异步读取详情完成后必须再次确认原对话订阅仍有效');
+assert.ok(startRoute.includes('wakeAgentTaskWorker();'), '路由创建任务后必须唤醒后台 Worker');
+assert.ok(taskWorker.includes("const WORKER_STATE_KEY = '__notus_agent_task_worker_state__';"), '跨 API 模块加载时 Worker 必须共享进程级状态');
+assert.ok(taskWorker.includes('const workerState = globalThis[WORKER_STATE_KEY]'), 'Worker 定时器与调度锁必须挂在进程级单例状态上');
+assert.ok(taskWorker.includes('if (workerState.timer) return;'), '重复初始化不能再次执行 orphaned 任务恢复或创建第二个定时 Worker');
+assert.ok(eventBus.includes("const EVENT_BUS_KEY = '__notus_agent_run_event_bus__';"), '跨 API 模块加载时事件总线必须共享进程级实例');
+assert.ok(eventBus.includes('const emitter = globalThis[EVENT_BUS_KEY]'), 'Worker 与 SSE Route 必须订阅同一个事件总线');
+assert.ok(taskWorker.includes('const finalSession = getSession(sessionId);'), '后台 Worker 收尾时必须读取真实会话状态');
+assert.ok(taskWorker.includes("const status = finalSession.status || loopResult?.status || 'failed';"), '后台 Worker 必须写回真实终态');
+assert.ok(agentWorkspace.includes("content={mcpAvailable ? 'MCP 工具' : '暂无 MCP 服务'}"), 'MCP 必须按可用状态显示 Tooltip');
+assert.ok(agentWorkspace.includes('onOpenFile={openDiffFile}'), 'Diff 文件列表应可打开文件');
+assert.ok(!icons.includes("skill: ({ style, ...p } = {}) => <Icon {...p} style={{ color: 'var(--accent)'"), 'Skill 图标不能在未选中时强制强调色');
+
+console.log('workspace continuity tests passed');

@@ -19,6 +19,7 @@ export default function handler(req, res) {
   const token = req.headers['x-agent-session-token'];
   const access = ticket ? validateCapability(ticket, { sessionId, action: 'session_read' }) : validateSessionAccess(sessionId, token);
   if (!access.valid) return res.status(403).json({ error: access.reason, code: access.reason });
+  const canIssueResumeTicket = !ticket;
   try { getSession(sessionId); } catch { return res.status(404).json({ error: 'SESSION_NOT_FOUND', code: 'SESSION_NOT_FOUND' }); }
   const after = Math.max(0, Number(req.query.after || 0) || 0);
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -31,9 +32,9 @@ export default function handler(req, res) {
     const id = Number(event.event_id || 0);
     if (id && id <= cursor) return;
     if (id) cursor = id;
-    // 恢复票据是一次性能力凭据，不能落入运行事件表；无论事件来自实时总线还是
-    // 历史补发，都在已经通过 session_read 校验的 SSE 输出边界临时签发。
-    send(res, attachInteractionResumeTicket(event, { sessionId, issueTicket: issueCapability }));
+    // session_read 只允许读取事件；只有持有该 session 原始 token 的连接，才可为
+    // 待回答 interaction 取得一次性 respond 票据。
+    send(res, attachInteractionResumeTicket(event, { sessionId, issueTicket: issueCapability, canIssueResumeTicket }));
   };
   // 先订阅再补发，避免读取与订阅之间丢失刚落库的事件；cursor 去重保证顺序。
   const unsubscribe = subscribe(sessionId, forward);

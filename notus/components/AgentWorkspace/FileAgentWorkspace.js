@@ -25,6 +25,7 @@ import { segmentsToAgentInput } from '../../utils/messageMentions';
 import { normalizeConversationId, readActiveConversationId, saveActiveConversationId } from '../../utils/activeConversationPersistence';
 import { dispatchAgentResourceChange } from '../../utils/agentResourceEvents';
 import { shouldClearAgentPresentation } from '../../utils/agentSessionRestore';
+import { readAgentSessionToken, readAgentSessionTokenHeader } from '../../utils/agentSessionTokens';
 
 const CONFIRM_MODE_STORAGE_KEY = 'notus-files-agent-confirm-mode';
 const AUTO_CONFIRM = 'auto_confirm';
@@ -416,7 +417,11 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     setOperationSetToOpen(null);
     subscribedSessionIdsRef.current.clear();
     try {
-      const response = await fetch(`/api/conversations/${conversationId}`, { cache: 'no-store' });
+      const sessionTokenHeader = readAgentSessionTokenHeader();
+      const response = await fetch(`/api/conversations/${conversationId}`, {
+        cache: 'no-store',
+        headers: sessionTokenHeader ? { 'x-agent-session-tokens': sessionTokenHeader } : {},
+      });
       const payload = await readApiResponse(response, '读取对话详情失败');
       if (loadSequence !== conversationLoadSequenceRef.current) return null;
       const operationSets = collectConversationOperationSets(payload);
@@ -432,7 +437,8 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
       if (confirmationMessages[0]?.operationSet) setOperationSetToOpen(confirmationMessages[0].operationSet);
       setPendingInteractions(Array.isArray(payload.pending_interactions) ? payload.pending_interactions : []);
       setAgentResumeJobs(Array.isArray(payload.agent_resume_jobs) ? payload.agent_resume_jobs : []);
-      setRestoredAgentSessions(Array.isArray(payload.agent_sessions) ? payload.agent_sessions : []);
+      setRestoredAgentSessions((Array.isArray(payload.agent_sessions) ? payload.agent_sessions : [])
+        .map((session) => ({ ...session, token: readAgentSessionToken(session.id) })));
       setTaskChangeSetsBySession(collectTaskChangeSets(payload));
       setPersistedActiveConversationId(conversationId);
       setHistoryDrawerOpen(false);
@@ -534,7 +540,11 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
   const refreshTaskChangeSetAccess = useCallback(async (targetSessionId) => {
     const conversationId = Number(activeConversationId || 0);
     if (!conversationId) return null;
-    const response = await fetch(`/api/conversations/${conversationId}`, { cache: 'no-store' });
+    const sessionTokenHeader = readAgentSessionTokenHeader();
+    const response = await fetch(`/api/conversations/${conversationId}`, {
+      cache: 'no-store',
+      headers: sessionTokenHeader ? { 'x-agent-session-tokens': sessionTokenHeader } : {},
+    });
     const payload = await readApiResponse(response, '刷新累计修改访问权限失败');
     const nextChangeSets = collectTaskChangeSets(payload);
     setTaskChangeSetsBySession(nextChangeSets);
@@ -676,6 +686,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
           // 恢复历史运行中的任务只需要接回事件流。不得以会话恢复票据重新
           // 调度队列，否则迟到的页面恢复可能跳过后续的确认卡片。
           subscribe_only: true,
+          session_token: item.token,
           read_ticket: item.control_tickets?.read,
           control_tickets: item.control_tickets,
           llm_config_id: selectedLlmConfigId || undefined,

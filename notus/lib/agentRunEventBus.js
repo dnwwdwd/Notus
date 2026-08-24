@@ -25,14 +25,14 @@ function broadcast({ sessionId, runId = null, event = {}, eventId = null } = {})
   return payload;
 }
 
-function attachInteractionResumeTicket(event = {}, { sessionId, issueTicket } = {}) {
+function attachInteractionResumeTicket(event = {}, { sessionId, issueTicket, canIssueResumeTicket = false } = {}) {
   const interactionId = Number(event?.interaction?.id || event?.interaction_id || 0);
   const isPendingInteraction = event?.type === 'artifact'
     && event?.artifact_type === 'interaction'
     && event?.interaction?.status === 'pending'
     && Number.isFinite(interactionId)
     && interactionId > 0;
-  if (!isPendingInteraction || typeof issueTicket !== 'function') return event;
+  if (!canIssueResumeTicket || !isPendingInteraction || typeof issueTicket !== 'function') return event;
   const resumeTicket = issueTicket({ sessionId, interactionId, action: 'respond' });
   return resumeTicket ? { ...event, resume_ticket: resumeTicket } : event;
 }

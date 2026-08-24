@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getAgentLoopReasonLabel, getAgentToolLabel } from '../utils/agentDisplay';
 import { dispatchAgentResourceChange } from '../utils/agentResourceEvents';
+import { rememberAgentSessionToken } from '../utils/agentSessionTokens';
 
 function toPositiveInt(value) {
   const next = Number(value);
@@ -989,6 +990,7 @@ export function useAgentLoopController({
       controller.agentSessionId = String(acceptedSessionId);
       acceptedConversationId = Number(accepted.conversation_id || input?.conversation_id || 0) || null;
       const acceptedToken = accepted.session_token || resumeToken;
+      if (acceptedToken) rememberAgentSessionToken(acceptedSessionId, acceptedToken);
       const suppliedTickets = input?.control_tickets || input?.controlTickets || {};
       const acceptedTickets = accepted.control_tickets || (isResume ? {
         ...suppliedTickets,
@@ -1034,8 +1036,8 @@ export function useAgentLoopController({
       const eventCursor = isResume && resumeEventCursor > 0 ? resumeEventCursor : (accepted.event_cursor || 0);
       const eventsResponse = await fetch(`/api/agent/sessions/${acceptedSessionId}/events?after=${encodeURIComponent(String(eventCursor))}`, {
         headers: {
-          ...(acceptedTickets.read ? { 'x-agent-control-ticket': acceptedTickets.read } : {}),
-          ...(!acceptedTickets.read && acceptedToken ? { 'x-agent-session-token': acceptedToken } : {}),
+          ...(acceptedToken ? { 'x-agent-session-token': acceptedToken } : {}),
+          ...(!acceptedToken && acceptedTickets.read ? { 'x-agent-control-ticket': acceptedTickets.read } : {}),
         },
         signal: controller.signal,
       });

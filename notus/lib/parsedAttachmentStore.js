@@ -1,7 +1,10 @@
 const { getDb } = require('./db');
+const { estimateTextTokens, trimTextToTokenBudget } = require('./llmBudget');
 
 const MAX_CHARS_PER_SOURCE = 12000;
 const MAX_PROMPT_CHARS = 48000;
+const MAX_TOKENS_PER_SOURCE = 3000;
+const MAX_PROMPT_TOKENS = 9000;
 
 const TYPE_LABELS = {
   pdf: 'PDF 文档',
@@ -129,37 +132,57 @@ function formatAttachmentsForPrompt(
   {
     maxCharsPerSource = MAX_CHARS_PER_SOURCE,
     maxTotalChars = MAX_PROMPT_CHARS,
+    maxTokensPerSource = MAX_TOKENS_PER_SOURCE,
+    maxTotalTokens = MAX_PROMPT_TOKENS,
   } = {}
 ) {
   const list = (Array.isArray(attachments) ? attachments : []).filter((item) => item?.text);
   if (list.length === 0) return '';
 
-  let used = 0;
-  const selected = [];
-  for (let index = list.length - 1; index >= 0; index -= 1) {
-    const item = list[index];
-    const block = formatAttachmentBlock(item, maxCharsPerSource);
-    const nextUsed = used + block.length;
-    if (selected.length > 0 && nextUsed > maxTotalChars) break;
-    selected.push(block);
-    used = nextUsed;
-    if (used >= maxTotalChars) break;
-  }
-
-  selected.reverse();
-  return [
+  const prefix = [
     '---',
     '# 本次对话已导入的文档/网页内容',
     '以下内容由用户主动导入，在本次对话中持续有效。回答和创作时可以直接引用这些内容，但不要声称它们来自知识库索引。',
     '',
-    ...selected,
-    '---',
   ].join('\n');
+  const suffix = '\n---';
+  const tokenBudget = Math.max(256, Number(maxTotalTokens) || MAX_PROMPT_TOKENS);
+  const fixedTokens = estimateTextTokens(`${prefix}${suffix}`);
+  let usedChars = 0;
+  let usedTokens = fixedTokens;
+  const selected = [];
+  for (let index = list.length - 1; index >= 0; index -= 1) {
+    const item = list[index];
+    const block = formatAttachmentBlock(item, maxCharsPerSource);
+    const remainingChars = Math.max(0, Number(maxTotalChars) || MAX_PROMPT_CHARS) - usedChars;
+    const remainingTokens = tokenBudget - usedTokens;
+    if (remainingChars < 80 || remainingTokens < 128) break;
+    const charBounded = block.length > remainingChars
+      ? `${block.slice(0, remainingChars)}\n[...其余附件内容已截断]`
+      : block;
+    let bounded = trimTextToTokenBudget(charBounded, Math.min(maxTokensPerSource, remainingTokens));
+    while (bounded && estimateTextTokens(bounded) > remainingTokens) {
+      bounded = bounded.slice(0, Math.max(0, Math.floor(bounded.length * 0.9))).trimEnd();
+    }
+    if (!bounded.trim()) break;
+    selected.push(bounded);
+    usedChars += bounded.length;
+    usedTokens += estimateTextTokens(bounded);
+  }
+
+  selected.reverse();
+  let result = [prefix, ...selected, '---'].join('\n');
+  while (estimateTextTokens(result) > tokenBudget) {
+    result = trimTextToTokenBudget(result, tokenBudget, '\n[附件上下文已按预算截断]');
+  }
+  return result;
 }
 
 module.exports = {
   MAX_CHARS_PER_SOURCE,
   MAX_PROMPT_CHARS,
+  MAX_TOKENS_PER_SOURCE,
+  MAX_PROMPT_TOKENS,
   formatAttachmentsForPrompt,
   hasAttachment,
   loadAttachments,

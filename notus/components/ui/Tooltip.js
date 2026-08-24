@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 
 const GAP = 8;
 
-export const Tooltip = ({ content, children, placement = 'top', gap = GAP, disabled = false }) => {
+export const Tooltip = ({ content, children, placement = 'top', gap = GAP, disabled = false, triggerStyle = null }) => {
   const triggerRef = useRef(null);
   const tooltipRef = useRef(null);
   const [open, setOpen] = useState(false);
@@ -92,7 +92,7 @@ export const Tooltip = ({ content, children, placement = 'top', gap = GAP, disab
     <>
       <span
         ref={triggerRef}
-        style={{ display: 'inline-flex' }}
+        style={{ display: 'inline-flex', ...(triggerStyle || {}) }}
         onMouseEnter={() => { if (!disabled) setOpen(true); }}
         onMouseLeave={() => setOpen(false)}
         onFocus={() => { if (!disabled) setOpen(true); }}

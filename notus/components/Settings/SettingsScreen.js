@@ -9,6 +9,7 @@ import { ProgressBar } from '../ui/ProgressBar';
 import { Badge } from '../ui/Badge';
 import { Toggle } from '../ui/Toggle';
 import { useToast } from '../ui/Toast';
+import { formatFullTimestamp } from '../../utils/messageTimestamps';
 import { AgentLoopLogList } from '../AgentLoop/AgentLoopLogList';
 import { LlmConfigCardsSection } from './LlmConfigCardsSection';
 import packageMeta from '../../package.json';
@@ -69,7 +70,7 @@ export const SETTINGS_SECTIONS = [
   { id: 'skills', label: 'Skill', icon: <Icons.skill size={17} /> },
   { id: 'mcp', label: 'MCP', icon: <Icons.mcp size={17} /> },
   { id: 'personalization', label: '个性化', icon: <Icons.palette size={17} /> },
-  { id: 'global-agent', label: '全局 Agent', icon: <Icons.robot size={17} /> },
+  { id: 'global-agent', label: 'Agent 个性', icon: <Icons.brain size={17} /> },
   { id: 'image-storage', label: '图床', icon: <Icons.image size={17} /> },
   { id: 'storage', label: '存储', icon: <Icons.database size={17} /> },
   { id: 'logs', label: '日志', icon: <Icons.list size={17} /> },
@@ -679,19 +680,7 @@ const Logs = ({ agentConversationId: suppliedAgentConversationId = '' }) => {
   const agentConversationId = String(suppliedAgentConversationId || router.query.conversation_id || '').trim();
 
   const formatLogTimestamp = (value) => {
-    if (!value) return '—';
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return value;
-    return new Intl.DateTimeFormat('zh-CN', {
-      timeZone: 'Asia/Shanghai',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false,
-    }).format(date).replace(/\//g, '-');
+    return formatFullTimestamp(value);
   };
 
   const fetchLogs = async () => {
@@ -839,6 +828,8 @@ const Logs = ({ agentConversationId: suppliedAgentConversationId = '' }) => {
                   {item.message ? <div>消息：{item.message}</div> : null}
                   {item.error ? <div>错误：{item.error}</div> : null}
                   {item.error_code ? <div>错误码：{item.error_code}</div> : null}
+                  {item.error_location ? <div>调用位置：{item.error_location}</div> : null}
+                  {item.error_stack ? <details style={{ marginTop: 6 }}><summary style={{ cursor: 'pointer' }}>查看错误调用位置</summary><pre style={{ margin: '8px 0 0', padding: 10, maxHeight: 220, overflow: 'auto', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', borderRadius: 8, background: 'var(--bg-secondary)', color: 'var(--text-secondary)' }}>{item.error_stack}</pre></details> : null}
                 </div>
               </div>
             ))}
@@ -914,12 +905,12 @@ const Personalization = ({ onOpenImageSettings }) => {
   };
 
   const handleImageTargetChange = async (target) => {
-    setImageTarget(target);
     if (!isConfiguredImageTarget(target)) {
       const option = IMAGE_STORAGE_OPTIONS.find((item) => item.value === target);
       toast(<span>{option?.label || '该图床'}尚未配置，<a href={`/settings/image-storage?provider=${encodeURIComponent(target)}`} onClick={(event) => { event.preventDefault(); onOpenImageSettings?.(target); }} style={{ color: 'var(--accent)', textDecoration: 'underline' }}>前往图床设置</a></span>, 'warning');
       return;
     }
+    setImageTarget(target);
     if (savingImageTarget) return;
     setSavingImageTarget(true);
     try {
@@ -1466,6 +1457,10 @@ const ShortcutsSettings = () => {
   );
 };
 
+function SkillListSkeleton() {
+  return <div aria-label="正在读取 Skill 列表" role="status" style={{ display: 'grid', gap: 8 }}>{Array.from({ length: 3 }, (_, index) => <div key={index} aria-hidden="true" style={{ ...SETTINGS_RESOURCE_ROW_STYLE, minHeight: 66, opacity: 0.72, background: 'linear-gradient(90deg, #F4F1E9 25%, #FBF9F4 42%, #F4F1E9 58%)', backgroundSize: '220% 100%', animation: 'shimmer 1.2s ease-in-out infinite' }}><span style={{ width: 34, height: 34, borderRadius: 10, background: '#ECE8DE', flexShrink: 0 }} /><span style={{ display: 'grid', gap: 8, flex: 1 }}><span style={{ width: '30%', height: 12, borderRadius: 6, background: '#E7E3D9' }} /><span style={{ width: '72%', height: 10, borderRadius: 6, background: '#EEEAE1' }} /></span></div>)}</div>;
+}
+
 const SkillsSettings = () => {
   const toast = useToast();
   const [skills, setSkills] = useState([]);
@@ -1601,7 +1596,7 @@ const SkillsSettings = () => {
         </div>
         <section style={{ ...SETTINGS_SURFACE_STYLE, display: 'grid', gap: 8, padding: 14 }}>
           <div style={{ display: 'grid', gap: 8 }}>
-            {skills.map((skill) => (
+            {loading ? <SkillListSkeleton /> : skills.map((skill) => (
               <div key={skill.id} style={{ ...SETTINGS_RESOURCE_ROW_STYLE, flexWrap: 'wrap' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 11, minWidth: 0, flex: '1 1 340px' }}>
                   <div style={SETTINGS_RESOURCE_ICON_STYLE}><Icons.skill size={17} /></div>
@@ -2083,10 +2078,10 @@ export function SettingsDialog({ open, section = 'model', conversationId = '', o
       showHeader
       maxWidth={1180}
       closeOnBackdrop={false}
-      bodyStyle={{ padding: 0, flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex' }}
-      dialogStyle={{ width: 'min(1180px, calc(100vw - 64px))', height: 'min(760px, calc(100vh - 64px))', margin: 0, display: 'flex', flexDirection: 'column' }}
+      bodyStyle={{ padding: 0, flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', background: 'var(--bg-secondary)' }}
+      dialogStyle={{ width: 'min(1180px, calc(100vw - 64px))', height: 'min(760px, calc(100vh - 64px))', margin: 0, display: 'flex', flexDirection: 'column', background: 'var(--bg-secondary)', border: '1px solid var(--border-primary)', overflow: 'hidden' }}
     >
-      <div className="notus-settings-layout" style={{ flex: 1, minHeight: 0, display: 'flex', overflow: 'hidden' }}>
+      <div className="notus-settings-layout" style={{ flex: 1, minHeight: 0, display: 'flex', overflow: 'hidden', background: 'var(--bg-primary)' }}>
         {mobileNavOpen ? <button type="button" className="notus-settings-nav-backdrop" aria-label="关闭设置菜单" onClick={() => setMobileNavOpen(false)} /> : null}
         <SettingsNav active={activeSection} mobileOpen={mobileNavOpen} onSelect={(nextSection) => { setActiveSection(nextSection); setMobileNavOpen(false); }} />
         <div className="notus-settings-content" style={{ flex: 1, overflow: 'auto', background: 'var(--bg-primary)', padding: 32, minWidth: 0 }}>

@@ -7,10 +7,26 @@ const {
 } = require('../../../lib/conversations');
 const { listOperationSetsByConversation, listOperationSetsBySession } = require('../../../lib/canvasOperationSets');
 const { listInteractionsByConversation } = require('../../../lib/conversationInteractions');
-const { countSnapshots, listRunEvents, listRunLogs, listSessionsByConversation } = require('../../../lib/agentSession');
+const { countSnapshots, listRunEvents, listRunLogs, listSessionsByConversation, validateSessionAccess } = require('../../../lib/agentSession');
 const { sanitizeResearchReceipts } = require('../../../lib/agentResearch');
 const { issueCapability, listResumeJobsByConversation, recoverStaleRunLeases } = require('../../../lib/agentControlPlane');
 const { getTaskBySession, getQueuePosition } = require('../../../lib/agentTaskQueue');
+const { listExecutionSegments } = require('../../../lib/agentExecutionSegments');
+const { getTaskChangeSetBySession } = require('../../../lib/agentTaskChangeSets');
+
+function readSessionTokens(req) {
+  const raw = req.headers['x-agent-session-tokens'];
+  if (typeof raw !== 'string' || raw.length === 0 || raw.length > 16_384) return new Map();
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return new Map();
+    return new Map(Object.entries(parsed)
+      .filter(([sessionId, token]) => /^\d+$/.test(String(sessionId)) && typeof token === 'string' && token.length > 0 && token.length <= 256)
+      .slice(-80));
+  } catch {
+    return new Map();
+  }
+}
 
 export default function handler(req, res) {
   const context = createRequestContext(req, res, '/api/conversations/[id]');
@@ -24,6 +40,9 @@ export default function handler(req, res) {
   const id = Number(req.query.id);
 
   if (req.method === 'GET') {
+    // 详情可能只为当前浏览器持有 token 的 session 附带 capability，禁止共享缓存。
+    res.setHeader('Cache-Control', 'no-store, no-cache, no-transform');
+    res.setHeader('Pragma', 'no-cache');
     const conversation = getConversation(id);
     if (!conversation) {
       return res.status(404).json({ error: 'Conversation not found', code: 'CONVERSATION_NOT_FOUND', request_id: context.request_id });
@@ -42,8 +61,12 @@ export default function handler(req, res) {
     // 应用或进程在运行中退出时 finally 可能来不及释放 lease。读取会话时先把
     // 已过期的 running 收敛成可恢复状态，避免前端永久认为任务仍在执行。
     recoverStaleRunLeases({ conversationId: id });
+    const sessionTokens = readSessionTokens(req);
+    const controllableSessionIds = new Set();
     const agentSessions = listSessionsByConversation(id).map((session) => {
-      const active = ['created', 'running', 'waiting_interaction', 'queued_resume', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery'].includes(session.status);
+      const active = ['created', 'queued', 'running', 'waiting_interaction', 'waiting_operation_confirmation', 'queued_resume', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery'].includes(session.status);
+      const canControl = validateSessionAccess(session.id, sessionTokens.get(String(session.id))).valid;
+      if (canControl) controllableSessionIds.add(Number(session.id));
       return {
         ...session,
         snapshots_count: countSnapshots(session.id),
@@ -51,9 +74,11 @@ export default function handler(req, res) {
         run_events: listRunEvents(session.id),
         research_receipts: sanitizeResearchReceipts(session.id),
         operation_sets: listOperationSetsBySession(session.id),
+        execution_segments: listExecutionSegments(session.id),
+        task_change_set: getTaskChangeSetBySession(session.id),
         task: getTaskBySession(session.id),
         queue_position: getQueuePosition(session.id),
-        control_tickets: {
+        control_tickets: canControl ? {
           read: issueCapability({ sessionId: session.id, action: 'session_read' }),
           rollback: issueCapability({ sessionId: session.id, action: 'rollback' }),
           operate: issueCapability({ sessionId: session.id, action: 'operate' }),
@@ -62,13 +87,13 @@ export default function handler(req, res) {
             resume: issueCapability({ sessionId: session.id, action: 'resume_session' }),
             extend: issueCapability({ sessionId: session.id, action: 'extend' }),
           } : {}),
-        },
+        } : {},
       };
     });
     const sessionById = new Map(agentSessions.map((session) => [session.id, session]));
     const interactionsWithTickets = pendingInteractions.map((interaction) => {
       const sessionId = Number(interaction?.payload?.agent_session_id || 0);
-      if (interaction.source !== 'agent_loop' || !sessionById.has(sessionId) || interaction.status !== 'pending') return interaction;
+      if (interaction.source !== 'agent_loop' || !sessionById.has(sessionId) || !controllableSessionIds.has(sessionId) || interaction.status !== 'pending') return interaction;
       return {
         ...interaction,
         resume_ticket: issueCapability({ sessionId, interactionId: interaction.id, action: 'respond' }),
@@ -76,7 +101,7 @@ export default function handler(req, res) {
     });
     const resumeJobs = listResumeJobsByConversation(id).map((job) => ({
       ...job,
-      resume_ticket: job.status === 'queued' ? issueCapability({
+      resume_ticket: job.status === 'queued' && controllableSessionIds.has(Number(job.session_id)) ? issueCapability({
         sessionId: job.session_id,
         interactionId: job.interaction_id,
         resumeJobId: job.id,

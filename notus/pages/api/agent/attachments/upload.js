@@ -88,7 +88,7 @@ export default async function handler(req, res) {
         errors.push({
           name: originalName,
           code: 'UNSUPPORTED_FORMAT',
-          error: `不支持的文件格式：${extension || '未知'}。当前支持 PDF、DOCX、MD、TXT。`,
+          error: `不支持的文件格式：${extension || '未知'}。当前支持 PDF、DOCX、MD、TXT、CSV。`,
         });
         return;
       }

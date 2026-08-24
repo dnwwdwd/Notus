@@ -50,6 +50,9 @@ async function runTests() {
     "filename*=UTF-8''",
     'encodeContentDispositionFilename(filename)',
     "res.setHeader('Content-Type', 'application/zip')",
+    'function listFilesByFolder(folderPath = \'\') {',
+    "mode === 'file'",
+    'folder ? listFilesByFolder(folder) : []',
   ].forEach((snippet) => {
     assert.ok(
       exportSource.includes(snippet),

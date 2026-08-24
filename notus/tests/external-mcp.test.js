@@ -90,7 +90,10 @@ async function run() {
     assert.ok(settingsRouteSource.includes('listTokens'));
     assert.ok(manifestSource.includes('    - /api/mcp'));
     assert.ok(settingsSource.includes('待确认变更'));
-    assert.ok(iconSource.includes('skill: (p) => <Icon {...p}>'));
+    assert.ok(iconSource.includes('skill: (p) => <Icon {...p}><path d="m12 2.5 8 4.5v10L12 21.5 4 17V7z"/>'), 'Skill 图标应使用等距立方体轮廓');
+    assert.ok(iconSource.includes('<path d="m4 12 8 4.5 8-4.5"/>'), 'Skill 图标应包含等高两层方块的分隔线');
+    assert.ok(iconSource.includes('mcp: (p) => <Icon {...p}><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/>'), 'MCP 图标应使用横向双层服务器机架');
+    assert.ok(iconSource.includes('M7 7h.01M10 7h.01M14 7h4M7 17h.01M10 17h.01M14 17h4'), 'MCP 图标应包含状态灯和端口线');
     console.log('external mcp tests passed');
   } finally {
     fs.rmSync(dataRoot, { recursive: true, force: true });

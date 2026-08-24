@@ -1,7 +1,7 @@
 const { ensureRuntime } = require('../../../../../lib/runtime');
 const { getSession, listRunEvents, validateSessionAccess } = require('../../../../../lib/agentSession');
-const { validateCapability } = require('../../../../../lib/agentControlPlane');
-const { subscribe } = require('../../../../../lib/agentRunEventBus');
+const { issueCapability, validateCapability } = require('../../../../../lib/agentControlPlane');
+const { subscribe, attachInteractionResumeTicket } = require('../../../../../lib/agentRunEventBus');
 const { getTaskBySession, getQueuePosition } = require('../../../../../lib/agentTaskQueue');
 
 function send(res, payload) {
@@ -14,14 +14,17 @@ export default function handler(req, res) {
   const runtime = ensureRuntime();
   if (!runtime.ok) return res.status(500).json({ error: runtime.error?.message || '运行时不可用', code: 'RUNTIME_ERROR' });
   const sessionId = Number(req.query.id || 0);
-  const ticket = req.headers['x-agent-control-ticket'] || req.query.control_ticket;
-  const token = req.headers['x-agent-session-token'] || req.query.session_token;
+  // capability 和 session token 都只能走请求头，不能进入 URL、浏览器历史或代理日志。
+  const ticket = req.headers['x-agent-control-ticket'];
+  const token = req.headers['x-agent-session-token'];
   const access = ticket ? validateCapability(ticket, { sessionId, action: 'session_read' }) : validateSessionAccess(sessionId, token);
   if (!access.valid) return res.status(403).json({ error: access.reason, code: access.reason });
+  const canIssueResumeTicket = !ticket;
   try { getSession(sessionId); } catch { return res.status(404).json({ error: 'SESSION_NOT_FOUND', code: 'SESSION_NOT_FOUND' }); }
   const after = Math.max(0, Number(req.query.after || 0) || 0);
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Cache-Control', 'no-store, no-cache, no-transform');
+  res.setHeader('Pragma', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders?.();
   let cursor = after;
@@ -29,7 +32,9 @@ export default function handler(req, res) {
     const id = Number(event.event_id || 0);
     if (id && id <= cursor) return;
     if (id) cursor = id;
-    send(res, event);
+    // session_read 只允许读取事件；只有持有该 session 原始 token 的连接，才可为
+    // 待回答 interaction 取得一次性 respond 票据。
+    send(res, attachInteractionResumeTicket(event, { sessionId, issueTicket: issueCapability, canIssueResumeTicket }));
   };
   // 先订阅再补发，避免读取与订阅之间丢失刚落库的事件；cursor 去重保证顺序。
   const unsubscribe = subscribe(sessionId, forward);

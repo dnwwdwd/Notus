@@ -45,6 +45,13 @@ async function runTests() {
     exports: {
       completeToolChat: async (request = {}) => {
         llmCallCount += 1;
+        if (llmCallCount > 1) {
+          return {
+            content: [{ type: 'text', text: '全文修订已经确认并完成。' }],
+            stopReason: 'end_turn',
+            usage: { prompt_tokens: 8, completion_tokens: 8, total_tokens: 16 },
+          };
+        }
         return {
           content: [
             { type: 'text', text: '准备生成全文修订预览。<thinking>这里是内部推理，不应展示。</thinking>' },
@@ -68,8 +75,17 @@ async function runTests() {
   try {
     const { createFile, getFileByPath } = require('../lib/files');
     const { ensureConversation } = require('../lib/conversations');
-    const { createSession, getSession, updateSessionStatus } = require('../lib/agentSession');
-    const { createOperationSet, getOperationSetById } = require('../lib/canvasOperationSets');
+    const {
+      createSession,
+      getSession,
+      loadMessagesCheckpoint,
+      updateSessionStatus,
+    } = require('../lib/agentSession');
+    const { getOperationSetById } = require('../lib/canvasOperationSets');
+    const { applyPreviewWithConflictCheck } = require('../lib/agentTools');
+    const { getTaskChangeSetDetail, resolveOperationSet } = require('../lib/agentTaskChangeSets');
+    const { listExecutionSegments } = require('../lib/agentExecutionSegments');
+    const { createTask, getTaskBySession, settleTaskRun, updateTask } = require('../lib/agentTaskQueue');
     const { runAgentLoop } = require('../lib/agentLoop');
 
     const file = createFile('case.md', '# Title\n\nalpha\n');
@@ -89,6 +105,8 @@ async function runTests() {
       authorizedOps: ['modify'],
       conversationId: conversation.id,
     });
+    createTask({ sessionId: session.sessionId, conversationId: conversation.id, input: {}, approvalMode: 'manual_confirm' });
+    updateTask(session.sessionId, { status: 'running' });
     updateSessionStatus(session.sessionId, 'running');
 
     const events = [];
@@ -106,10 +124,35 @@ async function runTests() {
     assert.strictEqual(getOperationSetById(result.operation_set_id).status, 'pending');
     const finalEvents = events.filter((event) => event.type === 'final');
     assert.strictEqual(finalEvents.length, 1, JSON.stringify(events));
-    assert.ok(String(finalEvents[0].text || '').includes('diff 卡片'), JSON.stringify(events));
+    assert.strictEqual(finalEvents[0].reason, 'manual_preview_generated');
+    assert.ok(!events.some((event) => event.type === 'artifact' && event.artifact_type === 'operation_confirmation'), JSON.stringify(events));
     assert.ok(events.some((event) => event.type === 'artifact' && event.artifact_type === 'operation_set'), JSON.stringify(events));
-    assert.deepStrictEqual(finalEvents[0].usage, { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 });
     assert.ok(events.every((event) => !String(event.text || '').includes('内部推理')), JSON.stringify(events));
+    assert.strictEqual(loadMessagesCheckpoint(session.sessionId), null, '手动 Diff 生成后不能保留可恢复 checkpoint');
+    settleTaskRun(session.sessionId, result.status, { finished: true });
+    assert.strictEqual(getTaskBySession(session.sessionId).status, 'completed');
+
+    const applied = await applyPreviewWithConflictCheck(result.operation_set_id, session.sessionId, { approvalMode: 'manual_confirm' });
+    assert.strictEqual(applied.success, true);
+    assert.strictEqual(applied.applied, true);
+    resolveOperationSet({
+      operationSetId: result.operation_set_id,
+      sessionId: session.sessionId,
+      resolution: 'applied',
+      toolResult: applied,
+    });
+    assert.strictEqual(llmCallCount, 1, '应用 Diff 后不得为了收尾总结再次请求模型');
+    assert.strictEqual(getSession(session.sessionId).status, 'completed');
+    assert.strictEqual(getTaskBySession(session.sessionId).status, 'completed');
+    assert.ok(getFileByPath('case.md').content.includes('alpha changed'));
+    const changeSet = getTaskChangeSetDetail(session.sessionId);
+    assert.strictEqual(changeSet.file_count, 1);
+    assert.strictEqual(changeSet.pending_count, 0);
+    assert.strictEqual(changeSet.operation_sets.length, 1);
+    assert.strictEqual(changeSet.operation_set_view.patches.length, 1);
+    const segments = listExecutionSegments(session.sessionId);
+    assert.strictEqual(segments.length, 1);
+    assert.strictEqual(segments[0].status, 'completed');
 
   } finally {
     delete require.cache[require.resolve('../lib/agentLoop')];

@@ -105,6 +105,7 @@ function runTests() {
   const conversationColumns = db.prepare('PRAGMA table_info(conversations)').all().map((row) => row.name);
   const messageColumns = db.prepare('PRAGMA table_info(messages)').all().map((row) => row.name);
   const agentSessionColumns = db.prepare('PRAGMA table_info(agent_sessions)').all().map((row) => row.name);
+  const agentQueueColumns = db.prepare('PRAGMA table_info(agent_task_queue)').all().map((row) => row.name);
   const files = getAllFiles();
 
   [
@@ -139,6 +140,7 @@ function runTests() {
   ['agent_checkpoints', 'agent_resume_jobs', 'agent_capabilities', 'agent_run_usage', 'agent_run_events'].forEach((table) => {
     assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table), `missing table ${table}`);
   });
+  assert.ok(agentQueueColumns.includes('resume_job_id'), 'missing agent_task_queue.resume_job_id');
   const conversationId = db.prepare("INSERT INTO conversations (kind, title) VALUES ('canvas', '系统消息测试')").run().lastInsertRowid;
   assert.doesNotThrow(() => {
     db.prepare(`

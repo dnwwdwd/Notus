@@ -222,6 +222,8 @@ export const WysiwygEditor = ({ value, onChange, onSave, onEditorReady, fileId =
         codeBlock: false,
         paragraph: false,
         heading: false,
+        link: false,
+        underline: false,
       }),
       TextAlignCenter,
       CenterParagraph,

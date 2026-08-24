@@ -8,13 +8,15 @@ const { loadAttachments } = require('./parsedAttachmentStore');
 const { recognizeConversationImages } = require('./imageRecognition');
 const { buildResearchSummary, buildWriteSummary, correctConflictingSourceClaims, registerParsedInputSources } = require('./agentResearch');
 const { updateInteraction } = require('./conversationInteractions');
-const { acquireRunLease, registerActiveRun, releaseRunLease, renewRunLease, recordRunUsage, recoverStaleRunLeases } = require('./agentControlPlane');
+const { acquireRunLease, registerActiveRun, releaseRunLease, renewRunLease, recordRunUsage, recoverStaleRunLeases, settleResumeJob } = require('./agentControlPlane');
 const { assertAttachmentLimits, assertImageContextSize, assertImageLimits, getImageInputBlocks, MAX_ANTHROPIC_IMAGE_CONTEXT_BYTES } = require('./conversationImages');
-const { claimRunnableTasks, updateTask, recoverOrphanedTasks, getTaskBySession } = require('./agentTaskQueue');
+const { claimRunnableTasks, updateTask, settleTaskRun, recoverOrphanedTasks, getTaskBySession } = require('./agentTaskQueue');
 const { publish } = require('./agentRunEventBus');
 const { getDb } = require('./db');
 const { updateResumeJob } = require('./agentControlPlane');
 const { mergeAgentMedia } = require('./agentMedia');
+const { markTaskChangeSetFinished } = require('./agentTaskChangeSets');
+const { ensureError } = require('./errors');
 
 const logger = createLogger({ subsystem: 'agent-task-worker' });
 const WORKER_STATE_KEY = '__notus_agent_task_worker_state__';
@@ -53,6 +55,27 @@ async function execute(task) {
   const sessionId = task.session_id;
   const session = getSession(sessionId);
   const conversationId = task.conversation_id || session.conversation_id;
+  const requestedResumeJobId = String(task.resume_job_id || '').trim();
+  let resumeJob = null;
+  if (requestedResumeJobId) {
+    resumeJob = getDb().prepare(`
+      SELECT * FROM agent_resume_jobs
+      WHERE id = ? AND session_id = ? AND status = 'queued'
+    `).get(requestedResumeJobId, sessionId);
+    if (!resumeJob) {
+      updateSessionStatus(sessionId, 'failed');
+      updateTask(sessionId, {
+        status: 'failed',
+        resumeJobId: null,
+        lastError: {
+          code: 'RESUME_JOB_NOT_QUEUED',
+          message: 'Agent 恢复任务状态已失效，请刷新后重新确认。',
+        },
+        finished: true,
+      });
+      return;
+    }
+  }
   const controller = new AbortController();
   const lease = acquireRunLease(sessionId, { allowedStatuses: ['created', 'queued_resume', 'running', 'waiting_retry', 'waiting_model_recovery'] });
   if (!lease.acquired) {
@@ -68,8 +91,29 @@ async function execute(task) {
   }, 20_000);
   let assistantText = '';
   let finalEvent = null;
-  const resumeJob = getDb().prepare("SELECT * FROM agent_resume_jobs WHERE session_id = ? AND status = 'queued' ORDER BY created_at ASC LIMIT 1").get(sessionId);
-  if (resumeJob) updateResumeJob(resumeJob.id, { status: 'running', runId, incrementAttempt: true, started: true });
+  if (resumeJob) {
+    const claimedResumeJob = getDb().prepare(`
+      UPDATE agent_resume_jobs
+      SET status = 'running', run_id = ?, attempt_count = attempt_count + 1,
+          started_at = COALESCE(started_at, datetime('now')), updated_at = datetime('now')
+      WHERE id = ? AND status = 'queued'
+    `).run(runId, resumeJob.id);
+    if (!claimedResumeJob.changes) {
+      clearInterval(leaseTimer);
+      releaseRunLease(sessionId, runId);
+      updateTask(sessionId, {
+        status: 'failed',
+        resumeJobId: null,
+        lastError: {
+          code: 'RESUME_JOB_STATE_CONFLICT',
+          message: 'Agent 恢复任务状态发生冲突，请刷新后重新确认。',
+        },
+        finished: true,
+      });
+      return;
+    }
+    resumeJob = getDb().prepare('SELECT * FROM agent_resume_jobs WHERE id = ?').get(resumeJob.id);
+  }
   try {
     const media = splitMedia(input);
     const attachments = assertAttachmentLimits(conversationId, media.attachments);
@@ -122,6 +166,7 @@ async function execute(task) {
     });
     const finalSession = getSession(sessionId);
     const status = finalSession.status || loopResult?.status || 'failed';
+    if (['completed', 'failed', 'cancelled'].includes(status)) markTaskChangeSetFinished(sessionId, status);
     if (status === 'waiting_interaction' && loopResult?.interaction?.id) {
       const intro = String(loopResult.interaction?.payload?.clarify_intro || '').trim() || '请回答这张提问卡片后继续执行。';
       const messageId = appendConversationMessage({ conversationId, role: 'assistant', content: intro, meta: { agent_loop: true, session_id: sessionId, status, answer_mode: 'clarify_needed', interaction_id: loopResult.interaction.id, interaction_kind: loopResult.interaction.kind || 'clarify_card', reason: loopResult.reason } });
@@ -135,18 +180,36 @@ async function execute(task) {
       }
     }
     touchConversation(conversationId);
-    const queueStatus = ['waiting_interaction', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery'].includes(status) ? status : status;
-    updateTask(sessionId, { status: queueStatus, finished: ['completed', 'failed', 'cancelled'].includes(status) });
-    if (resumeJob) updateResumeJob(resumeJob.id, { status: ['waiting_interaction', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery'].includes(status) ? 'queued' : status === 'completed' ? 'completed' : 'failed', result: { status }, finished: ['completed', 'failed', 'cancelled'].includes(status) });
+    settleTaskRun(sessionId, status, { finished: ['completed', 'failed', 'cancelled'].includes(status) });
+    if (resumeJob) {
+      // 一张卡片的 resume job 在实际进入 Loop 后已经被消费。即使续跑过程中
+      // 又生成了下一张卡片，也不能把旧 job 重新排队，否则刷新会跳过新卡片。
+      const settledResumeJob = settleResumeJob(resumeJob.id, status);
+      if (settledResumeJob?.status !== 'queued') updateTask(sessionId, { resumeJobId: null });
+    }
   } catch (error) {
+    const normalizedError = ensureError(error, 'AGENT_TASK_FAILED', 'Agent 任务执行失败');
     const cancelled = controller.signal.aborted && controller.signal.reason === 'cancel';
     const interrupted = controller.signal.aborted && !cancelled;
     const status = cancelled ? 'cancelled' : interrupted ? 'queued' : 'failed';
     try { updateSessionStatus(sessionId, cancelled ? 'cancelled' : interrupted ? 'queued_resume' : 'failed'); } catch {}
-    updateTask(sessionId, { status, lastError: { code: error.code || 'AGENT_TASK_FAILED', message: error.message || '任务执行失败' }, finished: !interrupted });
-    emit(sessionId, runId, { type: 'artifact', artifact_type: 'run_error', status: interrupted ? 'queued_resume' : 'failed', error_category: interrupted ? 'interrupted' : 'fatal', error_code: interrupted ? 'WORKER_INTERRUPTED' : (error.code || 'AGENT_TASK_FAILED'), message: interrupted ? '任务已保存，将在服务恢复后继续执行。' : 'Agent 执行异常，执行记录已保留。', resumable: interrupted });
-    logger.error('agent.task.failed', { session_id: sessionId, error });
-    if (resumeJob) updateResumeJob(resumeJob.id, { status: interrupted ? 'queued' : 'failed', errorCode: error.code || 'AGENT_TASK_FAILED', finished: !interrupted });
+    if (!interrupted) {
+      try { markTaskChangeSetFinished(sessionId, cancelled ? 'cancelled' : 'failed'); } catch {}
+    }
+    const diagnostics = {
+      module_id: normalizedError.module_id || null,
+      tokens: Number(normalizedError.tokens || 0) || null,
+      module_budget: Number(normalizedError.module_budget || 0) || null,
+      dynamic_tokens: Number(normalizedError.dynamic_tokens || 0) || null,
+      dynamic_budget: Number(normalizedError.dynamic_budget || 0) || null,
+    };
+    updateTask(sessionId, { status, lastError: { code: normalizedError.code || 'AGENT_TASK_FAILED', message: normalizedError.message || '任务执行失败' }, finished: !interrupted });
+    emit(sessionId, runId, { type: 'artifact', artifact_type: 'run_error', status: interrupted ? 'queued_resume' : 'failed', error_category: interrupted ? 'interrupted' : 'fatal', error_code: interrupted ? 'WORKER_INTERRUPTED' : (normalizedError.code || 'AGENT_TASK_FAILED'), message: interrupted ? '任务已保存，将在服务恢复后继续执行。' : normalizedError.code === 'PROMPT_MODULE_BUDGET_EXCEEDED' ? '任务材料超过 Prompt 预算；已记录模块和预算信息，请减少附件范围后重试。' : 'Agent 执行异常，执行记录已保留。', diagnostics, resumable: interrupted });
+    logger.error('agent.task.failed', { session_id: sessionId, diagnostics, error: normalizedError });
+    if (resumeJob) {
+      updateResumeJob(resumeJob.id, { status: interrupted ? 'queued' : 'failed', errorCode: normalizedError.code || 'AGENT_TASK_FAILED', finished: !interrupted });
+      if (!interrupted) updateTask(sessionId, { resumeJobId: null });
+    }
   } finally {
     clearInterval(leaseTimer);
     try { releaseRunLease(sessionId, runId); } catch {}

@@ -22,7 +22,7 @@ function renderAgentLoopPrompt(session, options = {}) {
     ids.add(module.id);
     const tokens = estimateTextTokens(module.content);
     if (tokens > Number(module.maxTokens || Infinity)) {
-      throw createAppError('PROMPT_MODULE_BUDGET_EXCEEDED', `Prompt 模块超出预算：${module.id}`, { module_id: module.id, tokens });
+      throw createAppError('PROMPT_MODULE_BUDGET_EXCEEDED', `Prompt 模块超出预算：${module.id}`, { module_id: module.id, tokens, module_budget: Number(module.maxTokens || 0) || null });
     }
   });
   candidates.forEach((module) => {

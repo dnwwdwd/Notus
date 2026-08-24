@@ -25,11 +25,17 @@ import { segmentsToAgentInput } from '../../utils/messageMentions';
 import { normalizeConversationId, readActiveConversationId, saveActiveConversationId } from '../../utils/activeConversationPersistence';
 import { dispatchAgentResourceChange } from '../../utils/agentResourceEvents';
 import { shouldClearAgentPresentation } from '../../utils/agentSessionRestore';
+import { readAgentSessionToken, readAgentSessionTokenHeader } from '../../utils/agentSessionTokens';
 
 const CONFIRM_MODE_STORAGE_KEY = 'notus-files-agent-confirm-mode';
 const AUTO_CONFIRM = 'auto_confirm';
 const MANUAL_CONFIRM = 'manual_confirm';
 const INTERRUPTIBLE_AGENT_SESSION_STATUSES = new Set(['created', 'queued', 'running']);
+const TERMINAL_AGENT_SESSION_STATUSES = new Set(['completed', 'failed', 'cancelled', 'rolled_back']);
+
+function isTerminalAgentSessionStatus(status) {
+  return TERMINAL_AGENT_SESSION_STATUSES.has(String(status || '').trim());
+}
 
 function readConfirmMode() {
   if (typeof window === 'undefined') return AUTO_CONFIRM;
@@ -53,6 +59,23 @@ function upsertById(list = [], item = null) {
   return next;
 }
 
+function mergeSessionTimeline(restored = {}, live = {}) {
+  const restoredSteps = Array.isArray(restored?.activeSteps) ? restored.activeSteps : [];
+  const liveSteps = Array.isArray(live?.activeSteps) ? live.activeSteps : [];
+  let activeSteps = liveSteps.reduce((steps, step) => upsertById(steps, step), restoredSteps);
+  if (['completed', 'failed', 'cancelled'].includes(String(live?.sessionStatus || ''))) {
+    activeSteps = activeSteps.filter((step) => step?.id !== 'resume-interrupted-task');
+  }
+  return {
+    ...restored,
+    ...live,
+    userMessageId: live?.userMessageId || restored?.userMessageId || null,
+    startedAt: live?.startedAt || restored?.startedAt || '',
+    finishedAt: live?.finishedAt || restored?.finishedAt || '',
+    activeSteps,
+  };
+}
+
 function collectConversationOperationSets(payload = {}) {
   const sessionSets = (Array.isArray(payload?.agent_sessions) ? payload.agent_sessions : [])
     .flatMap((session) => Array.isArray(session?.operation_sets) ? session.operation_sets : []);
@@ -60,11 +83,53 @@ function collectConversationOperationSets(payload = {}) {
     .reduce((items, operationSet) => upsertById(items, operationSet), []);
 }
 
+function collectTaskChangeSets(payload = {}) {
+  return Object.fromEntries(
+    (Array.isArray(payload.agent_sessions) ? payload.agent_sessions : [])
+      .filter((session) => session?.task_change_set)
+      .map((session) => [String(session.id), {
+        ...session.task_change_set,
+        session_status: session.status || '',
+        read_control_ticket: session?.control_tickets?.read || null,
+      }])
+  );
+}
+
+function buildOperationConfirmationMessage(operationSet = {}) {
+  const operationSetId = Number(operationSet?.id || operationSet?.operation_set_id || 0);
+  if (!operationSetId) return null;
+  return {
+    id: `agent-operation-confirmation-${operationSetId}`,
+    role: 'assistant',
+    content: operationSet?.revision?.error_message || operationSet?.revision_error || '已生成文件修改预览，请检查后决定是否应用。',
+    createdAt: operationSet?.updated_at || operationSet?.created_at || new Date().toISOString(),
+    meta: {
+      agent_loop: true,
+      session_id: operationSet?.agent_session_id || operationSet?.session_id || null,
+      status: 'waiting_operation_confirmation',
+      reason: 'operation_confirmation_required',
+      operation_set_id: operationSetId,
+    },
+    operationSet,
+  };
+}
+
+function mergeTaskChangeSetState(previous = {}, changeSet = {}) {
+  // operation_set 事件可能在 final 之后才完成会话详情读取。终态一经确认就不应被
+  // 较晚返回的 running 快照降级，否则最终回复出现时累计 Diff 会被错误隐藏。
+  const retainedStatus = isTerminalAgentSessionStatus(previous?.session_status)
+    ? previous.session_status
+    : (changeSet?.session_status || previous?.session_status || '');
+  return { ...previous, ...changeSet, session_status: retainedStatus };
+}
+
 function timelineFromSession(session = {}) {
   const restored = buildRestoredAgentTimeline(session);
   const activeSteps = Array.isArray(restored.steps) ? restored.steps : [];
   const streamText = session.status === 'completed' ? '' : String(restored.draft || '');
-  if (activeSteps.length === 0 && !streamText) return null;
+  const startedAt = session?.task?.started_at || '';
+  const finishedAt = session?.task?.finished_at || session?.task?.updated_at || '';
+  if (activeSteps.length === 0 && !streamText && !startedAt) return null;
   const sessionId = String(session.id || '');
   if (!sessionId) return null;
   return {
@@ -74,6 +139,8 @@ function timelineFromSession(session = {}) {
     streamText,
     loading: false,
     sessionStatus: session.status || '',
+    startedAt,
+    finishedAt,
   };
 }
 
@@ -212,7 +279,7 @@ function ResourceApprovalDrawer({ interaction, submitting, onDecision, onPhaseCh
       questions: [{ id: 'resource_decision', label: detail || '是否继续执行该操作？', type: 'single_select', required: true, allow_custom: false, options: [{ id: 'confirm', label: '确认执行', description: '执行这项资源操作。', answer_value: 'confirm' }, { id: 'cancel', label: '取消', description: '不执行，保留草稿。', answer_value: 'cancel' }] }],
     },
   };
-  return <ClarifyDrawer interaction={cardInteraction} submitting={submitting} submitLabel="确认执行" onPhaseChange={onPhaseChange} onSubmit={(_, answers) => onDecision?.(answers?.resource_decision?.option_id === 'confirm' ? 'confirm' : 'cancel')} onRetry={() => {}} onCancel={() => onDecision?.('cancel')} />;
+  return <ClarifyDrawer interaction={cardInteraction} collapsible={false} submitting={submitting} submitLabel="确认执行" onPhaseChange={onPhaseChange} onSubmit={(_, answers) => onDecision?.(answers?.resource_decision?.option_id === 'confirm' ? 'confirm' : 'cancel')} onRetry={() => {}} onCancel={() => onDecision?.('cancel')} />;
 }
 
 export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles, onFilesChanged, onAgentPanelLockChange, beforeAgentRun, fullWidth = false, onOpenDiffFile }) {
@@ -225,11 +292,12 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
   const [activeConversationId, setActiveConversationId] = useState(null);
   const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
   const [historySearchQuery, setHistorySearchQuery] = useState('');
-  const [conversationListLoading, setConversationListLoading] = useState(false);
   const [restoringConversation, setRestoringConversation] = useState(false);
   const [deletingConversationId, setDeletingConversationId] = useState(null);
   const [exportingConversationId, setExportingConversationId] = useState(null);
   const [pendingOperationSets, setPendingOperationSets] = useState([]);
+  const [operationSetToOpen, setOperationSetToOpen] = useState(null);
+  const [taskChangeSetsBySession, setTaskChangeSetsBySession] = useState({});
   const [pendingInteractions, setPendingInteractions] = useState([]);
   const [agentResumeJobs, setAgentResumeJobs] = useState([]);
   const [restoredAgentSessions, setRestoredAgentSessions] = useState([]);
@@ -237,7 +305,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
   const [interactionSubmittingId, setInteractionSubmittingId] = useState(null);
   const [clarifyPhase, setClarifyPhase] = useState('expanded-question');
   const [selectedLlmConfigId, setSelectedLlmConfigId] = useState(null);
-  const [agentConfirmMode, setAgentConfirmMode] = useState(() => readConfirmMode());
+  const [agentConfirmMode, setAgentConfirmMode] = useState(AUTO_CONFIRM);
   const [skills, setSkills] = useState([]);
   const restoredConversationRef = useRef(false);
   const autoResumedJobRef = useRef(new Set());
@@ -246,6 +314,10 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
   const agentLoopRef = useRef(null);
   const [liveSessionTimelines, setLiveSessionTimelines] = useState({});
   const resumeAgentTaskInFlightRef = useRef(false);
+
+  useEffect(() => {
+    setAgentConfirmMode(readConfirmMode());
+  }, []);
 
   const aiState = deriveAiReadiness({
     appStatus,
@@ -340,17 +412,34 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     setPendingInteractions([]);
     setAgentResumeJobs([]);
     setRestoredAgentSessions([]);
+    setTaskChangeSetsBySession({});
     setLiveSessionTimelines({});
+    setOperationSetToOpen(null);
     subscribedSessionIdsRef.current.clear();
     try {
-      const response = await fetch(`/api/conversations/${conversationId}`, { cache: 'no-store' });
+      const sessionTokenHeader = readAgentSessionTokenHeader();
+      const response = await fetch(`/api/conversations/${conversationId}`, {
+        cache: 'no-store',
+        headers: sessionTokenHeader ? { 'x-agent-session-tokens': sessionTokenHeader } : {},
+      });
       const payload = await readApiResponse(response, '读取对话详情失败');
       if (loadSequence !== conversationLoadSequenceRef.current) return null;
-      setMessages(mapConversationMessages(payload.messages, 'canvas'));
-      setPendingOperationSets(collectConversationOperationSets(payload));
+      const operationSets = collectConversationOperationSets(payload);
+      const waitingSessionIds = new Set((Array.isArray(payload.agent_sessions) ? payload.agent_sessions : [])
+        .filter((session) => session?.status === 'waiting_operation_confirmation')
+        .map((session) => String(session.id)));
+      const confirmationMessages = operationSets
+        .filter((operationSet) => waitingSessionIds.has(String(operationSet?.agent_session_id || operationSet?.session_id || '')) && operationSet?.status === 'pending')
+        .map(buildOperationConfirmationMessage)
+        .filter(Boolean);
+      setMessages([...mapConversationMessages(payload.messages, 'canvas'), ...confirmationMessages]);
+      setPendingOperationSets(operationSets);
+      if (confirmationMessages[0]?.operationSet) setOperationSetToOpen(confirmationMessages[0].operationSet);
       setPendingInteractions(Array.isArray(payload.pending_interactions) ? payload.pending_interactions : []);
       setAgentResumeJobs(Array.isArray(payload.agent_resume_jobs) ? payload.agent_resume_jobs : []);
-      setRestoredAgentSessions(Array.isArray(payload.agent_sessions) ? payload.agent_sessions : []);
+      setRestoredAgentSessions((Array.isArray(payload.agent_sessions) ? payload.agent_sessions : [])
+        .map((session) => ({ ...session, token: readAgentSessionToken(session.id) })));
+      setTaskChangeSetsBySession(collectTaskChangeSets(payload));
       setPersistedActiveConversationId(conversationId);
       setHistoryDrawerOpen(false);
       return payload;
@@ -363,7 +452,6 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     let cancelled = false;
     const savedId = readActiveConversationId();
     if (savedId) setRestoringConversation(true);
-    setConversationListLoading(true);
     fetchConversationList()
       .then(async (rows) => {
         if (cancelled) return;
@@ -386,7 +474,6 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
       })
       .finally(() => {
         if (!cancelled) {
-          setConversationListLoading(false);
           setRestoringConversation(false);
         }
       });
@@ -396,11 +483,9 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
   useEffect(() => {
     if (!historyDrawerOpen) return undefined;
     const timer = window.setTimeout(() => {
-      setConversationListLoading(true);
       fetchConversationList(historySearchQuery)
         .then((rows) => setConversationList(rows))
-        .catch(() => setConversationList([]))
-        .finally(() => setConversationListLoading(false));
+        .catch(() => setConversationList([]));
     }, 180);
     return () => window.clearTimeout(timer);
   }, [fetchConversationList, historyDrawerOpen, historySearchQuery]);
@@ -435,10 +520,44 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     )));
   }, []);
 
+  const handleOperationConfirmation = useCallback((operationSet) => {
+    const operationSetId = Number(operationSet?.id || operationSet?.operation_set_id || 0);
+    if (!operationSetId) return;
+    setOperationSetToOpen((current) => (
+      Number(current?.id || current?.operation_set_id || 0) === operationSetId ? current : operationSet
+    ));
+  }, []);
+
+  const handleTaskChangeSet = useCallback((changeSet) => {
+    const sessionId = String(changeSet?.session_id || '');
+    if (!sessionId) return;
+    setTaskChangeSetsBySession((previous) => ({
+      ...previous,
+      [sessionId]: mergeTaskChangeSetState(previous[sessionId], changeSet),
+    }));
+  }, []);
+
+  const refreshTaskChangeSetAccess = useCallback(async (targetSessionId) => {
+    const conversationId = Number(activeConversationId || 0);
+    if (!conversationId) return null;
+    const sessionTokenHeader = readAgentSessionTokenHeader();
+    const response = await fetch(`/api/conversations/${conversationId}`, {
+      cache: 'no-store',
+      headers: sessionTokenHeader ? { 'x-agent-session-tokens': sessionTokenHeader } : {},
+    });
+    const payload = await readApiResponse(response, '刷新累计修改访问权限失败');
+    const nextChangeSets = collectTaskChangeSets(payload);
+    setTaskChangeSetsBySession(nextChangeSets);
+    return nextChangeSets[String(targetSessionId)] || null;
+  }, [activeConversationId]);
+
   const handleSessionTimeline = useCallback((timeline) => {
     const sessionId = String(timeline?.sessionId || '');
     if (!sessionId) return;
-    setLiveSessionTimelines((previous) => ({ ...previous, [sessionId]: timeline }));
+    setLiveSessionTimelines((previous) => ({
+      ...previous,
+      [sessionId]: { ...(previous[sessionId] || {}), ...timeline },
+    }));
   }, []);
 
   const agentLoop = useAgentLoopController({
@@ -464,7 +583,9 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
       if (conversationId) refreshConversationList(Number(conversationId)).catch(() => {});
     },
     onOperationSets: handleOperationSets,
+    onTaskChangeSet: handleTaskChangeSet,
     onOperationSetHandled: handleOperationSetHandled,
+    onOperationConfirmation: handleOperationConfirmation,
     onApplySuccess: notifyFilesChanged,
     onRollbackSuccess: notifyFilesChanged,
     onFilesMayHaveChanged: notifyFilesChanged,
@@ -472,10 +593,17 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     onSessionTimeline: handleSessionTimeline,
   });
   agentLoopRef.current = agentLoop;
-  const sessionTimelines = useMemo(() => ({
-    ...restoredSessionTimelines,
-    ...liveSessionTimelines,
-  }), [liveSessionTimelines, restoredSessionTimelines]);
+  const registerAgentSessions = agentLoop.registerAgentSessions;
+  useEffect(() => {
+    registerAgentSessions(restoredAgentSessions);
+  }, [registerAgentSessions, restoredAgentSessions]);
+  const sessionTimelines = useMemo(() => {
+    const merged = { ...restoredSessionTimelines };
+    Object.entries(liveSessionTimelines).forEach(([sessionId, timeline]) => {
+      merged[sessionId] = mergeSessionTimeline(merged[sessionId], timeline);
+    });
+    return merged;
+  }, [liveSessionTimelines, restoredSessionTimelines]);
   const interruptibleSessionId = useMemo(() => {
     const activeConversationKey = String(activeConversationId || '');
     const candidates = [agentLoop.activeAgentSession, ...restoredAgentSessions]
@@ -530,7 +658,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
       || (Array.isArray(item?.run_logs) && item.run_logs.length > 0)
     );
     const session = reversedSessions.find((item) => (
-      ['created', 'running', 'waiting_interaction', 'queued_resume', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery'].includes(item.status)
+      ['created', 'running', 'waiting_interaction', 'waiting_operation_confirmation', 'queued_resume', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery'].includes(item.status)
     )) || reversedSessions.find((item) => ['failed', 'cancelled'].includes(item.status) && hasPersistedTimeline(item))
       || reversedSessions.find((item) => item.status === 'completed' && hasPersistedTimeline(item));
     // 历史详情只用于页面首次恢复。新消息启动后，旧 completed session 不能再把
@@ -555,7 +683,10 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
         subscribedSessionIdsRef.current.add(sessionId);
         resumeAgentLoop({
           session_id: item.id,
-          control_ticket: item.control_tickets?.resume,
+          // 恢复历史运行中的任务只需要接回事件流。不得以会话恢复票据重新
+          // 调度队列，否则迟到的页面恢复可能跳过后续的确认卡片。
+          subscribe_only: true,
+          session_token: item.token,
           read_ticket: item.control_tickets?.read,
           control_tickets: item.control_tickets,
           llm_config_id: selectedLlmConfigId || undefined,
@@ -571,7 +702,10 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
         || {})
       : null;
     const queuedControlTicket = queuedSession?.control_tickets?.resume;
-    if (!queuedJob || !queuedControlTicket || autoResumedJobRef.current.has(queuedJob.id)) return;
+    const queuedSessionCanResume = ['created', 'queued', 'queued_resume', 'waiting_retry', 'waiting_model_recovery']
+      .includes(String(queuedSession?.status || ''));
+    // 旧 job 绝不能在下一张卡片的 waiting_interaction 状态下自动续跑。
+    if (!queuedJob || !queuedControlTicket || !queuedSessionCanResume || autoResumedJobRef.current.has(queuedJob.id)) return;
     autoResumedJobRef.current.add(queuedJob.id);
     resumeAgentLoop({
       session_id: queuedJob.session_id,
@@ -667,6 +801,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     search_provider: options.searchProvider || undefined,
     mcp_selection: options.mcpSelection || { mode: 'off' },
     route_reason: 'files_agent_input',
+    hide_user_message_bubble: Boolean(options.hideUserMessageBubble),
     skip_user_message_append: Boolean(options.skipUserMessageAppend),
     rewriteUserMessageId: Number(options.rewriteUserMessageId || 0) || null,
     onTaskAccepted: (accepted) => {
@@ -700,9 +835,11 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     setPersistedActiveConversationId(null);
     setMessages([]);
     setPendingOperationSets([]);
+    setOperationSetToOpen(null);
     setPendingInteractions([]);
     setAgentResumeJobs([]);
     setRestoredAgentSessions([]);
+    setTaskChangeSetsBySession({});
     setLiveSessionTimelines({});
     subscribedSessionIdsRef.current.clear();
     setHistorySearchQuery('');
@@ -766,28 +903,38 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     return payload;
   }, []);
 
-  const resumeInteraction = useCallback(async (interaction, resume = {}) => {
+  const resumeInteraction = useCallback(async (interaction, resume = {}, options = {}) => {
     const session = agentLoop.activeAgentSession || {};
     const sessionId = Number(interaction?.payload?.agent_session_id || session.id || 0);
     const targetSession = agentLoop.getAgentSession?.(sessionId)
       || restoredAgentSessions.find((item) => Number(item?.id) === sessionId)
       || session;
+    const subscribeOnly = Boolean(options.subscribeOnly);
     const resumeJob = resume.resume_job || agentResumeJobs.find((job) => Number(job.interaction_id) === Number(interaction?.id));
     const resumeTicket = resume.resume_ticket || resumeJob?.resume_ticket;
-    if (!sessionId || !resumeJob?.id || !resumeTicket) {
+    const readTicket = targetSession.control_tickets?.read || targetSession.control_ticket;
+    if (!sessionId || (!subscribeOnly && (!resumeJob?.id || !resumeTicket)) || (subscribeOnly && !readTicket)) {
       toast('当前 Agent 任务状态已失效，请重新发起任务', 'warning');
       return;
     }
     await agentLoop.startAgentLoop({
       session_id: sessionId,
-      resume_job_id: resumeJob.id,
-      resume_ticket: resumeTicket,
+      ...(subscribeOnly ? { subscribe_only: true } : {
+        resume_job_id: resumeJob.id,
+        resume_ticket: resumeTicket,
+      }),
+      event_cursor: resume.event_cursor,
       control_ticket: targetSession.control_tickets?.resume,
-      read_ticket: targetSession.control_tickets?.read,
+      read_ticket: readTicket,
       control_tickets: targetSession.control_tickets,
       llm_config_id: selectedLlmConfigId || undefined,
     }, { resume: true });
   }, [agentLoop, agentResumeJobs, restoredAgentSessions, selectedLlmConfigId, toast]);
+
+  const shouldReconnectInteractionSession = useCallback((interaction) => {
+    const sessionId = Number(interaction?.payload?.agent_session_id || 0);
+    return Boolean(sessionId && !agentLoop.hasActiveSessionSubscription?.(sessionId));
+  }, [agentLoop]);
 
   const handleInteractionSubmit = useCallback(async (interaction, answers) => {
     setInteractionSubmittingId(interaction.id);
@@ -800,13 +947,42 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
           return next;
         });
       }
-      if (payload.should_continue) await resumeInteraction(payload.interaction || interaction, payload);
+      // 回答接口已经唤醒同一 session 的后台 Worker。当前 SSE 订阅继续接收
+      // 后续事件，避免为同一 session 增加第二个订阅；刷新后没有订阅时只补建
+      // SSE，不会再次调度任务。卡片的“重试”仍使用实际 resume job。
+      if (payload.should_continue && shouldReconnectInteractionSession(payload.interaction || interaction)) {
+        await resumeInteraction(payload.interaction || interaction, payload, { subscribeOnly: true });
+      }
     } catch (error) {
       toast(error.message || '回答提问卡片失败', 'error');
     } finally {
       setInteractionSubmittingId(null);
     }
-  }, [respondToInteraction, resumeInteraction, toast]);
+  }, [respondToInteraction, resumeInteraction, shouldReconnectInteractionSession, toast]);
+
+  const handleInteractionCancel = useCallback(async (interaction) => {
+    setInteractionSubmittingId(interaction.id);
+    try {
+      const payload = await respondToInteraction(interaction, { action: 'cancel' });
+      setInteractionAnswerDrafts((previous) => {
+        const next = { ...previous };
+        delete next[String(interaction.id)];
+        return next;
+      });
+      if (!payload.should_continue) {
+        const cancelledSessionId = payload.interaction?.payload?.agent_session_id
+          || interaction?.payload?.agent_session_id;
+        agentLoop.markAgentSessionStatus?.(cancelledSessionId, 'cancelled', 'cancelled');
+      }
+      if (payload.should_continue && shouldReconnectInteractionSession(payload.interaction || interaction)) {
+        await resumeInteraction(payload.interaction || interaction, payload, { subscribeOnly: true });
+      }
+    } catch (error) {
+      toast(error.message || '取消提问卡片失败', 'error');
+    } finally {
+      setInteractionSubmittingId(null);
+    }
+  }, [agentLoop, respondToInteraction, resumeInteraction, shouldReconnectInteractionSession, toast]);
 
   const handleInteractionAnswerDraftChange = useCallback((interactionId, answers) => {
     if (!interactionId) return;
@@ -817,42 +993,60 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     setInteractionSubmittingId(interaction.id);
     try {
       const payload = await respondToInteraction(interaction, { action: decision });
-      if (payload.should_continue) await resumeInteraction(payload.interaction || interaction, payload);
+      if (payload.should_continue && shouldReconnectInteractionSession(payload.interaction || interaction)) {
+        await resumeInteraction(payload.interaction || interaction, payload, { subscribeOnly: true });
+      }
     } catch (error) {
       toast(error.message || 'MCP 授权失败', 'error');
     } finally {
       setInteractionSubmittingId(null);
     }
-  }, [respondToInteraction, resumeInteraction, toast]);
+  }, [respondToInteraction, resumeInteraction, shouldReconnectInteractionSession, toast]);
 
   const handleResourceApproval = useCallback(async (interaction, decision) => {
     setInteractionSubmittingId(interaction.id);
     try {
       const payload = await respondToInteraction(interaction, { action: decision });
       if (payload.resolution_status === 'resolved') dispatchAgentResourceChange(interaction?.payload?.action);
-      if (payload.should_continue) await resumeInteraction(payload.interaction || interaction, payload);
+      if (payload.should_continue && shouldReconnectInteractionSession(payload.interaction || interaction)) {
+        await resumeInteraction(payload.interaction || interaction, payload, { subscribeOnly: true });
+      }
     } catch (error) { toast(error.message || '资源操作失败', 'error'); } finally { setInteractionSubmittingId(null); }
-  }, [respondToInteraction, resumeInteraction, toast]);
+  }, [respondToInteraction, resumeInteraction, shouldReconnectInteractionSession, toast]);
 
-  const displayedMessages = useMemo(() => messages.map((message) => {
-    const operationSetId = String(message?.meta?.operation_set_id || message?.operationSet?.id || '');
-    const sessionId = String(message?.meta?.session_id || '');
-    const operationSet = operationSetById[operationSetId] || operationSetBySessionId[sessionId] || message?.operationSet || null;
-    return operationSet ? { ...message, operationSet } : message;
-  }), [messages, operationSetById, operationSetBySessionId]);
-  // 后台运行、暂停、失败和提问卡都不再锁住输入；新消息会以同会话 FIFO 入队。
-  // 仅模型尚未就绪或输入组件自身正在上传时禁用。
+  const displayedMessages = useMemo(() => {
+    const latestAssistantIndexBySession = new Map();
+    messages.forEach((message, index) => {
+      const sessionId = String(message?.meta?.session_id || '');
+      if (message?.role === 'assistant' && sessionId) latestAssistantIndexBySession.set(sessionId, index);
+    });
+    return messages.map((message, index) => {
+      const operationSetId = String(message?.meta?.operation_set_id || message?.operationSet?.id || '');
+      const sessionId = String(message?.meta?.session_id || '');
+      const sessionChangeSet = taskChangeSetsBySession[sessionId] || null;
+      const operationSet = sessionChangeSet && isTerminalAgentSessionStatus(sessionChangeSet.session_status)
+        ? null
+        : operationSetById[operationSetId] || operationSetBySessionId[sessionId] || message?.operationSet || null;
+      const taskChangeSet = latestAssistantIndexBySession.get(sessionId) === index
+        ? (taskChangeSetsBySession[sessionId] || message?.taskChangeSet || null)
+        : null;
+      if (!operationSet && !taskChangeSet) return message;
+      return { ...message, operationSet, taskChangeSet };
+    });
+  }, [messages, operationSetById, operationSetBySessionId, taskChangeSetsBySession]);
+  // 待回答、失败或失效的 interaction 由专用 Drawer 接管并隐藏输入区；提交后恢复。
+  // 其他后台运行状态不锁住输入，新消息会以同会话 FIFO 入队。
   const inputDisabled = !aiUiState.ready;
 
   return (
-    <div className="notus-file-agent-workspace" style={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative', background: 'var(--bg-primary)' }}>
+    <div className={`notus-file-agent-workspace${activeInteraction ? ' has-interaction' : ''}`} style={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative', background: 'var(--bg-primary)' }}>
       <div className="notus-file-agent-workspace__header" style={{ height: 48, padding: '0 12px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', flexShrink: 0 }}>
         <div style={{ display: 'flex', gap: 4 }}>
           <Tooltip content="查看历史对话"><span><IconButton label="查看历史对话" size={30} active={historyDrawerOpen} onClick={() => setHistoryDrawerOpen(true)}><Icons.clock size={14} /></IconButton></span></Tooltip>
           <Tooltip content="新建对话"><span><IconButton label="新建对话" size={30} onClick={handleNewConversation}><Icons.plus size={14} /></IconButton></span></Tooltip>
         </div>
       </div>
-      <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+      <div className="notus-file-agent-workspace__content" style={{ flex: 1, minHeight: 0, position: 'relative' }}>
         <AgentWorkspace
           messages={displayedMessages}
           interactions={pendingInteractions}
@@ -863,6 +1057,9 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
           activeSessionId={agentLoop.activeAgentSession?.id || null}
           activeSessionStatus={agentLoop.activeAgentSession?.status || ''}
           sessionTimelines={sessionTimelines}
+          taskChangeSetsBySession={taskChangeSetsBySession}
+          operationSetToOpen={operationSetToOpen}
+          onRefreshTaskChangeSet={refreshTaskChangeSetAccess}
           interruptibleSessionId={interruptibleSessionId}
           llmConfigs={llmConfigs}
           selectedConfigId={selectedLlmConfigId}
@@ -886,18 +1083,20 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
           restoringConversation={restoringConversation}
         />
         {aiUiState.showLockedState ? <AiLockedState compact variant="panel" onAction={() => openSettings('model')} /> : null}
+        {activeInteraction ? (
+          <div className="notus-file-agent-workspace__interaction-layer">
+            <div className="notus-file-agent-workspace__interaction-drawer">
+              {activeInteraction.kind === 'mcp_approval' ? <McpApprovalDrawer interaction={activeInteraction} submitting={interactionSubmittingId === activeInteraction.id} onDecision={(decision) => handleMcpApproval(activeInteraction, decision)} /> : activeInteraction.kind === 'resource_approval' ? <ResourceApprovalDrawer interaction={activeInteraction} submitting={interactionSubmittingId === activeInteraction.id} onPhaseChange={setClarifyPhase} onDecision={(decision) => handleResourceApproval(activeInteraction, decision)} /> : <ClarifyDrawer interaction={activeInteraction} collapsible={false} answerDraft={interactionAnswerDrafts[String(activeInteraction.id)]} onAnswerDraftChange={(answers) => handleInteractionAnswerDraftChange(activeInteraction.id, answers)} submitting={interactionSubmittingId === activeInteraction.id} submitLabel="提交" onPhaseChange={setClarifyPhase} onSubmit={handleInteractionSubmit} onRetry={resumeInteraction} onCancel={handleInteractionCancel} />}
+            </div>
+          </div>
+        ) : null}
       </div>
-      {activeInteraction ? (
-        <div className="notus-agent-interaction-timeline" style={{ position: 'relative', zIndex: 2, padding: '0 12px 12px' }}>
-          {activeInteraction.kind === 'mcp_approval' ? <McpApprovalDrawer interaction={activeInteraction} submitting={interactionSubmittingId === activeInteraction.id} onDecision={(decision) => handleMcpApproval(activeInteraction, decision)} /> : activeInteraction.kind === 'resource_approval' ? <ResourceApprovalDrawer interaction={activeInteraction} submitting={interactionSubmittingId === activeInteraction.id} onPhaseChange={setClarifyPhase} onDecision={(decision) => handleResourceApproval(activeInteraction, decision)} /> : <ClarifyDrawer interaction={activeInteraction} answerDraft={interactionAnswerDrafts[String(activeInteraction.id)]} onAnswerDraftChange={(answers) => handleInteractionAnswerDraftChange(activeInteraction.id, answers)} submitting={interactionSubmittingId === activeInteraction.id} submitLabel="继续执行" onPhaseChange={setClarifyPhase} onSubmit={handleInteractionSubmit} onRetry={resumeInteraction} onCancel={(interaction) => respondToInteraction(interaction, { action: 'cancel' }).catch(() => {})} />}
-        </div>
-      ) : null}
       <ConversationDrawer
         open={historyDrawerOpen}
         onClose={() => { setHistoryDrawerOpen(false); setHistorySearchQuery(''); }}
         conversations={conversationList}
         activeConversationId={activeConversationId}
-        loading={conversationListLoading}
+        loading={false}
         searchQuery={historySearchQuery}
         onSearchQueryChange={setHistorySearchQuery}
         emptyText={historySearchQuery.trim() ? '没有匹配的历史对话' : '暂无历史对话'}

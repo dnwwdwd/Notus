@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Button } from '../ui/Button';
 import { TextInput } from '../ui/Input';
 import { Toggle } from '../ui/Toggle';
@@ -19,7 +20,7 @@ import { useSettingsDialog } from '../../contexts/SettingsDialogContext';
 import { SegmentedTabs } from '../ui/SegmentedTabs';
 import { readAgentInputPreference, writeAgentInputPreference } from '../../utils/agentInputPreferences';
 import { dedupeAgentMedia, getAgentImagePreviewUrl } from '../../utils/agentMedia';
-import { formatMessageTimestamp } from '../../utils/messageTimestamps';
+import { formatMessageTimestamp, parseMessageTimestamp } from '../../utils/messageTimestamps';
 import {
   clearAgentComposerDraft,
   readAgentComposerDraft,
@@ -73,9 +74,16 @@ const AGENT_INPUT_TEXTAREA_DEFAULT_ROWS = 3;
 const AGENT_INPUT_LINE_HEIGHT = 22;
 const AGENT_CHAT_CONTENT_WIDTH = 'min(860px, calc(100% - 32px))';
 const CHAT_STICKY_BOTTOM_THRESHOLD = 56;
-const CHAT_JUMP_BUTTON_OFFSET = 240;
 const MCP_SELECTION_STORAGE_KEY = 'notus-agent-mcp-selection';
 const AGENT_TASK_RECEIPTS_ENABLED = false;
+const FILE_READ_TOOL_NAMES = new Set(['read_file', 'read_global_agent_file']);
+const FILE_WRITE_TOOL_NAMES = new Set([
+  'create_note',
+  'preview_patch_files',
+  'preview_file_revision',
+  'preview_file_operations',
+  'update_global_agent_file',
+]);
 const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
 
 function readMcpSelectionPreference() {
@@ -129,8 +137,8 @@ async function copyMessageText(text = '') {
   }
 }
 
-const PARSED_ATTACHMENT_ACCEPT = '.pdf,.docx,.md,.markdown,.txt,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-const PARSED_ATTACHMENT_EXTENSIONS = new Set(['.pdf', '.docx', '.md', '.markdown', '.txt']);
+const PARSED_ATTACHMENT_ACCEPT = '.pdf,.docx,.md,.markdown,.txt,.csv,text/plain,text/markdown,text/csv,application/csv,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+const PARSED_ATTACHMENT_EXTENSIONS = new Set(['.pdf', '.docx', '.md', '.markdown', '.txt', '.csv']);
 const IMAGE_ACCEPT = 'image/png,image/jpeg,image/webp,image/gif';
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
 const IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif']);
@@ -195,6 +203,7 @@ function fileType(file) {
   if (type.includes('pdf') || name.endsWith('.pdf')) return 'PDF';
   if (type.includes('word') || /\.(doc|docx)$/.test(name)) return 'W';
   if (/\.(md|markdown)$/.test(name)) return 'MD';
+  if (type.includes('csv') || type.includes('excel') || name.endsWith('.csv')) return 'CSV';
   if (type.includes('text') || name.endsWith('.txt')) return 'TXT';
   if (/\.(ppt|pptx)$/.test(name)) return 'PPT';
   return 'FILE';
@@ -255,6 +264,7 @@ function isPdfAttachment(file = {}) {
 
 function FileChip({ file, onRemove, readOnly, onOpen, onPreview, imageOnly = false, imageSize = 72 }) {
   const image = isImageMedia(file);
+  const fileName = String(file?.name || '未命名附件');
   const type = fileType(file);
   const previewUrl = image ? imagePreviewUrl(file) : '';
   const canPreview = image && Boolean(previewUrl) && typeof onPreview === 'function';
@@ -332,8 +342,8 @@ function FileChip({ file, onRemove, readOnly, onOpen, onPreview, imageOnly = fal
           fontWeight: 800,
         }}>{type}</span>
       )}
-      <span style={{ minWidth: 0, display: 'grid', gap: 2 }}>
-        <span style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name || '未命名附件'}</span>
+      <span style={{ minWidth: 0, flex: '1 1 auto', display: 'grid', gap: 2 }}>
+        <span style={{ minWidth: 0, fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fileName}</span>
         <span style={{ fontSize: 11, color: C.tertiary }}>{file.sizeLabel || fileSize(file.size)}</span>
       </span>
       {canOpen ? <Icons.eye size={14} style={{ color: C.tertiary, flexShrink: 0 }} /> : null}
@@ -344,7 +354,9 @@ function FileChip({ file, onRemove, readOnly, onOpen, onPreview, imageOnly = fal
     display: 'inline-flex',
     alignItems: 'center',
     gap: 10,
-    maxWidth: 240,
+    width: '100%',
+    maxWidth: '100%',
+    boxSizing: 'border-box',
     padding: '8px 12px',
     borderRadius: 14,
     background: '#fff',
@@ -355,25 +367,27 @@ function FileChip({ file, onRemove, readOnly, onOpen, onPreview, imageOnly = fal
     cursor: interactive ? 'pointer' : 'default',
   };
   return (
-    <div style={{ position: 'relative', display: 'inline-flex', maxWidth: 240 }}>
-      {interactive ? (
-        <button
-          type="button"
-          aria-label={canPreview ? `预览图片：${file.name || '未命名图片'}` : `查看附件内容：${file.name || '未命名附件'}`}
-          onClick={() => {
-            if (canPreview) onPreview?.(file);
-            else onOpen?.(file);
-          }}
-          className="notus-agent-pressable"
-          style={transitionButton(commonStyle)}
-        >
-          {content}
-        </button>
-      ) : (
-        <div style={commonStyle}>{content}</div>
-      )}
-      {removeButton}
-    </div>
+    <Tooltip content={fileName} placement="top" triggerStyle={{ display: 'inline-flex', width: 240, maxWidth: '100%' }}>
+      <div style={{ position: 'relative', display: 'inline-flex', width: 240, maxWidth: '100%' }}>
+        {interactive ? (
+          <button
+            type="button"
+            aria-label={canPreview ? `预览图片：${fileName}` : `查看附件内容：${fileName}`}
+            onClick={() => {
+              if (canPreview) onPreview?.(file);
+              else onOpen?.(file);
+            }}
+            className="notus-agent-pressable"
+            style={transitionButton(commonStyle)}
+          >
+            {content}
+          </button>
+        ) : (
+          <div style={commonStyle}>{content}</div>
+        )}
+        {removeButton}
+      </div>
+    </Tooltip>
   );
 }
 
@@ -521,66 +535,99 @@ function ToolStatusIcon({ status, size = 14 }) {
 
 function ToolTraceIcon({ step, size = 15 }) {
   const status = String(step?.status || 'done');
+  const toolName = String(step?.tool || '').toLowerCase();
   const source = `${step?.tool || ''} ${step?.label || ''}`.toLowerCase();
   if (['failed', 'error'].includes(status)) return <Icons.warn size={size} />;
+  if (['stopped', 'cancelled'].includes(status)) return <Icons.circleX size={size} />;
+  if (source.includes('生成提问卡片')) return <Icons.messagePlus size={size} />;
+  if (source.includes('等待回答提问卡片')) return <Icons.messageQuestion size={size} />;
+  if (source.includes('ask_question_card') || source.includes('提问') || source.includes('问题')) {
+    return step?.questionAnswer ? <Icons.messageCircle size={size} /> : <Icons.messageQuestion size={size} />;
+  }
   if (['waiting', 'action_required'].includes(status)) return <Icons.warn size={size} />;
-  if (['stopped', 'cancelled'].includes(status)) return <Icons.square size={Math.max(10, size - 2)} />;
   if (source.includes('mcp')) return <Icons.mcp size={size} />;
   if (source.includes('skill')) return <Icons.skill size={size} />;
+  if (FILE_READ_TOOL_NAMES.has(toolName)) return <Icons.fileText size={size} />;
+  if (FILE_WRITE_TOOL_NAMES.has(toolName)) return <Icons.fileEdit size={size} />;
+  if (source.includes('正在思考')) return <Icons.brain size={size} />;
   if (source.includes('image') || source.includes('图片')) return <Icons.image size={size} />;
   if (source.includes('search') || source.includes('检索') || source.includes('搜索')) return <Icons.search size={size} />;
   if (source.includes('folder') || source.includes('目录')) return <Icons.folderOpen size={size} />;
   if (source.includes('create') || source.includes('新建')) return <Icons.filePlus size={size} />;
   if (source.includes('file') || source.includes('文件') || source.includes('附件')) return <Icons.file size={size} />;
   if (source.includes('web') || source.includes('网页')) return <Icons.globe size={size} />;
-  if (source.includes('ask_question_card') || source.includes('提问') || source.includes('问题')) {
-    return step?.questionAnswer ? <Icons.messageCircle size={size} /> : <Icons.hand size={size} />;
-  }
   return <Icons.code size={size} />;
 }
 
 function buildInteractionHistoryStep(interaction) {
   const questions = Array.isArray(interaction?.payload?.questions) ? interaction.payload.questions : [];
   const answers = interaction?.response?.answers || {};
-  const question = questions[0] || {};
-  const questionText = String(question.question || question.title || question.label || '').trim();
-  const answer = answers?.[question.id] || {};
-  const answerText = String(answer.label || answer.value || answer.text || answer.custom_text || '').trim();
+  const items = questions.map((question) => {
+    const questionText = String(question.question || question.title || question.label || '').trim();
+    const answer = answers?.[question.id] || {};
+    const answerText = answer.skipped
+      ? '未回答（已跳过）'
+      : String(answer.text || answer.custom_text || answer.label || answer.value || '').trim();
+    return {
+      question: questionText || '已保存提问',
+      answer: answerText,
+      skipped: Boolean(answer.skipped),
+    };
+  });
   return {
     id: `interaction-${interaction.id}`,
-    status: interaction?.status === 'failed' ? 'error' : 'done',
+    status: interaction?.status === 'failed' ? 'error' : interaction?.status === 'pending' ? 'waiting' : 'done',
     tool: 'ask_question_card',
     label: interaction?.status === 'answered' ? '已回答问题' : '提问需要处理',
-    createdAt: interaction?.answered_at || interaction?.updated_at || interaction?.created_at || '',
+    createdAt: interaction?.created_at || interaction?.updated_at || interaction?.answered_at || '',
     questionAnswer: {
-      question: questionText || '已保存提问',
-      answer: answerText && answerText !== questionText ? answerText : '',
-      answeredAt: formatMessageTimestamp(interaction?.answered_at || interaction?.updated_at || interaction?.created_at || ''),
+      items,
+      question: items[0]?.question || '已保存提问',
+      answer: items[0]?.answer || '',
+      answeredAt: interaction?.status === 'answered'
+        ? formatMessageTimestamp(interaction?.answered_at || interaction?.updated_at || interaction?.created_at || '')
+        : '',
     },
   };
 }
 
 function mergeInteractionStepsIntoTimeline(steps, interactionSteps) {
   if (!interactionSteps.length) return steps;
-  const lastQuestionStepIndex = steps.reduce((index, step, currentIndex) => {
+  const next = [...steps];
+  const pendingSteps = [];
+  interactionSteps.forEach((interactionStep) => {
+    const matchingIndex = next.findIndex((step) => (
+      String(step?.id || '') === String(interactionStep?.id || '')
+      || (String(step?.tool || '').toLowerCase() === 'ask_question_card'
+        && String(step?.id || '').includes(String(interactionStep?.id || '').replace(/^interaction-/, '')))
+    ));
+    if (matchingIndex >= 0) {
+      next[matchingIndex] = { ...next[matchingIndex], ...interactionStep };
+    } else {
+      pendingSteps.push(interactionStep);
+    }
+  });
+  if (!pendingSteps.length) return next;
+  const lastQuestionStepIndex = next.reduce((index, step, currentIndex) => {
     const source = `${step?.tool || ''} ${step?.label || ''}`.toLowerCase();
     return source.includes('ask_question_card') || source.includes('等待回答') ? currentIndex : index;
   }, -1);
-  if (lastQuestionStepIndex < 0) return steps.concat(interactionSteps);
+  if (lastQuestionStepIndex < 0) return next.concat(pendingSteps);
   return [
-    ...steps.slice(0, lastQuestionStepIndex + 1),
-    ...interactionSteps,
-    ...steps.slice(lastQuestionStepIndex + 1),
+    ...next.slice(0, lastQuestionStepIndex + 1),
+    ...pendingSteps,
+    ...next.slice(lastQuestionStepIndex + 1),
   ];
 }
 
 function traceTimestamp(value) {
-  const timestamp = new Date(value || '').getTime();
-  return Number.isFinite(timestamp) ? timestamp : 0;
+  return parseMessageTimestamp(value)?.getTime() || 0;
 }
 
 function formatTraceElapsed(milliseconds) {
-  const seconds = Math.max(0, Math.round(Number(milliseconds || 0) / 1000));
+  const duration = Number(milliseconds);
+  if (!Number.isFinite(duration) || duration < 1000) return '1 秒';
+  const seconds = Math.max(1, Math.round(duration / 1000));
   if (seconds < 60) return `${seconds} 秒`;
   const minutes = Math.floor(seconds / 60);
   const remainder = seconds % 60;
@@ -634,6 +681,67 @@ function MessageIconButton({ label, onClick, disabled, active = false, children 
   );
 }
 
+function normalizeAgentErrorDetails(value, errorCode = '', requestId = '') {
+  const source = String(value || '').trim();
+  const safeSource = /<\/?[a-z][^>]*>/i.test(source) ? '服务没有返回可用结果，请稍后重试。' : source;
+  const requestMatch = safeSource.match(/请求编号\s*[:：]\s*([^）)\s]+)/i);
+  const httpMatch = safeSource.match(/\bHTTP\s*\d{3}\b/i);
+  const codeMatch = safeSource.match(/\b[A-Z][A-Z0-9_]{3,}\b/);
+  const resolvedRequestId = String(requestId || requestMatch?.[1] || '').trim();
+  const message = safeSource
+    .replace(/\s*[（(]\s*请求编号\s*[:：]\s*[^）)]*[）)]\s*$/i, '')
+    .trim() || 'Agent 任务未完成，请稍后重试。';
+  return {
+    message,
+    code: String(errorCode || httpMatch?.[0] || codeMatch?.[0] || '').trim(),
+    requestId: resolvedRequestId,
+  };
+}
+
+function AgentErrorCard({ title = '任务没有完成', message, errorCode = '', requestId = '', diagnostics = null, retryMessage = null, onRetry, onResume, resumeLabel = '继续任务' }) {
+  const [retrying, setRetrying] = useState(false);
+  const details = useMemo(() => normalizeAgentErrorDetails(message, errorCode, requestId), [errorCode, message, requestId]);
+  const canRetry = Boolean(retryMessage?.content) && typeof onRetry === 'function';
+
+  const handleRetry = useCallback(async () => {
+    if (!canRetry || retrying) return;
+    setRetrying(true);
+    try {
+      await onRetry(retryMessage, { reason: 'retry' });
+    } finally {
+      setRetrying(false);
+    }
+  }, [canRetry, onRetry, retryMessage, retrying]);
+
+  return (
+    <section className="notus-agent-error-card" role="alert" aria-label="Agent 错误信息">
+      <div className="notus-agent-error-card__main">
+        <div className="notus-agent-error-card__icon" aria-hidden="true"><Icons.warn size={18} /></div>
+        <div className="notus-agent-error-card__content">
+          <div className="notus-agent-error-card__title">{title}</div>
+          <p className="notus-agent-error-card__message">{details.message}</p>
+          {details.code || details.requestId ? (
+            <div className="notus-agent-error-card__meta">
+              {details.code ? <span>{details.code}</span> : null}
+              {details.requestId ? <span>请求编号：{details.requestId}</span> : null}
+            </div>
+          ) : null}
+          {diagnostics?.module_id ? <div className="notus-agent-error-card__meta">模块：{diagnostics.module_id}{diagnostics.tokens ? ` · 约 ${diagnostics.tokens} tokens` : ''}{diagnostics.module_budget ? ` / 模块预算 ${diagnostics.module_budget}` : ''}</div> : null}
+        </div>
+      </div>
+      <div className="notus-agent-error-card__footer">
+        <div className="notus-agent-error-card__actions">
+          {typeof onResume === 'function' ? <button type="button" className="notus-agent-error-card__secondary notus-agent-pressable" onClick={onResume}>{resumeLabel}</button> : null}
+          <button type="button" className="notus-agent-error-card__primary notus-agent-pressable" onClick={() => { void handleRetry(); }} disabled={!canRetry || retrying}>
+            {retrying ? <InlineActionSpinner size={14} color="#fff" /> : <Icons.refresh size={14} />}
+            <span>{retrying ? '重新发送中' : '重试'}</span>
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function CopyMessageButton({ text, successMessage = '已复制消息', disabled = false }) {
   const toast = useToast();
   const [copied, setCopied] = useState(false);
@@ -676,17 +784,110 @@ function CopyMessageButton({ text, successMessage = '已复制消息', disabled 
   );
 }
 
-function ToolChain({ steps, loading, sessionStatus = '', sessionId = '', startedAt = '', onAction, onPreviewImages }) {
+function timelineStepId(step = {}, index = 0) {
+  return String(step.id || step.label || index);
+}
+
+function ToolChainStep({ step, index, open, onToggle, onAction, onPreviewImages, sessionId }) {
+  const stepId = timelineStepId(step, index);
+  const hasDetails = Boolean(step.tool || step.input || step.result || step.action || step.images?.length || step.questionAnswer);
+  return (
+    <div className="notus-agent-toolchain__step notus-agent-toolchain__step--enter" style={{ '--notus-step-index': Math.min(index, 6) }}>
+      <button
+        type="button"
+        aria-expanded={hasDetails ? open : undefined}
+        aria-controls={hasDetails ? `agent-step-${stepId}` : undefined}
+        disabled={!hasDetails}
+        onClick={hasDetails ? () => onToggle(stepId) : undefined}
+        className={`notus-agent-tool-row notus-agent-toolchain__row${hasDetails ? '' : ' is-static'}`}
+      >
+        <span className="notus-agent-toolchain__icon">
+          <ToolTraceIcon step={step} size={14} />
+        </span>
+        <span className="notus-agent-toolchain__label">{step.label}</span>
+        {hasDetails ? <Icons.chevronRight size={14} className={open ? 'notus-agent-tool-chevron is-open' : 'notus-agent-tool-chevron'} /> : null}
+      </button>
+      {!hasDetails && step.detail ? <div className="notus-agent-toolchain__description notus-agent-toolchain__description--static">{step.detail}</div> : null}
+      {open ? (
+        <div id={`agent-step-${stepId}`} className="notus-agent-toolchain__detail">
+          {step.questionAnswer ? <div className="notus-agent-toolchain__question-answer">
+            {(Array.isArray(step.questionAnswer.items) ? step.questionAnswer.items : [step.questionAnswer]).map((item, itemIndex) => (
+              <div key={`${stepId}-question-${itemIndex}`} className="notus-agent-toolchain__question-item">
+                <div className="notus-agent-toolchain__question-label">问题</div>
+                <div>{item.question || '已保存提问'}</div>
+                <div className="notus-agent-toolchain__question-label">回答</div>
+                <div className={item.answer ? '' : 'notus-agent-toolchain__question-saved'}>{item.answer || '等待用户回答'}</div>
+              </div>
+            ))}
+            {step.questionAnswer.answeredAt ? <div className="notus-agent-toolchain__question-time">{step.questionAnswer.answeredAt}</div> : null}
+          </div> : null}
+          {step.detail ? <div className="notus-agent-toolchain__description">{step.detail}</div> : null}
+          {step.tool && !step.questionAnswer && step.errorType !== 'agent' ? <div className="notus-agent-toolchain__code">
+            <div className="notus-agent-toolchain__code-title"><Icons.code size={12} /> {step.tool}</div>
+            {step.input ? <ToolPayload label="调用参数" value={step.input} /> : null}
+            {step.result ? <ToolPayload label="调用结果" value={step.result} /> : null}
+          </div> : null}
+          {Array.isArray(step.images) && step.images.length > 0 ? (
+            <div className="notus-agent-toolchain__images" aria-label="已查看的图片">
+              {step.images.map((image, imageIndex) => image?.preview_url ? (
+                <button
+                  key={image.id || image.preview_url || imageIndex}
+                  type="button"
+                  className="notus-agent-toolchain__image-preview notus-agent-pressable"
+                  onClick={() => onPreviewImages?.(step.images, image)}
+                  aria-label={`预览已查看图片 ${imageIndex + 1}`}
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={image.preview_url} alt={image.alt || image.name || '已查看图片'} />
+                </button>
+              ) : null)}
+            </div>
+          ) : null}
+          {step.action && step.errorType !== 'agent' && typeof onAction === 'function' ? (
+            <div className="notus-agent-toolchain__actions">
+              <button type="button" onClick={() => onAction(step.action, step, sessionId)} className="notus-agent-pressable">
+                {step.actionLabel || '继续任务'}
+              </button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ToolChain({ steps, loading, sessionStatus = '', sessionId = '', startedAt = '', finishedAt = '', errorMessage = '', onAction, onRetryMessage, retryMessage = null, onPreviewImages }) {
   // 只展示服务端已经确认的真实动作，内部循环、排队和推测性 loading 不进入执行记录。
   const visibleSteps = useMemo(() => (Array.isArray(steps) ? steps : []), [steps]);
+  const agentErrorStep = [...visibleSteps].reverse().find((step) => step?.errorType === 'agent') || null;
+  const renderedSteps = useMemo(() => visibleSteps.filter((step) => step?.errorType !== 'agent' && step?.kind !== 'segment'), [visibleSteps]);
+  const fallbackErrorStep = !agentErrorStep && String(errorMessage || '').trim()
+    ? {
+      label: '请求失败',
+      errorType: 'agent',
+      errorMessage,
+      errorCode: '',
+      requestId: '',
+    }
+    : null;
+  const displayedErrorStep = agentErrorStep || fallbackErrorStep;
   const [expanded, setExpanded] = useState({});
   const liveSession = Boolean(loading) || ['created', 'queued', 'running'].includes(sessionStatus);
-  const tailStatus = visibleSteps[visibleSteps.length - 1]?.status || 'done';
-  const hasActionRequired = ['waiting', 'action_required'].includes(tailStatus)
+  const tailStatus = renderedSteps[renderedSteps.length - 1]?.status || 'done';
+  const hasActionRequired = Boolean(displayedErrorStep)
+    || ['waiting', 'action_required'].includes(tailStatus)
     || ['waiting_confirm', 'waiting_interaction', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery'].includes(sessionStatus);
   const hasViewedImages = visibleSteps.some((step) => Array.isArray(step.images) && step.images.length > 0);
+  const hasToolActivity = Boolean(displayedErrorStep) || renderedSteps.some((step) => Boolean(
+    step?.tool
+      || step?.action
+      || step?.input
+      || step?.result
+      || (Array.isArray(step?.images) && step.images.length > 0)
+      || step?.questionAnswer
+  ));
   // 已完成的历史记录通常保持收起；但图片查看属于需要可见确认的结果，不能被自动折叠隐藏。
-  const [traceExpanded, setTraceExpanded] = useState(() => liveSession || hasActionRequired || hasViewedImages);
+  const [traceExpanded, setTraceExpanded] = useState(() => liveSession || hasActionRequired || hasViewedImages || !hasToolActivity);
   const [now, setNow] = useState(() => Date.now());
   const stepKey = visibleSteps.map((step, index) => step.id || step.label || index).join('|');
 
@@ -703,14 +904,20 @@ function ToolChain({ steps, loading, sessionStatus = '', sessionId = '', started
   }, [stepKey, visibleSteps]);
 
   const hasRunning = liveSession || tailStatus === 'running';
-  const hasFailed = ['failed', 'error', 'stopped', 'cancelled'].includes(tailStatus);
-  const firstTimestamp = visibleSteps.map((step) => traceTimestamp(step.createdAt)).filter(Boolean)[0]
-    || traceTimestamp(startedAt)
+  const isCancelled = sessionStatus === 'cancelled' || tailStatus === 'cancelled';
+  const hasFailed = ['failed', 'error', 'stopped'].includes(tailStatus);
+  const taskStartedAt = traceTimestamp(startedAt);
+  const taskFinishedAt = traceTimestamp(finishedAt);
+  const firstTimestamp = taskStartedAt
+    || visibleSteps.map((step) => traceTimestamp(step.createdAt)).filter(Boolean)[0]
     || 0;
-  const lastTimestamp = visibleSteps.map((step) => traceTimestamp(step.updatedAt || step.createdAt)).filter(Boolean).at(-1) || firstTimestamp;
+  const lastStepTimestamp = visibleSteps.map((step) => traceTimestamp(step.updatedAt || step.createdAt)).filter(Boolean).at(-1);
+  const lastTimestamp = hasRunning ? now : taskFinishedAt || lastStepTimestamp || firstTimestamp;
   const elapsed = firstTimestamp ? formatTraceElapsed((hasRunning ? now : lastTimestamp) - firstTimestamp) : '';
-  const statusLabel = hasFailed || hasActionRequired
-    ? '需要处理'
+  const statusLabel = isCancelled
+    ? '已取消'
+    : hasFailed || hasActionRequired
+      ? '需要处理'
     : sessionStatus === 'queued'
       ? `任务已提交${elapsed ? ` · 已等待 ${elapsed}` : ''}`
       : hasRunning
@@ -724,88 +931,61 @@ function ToolChain({ steps, loading, sessionStatus = '', sessionId = '', started
   }, [hasRunning]);
 
   useEffect(() => {
+    if (!hasToolActivity) {
+      setTraceExpanded(true);
+      return;
+    }
     if (!liveSession && !hasActionRequired && !hasViewedImages) setTraceExpanded(false);
-  }, [hasActionRequired, hasViewedImages, liveSession]);
+  }, [hasActionRequired, hasToolActivity, hasViewedImages, liveSession]);
 
-  if (!visibleSteps.length && !liveSession) return null;
+  if (!visibleSteps.length && !liveSession && !displayedErrorStep) return null;
 
   return (
     <section className="notus-agent-toolchain" aria-label="Agent 执行记录">
       <div className="notus-agent-toolchain__header">
-        <button type="button" className="notus-agent-toolchain__summary-toggle notus-agent-pressable" aria-expanded={traceExpanded} onClick={() => setTraceExpanded((value) => !value)}>
-          <span role="status" aria-live="polite">{statusLabel}</span>
-          <Icons.chevronRight size={15} aria-hidden="true" />
-        </button>
-        {hasRunning && typeof onAction === 'function' ? <button type="button" className="notus-agent-toolchain__stop notus-agent-pressable" onClick={() => onAction('stop_agent', null, sessionId)} aria-label="停止当前任务">停止</button> : null}
+        {hasToolActivity ? (
+          <button type="button" className="notus-agent-toolchain__summary-toggle notus-agent-pressable" aria-expanded={traceExpanded} onClick={() => setTraceExpanded((value) => !value)}>
+            <span role="status" aria-live="polite">{statusLabel}</span>
+            <Icons.chevronRight size={15} aria-hidden="true" />
+          </button>
+        ) : (
+          <div className="notus-agent-toolchain__summary-static">
+            <span role="status" aria-live="polite">{statusLabel}</span>
+          </div>
+        )}
       </div>
-      {traceExpanded ? <div className="notus-agent-toolchain__steps">
-        {visibleSteps.map((step, index) => {
-          const stepId = String(step.id || step.label || index);
-          const open = Boolean(expanded[stepId]);
-          const hasDetails = Boolean(step.detail || step.tool || step.input || step.result || step.action || step.images?.length || step.questionAnswer);
-          return (
-            <div key={stepId} className="notus-agent-toolchain__step notus-agent-toolchain__step--enter" style={{ '--notus-step-index': Math.min(index, 6) }}>
-              <button
-                type="button"
-                aria-expanded={open}
-                aria-controls={`agent-step-${stepId}`}
-                disabled={!hasDetails}
-                onClick={() => setExpanded((prev) => ({ ...prev, [stepId]: !prev[stepId] }))}
-                className={`notus-agent-tool-row notus-agent-toolchain__row${hasDetails ? '' : ' is-static'}`}
-              >
-                <span className="notus-agent-toolchain__icon">
-                  <ToolTraceIcon step={step} size={14} />
-                </span>
-                <span className="notus-agent-toolchain__label">{step.label}</span>
-                {hasDetails ? <Icons.chevronRight size={14} className={open ? 'notus-agent-tool-chevron is-open' : 'notus-agent-tool-chevron'} /> : null}
-              </button>
-              {open ? (
-                <div id={`agent-step-${stepId}`} className="notus-agent-toolchain__detail">
-                  {step.questionAnswer ? <div className="notus-agent-toolchain__question-answer">
-                    <div className="notus-agent-toolchain__question-label">问题</div>
-                    <div>{step.questionAnswer.question}</div>
-                    {step.questionAnswer.answer ? <><div className="notus-agent-toolchain__question-label">回答</div><div>{step.questionAnswer.answer}</div></> : <div className="notus-agent-toolchain__question-saved">回答已保存</div>}
-                    {step.questionAnswer.answeredAt ? <div className="notus-agent-toolchain__question-time">{step.questionAnswer.answeredAt}</div> : null}
-                  </div> : null}
-                  {step.detail ? <div className="notus-agent-toolchain__description">{step.detail}</div> : null}
-                  {step.tool && !step.questionAnswer ? <div className="notus-agent-toolchain__code">
-                    <div className="notus-agent-toolchain__code-title"><Icons.code size={12} /> {step.tool}</div>
-                    {step.input ? <ToolPayload label="调用参数" value={step.input} /> : null}
-                    {step.result ? <ToolPayload label="调用结果" value={step.result} /> : null}
-                  </div> : null}
-                  {Array.isArray(step.images) && step.images.length > 0 ? (
-                    <div className="notus-agent-toolchain__images" aria-label="已查看的图片">
-                      {step.images.map((image, imageIndex) => image?.preview_url ? (
-                        <button
-                          key={image.id || image.preview_url || imageIndex}
-                          type="button"
-                          className="notus-agent-toolchain__image-preview notus-agent-pressable"
-                          onClick={() => onPreviewImages?.(step.images, image)}
-                          aria-label={`预览已查看图片 ${imageIndex + 1}`}
-                        >
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img src={image.preview_url} alt={image.alt || image.name || '已查看图片'} />
-                        </button>
-                      ) : null)}
-                    </div>
-                  ) : null}
-                  {step.action && typeof onAction === 'function' ? (
-                    <div className="notus-agent-toolchain__actions">
-                      <button
-                        type="button"
-                        onClick={() => onAction(step.action, step, sessionId)}
-                        className="notus-agent-pressable"
-                      >
-                        {step.actionLabel || '继续任务'}
-                      </button>
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-          );
-        })}
-      </div> : null}
+      {(!hasToolActivity || traceExpanded) ? <>
+        {renderedSteps.length > 0 ? <div className="notus-agent-toolchain__steps">
+          {renderedSteps.map((step, index) => {
+            const stepId = timelineStepId(step, index);
+            return <ToolChainStep
+              key={stepId}
+              step={step}
+              index={index}
+              open={Boolean(expanded[stepId])}
+              onToggle={(id) => setExpanded((previous) => ({ ...previous, [id]: !previous[id] }))}
+              onAction={onAction}
+              onPreviewImages={onPreviewImages}
+              sessionId={sessionId}
+            />;
+          })}
+        </div> : null}
+        {displayedErrorStep ? (
+          <AgentErrorCard
+            title={displayedErrorStep.label || '任务没有完成'}
+            message={displayedErrorStep.errorMessage || displayedErrorStep.detail}
+            errorCode={displayedErrorStep.errorCode}
+            requestId={displayedErrorStep.requestId}
+            diagnostics={displayedErrorStep.diagnostics}
+            retryMessage={retryMessage}
+            onRetry={onRetryMessage}
+            onResume={displayedErrorStep.action && typeof onAction === 'function'
+              ? () => onAction(displayedErrorStep.action, displayedErrorStep, sessionId)
+              : undefined}
+            resumeLabel={displayedErrorStep.actionLabel || '继续任务'}
+          />
+        ) : null}
+      </> : null}
     </section>
   );
 }
@@ -864,6 +1044,7 @@ function operationItems(operationSet) {
       status: patch.status || 'pending',
       handled_at: patch.handled_at || null,
       error: patch.error || '',
+      source_batches: Array.isArray(patch.source_batches) ? patch.source_batches : [],
       media_changes: (Array.isArray(operationSet.media_changes) ? operationSet.media_changes : [])
         .filter((change) => String(change?.file_path || '') === String(patch.file_path || '')),
     }));
@@ -964,10 +1145,7 @@ function operationSetSummary(operationSet) {
   const revisionMode = operations.some((item) => item.change_type === 'file_revision');
   const fileSystemMode = operations.some((item) => isFileSystemOperation(item));
   const mediaCount = operations.reduce((total, item) => total + (Array.isArray(item.media_changes) ? item.media_changes.length : 0), 0);
-  let detail = revisionMode ? '本次任务的全文修订预览已生成' : fileSystemMode ? '本次任务的文件/目录操作预览已生成' : '本次任务的文件修改预览已生成';
-  if (pendingCount > 0) detail = `${pendingCount} 个文件待确认`;
-  else if (autoAppliedCount === operations.length && operations.length > 0) detail = '已自动应用，可查看详情或逐文件回滚';
-  else if (appliedCount > 0 || rolledBackCount > 0 || discardedCount > 0) detail = `已应用 ${appliedCount} 个，已回滚 ${rolledBackCount} 个，已废弃 ${discardedCount} 个`;
+  let detail = `已应用 ${appliedCount} 个，已回滚 ${rolledBackCount} 个，已废弃 ${discardedCount} 个`;
   if (failedCount > 0) detail = `${detail}，${failedCount} 个处理失败`;
   if (staleCount > 0) detail = `${staleCount} 个文件已变化，需要重新生成`;
   if (applyFailedCount > 0) detail = `${applyFailedCount} 个文件应用失败`;
@@ -999,13 +1177,46 @@ function OperationSetCard({ operationSet, onOpenDetail }) {
           <Icons.edit size={15} />
         </span>
         <div style={{ display: 'grid', gap: 3, minWidth: 0 }}>
-          <div style={{ fontSize: 13, fontWeight: 800, color: C.text }}>{summary.fileCount} {summary.revisionMode ? '个文件全文修订' : summary.fileSystemMode ? '项文件/目录操作' : '个文件发生变更'}</div>
+          <div style={{ fontSize: 13, fontWeight: 800, color: C.text }}>{summary.fileCount} 个文件修订</div>
           <div style={{ fontSize: 11, color: C.tertiary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{summary.detail}</div>
         </div>
       </div>
       <button type="button" className="notus-agent-pressable" onClick={() => onOpenDetail?.(operationSet)} style={transitionButton({ minWidth: 0, height: 32, padding: '0 16px', borderRadius: 8, background: C.accent, color: '#fff', boxShadow: '0 1px 6px rgba(217, 119, 87, 0.24)', fontSize: 12, fontWeight: 800 })}>查看详情</button>
     </div>
   );
+}
+
+function TaskChangeSetCard({ changeSet, onOpenDetail }) {
+  if (!changeSet || Number(changeSet.file_count || 0) + Number(changeSet.directory_count || 0) === 0) return null;
+  const fileCount = Number(changeSet.file_count || 0);
+  const directoryCount = Number(changeSet.directory_count || 0);
+  const revisionCount = fileCount + directoryCount;
+  const appliedCount = Number(changeSet.applied_count || 0);
+  const rolledBackCount = Number(changeSet.rolled_back_count || 0);
+  const discardedCount = Number(changeSet.discarded_count || 0);
+  const mediaChangeCount = Number(changeSet.media_change_count || 0);
+  const statusText = [`已应用 ${appliedCount} 个`, `已回滚 ${rolledBackCount} 个`, `已废弃 ${discardedCount} 个`]
+    .concat(mediaChangeCount > 0 ? [`包含 ${mediaChangeCount} 项图片变更`] : [])
+    .join('，');
+  return (
+    <section aria-label="本任务累计修改" style={{ marginTop: 12, padding: 14, borderRadius: 12, background: C.soft, boxShadow: 'inset 0 0 0 1px rgba(229,227,216,0.72)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+        <span aria-hidden="true" style={{ width: 32, height: 32, borderRadius: '50%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: C.accent, background: '#fff', boxShadow: 'inset 0 0 0 1px rgba(229,227,216,0.95)' }}><Icons.edit size={15} /></span>
+        <div style={{ display: 'grid', gap: 3, minWidth: 0 }}>
+          <div style={{ fontSize: 13, fontWeight: 800, color: C.text }}>{revisionCount} 个文件修订</div>
+          <div style={{ fontSize: 11, color: C.tertiary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{statusText}</div>
+        </div>
+      </div>
+      <button type="button" className="notus-agent-pressable" onClick={() => onOpenDetail?.(changeSet)} style={transitionButton({ minWidth: 88, height: 34, padding: '0 14px', borderRadius: 8, background: C.accent, color: '#fff', fontSize: 12, fontWeight: 800, boxShadow: '0 1px 6px rgba(217, 119, 87, 0.24)' })}>查看详情</button>
+    </section>
+  );
+}
+
+const TERMINAL_AGENT_SESSION_STATUSES = new Set(['completed', 'failed', 'cancelled', 'rolled_back']);
+
+function isTaskChangeSetReady(changeSet, sessionStatus = '') {
+  const sessionStatuses = Array.isArray(sessionStatus) ? sessionStatus : [sessionStatus];
+  return Boolean(changeSet) && sessionStatuses.some((status) => TERMINAL_AGENT_SESSION_STATUSES.has(String(status || '').trim()));
 }
 
 function isDocumentPath(value) {
@@ -1046,22 +1257,34 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
   const operations = operationItems(operationSet);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [busyKey, setBusyKey] = useState('');
+  const [fileDrawerOpen, setFileDrawerOpen] = useState(false);
   useEffect(() => {
     setSelectedIndex((prev) => Math.min(prev, Math.max(operations.length - 1, 0)));
+    setFileDrawerOpen(false);
   }, [operationSet?.id, operations.length]);
   if (!open) return null;
   const activeOperation = operations[Math.min(selectedIndex, Math.max(operations.length - 1, 0))] || {};
   const activePath = activeOperation.new_path || activeOperation.file_path || activeOperation.old_path || activeOperation.path || '全文';
   const diffLines = buildDiffLines(activeOperation);
   const mediaChanges = Array.isArray(activeOperation.media_changes) ? activeOperation.media_changes : [];
+  const sourceBatches = Array.isArray(activeOperation.source_batches) ? activeOperation.source_batches : [];
+  const sourceBatchLabel = sourceBatches.length > 0
+    ? sourceBatches.map((batch) => {
+      const segment = Number(batch.execution_segment_sequence_no || batch.execution_segment_id || 0);
+      const sequence = Number(batch.batch_sequence_no || 0);
+      return [segment ? `执行段 ${segment}` : '', sequence ? `批次 ${sequence}` : ''].filter(Boolean).join(' · ');
+    }).filter(Boolean).join('；')
+    : '';
   const activeStatus = patchStatusMeta(activeOperation.status);
   const pendingCount = operations.filter(isPatchPending).length;
   const isRevision = activeOperation.change_type === 'file_revision';
   const activeNormalizedStatus = String(activeOperation.status || 'pending');
-  const canApply = (isRevision ? activeNormalizedStatus === 'pending' : isPatchPending(activeOperation)) && typeof onApplyFile === 'function';
+  const taskCumulative = operationSet?.type === 'task_cumulative' || operationSet?.mode === 'task_cumulative';
+  const canApply = !taskCumulative && (isRevision ? activeNormalizedStatus === 'pending' : isPatchPending(activeOperation)) && typeof onApplyFile === 'function';
   const canApplyAll = pendingCount > 0 && typeof onApplyAll === 'function';
-  const canRollback = (isRevision ? ['applied', 'rollback_conflict'].includes(activeNormalizedStatus) : !['rolled_back', 'discarded'].includes(activeNormalizedStatus)) && typeof onRollbackFile === 'function';
-  const canDiscard = isRevision && ['pending', 'stale', 'apply_failed', 'rollback_conflict'].includes(activeNormalizedStatus) && typeof onDiscardFile === 'function';
+  const canRollback = !taskCumulative && (isRevision ? ['applied', 'rollback_conflict'].includes(activeNormalizedStatus) : !['rolled_back', 'discarded'].includes(activeNormalizedStatus)) && typeof onRollbackFile === 'function';
+  const canDiscard = !taskCumulative && isRevision && ['pending', 'stale', 'apply_failed', 'rollback_conflict'].includes(activeNormalizedStatus) && typeof onDiscardFile === 'function';
+  const canDiscardAll = taskCumulative && pendingCount > 0 && typeof onDiscardFile === 'function';
   const moveToNextPending = () => {
     const next = operations.findIndex((item, index) => index !== selectedIndex && isPatchPending(item));
     if (next >= 0) setSelectedIndex(next);
@@ -1073,6 +1296,7 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
       if (kind === 'apply') await onApplyFile?.(operationSet, activeOperation.patchIndex);
       else if (kind === 'discard') await onDiscardFile?.(operationSet, activeOperation.patchIndex);
       else await onRollbackFile?.(operationSet, activeOperation.patchIndex);
+      if (taskCumulative && kind === 'discard') onClose?.();
       moveToNextPending();
     } finally {
       setBusyKey('');
@@ -1088,22 +1312,27 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
     }
   };
   const openDiffFile = (path) => {
+    setFileDrawerOpen(false);
     onClose?.();
     onOpenFile?.(path);
   };
 
-  return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 80, background: 'rgba(45,45,45,0.28)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-      <div role="dialog" aria-modal="true" aria-label="修改详情" style={{ width: 'min(980px, calc(100vw - 48px))', height: 'min(760px, calc(100vh - 48px))', background: '#fff', borderRadius: 18, overflow: 'hidden', boxShadow: '0 24px 80px rgba(45,45,45,0.22)', display: 'flex', flexDirection: 'column' }}>
-        <div style={{ minHeight: 58, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '14px 18px', borderBottom: '1px solid ' + C.border, background: C.page }}>
+  const dialog = (
+    <div className="notus-diff-dialog__backdrop" style={{ background: 'rgba(45,45,45,0.28)' }}>
+      <div className="notus-diff-dialog" role="dialog" aria-modal="true" aria-label="修改详情">
+        <div className="notus-diff-dialog__header" style={{ borderBottom: '1px solid ' + C.border, background: C.page }}>
           <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 15, fontWeight: 900, color: C.text }}>修改详情</div>
+            <div style={{ fontSize: 15, fontWeight: 900, color: C.text }}>{taskCumulative ? '本任务累计修改' : '修改详情'}</div>
             {pendingCount > 0 ? <div style={{ marginTop: 3, fontSize: 12, color: C.tertiary }}>{pendingCount} 个文件待确认</div> : null}
           </div>
-          <button type="button" aria-label="关闭" onClick={onClose} style={transitionButton({ width: 34, height: 34, borderRadius: 10, background: '#fff', color: C.secondary, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', boxShadow: 'inset 0 0 0 1px rgba(229,227,216,0.95)' })}><Icons.x size={16} /></button>
+          <div className="notus-diff-dialog__header-actions">
+            <button type="button" className="notus-diff-dialog__file-toggle notus-agent-pressable" aria-label="打开文件列表" aria-expanded={fileDrawerOpen} onClick={() => setFileDrawerOpen(true)} style={transitionButton({ borderRadius: 10, background: '#fff', color: C.secondary, alignItems: 'center', justifyContent: 'center', gap: 6, boxShadow: 'inset 0 0 0 1px rgba(229,227,216,0.95)' })}><Icons.list size={15} /><span>文件</span></button>
+            <button type="button" aria-label="关闭" onClick={onClose} style={transitionButton({ width: 34, height: 34, borderRadius: 10, background: '#fff', color: C.secondary, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', boxShadow: 'inset 0 0 0 1px rgba(229,227,216,0.95)' })}><Icons.x size={16} /></button>
+          </div>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '220px minmax(0, 1fr)', minHeight: 0, flex: 1, overflow: 'hidden' }}>
-          <div style={{ borderRight: '1px solid ' + C.border, background: C.page, padding: 8, overflowY: 'auto' }}>
+        <div className="notus-diff-dialog__body">
+          {fileDrawerOpen ? <button type="button" className="notus-diff-dialog__file-backdrop" aria-label="关闭文件列表" onClick={() => setFileDrawerOpen(false)} /> : null}
+          <nav className={['notus-diff-dialog__sidebar', fileDrawerOpen ? 'is-mobile-open' : ''].filter(Boolean).join(' ')} aria-label="文件列表" style={{ borderRight: '1px solid ' + C.border, background: C.page }}>
             {operations.map((operation, index) => {
               const pathText = operation.new_path || operation.file_path || operation.old_path || operation.path || '全文';
               const active = index === selectedIndex;
@@ -1120,13 +1349,16 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
                 </div>
               );
             })}
-          </div>
-          <div style={{ minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', background: '#FAFAFA', overflow: 'hidden' }}>
-            <div style={{ minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '8px 12px', borderBottom: '1px solid ' + C.border, background: '#fff' }}>
-              <DiffFileLink path={activePath} onOpenFile={openDiffFile} style={{ minWidth: 0, fontSize: 12, color: isDocumentPath(activePath) ? C.accent : C.secondary, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} />
+          </nav>
+          <div className="notus-diff-dialog__content" style={{ background: '#FAFAFA' }}>
+            <div className="notus-diff-dialog__content-header" style={{ borderBottom: '1px solid ' + C.border, background: '#fff' }}>
+              <div style={{ minWidth: 0, display: 'grid', gap: 2 }}>
+                <DiffFileLink path={activePath} onOpenFile={openDiffFile} style={{ minWidth: 0, fontSize: 12, color: isDocumentPath(activePath) ? C.accent : C.secondary, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} />
+                {taskCumulative && sourceBatchLabel ? <span title={sourceBatchLabel} style={{ minWidth: 0, color: C.tertiary, fontSize: 10.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>来源：{sourceBatchLabel}</span> : null}
+              </div>
               <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 800, color: activeStatus.color, background: activeStatus.bg, borderRadius: 999, padding: '4px 8px' }}>{activeStatus.label}</span>
             </div>
-            <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '12px 0', overscrollBehavior: 'contain' }}>
+            <div className="notus-diff-dialog__scroll" style={{ overscrollBehavior: 'contain' }}>
               {activeOperation.error ? (
                 <div style={{ margin: '0 12px 12px', padding: '10px 12px', borderRadius: 10, background: 'rgba(217,119,87,0.10)', color: C.accentDark, fontSize: 12, lineHeight: 1.65, boxShadow: 'inset 0 0 0 1px rgba(217,119,87,0.18)' }}>
                   {activeOperation.error}
@@ -1166,7 +1398,7 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
                   </div>
                 </div>
               ) : null}
-              <div style={{ minWidth: 'max-content', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12.5, lineHeight: 1.65 }}>
+              <div className="notus-diff-dialog__lines" style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>
                 {diffLines.length === 0 ? <div style={{ padding: '0 14px', color: C.tertiary }}>没有可展示的 diff 内容。</div> : diffLines.map((line, index) => {
                   const hunk = line.type === 'hunk';
                   const remove = line.type === 'remove';
@@ -1180,14 +1412,17 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
                 })}
               </div>
             </div>
-            <div style={{ minHeight: 56, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '10px 12px', borderTop: '1px solid ' + C.border, background: '#fff' }}>
+            <div className="notus-diff-dialog__footer" style={{ borderTop: '1px solid ' + C.border, background: '#fff' }}>
               <span style={{ flex: 1, minWidth: 0, fontSize: 12, lineHeight: 1.6, color: C.tertiary }}>仅当前对话可应用或回滚修改；新建/切换对话、预览已处理、会话权限过期或文件内容变化后，应用与回滚会失效。</span>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                {canDiscardAll ? (
+                  <button type="button" disabled={Boolean(busyKey)} onClick={() => runFileAction('discard')} style={transitionButton({ height: 32, padding: '0 11px', borderRadius: 9, background: C.muted, color: C.secondary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: busyKey ? 'not-allowed' : 'pointer' })}>废弃本批修改</button>
+                ) : null}
                 {canDiscard ? (
                   <button type="button" disabled={Boolean(busyKey)} onClick={() => runFileAction('discard')} style={transitionButton({ height: 32, padding: '0 11px', borderRadius: 9, background: C.muted, color: C.secondary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: busyKey ? 'not-allowed' : 'pointer' })}>废弃预览</button>
                 ) : null}
-                <button type="button" disabled={!canRollback || Boolean(busyKey)} onClick={() => runFileAction('rollback')} style={transitionButton({ height: 32, padding: '0 11px', borderRadius: 9, background: canRollback ? 'rgba(254,202,202,0.65)' : C.muted, color: canRollback ? '#991B1B' : C.tertiary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: (!canRollback || busyKey) ? 'not-allowed' : 'pointer' })}>回滚修改</button>
-                <button type="button" disabled={!canApply || Boolean(busyKey)} onClick={() => runFileAction('apply')} style={transitionButton({ height: 32, padding: '0 12px', borderRadius: 9, background: canApply ? '#16A34A' : C.muted, color: canApply ? '#fff' : C.tertiary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: (!canApply || busyKey) ? 'not-allowed' : 'pointer' })}>应用修改</button>
+                {!taskCumulative ? <button type="button" disabled={!canRollback || Boolean(busyKey)} onClick={() => runFileAction('rollback')} style={transitionButton({ height: 32, padding: '0 11px', borderRadius: 9, background: canRollback ? 'rgba(254,202,202,0.65)' : C.muted, color: canRollback ? '#991B1B' : C.tertiary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: (!canRollback || busyKey) ? 'not-allowed' : 'pointer' })}>回滚修改</button> : null}
+                {!taskCumulative ? <button type="button" disabled={!canApply || Boolean(busyKey)} onClick={() => runFileAction('apply')} style={transitionButton({ height: 32, padding: '0 12px', borderRadius: 9, background: canApply ? '#16A34A' : C.muted, color: canApply ? '#fff' : C.tertiary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: (!canApply || busyKey) ? 'not-allowed' : 'pointer' })}>应用修改</button> : null}
                 <button type="button" disabled={!canApplyAll || Boolean(busyKey)} onClick={runApplyAll} style={transitionButton({ height: 32, padding: '0 13px', borderRadius: 9, background: canApplyAll ? C.accent : C.muted, color: canApplyAll ? '#fff' : C.tertiary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: (!canApplyAll || busyKey) ? 'not-allowed' : 'pointer' })}>全部应用</button>
               </div>
             </div>
@@ -1196,6 +1431,7 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
       </div>
     </div>
   );
+  return typeof document === 'undefined' ? null : createPortal(dialog, document.body);
 }
 
 function UserMessageRow({ message, disabled, removing = false, onResendMessage, onOpenAttachment, onPreviewMention, onPrefetchMention, onPreviewImages }) {
@@ -1203,7 +1439,8 @@ function UserMessageRow({ message, disabled, removing = false, onResendMessage, 
   const [draft, setDraft] = useState(String(message.content || ''));
   const [sending, setSending] = useState(false);
   const [submittedContent, setSubmittedContent] = useState(null);
-  const canEdit = Boolean(String(message.content || '').trim()) && typeof onResendMessage === 'function';
+  const hideUserMessageBubble = Boolean(message?.meta?.hide_user_message_bubble);
+  const canEdit = !hideUserMessageBubble && Boolean(String(message.content || '').trim()) && typeof onResendMessage === 'function';
   const displayContent = submittedContent === null ? String(message.content || '') : submittedContent;
 
   useEffect(() => {
@@ -1233,7 +1470,10 @@ function UserMessageRow({ message, disabled, removing = false, onResendMessage, 
   const messageMedia = dedupeAgentMedia(message.attachments);
   const messageImages = messageMedia.filter(isImageMedia);
   const messageAttachments = messageMedia.filter((file) => !isImageMedia(file));
-  const hasTextContent = Boolean(String(message.content || '').trim() || (Array.isArray(message.mentions) && message.mentions.length > 0));
+  const hasTextContent = !hideUserMessageBubble && Boolean(
+    String(message.content || '').trim()
+    || (Array.isArray(message.mentions) && message.mentions.length > 0),
+  );
   const timestamp = formatMessageTimestamp(message.createdAt);
 
   return (
@@ -1304,7 +1544,7 @@ function UserMessageRow({ message, disabled, removing = false, onResendMessage, 
         <div aria-label="用户消息操作" style={{ width: hasTextContent ? 'min(80%, 560px)' : undefined, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8, minHeight: 28 }}>
           <MessageTimestamp value={timestamp} align="left" inline />
           {displayContent.trim() ? <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            <CopyMessageButton text={displayContent} disabled={disabled} successMessage="已复制用户消息" />
+            <CopyMessageButton text={displayContent} disabled={false} successMessage="已复制用户消息" />
             <MessageIconButton label="改写" onClick={() => setEditing(true)} disabled={disabled || !canEdit}>
               <Icons.edit size={14} />
             </MessageIconButton>
@@ -1374,7 +1614,7 @@ function TaskReceiptCards({ researchSummary, writeSummary }) {
   );
 }
 
-function AssistantMessageRow({ message, disabled, removing = false, onRetryMessage, previousUserMessage, onOpenOperationSet, onCitationClick, citationSelection, executionTrace = null }) {
+function AssistantMessageRow({ message, taskChangeSet = null, disabled, removing = false, onRetryMessage, previousUserMessage, onOpenOperationSet, onOpenTaskChangeSet, onCitationClick, citationSelection, executionTrace = null }) {
   const [retrying, setRetrying] = useState(false);
   const canRetry = Boolean(previousUserMessage?.content) && typeof onRetryMessage === 'function';
   const timestamp = formatMessageTimestamp(message.createdAt);
@@ -1417,7 +1657,6 @@ function AssistantMessageRow({ message, disabled, removing = false, onRetryMessa
           ))}
         </div>
       ) : null}
-      {message.operationSet ? <OperationSetCard operationSet={message.operationSet} onOpenDetail={onOpenOperationSet} /> : null}
       <TaskReceiptCards researchSummary={message.meta?.research_summary} writeSummary={message.meta?.write_summary} />
       <div aria-label="AI 回复操作" style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', gap: 8, marginTop: 10, minHeight: 30 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -1428,20 +1667,22 @@ function AssistantMessageRow({ message, disabled, removing = false, onRetryMessa
         </div>
         <MessageTimestamp value={timestamp} align="right" inline />
       </div>
+      {taskChangeSet ? <TaskChangeSetCard changeSet={taskChangeSet} onOpenDetail={onOpenTaskChangeSet} /> : null}
+      {!taskChangeSet && !message.taskChangeSet && message.operationSet ? <OperationSetCard operationSet={message.operationSet} onOpenDetail={onOpenOperationSet} /> : null}
     </div>
   );
 }
 
-function AgentTaskTimeline({ activeSteps, loading, streamText, sessionStatus = '', sessionId = '', startedAt = '', onAction, onPreviewImages }) {
+function AgentTaskTimeline({ activeSteps, loading, streamText, sessionStatus = '', sessionId = '', startedAt = '', finishedAt = '', errorMessage = '', retryMessage = null, onRetryMessage, onAction, onPreviewImages }) {
   const hasSteps = Array.isArray(activeSteps) && activeSteps.length > 0;
   const isStarting = !hasSteps && !streamText && (loading || ['created', 'queued'].includes(sessionStatus));
   const hasTrace = hasSteps || Boolean(startedAt);
-  const hasActivity = hasTrace || Boolean(streamText) || isStarting;
+  const hasActivity = hasTrace || Boolean(streamText) || Boolean(errorMessage) || isStarting;
   if (!hasActivity) return null;
   return (
     <div className="notus-agent-task-timeline">
       {isStarting && !hasTrace ? <div className="notus-agent-task-timeline__pending" role="status" aria-live="polite">任务正在提交</div> : null}
-      {hasTrace ? <ToolChain steps={activeSteps} loading={loading} sessionStatus={sessionStatus} sessionId={sessionId} startedAt={startedAt} onAction={onAction} onPreviewImages={onPreviewImages} /> : null}
+      {hasTrace || errorMessage ? <ToolChain steps={activeSteps} loading={loading} sessionStatus={sessionStatus} sessionId={sessionId} startedAt={startedAt} finishedAt={finishedAt} errorMessage={errorMessage} retryMessage={retryMessage} onRetryMessage={onRetryMessage} onAction={onAction} onPreviewImages={onPreviewImages} /> : null}
       {streamText ? (
         <div className="notus-agent-task-timeline__draft">
           {!loading ? <div className="notus-agent-task-timeline__draft-label">中断前已生成的回复</div> : null}
@@ -1452,38 +1693,72 @@ function AgentTaskTimeline({ activeSteps, loading, streamText, sessionStatus = '
   );
 }
 
-function MessageList({ messages, interactions = [], streamText, loading, activeSteps, activeSessionId = null, activeSessionStatus = '', sessionTimelines = {}, removingMessageIds, onOpenOperationSet, onCitationClick, citationSelection, actionDisabled = false, onResendMessage, onRetryMessage, onOpenAttachment, onPreviewMention, onPrefetchMention, onPreviewImages, onPreviewToolchainImages, onAgentStepAction }) {
+function mergeAgentTimelineSteps(restoredSteps = [], activeSteps = []) {
+  return (Array.isArray(activeSteps) ? activeSteps : []).reduce((steps, step) => {
+    const stepId = String(step?.id || '');
+    const index = stepId ? steps.findIndex((item) => String(item?.id || '') === stepId) : -1;
+    if (index < 0) return [...steps, step];
+    const next = [...steps];
+    next[index] = { ...next[index], ...step };
+    return next;
+  }, [...(Array.isArray(restoredSteps) ? restoredSteps : [])]);
+}
+
+function MessageList({ messages, interactions = [], streamText, error = '', loading, activeSteps, activeSessionId = null, activeSessionStatus = '', sessionTimelines = {}, taskChangeSetsBySession = {}, removingMessageIds, onOpenOperationSet, onOpenTaskChangeSet, onCitationClick, citationSelection, actionDisabled = false, onResendMessage, onRetryMessage, onOpenAttachment, onPreviewMention, onPrefetchMention, onPreviewImages, onPreviewToolchainImages, onAgentStepAction }) {
   const hasPersistedTimeline = Array.isArray(activeSteps) && activeSteps.length > 0;
-  const hasAgentActivity = hasPersistedTimeline || Boolean(streamText) || Boolean(loading)
+  const hasAgentActivity = hasPersistedTimeline || Boolean(streamText) || Boolean(error) || Boolean(loading)
     || ['created', 'queued', 'running'].includes(activeSessionStatus);
   const lastMessageIndex = messages.length - 1;
   const currentSessionKey = String(activeSessionId || '');
   const assistantSessionIds = new Set((Array.isArray(messages) ? messages : [])
     .filter((message) => message?.role === 'assistant' && message?.meta?.session_id)
     .map((message) => String(message.meta.session_id)));
-  const answeredInteractions = (Array.isArray(interactions) ? interactions : [])
-    .filter((interaction) => interaction?.status === 'answered');
-  const interactionStepsFor = (sessionId) => answeredInteractions
+  const visibleInteractions = (Array.isArray(interactions) ? interactions : [])
+    .filter((interaction) => ['pending', 'answered', 'failed', 'stale'].includes(interaction?.status));
+  const interactionStepsFor = (sessionId) => visibleInteractions
     .filter((interaction) => String(interaction?.payload?.agent_session_id || '') === String(sessionId || ''))
     .map(buildInteractionHistoryStep);
-  const traceFor = (timeline, key) => {
+  const traceFor = (timeline, key, retryMessage = null) => {
     if (!timeline) return null;
     const steps = mergeInteractionStepsIntoTimeline(
       Array.isArray(timeline.activeSteps) ? timeline.activeSteps : [],
       interactionStepsFor(timeline.sessionId),
     );
     const draft = String(timeline.streamText || '');
-    if (steps.length === 0 && !draft && !timeline.loading) return null;
-    return <AgentTaskTimeline key={key} activeSteps={steps} loading={Boolean(timeline.loading)} streamText={draft} sessionStatus={timeline.sessionStatus || ''} sessionId={timeline.sessionId || ''} startedAt={timeline.startedAt || ''} onAction={onAgentStepAction} onPreviewImages={onPreviewToolchainImages} />;
+    const timelineError = String(timeline.errorMessage || '').trim();
+    if (steps.length === 0 && !draft && !timeline.loading && !timelineError && !timeline.startedAt) return null;
+    return <AgentTaskTimeline key={key} activeSteps={steps} loading={Boolean(timeline.loading)} streamText={draft} errorMessage={timelineError} retryMessage={retryMessage} onRetryMessage={onRetryMessage} sessionStatus={timeline.sessionStatus || ''} sessionId={timeline.sessionId || ''} startedAt={timeline.startedAt || ''} finishedAt={timeline.finishedAt || ''} onAction={onAgentStepAction} onPreviewImages={onPreviewToolchainImages} />;
   };
-  const currentTimeline = hasAgentActivity ? {
-    sessionId: currentSessionKey,
-    activeSteps,
-    loading,
-    streamText,
-    sessionStatus: activeSessionStatus,
+  const currentTimelineSource = sessionTimelines?.[currentSessionKey] || null;
+  const currentRetryMessage = currentTimelineSource?.userMessageId
+    ? (messages.find((message) => String(message?.id || '') === String(currentTimelineSource.userMessageId)) || null)
+    : ([...messages].reverse().find((message) => message?.role === 'user') || null);
+  const currentTimeline = currentTimelineSource || hasAgentActivity ? {
+    ...currentTimelineSource,
+    sessionId: currentSessionKey || currentTimelineSource?.sessionId || '',
+    userMessageId: currentTimelineSource?.userMessageId || null,
+    activeSteps: mergeAgentTimelineSteps(currentTimelineSource?.activeSteps, activeSteps),
+    loading: Boolean(loading || currentTimelineSource?.loading),
+    streamText: streamText || currentTimelineSource?.streamText || '',
+    errorMessage: error || currentTimelineSource?.errorMessage || '',
+    sessionStatus: activeSessionStatus || currentTimelineSource?.sessionStatus || '',
+    startedAt: currentTimelineSource?.startedAt || '',
+    finishedAt: currentTimelineSource?.finishedAt || '',
   } : null;
-  const executionTrace = traceFor(currentTimeline, `active-${currentSessionKey || 'pending'}`);
+  const executionTrace = traceFor(currentTimeline, `active-${currentSessionKey || 'pending'}`, currentRetryMessage);
+  const taskChangeSetFor = (sessionId, fallback = null, sessionStatus = '') => {
+    const changeSet = taskChangeSetsBySession[sessionId] || fallback || null;
+    const timelineStatus = sessionTimelines?.[sessionId]?.sessionStatus || '';
+    const activeStatus = sessionId === currentSessionKey ? activeSessionStatus : '';
+    return isTaskChangeSetReady(changeSet, [
+      sessionStatus,
+      activeStatus,
+      timelineStatus,
+      changeSet?.session_status,
+    ])
+      ? changeSet
+      : null;
+  };
   if (messages.length === 0 && !hasAgentActivity) {
     return (
       <div style={{ minHeight: '42vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', color: C.tertiary }}>
@@ -1504,8 +1779,11 @@ function MessageList({ messages, interactions = [], streamText, loading, activeS
             .sort((left, right) => Number(right?.sessionId || 0) - Number(left?.sessionId || 0))[0] || null;
           const userSessionKey = String(userTimeline?.sessionId || '');
           const userTrace = userTimeline && !assistantSessionIds.has(userSessionKey)
-            ? traceFor(userSessionKey && userSessionKey === currentSessionKey ? currentTimeline : userTimeline, `user-${userSessionKey}`)
+            ? traceFor(userSessionKey && userSessionKey === currentSessionKey ? currentTimeline : userTimeline, `user-${userSessionKey}`, message)
             : (index === lastMessageIndex && hasAgentActivity ? executionTrace : null);
+          const userTaskChangeSet = userSessionKey && !assistantSessionIds.has(userSessionKey)
+            ? taskChangeSetFor(userSessionKey, null, userTimeline?.sessionStatus)
+            : null;
           return (
             <Fragment key={message.id}>
               <UserMessageRow
@@ -1519,25 +1797,33 @@ function MessageList({ messages, interactions = [], streamText, loading, activeS
                 onPreviewImages={onPreviewImages}
               />
               {userTrace}
+              {userTaskChangeSet ? <TaskChangeSetCard changeSet={userTaskChangeSet} onOpenDetail={onOpenTaskChangeSet} /> : null}
             </Fragment>
           );
         }
 
         const previousUserMessage = [...messages.slice(0, index)].reverse().find((item) => item.role === 'user') || null;
 
+        const taskChangeSet = taskChangeSetFor(
+          messageSessionKey,
+          message.taskChangeSet,
+          message?.meta?.status,
+        );
         return (
           <AssistantMessageRow
             key={message.id}
             message={message}
+            taskChangeSet={taskChangeSet}
             disabled={actionDisabled}
             removing={removing}
             onRetryMessage={onRetryMessage}
             previousUserMessage={previousUserMessage}
             onOpenOperationSet={onOpenOperationSet}
+            onOpenTaskChangeSet={onOpenTaskChangeSet}
             onCitationClick={onCitationClick}
             citationSelection={citationSelection}
             executionTrace={messageTimeline
-              ? traceFor(messageSessionKey === currentSessionKey ? currentTimeline : messageTimeline, `assistant-${messageSessionKey}`)
+              ? traceFor(messageSessionKey === currentSessionKey ? currentTimeline : messageTimeline, `assistant-${messageSessionKey}`, previousUserMessage)
               : (index === lastMessageIndex && hasAgentActivity ? executionTrace : null)}
           />
         );
@@ -1563,7 +1849,7 @@ function AgentConfirmModeSelect({ value, onChange, disabled }) {
   );
 }
 
-function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigChange, onSend, onInterrupt, interruptibleSessionId = null, searchConfig, searchPreference, onSearchPreferenceChange, onRequireSearchConfig, onRequireMcpConfig, mcpSelection = { mode: 'off' }, onMcpSelectionChange, mcpAvailable = false, mcpAvailabilityChecked = false, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [], onPreviewMention, onPrefetchMention }) {
+function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigChange, onSend, onInterrupt, interruptibleSessionId = null, searchConfig, searchPreference, onSearchPreferenceChange, onRequireSearchConfig, onRequireMcpConfig, mcpSelection = { mode: 'off' }, onMcpSelectionChange, mcpAvailable = false, mcpAvailabilityChecked = false, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [], onPreviewMention, onPrefetchMention, showJumpToBottom = false, onJumpToBottom }) {
   const [composerState, setComposerState] = useState({ content: '', mentions: [], segments: [] });
   const [files, setFiles] = useState([]);
   const [imagePreview, setImagePreview] = useState(null);
@@ -1593,6 +1879,13 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
   const composerDraftSaveTimerRef = useRef(null);
   const composerInteractionRef = useRef(false);
   const mentionDropCounterRef = useRef(0);
+  const composerFooterRef = useRef(null);
+  const composerToolsRef = useRef(null);
+  const modelButtonRef = useRef(null);
+  const modelLabelRef = useRef(null);
+  const primaryActionRef = useRef(null);
+  const [modelNameMaxWidth, setModelNameMaxWidth] = useState(150);
+  const [modelNameTruncated, setModelNameTruncated] = useState(false);
   const selectedConfig = useMemo(() => llmConfigs.find((item) => String(item.id) === String(selectedConfigId)) || llmConfigs[0] || null, [llmConfigs, selectedConfigId]);
   const toast = useToast();
   const parsedAttachmentMode = attachmentMode === 'parsed';
@@ -1645,6 +1938,42 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
     const timer = window.setTimeout(() => modelSearchRef.current?.focus(), 0);
     return () => window.clearTimeout(timer);
   }, [modelOpen]);
+  useEffect(() => {
+    const footer = composerFooterRef.current;
+    const tools = composerToolsRef.current;
+    const modelButton = modelButtonRef.current;
+    const modelName = modelLabelRef.current;
+    const primaryAction = primaryActionRef.current;
+    if (!footer || !tools || !modelButton || !modelName || !primaryAction) return undefined;
+
+    let frameId = null;
+    const updateModelNameWidth = () => {
+      const footerWidth = footer.getBoundingClientRect().width;
+      const toolsWidth = tools.getBoundingClientRect().width;
+      const primaryActionWidth = primaryAction.getBoundingClientRect().width;
+      const modelNameWidth = modelName.scrollWidth;
+      const buttonChromeWidth = Math.ceil(modelButton.getBoundingClientRect().width - modelName.clientWidth);
+      const availableWidth = Math.max(64, Math.floor(footerWidth - toolsWidth - primaryActionWidth - 24));
+      const targetWidth = Math.min(Math.ceil(modelNameWidth + buttonChromeWidth), availableWidth, 320);
+      setModelNameMaxWidth((current) => current === targetWidth ? current : targetWidth);
+      frameId = window.requestAnimationFrame(() => {
+        const nextTruncated = modelName.scrollWidth > modelName.clientWidth + 1;
+        setModelNameTruncated((current) => current === nextTruncated ? current : nextTruncated);
+      });
+    };
+
+    updateModelNameWidth();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateModelNameWidth);
+    observer?.observe(footer);
+    observer?.observe(tools);
+    observer?.observe(primaryAction);
+    window.addEventListener('resize', updateModelNameWidth);
+    return () => {
+      if (frameId) window.cancelAnimationFrame(frameId);
+      observer?.disconnect();
+      window.removeEventListener('resize', updateModelNameWidth);
+    };
+  }, [selectedConfig?.id, selectedConfig?.model, selectedConfig?.name]);
   useEffect(() => {
     if (!mcpAvailabilityChecked || mcpAvailable || mcpMode !== 'auto') return;
     onMcpSelectionChange?.({ mode: 'off' });
@@ -1739,7 +2068,34 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
     const label = document.createElement('span');
     label.className = 'notus-mention-item__label';
     label.textContent = mention.name;
-    chip.append(icon, label);
+    const removeButton = document.createElement('button');
+    removeButton.type = 'button';
+    removeButton.className = 'notus-mention-item__remove';
+    removeButton.setAttribute('aria-label', `移除 mention：${mention.name}`);
+    removeButton.textContent = '×';
+    const removeChip = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const root = composerRef.current;
+      if (!root || !root.contains(chip)) return;
+      let trailingText = chip.nextSibling;
+      if (trailingText?.nodeType !== 3) {
+        trailingText = document.createTextNode('');
+        chip.after(trailingText);
+      }
+      chip.remove();
+      composerInteractionRef.current = true;
+      restoreComposerCaret(trailingText, 0);
+      syncComposerState();
+      setMentionQuery(null);
+      setDismissedMentionKey('');
+    };
+    removeButton.addEventListener('mousedown', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    removeButton.addEventListener('click', removeChip);
+    chip.append(icon, label, removeButton);
     const openPreview = (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -1754,7 +2110,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
       if (event.key === 'Enter' || event.key === ' ') openPreview(event);
     });
     return chip;
-  }, [onPrefetchMention, onPreviewMention]);
+  }, [onPrefetchMention, onPreviewMention, restoreComposerCaret, syncComposerState]);
 
   const restoreComposerDom = useCallback((segments = []) => {
     const root = composerRef.current;
@@ -2136,7 +2492,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
     if (rejected.length > 0) {
       toast(mediaKind === 'image'
         ? `暂不支持 ${rejected.slice(0, 3).join('、')}，请上传 PNG、JPG、WEBP 或 GIF。`
-        : `暂不支持 ${rejected.slice(0, 3).join('、')}，请上传 PDF、DOCX、MD 或 TXT。`, 'warning');
+        : `暂不支持 ${rejected.slice(0, 3).join('、')}，请上传 PDF、DOCX、MD、TXT 或 CSV。`, 'warning');
     }
     if (skippedCount > 0) {
       toast(mediaKind === 'image'
@@ -2203,7 +2559,13 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
         ? '请读取并分析已上传的文件。'
         : '';
     const currentComposer = serializeComposer();
-    const text = String(forcedText || currentComposer.content || fallbackText || '').trim();
+    const explicitText = String(forcedText || currentComposer.content || '').trim();
+    const hideUserMessageBubble = Boolean(
+      !explicitText
+      && currentComposer.mentions.length === 0
+      && files.length > 0,
+    );
+    const text = String(explicitText || fallbackText || '').trim();
     if ((!text && files.length === 0 && currentComposer.mentions.length === 0) || busy || disabled || !selectedConfig) return;
     if (webSearchSelected && !searchConfig.enabled) {
       onRequireSearchConfig?.({ reason: 'disabled', selectProvider: selectedSearchProvider || preferredSearchProvider });
@@ -2244,6 +2606,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
         mediaItems,
         mentions: currentComposer.mentions,
         mentionSegments,
+        hideUserMessageBubble,
         webSearchEnabled: webSearchSelected,
         searchProvider: selectedSearchProvider || null,
         searchProviders: searchProviderList,
@@ -2410,6 +2773,29 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
   return (
     <div className="notus-agent-composer-dock" style={{ position: 'absolute', left: 0, right: 0, bottom: 0, background: 'linear-gradient(0deg, ' + C.page + ' 0%, ' + C.page + ' 68%, rgba(253,252,251,0) 100%)', zIndex: 6 }}>
       {imagePreview ? <ImagePreviewOverlay preview={imagePreview} onClose={() => setImagePreview(null)} onMove={moveImagePreview} /> : null}
+      {showJumpToBottom ? (
+        <button
+          type="button"
+          aria-label="滚动到最新消息"
+          onClick={onJumpToBottom}
+          className="notus-agent-composer__jump-to-bottom notus-agent-pressable"
+          style={transitionButton({
+            width: 34,
+            height: 34,
+            margin: '0 auto 8px',
+            padding: 0,
+            borderRadius: 999,
+            background: '#fff',
+            color: C.secondary,
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            boxShadow: '0 10px 28px rgba(45,45,45,0.12), inset 0 0 0 1px rgba(229,227,216,0.95)',
+          })}
+        >
+          <Icons.chevronDown size={14} />
+        </button>
+      ) : null}
       <div className="notus-agent-composer-shell" aria-busy={loading || undefined} style={{ width: AGENT_CHAT_CONTENT_WIDTH, maxWidth: 'none', margin: '0 auto', background: '#fff', boxShadow: focused ? '0 4px 24px rgba(217,119,87,0.08), inset 0 0 0 1px rgba(217,119,87,0.30)' : '0 2px 12px rgba(0,0,0,0.03), inset 0 0 0 1px rgba(229,227,216,0.95)', transitionProperty: 'box-shadow', transitionDuration: '180ms', transitionTimingFunction: 'cubic-bezier(0.16,1,0.3,1)', overflow: 'visible' }}>
         <input ref={fileInputRef} type="file" multiple accept={parsedAttachmentMode ? `${PARSED_ATTACHMENT_ACCEPT},${IMAGE_ACCEPT}` : undefined} style={{ display: 'none' }} onChange={(event) => { addFiles(event.target.files, { mediaKind: 'attachment' }); event.target.value = ''; }} />
         <input ref={imageInputRef} type="file" multiple accept={IMAGE_ACCEPT} style={{ display: 'none' }} onChange={(event) => { addFiles(event.target.files, { mediaKind: 'image' }); event.target.value = ''; }} />
@@ -2513,15 +2899,14 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
             </div>
           ) : null}
         </div>
-        <div className="notus-agent-composer__footer">
-          <div className="notus-agent-composer__tools">
+        <div ref={composerFooterRef} className="notus-agent-composer__footer">
+          <div ref={composerToolsRef} className="notus-agent-composer__tools">
             <div className="notus-agent-composer__attachments">
               <button type="button" aria-label="添加附件" onClick={() => fileInputRef.current?.click()} disabled={busy || disabled} style={transitionButton({ width: 30, height: 30, borderRadius: 10, background: 'transparent', color: C.tertiary, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, opacity: busy || disabled ? 0.5 : 1 })}><Icons.paperclip size={18} /></button>
               <button type="button" aria-label="添加图片" onClick={() => imageInputRef.current?.click()} disabled={busy || disabled} style={transitionButton({ width: 30, height: 30, borderRadius: 10, background: 'transparent', color: C.tertiary, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, opacity: busy || disabled ? 0.5 : 1 })}><Icons.image size={18} /></button>
             </div>
-            <div className="notus-agent-composer__task-controls">
-              {showAgentConfirmMode ? <AgentConfirmModeSelect value={agentConfirmMode} onChange={onAgentConfirmModeChange} disabled={busy || disabled} /> : null}
-              <div className="notus-agent-composer__network-tools">
+            {showAgentConfirmMode ? <AgentConfirmModeSelect value={agentConfirmMode} onChange={onAgentConfirmModeChange} disabled={busy || disabled} /> : null}
+            <div className="notus-agent-composer__network-tools">
               <div style={{ position: 'relative' }}>
                 <Tooltip content="联网搜索">
                   <span style={{ display: 'inline-flex' }}>
@@ -2546,7 +2931,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
               <div style={{ position: 'relative' }}>
                 <Tooltip content={mcpAvailable ? 'MCP 工具' : '暂无 MCP 服务'}>
                   <span style={{ display: 'inline-flex' }}>
-                    <button type="button" aria-label={mcpAvailable ? '切换 MCP 自动工具' : '配置 MCP 服务'} aria-disabled={!mcpAvailable} onClick={toggleMcp} disabled={busy || disabled} style={transitionButton({ height: 28, padding: '0 10px', borderRadius: 8, background: mcpEnabled ? 'rgba(251,228,210,0.40)' : 'transparent', color: mcpEnabled ? C.accent : C.tertiary, display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: mcpEnabled ? 800 : 600, opacity: busy || disabled || !mcpAvailable ? 0.5 : 1, cursor: !mcpAvailable ? 'pointer' : undefined })}><Icons.mcp size={15} /><span className="notus-agent-control-label">{mcpLabel}</span></button>
+                    <button type="button" aria-label={mcpAvailable ? '切换 MCP 自动工具' : '暂无 MCP 服务'} aria-disabled={busy || disabled || !mcpAvailable} onClick={toggleMcp} disabled={busy || disabled || !mcpAvailable} style={transitionButton({ height: 28, padding: '0 10px', borderRadius: 8, background: mcpEnabled ? 'rgba(251,228,210,0.40)' : 'transparent', color: mcpEnabled ? C.accent : C.tertiary, display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: mcpEnabled ? 800 : 600, opacity: busy || disabled || !mcpAvailable ? 0.5 : 1, cursor: busy || disabled || !mcpAvailable ? 'not-allowed' : undefined })}><Icons.mcp size={15} /><span className="notus-agent-control-label">{mcpLabel}</span></button>
                   </span>
                 </Tooltip>
                 {mcpOpen && mcpAvailable ? (
@@ -2558,12 +2943,11 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
                   </>
                 ) : null}
               </div>
-              </div>
             </div>
           </div>
           <div className="notus-agent-composer__actions">
             <div style={{ position: 'relative' }}>
-              <Tooltip content={modelLabel(selectedConfig)} disabled={!selectedConfig}><span style={{ display: 'inline-flex', minWidth: 0 }}><button type="button" className="notus-agent-composer__model" onClick={() => { setSearchOpen(false); setMcpOpen(false); setModelOpen((prev) => !prev); }} disabled={busy || disabled || llmConfigs.length === 0} style={transitionButton({ height: 28, padding: '0 8px', borderRadius: 8, background: 'transparent', color: C.secondary, display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 13, fontWeight: 700, opacity: llmConfigs.length === 0 || disabled ? 0.55 : 1 })}><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{modelLabel(selectedConfig)}</span><Icons.chevronDown size={13} /></button></span></Tooltip>
+              <Tooltip content={modelLabel(selectedConfig)} disabled={!selectedConfig || !modelNameTruncated}><span style={{ display: 'inline-flex', minWidth: 0 }}><button ref={modelButtonRef} type="button" className="notus-agent-composer__model" onClick={() => { setSearchOpen(false); setMcpOpen(false); setModelOpen((prev) => !prev); }} disabled={busy || disabled || llmConfigs.length === 0} style={transitionButton({ '--notus-model-name-max-width': `${modelNameMaxWidth}px`, height: 28, padding: '0 8px', borderRadius: 8, background: 'transparent', color: C.secondary, display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 13, fontWeight: 700, opacity: llmConfigs.length === 0 || disabled ? 0.55 : 1 })}><span ref={modelLabelRef} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{modelLabel(selectedConfig)}</span><Icons.chevronDown size={13} /></button></span></Tooltip>
               {modelOpen ? (
                 <>
                   <button type="button" aria-label="关闭模型下拉" onClick={() => setModelOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 19, border: 0, background: 'transparent', padding: 0 }} />
@@ -2584,7 +2968,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
                 </>
               ) : null}
             </div>
-            <Tooltip content={canInterrupt ? '中断当前任务' : '发送'}><span style={{ display: 'inline-flex' }}><button type="button" aria-label={canInterrupt ? '中断当前任务' : '发送'} disabled={!primaryActionEnabled} onClick={handlePrimaryAction} style={transitionButton({ width: 34, height: 34, borderRadius: 10, background: primaryActionEnabled ? C.accent : C.muted, color: primaryActionEnabled ? '#fff' : '#BDBBB3', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: primaryActionEnabled ? 'pointer' : 'not-allowed', boxShadow: primaryActionEnabled ? '0 6px 18px rgba(217,119,87,0.22)' : 'none' })}>{canInterrupt ? <Icons.square size={16} /> : uploading ? <span aria-hidden="true" style={{ width: 14, height: 14, borderRadius: 999, display: 'inline-block', boxSizing: 'border-box', border: '2px solid rgba(255,255,255,0.45)', borderTopColor: '#fff', animation: 'spin 0.82s linear infinite' }} /> : <Icons.arrowUp size={18} />}</button></span></Tooltip>
+            <Tooltip content={canInterrupt ? '中断当前任务' : '发送'}><span ref={primaryActionRef} style={{ display: 'inline-flex' }}><button type="button" aria-label={canInterrupt ? '中断当前任务' : '发送'} disabled={!primaryActionEnabled} onClick={handlePrimaryAction} style={transitionButton({ width: 34, height: 34, borderRadius: 10, background: primaryActionEnabled ? C.accent : C.muted, color: primaryActionEnabled ? '#fff' : '#BDBBB3', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: primaryActionEnabled ? 'pointer' : 'not-allowed', boxShadow: primaryActionEnabled ? '0 6px 18px rgba(217,119,87,0.22)' : 'none' })}>{canInterrupt ? <Icons.square size={16} /> : uploading ? <span aria-hidden="true" style={{ width: 14, height: 14, borderRadius: 999, display: 'inline-block', boxSizing: 'border-box', border: '2px solid rgba(255,255,255,0.45)', borderTopColor: '#fff', animation: 'spin 0.82s linear infinite' }} /> : <Icons.arrowUp size={18} />}</button></span></Tooltip>
           </div>
         </div>
       </div>
@@ -2793,7 +3177,7 @@ function SearchConfigView({ config, onSaved, onBack, selectProvider }) {
   );
 }
 
-export function AgentWorkspace({ messages, interactions = [], streamText, loading, error, activeSteps, activeSessionId = null, activeSessionStatus = '', sessionTimelines = {}, interruptibleSessionId = null, llmConfigs, selectedConfigId, onConfigChange, onSend, onStop, onResumeAgentTask, onConversationRewritten, onApplyOperationSet, onApplyOperationFile, onRollbackOperationFile, onDiscardOperationFile, onCitationClick, citationSelection, disabled, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [], fullWidth = false, onOpenDiffFile, restoringConversation = false }) {
+export function AgentWorkspace({ messages, interactions = [], streamText, loading, error, activeSteps, activeSessionId = null, activeSessionStatus = '', sessionTimelines = {}, taskChangeSetsBySession = {}, operationSetToOpen = null, interruptibleSessionId = null, llmConfigs, selectedConfigId, onConfigChange, onSend, onStop, onResumeAgentTask, onConversationRewritten, onApplyOperationSet, onApplyOperationFile, onRollbackOperationFile, onDiscardOperationFile, onCitationClick, citationSelection, disabled, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [], fullWidth = false, onOpenDiffFile, onRefreshTaskChangeSet, restoringConversation = false }) {
   const { openSettings } = useSettingsDialog();
   const toast = useToast();
   const [searchConfig, setSearchConfig] = useState({ enabled: false, selected_provider: 'firecrawl', modes: {}, counts: {}, api_key_set: {}, providers: SEARCH_PROVIDER_FALLBACKS });
@@ -2803,8 +3187,47 @@ export function AgentWorkspace({ messages, interactions = [], streamText, loadin
   const [searchViewProvider, setSearchViewProvider] = useState('');
   const [searchPromptReason, setSearchPromptReason] = useState('disabled');
   const [detailOperationSet, setDetailOperationSet] = useState(null);
+  const [loadingTaskChangeSetId, setLoadingTaskChangeSetId] = useState(null);
   const [attachmentDetail, setAttachmentDetail] = useState(null);
   const [previewMention, setPreviewMention] = useState(null);
+
+  useEffect(() => {
+    if (operationSetToOpen?.id) setDetailOperationSet(operationSetToOpen);
+  }, [operationSetToOpen]);
+
+  const openTaskChangeSet = useCallback(async (changeSet) => {
+    const sessionId = Number(changeSet?.session_id || 0);
+    if (!sessionId || loadingTaskChangeSetId) return;
+    setLoadingTaskChangeSetId(changeSet.id || sessionId);
+    try {
+      const readDetail = async (access) => {
+        const response = await fetch(`/api/agent/sessions/${sessionId}/changes`, {
+          cache: 'no-store',
+          headers: {
+            ...(access?.read_control_ticket ? { 'x-agent-control-ticket': access.read_control_ticket } : {}),
+            ...(!access?.read_control_ticket && access?.session_token ? { 'x-agent-session-token': access.session_token } : {}),
+          },
+        });
+        return { response, payload: await response.json().catch(() => ({})) };
+      };
+      let access = changeSet;
+      if (!access?.read_control_ticket && !access?.session_token) access = await onRefreshTaskChangeSet?.(sessionId);
+      let { response, payload } = await readDetail(access);
+      if (!response.ok && typeof onRefreshTaskChangeSet === 'function') {
+        access = await onRefreshTaskChangeSet(sessionId);
+        ({ response, payload } = await readDetail(access));
+      }
+      if (!response.ok || !payload.task_change_set?.operation_set_view) {
+        const code = payload.code ? `（${payload.code}）` : '';
+        throw new Error(`${payload.error || '无法读取累计修改详情'}${code}`);
+      }
+      setDetailOperationSet(payload.task_change_set.operation_set_view);
+    } catch (error) {
+      toast(error.message || '读取累计修改失败', 'error');
+    } finally {
+      setLoadingTaskChangeSetId(null);
+    }
+  }, [loadingTaskChangeSetId, onRefreshTaskChangeSet, toast]);
 
   useEffect(() => {
     setDetailOperationSet((current) => {
@@ -3007,6 +3430,27 @@ export function AgentWorkspace({ messages, interactions = [], streamText, loadin
 
   const handleResendMessage = useCallback(async (sourceMessage, options = {}) => {
     const nextContent = String(options.content ?? sourceMessage?.content ?? '').trim();
+    const sourceMeta = sourceMessage?.meta && typeof sourceMessage.meta === 'object' ? sourceMessage.meta : {};
+    const sourceMedia = dedupeAgentMedia([
+      ...(Array.isArray(sourceMessage?.attachments) ? sourceMessage.attachments : []),
+      ...(Array.isArray(sourceMeta.attachments) ? sourceMeta.attachments : []),
+      ...(Array.isArray(sourceMeta.images) ? sourceMeta.images.map((image) => ({ ...image, source_kind: 'image', media_kind: 'image' })) : []),
+    ]);
+    const sourceImages = sourceMedia.filter(isImageMedia);
+    const sourceAttachments = sourceMedia.filter((file) => !isImageMedia(file));
+    const sourceMediaItems = Array.isArray(sourceMeta.media_items) && sourceMeta.media_items.length > 0
+      ? dedupeAgentMedia(sourceMeta.media_items)
+      : sourceMedia;
+    const hasOriginalSearchPreference = Object.prototype.hasOwnProperty.call(sourceMeta, 'web_search_enabled');
+    const retryWebSearchEnabled = options.reason === 'retry' && hasOriginalSearchPreference
+      ? Boolean(sourceMeta.web_search_enabled)
+      : activeWebSearchEnabled;
+    const retrySearchProvider = options.reason === 'retry' && sourceMeta.search_provider
+      ? String(sourceMeta.search_provider)
+      : activeSearchProvider;
+    const retryMcpSelection = options.reason === 'retry' && sourceMeta.mcp_selection?.mode
+      ? (sourceMeta.mcp_selection.mode === 'auto' ? { mode: 'auto' } : { mode: 'off' })
+      : mcpSelection;
     if (!nextContent) {
       toast('当前消息没有可发送内容', 'warning');
       return false;
@@ -3015,15 +3459,16 @@ export function AgentWorkspace({ messages, interactions = [], streamText, loadin
       toast('请先在模型配置中新增至少一个 LLM 配置', 'warning');
       return false;
     }
-    if (activeWebSearchEnabled && !searchConfig.enabled) {
-      requireSearchConfig({ reason: 'disabled', selectProvider: activeSearchProvider });
+    if (retryWebSearchEnabled && !searchConfig.enabled) {
+      requireSearchConfig({ reason: 'disabled', selectProvider: retrySearchProvider });
       return false;
     }
-    if (activeWebSearchEnabled && !isSearchProviderReady(activeSearchProvider)) {
-      requireSearchConfig({ reason: 'missing_api_key', selectProvider: activeSearchProvider });
+    if (retryWebSearchEnabled && !isSearchProviderReady(retrySearchProvider)) {
+      requireSearchConfig({ reason: 'missing_api_key', selectProvider: retrySearchProvider });
       return false;
     }
 
+    let hiddenOptimisticMessageKey = '';
     try {
       const isRewrite = options.reason === 'rewrite';
       // 改写与重试都会从当前用户消息截断。重试不改写原文，但必须移除旧回答及其后的分支，
@@ -3032,62 +3477,78 @@ export function AgentWorkspace({ messages, interactions = [], streamText, loadin
       if (replacesConversation) {
         const sourceId = sourceMessage?.id;
         const conversationId = Number(sourceMessage?.conversationId || sourceMessage?.conversation_id || 0) || null;
-        if (!conversationId || !Number.isFinite(Number(sourceId)) || Number(sourceId) <= 0) {
+        const hasSavedSourceMessage = Boolean(conversationId && Number.isFinite(Number(sourceId)) && Number(sourceId) > 0);
+        if (!hasSavedSourceMessage && isRewrite) {
           throw new Error('当前消息尚未完成服务端保存，无法改写。请稍后重试。');
         }
         const sourceKey = String(sourceId || '');
-        const sourceIndex = sourceMessages.findIndex((message) => String(message.id) === sourceKey);
-        const futureMessages = sourceIndex >= 0 ? sourceMessages.slice(sourceIndex + 1) : [];
-        const futureIds = futureMessages.map((message) => String(message.id));
-        const response = await fetch(`/api/conversations/${conversationId}/truncate`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            message_id: Number(sourceId),
-            content: nextContent,
-          }),
-        });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(payload.error || '清理后续对话失败');
+        if (hasSavedSourceMessage) {
+          const sourceIndex = sourceMessages.findIndex((message) => String(message.id) === sourceKey);
+          const futureMessages = sourceIndex >= 0 ? sourceMessages.slice(sourceIndex + 1) : [];
+          const futureIds = futureMessages.map((message) => String(message.id));
+          const response = await fetch(`/api/conversations/${conversationId}/truncate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              message_id: Number(sourceId),
+              content: nextContent,
+            }),
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(payload.error || '清理后续对话失败');
 
-        onConversationRewritten?.(payload);
+          onConversationRewritten?.(payload);
 
-        setRewrittenMessages((prev) => ({ ...prev, [sourceKey]: nextContent }));
-        setRemovingMessageIds((prev) => {
-          const next = new Set(prev);
-          futureIds.forEach((id) => next.add(id));
-          return next;
-        });
-        if (futureIds.length > 0) {
-          window.setTimeout(() => {
-            setHiddenMessageIds((prev) => {
-              const next = new Set(prev);
-              futureIds.forEach((id) => next.add(id));
-              return next;
-            });
-            setRemovingMessageIds((prev) => {
-              const next = new Set(prev);
-              futureIds.forEach((id) => next.delete(id));
-              return next;
-            });
-          }, 220);
+          setRewrittenMessages((prev) => ({ ...prev, [sourceKey]: nextContent }));
+          setRemovingMessageIds((prev) => {
+            const next = new Set(prev);
+            futureIds.forEach((id) => next.add(id));
+            return next;
+          });
+          if (futureIds.length > 0) {
+            window.setTimeout(() => {
+              setHiddenMessageIds((prev) => {
+                const next = new Set(prev);
+                futureIds.forEach((id) => next.add(id));
+                return next;
+              });
+              setRemovingMessageIds((prev) => {
+                const next = new Set(prev);
+                futureIds.forEach((id) => next.delete(id));
+                return next;
+              });
+            }, 220);
+          }
+        } else if (options.reason === 'retry' && sourceKey) {
+          // POST 尚未落库时，乐观用户气泡不能参与下一次消息列表，否则重试会显示两条相同 prompt。
+          hiddenOptimisticMessageKey = sourceKey;
+          setHiddenMessageIds((prev) => new Set([...prev, sourceKey]));
         }
       }
 
       await onSend?.(nextContent, {
         llmConfigId: selectedModelId,
-        attachments: Array.isArray(sourceMessage?.attachments) ? sourceMessage.attachments : [],
+        attachments: sourceAttachments,
+        images: sourceImages,
+        mediaItems: sourceMediaItems,
         mentions: isRewrite ? [] : (Array.isArray(sourceMessage?.mentions) ? sourceMessage.mentions : []),
         mentionSegments: isRewrite ? [{ type: 'text', text: nextContent }] : (Array.isArray(sourceMessage?.mentionSegments) ? sourceMessage.mentionSegments : []),
-        rewriteUserMessageId: replacesConversation ? Number(sourceMessage?.id || 0) || null : null,
-        webSearchEnabled: activeWebSearchEnabled,
-        searchProvider: activeWebSearchEnabled ? activeSearchProvider : null,
-        searchProviders: activeWebSearchEnabled ? [activeSearchProvider] : [],
-        mcpSelection,
-        skipUserMessageAppend: replacesConversation,
+        rewriteUserMessageId: replacesConversation && Number(sourceMessage?.id || 0) > 0 ? Number(sourceMessage.id) : null,
+        webSearchEnabled: retryWebSearchEnabled,
+        searchProvider: retryWebSearchEnabled ? retrySearchProvider : null,
+        searchProviders: retryWebSearchEnabled ? [retrySearchProvider] : [],
+        mcpSelection: retryMcpSelection,
+        skipUserMessageAppend: replacesConversation && Number(sourceMessage?.id || 0) > 0,
       });
       return true;
     } catch (sendError) {
+      if (hiddenOptimisticMessageKey) {
+        setHiddenMessageIds((prev) => {
+          const next = new Set(prev);
+          next.delete(hiddenOptimisticMessageKey);
+          return next;
+        });
+      }
       toast(sendError.message || (options.reason === 'retry' ? '重试失败' : '重新发送失败'), 'error');
       return false;
     }
@@ -3122,16 +3583,19 @@ export function AgentWorkspace({ messages, interactions = [], streamText, loadin
             messages={visibleMessages}
             interactions={interactions}
             streamText={streamText || ''}
+            error={error || ''}
             loading={Boolean(loading)}
             activeSteps={visibleActiveSteps}
             activeSessionId={activeSessionId}
             activeSessionStatus={activeSessionStatus}
             sessionTimelines={sessionTimelines}
+            taskChangeSetsBySession={taskChangeSetsBySession}
             removingMessageIds={removingMessageIds}
             onOpenOperationSet={setDetailOperationSet}
+            onOpenTaskChangeSet={openTaskChangeSet}
             onCitationClick={onCitationClick}
             citationSelection={citationSelection}
-            actionDisabled={Boolean(disabled) || Boolean(loading)}
+            actionDisabled={Boolean(disabled)}
             onResendMessage={handleResendMessage}
             onRetryMessage={handleResendMessage}
             onOpenAttachment={handleOpenAttachment}
@@ -3144,44 +3608,16 @@ export function AgentWorkspace({ messages, interactions = [], streamText, loadin
               if (action === 'resume_agent') void onResumeAgentTask?.(sessionId);
             }}
           />}
-          {error ? <div style={{ marginTop: 16, padding: '12px 14px', borderRadius: 14, background: 'rgba(217,119,87,0.08)', color: C.accentDark, fontSize: 13, lineHeight: 1.7 }}>{error}</div> : null}
           <div style={{ height: 12 }} />
         </div>
       </main>
-      {showJumpToBottom && (visibleMessages.length > 0 || loading) ? (
-        <button
-          type="button"
-          aria-label="滚动到最新消息"
-          onClick={() => {
-            const container = scrollContainerRef.current;
-            if (!container) return;
-            scrollContainerToBottom(container, 'smooth');
-            shouldStickToBottomRef.current = true;
-            setShowJumpToBottom(false);
-          }}
-          className="notus-agent-pressable"
-          style={transitionButton({
-            position: 'absolute',
-            left: '50%',
-            bottom: CHAT_JUMP_BUTTON_OFFSET,
-            transform: 'translateX(-50%)',
-            width: 34,
-            height: 34,
-            padding: 0,
-            borderRadius: 999,
-            background: '#fff',
-            color: C.secondary,
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            boxShadow: '0 10px 28px rgba(45,45,45,0.12), inset 0 0 0 1px rgba(229,227,216,0.95)',
-            zIndex: 9,
-          })}
-        >
-          <Icons.chevronDown size={14} />
-        </button>
-      ) : null}
-      <AgentInput loading={Boolean(loading)} disabled={Boolean(disabled)} llmConfigs={llmConfigs || []} selectedConfigId={selectedConfigId} onConfigChange={onConfigChange} onSend={onSend} onInterrupt={onStop} interruptibleSessionId={interruptibleSessionId} searchConfig={searchConfig} searchPreference={searchPreference} onSearchPreferenceChange={handleSearchPreferenceChange} onRequireSearchConfig={requireSearchConfig} onRequireMcpConfig={() => setMcpPromptOpen(true)} mcpSelection={mcpSelection} onMcpSelectionChange={handleMcpSelectionChange} mcpAvailable={mcpAvailable} mcpAvailabilityChecked={mcpAvailabilityChecked} placeholder={placeholder} agentConfirmMode={agentConfirmMode} onAgentConfirmModeChange={onAgentConfirmModeChange} attachmentMode={attachmentMode} mentionOptions={mentionOptions} onPreviewMention={setPreviewMention} onPrefetchMention={handlePrefetchMention} />
+      <AgentInput loading={Boolean(loading)} disabled={Boolean(disabled)} llmConfigs={llmConfigs || []} selectedConfigId={selectedConfigId} onConfigChange={onConfigChange} onSend={onSend} onInterrupt={onStop} interruptibleSessionId={interruptibleSessionId} searchConfig={searchConfig} searchPreference={searchPreference} onSearchPreferenceChange={handleSearchPreferenceChange} onRequireSearchConfig={requireSearchConfig} onRequireMcpConfig={() => setMcpPromptOpen(true)} mcpSelection={mcpSelection} onMcpSelectionChange={handleMcpSelectionChange} mcpAvailable={mcpAvailable} mcpAvailabilityChecked={mcpAvailabilityChecked} placeholder={placeholder} agentConfirmMode={agentConfirmMode} onAgentConfirmModeChange={onAgentConfirmModeChange} attachmentMode={attachmentMode} mentionOptions={mentionOptions} onPreviewMention={setPreviewMention} onPrefetchMention={handlePrefetchMention} showJumpToBottom={showJumpToBottom && (visibleMessages.length > 0 || loading)} onJumpToBottom={() => {
+        const container = scrollContainerRef.current;
+        if (!container) return;
+        scrollContainerToBottom(container, 'smooth');
+        shouldStickToBottomRef.current = true;
+        setShowJumpToBottom(false);
+      }} />
       <MentionPreviewDialog mention={previewMention} onClose={() => setPreviewMention(null)} onOpenDocument={onOpenDiffFile} />
       <Dialog open={searchPromptOpen} onClose={() => setSearchPromptOpen(false)} title={promptTitle} maxWidth={420} footer={<><Button variant="ghost" onClick={() => setSearchPromptOpen(false)}>取消</Button><Button variant="primary" onClick={() => { setSearchPromptOpen(false); openSettings('search', { provider: promptProvider?.id }); }}>前往设置</Button></>}>
         <div style={{ fontSize: 14, color: C.secondary, lineHeight: 1.8 }}>{promptMessage}</div>

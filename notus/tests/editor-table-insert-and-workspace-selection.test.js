@@ -22,5 +22,6 @@ assert.ok(sidebar.includes("navigateWithFallback(router, `/${currentPage}`, { mo
 assert.ok(settings.includes('<SegmentedTabs value={selectedProvider}'), 'image storage should use the shared segmented control');
 assert.ok(settings.includes('ariaLabel="图床服务商"'), 'image storage provider selector should keep an accessible label');
 assert.ok(settings.includes('onSaved={applySettings}'), 'image storage provider save should refresh the active configuration');
+assert.ok(settings.includes("if (!isConfiguredImageTarget(target))") && settings.indexOf('setImageTarget(target);') > settings.indexOf("if (!isConfiguredImageTarget(target))"), '未配置图床只提示，不应切换当前上传位置');
 
 console.log('editor table insert and workspace selection tests passed');

@@ -261,6 +261,75 @@ function runTests() {
   assert.strictEqual(customTarget.resolution_status, 'resolved');
   assert.strictEqual(customTarget.answers.target_note_path.value, 'research/new-note.md');
 
+  const optionalInteraction = {
+    conversation_id: 3,
+    status: 'pending',
+    payload: {
+      questions: [
+        { id: 'choice', type: 'single_select', required: true, options: [{ id: 'a', label: '选项 A' }] },
+        { id: 'note', type: 'text_input', required: true },
+      ],
+    },
+  };
+  const optionalResponse = normalizeInteractionResponse(optionalInteraction, {
+    answers: {
+      choice: { option_id: '__none_of_the_above__' },
+      note: { skipped: true },
+    },
+  });
+  assert.strictEqual(optionalResponse.resolution_status, 'resolved', '选择兜底项或跳过不得被 required 阻止');
+  assert.strictEqual(optionalResponse.answers.choice.none_of_the_above, true, '兜底项必须保留结构化标记');
+  assert.strictEqual(optionalResponse.answers.note.skipped, true, '跳过必须保留结构化标记');
+
+  const skippedEditResponse = normalizeInteractionResponse(baseInteraction, {
+    answers: {
+      source_content_ref: { skipped: true },
+      target_location: { option_id: '__none_of_the_above__' },
+      write_mode: { skipped: true },
+    },
+  });
+  const skippedEditPlan = buildResumePlanFromInteraction({
+    ...baseInteraction,
+    response: skippedEditResponse,
+  }, {
+    blocks: baseInteraction.payload.article_blocks,
+  });
+  assert.strictEqual(skippedEditPlan.clarify_needed, true, '跳过编辑上下文时必须阻止写入');
+  assert.strictEqual(skippedEditPlan.clarify_reason, 'skipped_edit_context');
+  assert.deepStrictEqual(skippedEditPlan.missing_slots, ['target_location', 'write_mode']);
+  assert.strictEqual(skippedEditPlan.write_action, '');
+  assert.strictEqual(skippedEditPlan.write_mode, '');
+
+  const skippedIntentInteraction = {
+    ...baseInteraction,
+    payload: {
+      ...baseInteraction.payload,
+      questions: [
+        {
+          id: 'primary_intent',
+          slot: 'primary_intent',
+          type: 'single_select',
+          required: true,
+          options: [
+            { id: 'edit', label: '直接改文档' },
+            { id: 'text', label: '继续讨论' },
+          ],
+        },
+        ...baseInteraction.payload.questions,
+      ],
+    },
+  };
+  const skippedIntentResponse = normalizeInteractionResponse(skippedIntentInteraction, {
+    answers: { primary_intent: { option_id: '__none_of_the_above__' } },
+  });
+  const skippedIntentPlan = buildResumePlanFromInteraction({
+    ...skippedIntentInteraction,
+    response: skippedIntentResponse,
+  }, { blocks: baseInteraction.payload.article_blocks });
+  assert.strictEqual(skippedIntentPlan.clarify_needed, true, '跳过主意图时必须阻止默认编辑');
+  assert.strictEqual(skippedIntentPlan.clarify_reason, 'skipped_edit_context');
+  assert.ok(skippedIntentPlan.missing_slots.includes('primary_intent'));
+
   console.log('conversation interactions tests passed');
 }
 

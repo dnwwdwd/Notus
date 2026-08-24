@@ -210,7 +210,7 @@ function updateSessionStatus(sessionId, status) {
   const requested = String(status || '').trim();
   const normalized = requested === 'waiting_confirm' ? 'waiting_interaction' : requested;
   if (!normalized) throw new Error('status is required');
-  const waitingSinceExpr = ['waiting_interaction', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery'].includes(normalized) ? 'datetime(\'now\')' : 'NULL';
+  const waitingSinceExpr = ['waiting_interaction', 'waiting_operation_confirmation', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery'].includes(normalized) ? 'datetime(\'now\')' : 'NULL';
   getDb().prepare(`
     UPDATE agent_sessions
     SET status = ?, waiting_since = ${waitingSinceExpr}, state_version = state_version + 1, updated_at = datetime('now')
@@ -466,7 +466,7 @@ function compactMessagesForStorage(messages = []) {
   return compact.concat(keep);
 }
 
-function saveMessagesCheckpoint(sessionId, messages, lastResponseContent, appliedToolUseId, runId = '') {
+function saveMessagesCheckpoint(sessionId, messages, lastResponseContent, appliedToolUseId, runId = '', options = {}) {
   const checkpoint = {
     messages: compactMessagesForStorage(messages),
     last_response_content: lastResponseContent,
@@ -477,14 +477,23 @@ function saveMessagesCheckpoint(sessionId, messages, lastResponseContent, applie
     const sid = normalizePositiveInt(sessionId);
     const result = db.prepare(`
       INSERT INTO agent_checkpoints (
-        session_id, run_id, messages_json, last_response_content_json, tool_use_id
-      ) VALUES (?, ?, ?, ?, ?)
+        session_id, run_id, messages_json, last_response_content_json, tool_use_id,
+        phase, execution_segment_id, llm_request_window_id, tool_results_json,
+        next_tool_index, pending_operation_set_id, resume_tool_result_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       sid,
       String(runId || '') || null,
       JSON.stringify(checkpoint.messages),
       JSON.stringify(lastResponseContent || []),
-      String(appliedToolUseId || '') || null
+      String(appliedToolUseId || '') || null,
+      String(options.phase || 'before_llm'),
+      normalizePositiveInt(options.executionSegmentId),
+      normalizePositiveInt(options.llmRequestWindowId),
+      JSON.stringify(Array.isArray(options.toolResults) ? options.toolResults : []),
+      Math.max(0, Number(options.nextToolIndex) || 0),
+      normalizePositiveInt(options.pendingOperationSetId),
+      options.resumeToolResult == null ? null : JSON.stringify(options.resumeToolResult)
     );
     const checkpointId = Number(result.lastInsertRowid);
     db.prepare(`
@@ -516,6 +525,13 @@ function loadMessagesCheckpoint(sessionId) {
       messages: safeJsonParse(current.messages_json, []),
       lastResponseContent: safeJsonParse(current.last_response_content_json, []),
       appliedToolUseId: current.tool_use_id || '',
+      phase: current.phase || 'before_llm',
+      executionSegmentId: normalizePositiveInt(current.execution_segment_id),
+      llmRequestWindowId: normalizePositiveInt(current.llm_request_window_id),
+      toolResults: safeJsonParse(current.tool_results_json, []),
+      nextToolIndex: Math.max(0, Number(current.next_tool_index || 0)),
+      pendingOperationSetId: normalizePositiveInt(current.pending_operation_set_id),
+      resumeToolResult: safeJsonParse(current.resume_tool_result_json, null),
     };
   }
   const row = db.prepare('SELECT messages_checkpoint, checkpoint_tool_use_id FROM agent_sessions WHERE id = ?').get(sid);
@@ -528,6 +544,26 @@ function loadMessagesCheckpoint(sessionId) {
     lastResponseContent: checkpoint.last_response_content || [],
     appliedToolUseId: row.checkpoint_tool_use_id || '',
   };
+}
+
+function setCheckpointResumeToolResult(sessionId, operationSetId, toolResult, options = {}) {
+  const db = getDb();
+  const sid = normalizePositiveInt(sessionId);
+  const setId = normalizePositiveInt(operationSetId);
+  if (!sid || !setId) return false;
+  const result = db.prepare(`
+    UPDATE agent_checkpoints
+    SET resume_tool_result_json = ?, phase = 'after_tools'
+    WHERE id = (
+      SELECT id FROM agent_checkpoints
+      WHERE session_id = ? AND status = 'active' AND pending_operation_set_id = ?
+      ORDER BY id DESC LIMIT 1
+    )
+  `).run(JSON.stringify({
+    content: typeof toolResult?.content === 'string' ? toolResult.content : JSON.stringify(toolResult || {}),
+    is_error: Boolean(toolResult?.is_error || options.isError),
+  }), sid, setId);
+  return Number(result.changes || 0) > 0;
 }
 
 function clearMessagesCheckpoint(sessionId, checkpointId = null) {
@@ -769,6 +805,84 @@ function sanitizeViewedImages(images = [], conversationId = null) {
   }, []).slice(0, 30);
 }
 
+function sanitizeInteractionQuestion(question = {}) {
+  const dependsOn = question?.depends_on || question?.dependsOn || null;
+  const dependentQuestionId = truncateTimelineText(dependsOn?.question_id || dependsOn?.questionId || '', 256);
+  const dependentValues = Array.isArray(dependsOn?.values)
+    ? dependsOn.values.map((value) => truncateTimelineText(value, 512)).filter(Boolean).slice(0, 5)
+    : [];
+  return {
+    id: truncateTimelineText(question?.id || '', 256),
+    slot: truncateTimelineText(question?.slot || question?.id || '', 256),
+    label: truncateTimelineText(question?.label || question?.question || question?.title || '', 4096),
+    type: String(question?.type || 'text_input') === 'single_select' ? 'single_select' : 'text_input',
+    required: question?.required !== false,
+    options: (Array.isArray(question?.options) ? question.options : []).slice(0, 5).map((option) => ({
+      id: truncateTimelineText(option?.id || '', 256),
+      label: truncateTimelineText(option?.label || option?.text || '', 4096),
+      description: truncateTimelineText(option?.description || option?.hint || '', 4096),
+      answer_value: truncateTimelineText(option?.answer_value || option?.answerValue || '', 4096),
+    })).filter((option) => option.id && option.label),
+    allow_custom: question?.allow_custom !== false,
+    custom_placeholder: truncateTimelineText(question?.custom_placeholder || question?.placeholder || '', 1024),
+    recommended_option_ids: Array.isArray(question?.recommended_option_ids)
+      ? question.recommended_option_ids.map((value) => truncateTimelineText(value, 256)).filter(Boolean).slice(0, 3)
+      : [],
+    ...(dependentQuestionId && dependentValues.length > 0 ? {
+      depends_on: { question_id: dependentQuestionId, values: dependentValues },
+    } : {}),
+  };
+}
+
+function sanitizeInteractionPayload(interaction = {}) {
+  const payload = interaction?.payload && typeof interaction.payload === 'object' ? interaction.payload : {};
+  const common = {
+    title: truncateTimelineText(payload.title || '', 1024),
+    kicker: truncateTimelineText(payload.kicker || '', 1024),
+    submit_label: truncateTimelineText(payload.submit_label || '', 512),
+    footer_hint: truncateTimelineText(payload.footer_hint || '', 2048),
+    collapsed_summary: truncateTimelineText(payload.collapsed_summary || '', 2048),
+    clarify_reason: truncateTimelineText(payload.clarify_reason || '', 512),
+    agent_session_id: normalizePositiveInt(payload.agent_session_id || payload.agentSessionId),
+  };
+  if (String(interaction?.kind || '') === 'resource_approval') {
+    return {
+      ...common,
+      action: truncateTimelineText(payload.action || '', 512),
+      target: truncateTimelineText(payload.target || '', 4096),
+      files: (Array.isArray(payload.files) ? payload.files : [])
+        .map((filePath) => truncateTimelineText(filePath, 4096))
+        .filter(Boolean)
+        .slice(0, 100),
+    };
+  }
+  return {
+    ...common,
+    questions: (Array.isArray(payload.questions) ? payload.questions : [])
+      .slice(0, 3)
+      .map(sanitizeInteractionQuestion)
+      .filter((question) => question.id && question.label),
+  };
+}
+
+function sanitizeInteractionForRunEvent(interaction = {}) {
+  if (!interaction || typeof interaction !== 'object') return null;
+  const id = normalizePositiveInt(interaction.id);
+  if (!id) return null;
+  const schemaVersion = Number(interaction.schema_version || interaction.schemaVersion || 1);
+  return {
+    id,
+    conversation_id: normalizePositiveInt(interaction.conversation_id || interaction.conversationId),
+    message_id: normalizePositiveInt(interaction.message_id || interaction.messageId),
+    kind: truncateTimelineText(interaction.kind || 'clarify_card', 128),
+    source: truncateTimelineText(interaction.source || '', 128),
+    status: truncateTimelineText(interaction.status || 'pending', 64),
+    schema_version: Number.isFinite(schemaVersion) ? Math.max(1, schemaVersion) : 1,
+    reason_code: truncateTimelineText(interaction.reason_code || interaction.reasonCode || '', 512),
+    payload: sanitizeInteractionPayload(interaction),
+  };
+}
+
 function sanitizeRunEvent(event = {}) {
   const type = String(event.type || '').trim();
   if (!['progress', 'artifact', 'final'].includes(type)) return null;
@@ -778,6 +892,16 @@ function sanitizeRunEvent(event = {}) {
   const sourceKind = isAttachmentParseEvent ? normalizeAttachmentSourceKind(event.source_kind) : '';
   const conversationId = normalizePositiveInt(event.conversation_id || event.conversationId);
   const viewedImages = isImageViewEvent ? sanitizeViewedImages(event.images, conversationId) : [];
+  const diagnostics = event?.diagnostics && typeof event.diagnostics === 'object' ? {
+    module_id: truncateTimelineText(event.diagnostics.module_id || '', 160),
+    tokens: Math.max(0, Number(event.diagnostics.tokens || 0)),
+    module_budget: Math.max(0, Number(event.diagnostics.module_budget || 0)),
+    dynamic_tokens: Math.max(0, Number(event.diagnostics.dynamic_tokens || 0)),
+    dynamic_budget: Math.max(0, Number(event.diagnostics.dynamic_budget || 0)),
+  } : null;
+  const interaction = type === 'artifact' && String(event.artifact_type || '').trim() === 'interaction'
+    ? sanitizeInteractionForRunEvent(event.interaction)
+    : null;
   const payload = {
     type,
     stage,
@@ -798,9 +922,19 @@ function sanitizeRunEvent(event = {}) {
     error: isImageViewEvent ? truncateTimelineText(event.error || '', 512) : '',
     message: truncateTimelineText(event.message || '', 8 * 1024),
     retry_attempts: Math.max(0, Number(event.retry_attempts || 0)),
+    diagnostics,
     resumable: Boolean(event.resumable),
     operation_set_id: normalizePositiveInt(event.operation_set_id),
-    interaction_id: normalizePositiveInt(event.interaction?.id || event.interaction_id),
+    task_change_set_id: normalizePositiveInt(event.task_change_set_id),
+    task_change_set_version: Math.max(0, Number(event.task_change_set_version || 0)),
+    execution_segment_id: normalizePositiveInt(event.execution_segment_id),
+    segment_sequence_no: Math.max(0, Number(event.segment_sequence_no || 0)),
+    request_window_no: Math.max(0, Number(event.request_window_no || 0)),
+    tool_index: Math.max(0, Number(event.tool_index || 0)),
+    change_file_count: Math.max(0, Number(event.change_file_count || 0)),
+    change_directory_count: Math.max(0, Number(event.change_directory_count || 0)),
+    interaction_id: normalizePositiveInt(interaction?.id || event.interaction_id),
+    interaction,
     conversation_id: isImageViewEvent ? conversationId : null,
     message_id: isImageViewEvent ? normalizePositiveInt(event.message_id) : null,
     image_count: isImageViewEvent ? (viewedImages.length || Math.min(30, Math.max(0, Number(event.image_count || 0)))) : 0,
@@ -951,6 +1085,7 @@ module.exports = {
   snapshotFiles,
   rollbackSession,
   saveMessagesCheckpoint,
+  setCheckpointResumeToolResult,
   loadMessagesCheckpoint,
   clearMessagesCheckpoint,
   logToolCall,

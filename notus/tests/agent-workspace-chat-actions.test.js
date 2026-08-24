@@ -18,7 +18,7 @@ async function runTests() {
     'scrollContainerToBottom(container, \'smooth\')',
     '<Icons.chevronDown size={14} />',
     'function UserMessageRow({ message, disabled, removing = false, onResendMessage, onOpenAttachment, onPreviewMention, onPrefetchMention, onPreviewImages })',
-    'function AssistantMessageRow({ message, disabled, removing = false, onRetryMessage, previousUserMessage',
+    'function AssistantMessageRow({ message, taskChangeSet = null, disabled, removing = false, onRetryMessage, previousUserMessage',
     'aria-label="AI 回复操作"',
     'aria-label="用户消息操作"',
     '已复制用户消息',
@@ -37,8 +37,10 @@ async function runTests() {
     'setEditing(false);',
     'await fetch(`/api/conversations/${conversationId}/truncate`',
     'window.setTimeout(() => {',
-    'skipUserMessageAppend: replacesConversation',
-    'attachments: Array.isArray(sourceMessage?.attachments) ? sourceMessage.attachments : []',
+    'skipUserMessageAppend: replacesConversation && Number(sourceMessage?.id || 0) > 0',
+    'attachments: sourceAttachments',
+    'images: sourceImages',
+    'mediaItems: sourceMediaItems',
   ].forEach((snippet) => {
     assert.ok(
       workspaceSource.includes(snippet),
@@ -75,6 +77,22 @@ async function runTests() {
     '当前任务的执行记录应优先附着在同一 session 的助手回复之前'
   );
   assert.ok(
+    workspaceSource.includes("const TERMINAL_AGENT_SESSION_STATUSES = new Set(['completed', 'failed', 'cancelled', 'rolled_back']);")
+      && workspaceSource.includes('function isTaskChangeSetReady(changeSet, sessionStatus = \'\')')
+      && workspaceSource.includes('const sessionStatuses = Array.isArray(sessionStatus) ? sessionStatus : [sessionStatus];')
+      && workspaceSource.includes('sessionStatuses.some((status) => TERMINAL_AGENT_SESSION_STATUSES.has(String(status || \'\').trim()))')
+      && workspaceSource.includes('taskChangeSetFor(userSessionKey, null, userTimeline?.sessionStatus)')
+      && workspaceSource.includes('{taskChangeSet ? <TaskChangeSetCard changeSet={taskChangeSet}')
+      && !workspaceSource.includes('taskChangeSet || message.taskChangeSet'),
+    '累计 Diff 卡只能在所属 Agent 任务进入终态后显示，不能由消息缓存的变更集绕过判定；完整回滚后的任务仍可查看'
+  );
+  assert.ok(
+    fileWorkspaceSource.includes('function mergeTaskChangeSetState(previous = {}, changeSet = {})')
+      && fileWorkspaceSource.includes('const retainedStatus = isTerminalAgentSessionStatus(previous?.session_status)')
+      && fileWorkspaceSource.includes('return { ...previous, ...changeSet, session_status: retainedStatus };'),
+    '较晚返回的运行中批次详情不得覆盖已经确认的终态；否则最终回复追加后累计 Diff 会消失'
+  );
+  assert.ok(
     workspaceSource.includes(".filter((timeline) => String(timeline?.userMessageId || '') === String(message.id || ''))"),
     '尚未生成助手回复时，执行记录应按 user_message_id 紧跟在对应用户消息之后'
   );
@@ -95,7 +113,8 @@ async function runTests() {
     '会话恢复必须把 agent_sessions 中完成态操作集并入消息操作集索引'
   );
   assert.ok(
-    fileWorkspaceSource.includes('setPendingOperationSets(collectConversationOperationSets(payload));'),
+    fileWorkspaceSource.includes('const operationSets = collectConversationOperationSets(payload);')
+      && fileWorkspaceSource.includes('setPendingOperationSets(operationSets);'),
     '加载会话时必须使用完整操作集索引恢复消息中的 Diff 详情卡'
   );
 
@@ -152,7 +171,7 @@ async function runTests() {
   assert.ok(workspaceSource.includes('function AttachmentContentDialog'));
   assert.ok(workspaceSource.includes("fetch('/api/agent/attachments/content'"));
   assert.ok(workspaceSource.includes('PDF 不支持复制'));
-  assert.ok(workspaceSource.includes("`查看附件内容：${file.name || '未命名附件'}`"));
+  assert.ok(workspaceSource.includes('`查看附件内容：${fileName}`'));
 
   console.log('agent workspace chat actions tests passed');
 }

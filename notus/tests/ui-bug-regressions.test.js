@@ -5,13 +5,17 @@ const path = require('path');
 const root = path.resolve(__dirname, '..');
 
 function read(relativePath) {
-  return fs.readFileSync(path.join(root, relativePath), 'utf8');
+  return fs.readFileSync(path.join(root, relativePath), 'utf8').replace(/\r\n/g, '\n');
 }
 
 function runTests() {
   const findBar = read('components/ui/DocumentFindBar.js');
   assert.ok(!findBar.includes('搜索当前文档内容，回车或按钮切换匹配项'));
   assert.ok(!findBar.includes('输入关键词'));
+
+  const wysiwygEditor = read('components/Editor/WysiwygEditor.js');
+  assert.ok(wysiwygEditor.includes('link: false,'), 'StarterKit 必须关闭内置 Link，避免与显式 Link 配置重复注册');
+  assert.ok(wysiwygEditor.includes('underline: false,'), 'StarterKit 必须关闭内置 Underline，避免与显式 Underline 重复注册');
 
   const unsavedDialog = read('components/ui/UnsavedChangesDialog.js');
   assert.ok(!unsavedDialog.includes('>取消</Button>'));
@@ -45,6 +49,9 @@ function runTests() {
   assert.ok(sidebar.includes('const isSidebarCollapsed = autoCollapsed || (isMobileViewport ? !mobileSidebarOpen : sidebarCollapsed);'));
   assert.ok(sidebar.includes('const [autoCollapsed, setAutoCollapsed] = useState(false);'));
   assert.ok(sidebar.includes('setMobileSidebarOpen((current) => !current);'));
+  assert.ok(sidebar.includes('function useTextOverflow(ref, value)'));
+  assert.ok(sidebar.includes('node.scrollWidth > node.clientWidth + 1'));
+  assert.ok(sidebar.includes('disabled={!labelTruncated}'));
   assert.ok(desktopMain.includes('minWidth: 390'));
   assert.ok(desktopMain.includes('minHeight: 640'));
   assert.ok(!appRoot.includes('PageTransitionOverlay'));
@@ -58,6 +65,11 @@ function runTests() {
   assert.ok(sidebar.includes("change_type: moveNode.type === 'folder' ? 'move_folder' : 'move_file'"));
   assert.ok(sidebar.includes('isSameOrChildPath(option.value, moveNode.path)'));
   assert.ok(!sidebar.includes("renameNode?.type === 'folder' ? '生成预览' : '确认'"));
+  assert.ok(sidebar.includes("{ label: '上传文件'"), '目录右键菜单必须提供上传文件入口');
+  assert.ok(sidebar.includes("{ label: '下载目录'"), '目录右键菜单必须提供目录 ZIP 下载入口');
+  assert.ok(sidebar.includes("{ label: '下载文件'"), '文件右键菜单必须提供文件下载入口');
+  assert.ok(sidebar.indexOf("{ label: '删除目录'") < sidebar.indexOf("{ label: '上传文件'"), '目录右键原有操作顺序不得变化，新入口仅追加到末尾');
+  assert.ok(sidebar.indexOf("{ label: '删除',") < sidebar.indexOf("{ label: '下载文件'"), '文件右键原有操作顺序不得变化，新入口仅追加到末尾');
 
   const dropdownSelect = read('components/ui/DropdownSelect.js');
   assert.ok(dropdownSelect.includes('menuZIndex = 2100'));
@@ -67,6 +79,7 @@ function runTests() {
   assert.ok(tooltip.includes("maxWidth: 'calc(100vw - 24px)'"));
   assert.ok(tooltip.includes("whiteSpace: 'nowrap'"));
   assert.ok(tooltip.includes("textOverflow: 'ellipsis'"));
+  assert.ok(tooltip.includes('triggerStyle'));
 
   const segmentedTabs = read('components/ui/SegmentedTabs.js');
   assert.ok(segmentedTabs.includes('export function SegmentedTabs'));
@@ -78,6 +91,7 @@ function runTests() {
   assert.ok(segmentedTabs.includes("maxWidth: '100%'"));
   assert.ok(segmentedTabs.includes('minWidth: 0'));
   assert.ok(segmentedTabs.includes("overflowX: 'auto'"));
+  assert.ok(segmentedTabs.includes('const tooltipContent = option.description || (responsiveLabels && option.compactLabel ? option.label : \'\');'));
 
   const settings = read('components/Settings/SettingsScreen.js');
   assert.ok(settings.includes('closeOnBackdrop={false}'));
@@ -115,10 +129,15 @@ function runTests() {
   assert.ok(settings.includes('aria-label="关闭设置菜单"'));
   assert.ok(settings.includes('mobileOpen={mobileNavOpen}'));
   assert.ok(!settings.includes('activeSectionMeta.label'));
+assert.ok(settings.includes("{ id: 'global-agent', label: 'Agent 个性', icon: <Icons.brain"));
 
   assert.ok(globalStyles.includes('.notus-settings-nav.is-mobile-open'));
   assert.ok(globalStyles.includes('.notus-settings-nav-backdrop'));
   assert.ok(globalStyles.includes('transform: translateX(-104%)'));
+  assert.ok(settings.includes("background: 'var(--bg-secondary)'"), '设置弹窗外壳应有明确的暖色背景');
+  assert.ok(settings.includes("background: 'var(--bg-primary)'"), '设置弹窗内容层应有明确的背景色');
+  assert.ok(settings.includes("background: 'var(--bg-secondary)'"), '设置弹窗外壳应继承暖色背景');
+  assert.ok(settings.includes("border: '1px solid var(--border-primary)'"), '设置弹窗外壳应有明确边界');
   assert.ok(settings.includes('导入 ZIP'));
   assert.ok(settings.includes("fetch('/api/skills/install/zip', { method: 'POST', body: form })"));
   assert.ok(settings.includes('type="file" accept=".zip,application/zip,application/x-zip-compressed"'));
@@ -153,15 +172,32 @@ function runTests() {
   assert.ok(agentWorkspace.includes('<SegmentedTabs'));
   assert.ok(agentWorkspace.includes('function OperationSetCard'));
   assert.ok(agentWorkspace.includes('function DiffDialog'));
+  assert.ok(agentWorkspace.includes('createPortal(dialog, document.body)'), 'Diff 弹窗必须脱离工作区堆叠上下文');
+  assert.ok(agentWorkspace.includes('className="notus-diff-dialog__file-toggle notus-agent-pressable"'), '窄屏 Diff 必须提供文件列表抽屉入口');
+  assert.ok(agentWorkspace.includes('className="notus-diff-dialog__file-backdrop"'), '文件列表抽屉必须有独立遮罩关闭入口');
+  assert.ok(agentWorkspace.includes('className="notus-diff-dialog__scroll"'), 'Diff 内容必须在独立滚动区域内承载长行');
+  assert.ok(globalStyles.includes('.notus-diff-dialog__backdrop {\n  position: fixed;\n  inset: 0;\n  z-index: 2000;'), 'Diff 弹窗必须位于页面吸顶工具栏之上');
+  assert.ok(globalStyles.includes('@media (max-width: 960px)'), 'Diff 详情必须定义窄屏布局');
+  assert.ok(globalStyles.includes('.notus-diff-dialog__sidebar.is-mobile-open'), '窄屏文件列表必须使用悬浮抽屉状态');
+  assert.ok(agentWorkspace.includes("step?.errorType !== 'agent' && step?.kind !== 'segment'"), 'Agent 错误和内部执行段都不能进入普通工具步骤列表');
   assert.ok(agentWorkspace.includes("attachmentMode === 'parsed'"));
   assert.ok(agentWorkspace.includes('pasted-text-'));
   assert.ok(agentWorkspace.includes('const LONG_PASTE_ATTACHMENT_THRESHOLD = 100;'));
   assert.ok(agentWorkspace.includes('const MAX_PARSED_ATTACHMENTS = 10;'));
+  assert.ok(agentWorkspace.includes("const PARSED_ATTACHMENT_EXTENSIONS = new Set(['.pdf', '.docx', '.md', '.markdown', '.txt', '.csv']);"));
+  assert.ok(agentWorkspace.includes('text/csv'));
+  assert.ok(agentWorkspace.includes('return PARSED_ATTACHMENT_EXTENSIONS.has(fileExtension(file?.name));'));
+  assert.ok(agentWorkspace.includes('width: 240'));
+  assert.ok(agentWorkspace.includes('<Tooltip content={fileName} placement="top"'));
   assert.ok(agentWorkspace.includes('const MAX_IMAGES_PER_MESSAGE = 30;'));
   assert.ok(agentWorkspace.includes("aria-label=\"添加图片\""));
   assert.ok(agentWorkspace.includes('没有匹配的文件'));
   assert.ok(agentWorkspace.includes('mentionOptions = []'));
   assert.ok(agentWorkspace.includes('const activeMention = useMemo'));
+  assert.ok(agentWorkspace.includes('const removeChip = (event) =>'));
+  assert.ok(agentWorkspace.includes('removeButton.setAttribute(\'aria-label\', `移除 mention：${mention.name}`)'));
+  assert.ok(agentWorkspace.includes('restoreComposerCaret(trailingText, 0);'));
+  assert.ok(globalStyles.includes('.notus-agent-composer .notus-mention-item--inline .notus-mention-item__remove'));
   assert.ok(agentWorkspace.includes('function AgentWorkspace({'));
   assert.ok(agentWorkspace.includes('mentionOptions={mentionOptions}'));
   assert.ok(agentWorkspace.includes('function isFileSystemOperation(operation = {})'));
@@ -221,11 +257,24 @@ function runTests() {
   assert.ok(!topBar.includes('点击保存（'));
 
   const clarifyDrawer = read('components/ChatArea/ClarifyDrawer.js');
+  assert.ok(clarifyDrawer.includes('const handleAnswerPatch'));
   assert.ok(clarifyDrawer.includes('const selectOptionAndAdvance'));
-  assert.ok(clarifyDrawer.includes("setPhase('expanded-review')"));
-  assert.ok(clarifyDrawer.includes('<ReviewRow'));
-  assert.ok(clarifyDrawer.includes('notus-agent-question-card__toggle'));
-  assert.ok(clarifyDrawer.includes('notus-agent-question-card__review-row'));
+  assert.ok(clarifyDrawer.includes('NONE_OF_THE_ABOVE_OPTION_ID'));
+  assert.ok(clarifyDrawer.includes("label: '以上选项都不是'"), '每道题必须提供“以上选项都不是”');
+  assert.ok(clarifyDrawer.includes('function buildFallbackQuestionOptions'), '没有候选项时必须生成相关候选');
+  assert.ok(!clarifyDrawer.includes('用自定义输入补充，或跳过这道题。'), '不再显示旧的兜底提示语');
+  assert.ok(clarifyDrawer.includes('const skipQuestionAndAdvance'), '每道题必须允许跳过');
+  assert.ok(clarifyDrawer.includes('skipped: Boolean(current.skipped)'), '跳过状态必须随回答提交');
+  assert.ok(clarifyDrawer.includes('aria-label="上一题"'));
+  assert.ok(clarifyDrawer.includes('aria-label="下一题"'));
+  assert.ok(!clarifyDrawer.includes('上一题</button>') && !clarifyDrawer.includes('下一题</Button>'));
+  assert.ok(!clarifyDrawer.includes('<ReviewRow'));
+  assert.ok(!clarifyDrawer.includes('title="收起，先用普通对话"'));
+  assert.ok(clarifyDrawer.includes('aria-label="取消提问"'));
+  assert.ok(clarifyDrawer.includes('function getDrawerTitle'));
+  assert.ok(!clarifyDrawer.includes('<Icons.sparkles size={13} />'));
+  assert.ok(fileAgentWorkspace.includes('const handleInteractionCancel = useCallback'));
+  assert.ok(!clarifyDrawer.includes('function ReviewRow'));
 
   assert.ok(globalStyles.includes('.notus-agent-question-card__detail'));
   assert.ok(globalStyles.includes('.notus-agent-toolchain__question-answer'));
@@ -234,6 +283,9 @@ function runTests() {
   assert.ok(agentWorkspace.includes('function mergeInteractionStepsIntoTimeline'));
   assert.ok(agentWorkspace.includes('const interactionStepsFor'));
   assert.ok(agentWorkspace.includes('Icons.messageCircle'));
+  assert.ok(agentWorkspace.includes('Icons.messagePlus'));
+  assert.ok(agentWorkspace.includes('Icons.messageQuestion'));
+  assert.ok(agentWorkspace.includes('Icons.circleX'));
   assert.ok(!agentWorkspace.includes('function InteractionHistoryNode'));
   assert.ok(agentWorkspace.includes('<Tooltip content="联网搜索">'));
   assert.ok(agentWorkspace.includes("<Tooltip content={mcpAvailable ? 'MCP 工具' : '暂无 MCP 服务'}>"));
@@ -251,6 +303,9 @@ function runTests() {
   assert.ok(agentPrompt.includes('scope_paths: [该目录路径]'));
 
   const agentTools = read('lib/agentTools.js');
+  assert.ok(agentTools.includes('至少 2 个、最多 5 个与问题直接相关的候选选项'));
+  assert.ok(agentTools.includes('function buildFallbackQuestionOptions'));
+  assert.ok(!agentTools.includes("id: 'current_document'"), '来源问题兜底不能生成无法解析的当前文档选项');
   assert.ok(agentTools.includes('不要用它判断目录是否存在、目标目录位置或空目录'));
   assert.ok(agentTools.includes('返回子目录、Markdown 文件路径、标题和可选内容预览'));
   assert.ok(agentTools.includes('folders_truncated'));

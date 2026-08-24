@@ -62,6 +62,22 @@ function issueCapability({ sessionId, interactionId = null, resumeJobId = null, 
   const encoded = encode(payload);
   const db = getDb();
   db.prepare("DELETE FROM agent_capabilities WHERE expires_at <= datetime('now') OR (consumed_at IS NOT NULL AND consumed_at <= datetime('now', '-1 day'))").run();
+  // 一张待回答卡片或一个待恢复任务只保留最新的一次性票据。SSE 重连和
+  // 对话刷新会重新发送它们，旧票据立即失效，既避免未消费记录不断累积，也
+  // 缩小意外泄露后的有效窗口。最终的状态迁移仍会做条件更新，不能只依赖
+  // 票据去重。
+  if (payload.action === 'respond' && payload.iid) {
+    db.prepare(`
+      DELETE FROM agent_capabilities
+      WHERE session_id = ? AND interaction_id = ? AND action = 'respond' AND consumed_at IS NULL
+    `).run(sid, payload.iid);
+  }
+  if (payload.action === 'resume' && payload.jid) {
+    db.prepare(`
+      DELETE FROM agent_capabilities
+      WHERE session_id = ? AND resume_job_id = ? AND action = 'resume' AND consumed_at IS NULL
+    `).run(sid, payload.jid);
+  }
   db.prepare(`
     INSERT INTO agent_capabilities (
       nonce_hash, session_id, interaction_id, resume_job_id, owner_id, action, expires_at
@@ -125,14 +141,15 @@ function createOrGetResumeJob({ sessionId, interactionId, ownerId = null } = {})
       `).run(id, sid, iid, ownerId ? String(ownerId) : null);
       job = db.prepare('SELECT * FROM agent_resume_jobs WHERE id = ?').get(id);
     }
-    db.prepare(`
-      UPDATE agent_sessions
-      SET status = 'queued_resume', state_version = state_version + 1, updated_at = datetime('now')
-      WHERE id = ? AND status IN ('waiting_interaction', 'queued_resume')
-    `).run(sid);
-    // 提问卡回答仅唤醒持久化任务；是否能执行仍由同会话 FIFO 队列判断。
-    try { require('./agentTaskQueue').wakeTask(sid); } catch {}
-    return job;
+    // 已完成的 resume job 只能用于幂等查询，不能因旧请求再次把 session 唤醒。
+    if (job.status === 'queued') {
+      db.prepare(`
+        UPDATE agent_sessions
+        SET status = 'queued_resume', state_version = state_version + 1, updated_at = datetime('now')
+        WHERE id = ? AND status IN ('waiting_interaction', 'queued_resume')
+      `).run(sid);
+    }
+    return formatResumeJob(job);
   })();
 }
 
@@ -159,6 +176,12 @@ function formatResumeJob(row) {
 
 function getResumeJob(id) {
   return formatResumeJob(getDb().prepare('SELECT * FROM agent_resume_jobs WHERE id = ?').get(String(id || '')));
+}
+
+function getResumeJobByInteraction(interactionId) {
+  const iid = toPositiveInt(interactionId);
+  if (!iid) return null;
+  return formatResumeJob(getDb().prepare('SELECT * FROM agent_resume_jobs WHERE interaction_id = ?').get(iid));
 }
 
 function listResumeJobsByConversation(conversationId) {
@@ -281,8 +304,21 @@ function registerActiveRun(runId, controller) {
 function requestCancellation(sessionId) {
   const sid = toPositiveInt(sessionId);
   const db = getDb();
-  const session = db.prepare('SELECT active_run_id FROM agent_sessions WHERE id = ?').get(sid);
-  db.prepare("UPDATE agent_sessions SET cancel_requested_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(sid);
+  const session = db.prepare('SELECT active_run_id, status FROM agent_sessions WHERE id = ?').get(sid);
+  const inactiveSession = !session?.active_run_id;
+  db.prepare(`
+    UPDATE agent_sessions
+    SET cancel_requested_at = datetime('now'),
+        status = CASE
+          WHEN ? AND status NOT IN ('completed', 'cancelled', 'failed', 'rolled_back') THEN 'cancelled'
+          ELSE status
+        END,
+        active_run_id = CASE WHEN ? THEN NULL ELSE active_run_id END,
+        lease_expires_at = CASE WHEN ? THEN NULL ELSE lease_expires_at END,
+        state_version = CASE WHEN ? THEN state_version + 1 ELSE state_version END,
+        updated_at = datetime('now')
+    WHERE id = ?
+  `).run(inactiveSession ? 1 : 0, inactiveSession ? 1 : 0, inactiveSession ? 1 : 0, inactiveSession ? 1 : 0, sid);
   const controller = session?.active_run_id ? activeRuns.get(String(session.active_run_id)) : null;
   if (controller && !controller.signal.aborted) controller.abort('cancel');
   return { requested: true, active: Boolean(controller), runId: session?.active_run_id || null };
@@ -307,6 +343,18 @@ function updateResumeJob(id, updates = {}) {
   sets.push("updated_at = datetime('now')");
   getDb().prepare(`UPDATE agent_resume_jobs SET ${sets.join(', ')} WHERE id = ?`).run(...values, String(id || ''));
   return getResumeJob(id);
+}
+
+function settleResumeJob(id, sessionStatus) {
+  const status = String(sessionStatus || 'failed');
+  const interrupted = status === 'queued_resume';
+  const resumedToStableState = status === 'completed'
+    || ['waiting_interaction', 'waiting_operation_confirmation', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery'].includes(status);
+  return updateResumeJob(id, {
+    status: interrupted ? 'queued' : resumedToStableState ? 'completed' : 'failed',
+    result: { status },
+    finished: !interrupted,
+  });
 }
 
 function recordRunUsage({ sessionId, runId = null, loopIndex = null, sourceType = 'llm', provider = '', model = '', usage = null, usageSource = 'provider' } = {}) {
@@ -338,6 +386,7 @@ module.exports = {
   acquireRunLease,
   createOrGetResumeJob,
   getResumeJob,
+  getResumeJobByInteraction,
   getSessionUsage,
   isCancellationRequested,
   issueCapability,
@@ -348,6 +397,7 @@ module.exports = {
   releaseRunLease,
   renewRunLease,
   requestCancellation,
+  settleResumeJob,
   updateResumeJob,
   validateCapability,
 };

@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { readEnvConfig } = require('./config');
 const { ensureError } = require('./errors');
+const { redactSecrets } = require('./agentToolPolicy');
 
 const LEVEL_PRIORITY = {
   debug: 10,
@@ -12,6 +13,13 @@ const LEVEL_PRIORITY = {
 };
 
 const LOG_PREFIX = 'notus';
+const MAX_ERROR_MESSAGE_CHARS = 8 * 1024;
+const MAX_ERROR_STACK_CHARS = 32 * 1024;
+const INLINE_SECRET_PATTERNS = [
+  /(["']?authorization["']?\s*[=:]\s*["']?(?:bearer|basic)\s+)[^\s,;"']+/gi,
+  /(["']?(?:cookie|set-cookie)["']?\s*:\s*)[^\r\n]+/gi,
+  /(["']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password|passwd)["']?\s*[=:]\s*["']?)[^\s,;"'}]+/gi,
+];
 
 function normalizeLevel(level) {
   const normalized = String(level || '').trim().toLowerCase();
@@ -74,6 +82,15 @@ function sanitizeValue(value, depth = 0, seen = new WeakSet()) {
   return String(value);
 }
 
+function redactDiagnosticText(value, maxChars) {
+  let text = String(redactSecrets(String(value || '')) || '');
+  INLINE_SECRET_PATTERNS.forEach((pattern) => {
+    text = text.replace(pattern, '$1[REDACTED]');
+  });
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars)}\n[已截断超长错误诊断]`;
+}
+
 function splitErrorFields(payload = {}) {
   if (!payload.error) return sanitizeValue(payload);
 
@@ -81,11 +98,35 @@ function splitErrorFields(payload = {}) {
   const next = sanitizeValue({ ...payload });
   delete next.error;
 
-  next.error = normalized.message;
+  next.error = redactDiagnosticText(normalized.message, MAX_ERROR_MESSAGE_CHARS);
   next.error_code = normalized.code || null;
   next.error_name = normalized.name || 'Error';
-  next.error_stack = normalized.stack || null;
+  next.error_stack = redactDiagnosticText(normalized.stack, MAX_ERROR_STACK_CHARS) || null;
+  next.error_location = extractProjectErrorLocation(normalized.stack);
   return next;
+}
+
+function extractProjectErrorLocation(stack) {
+  const lines = String(stack || '').split('\n');
+  for (const line of lines) {
+    const match = line.match(/((?:notus\/)?(?:pages|lib|components|hooks)\/[^\s)]+:\d+:\d+)/);
+    if (match) return match[1].replace(/^notus\//, 'notus/');
+  }
+  return null;
+}
+
+function formatConsoleEntry(entry = {}) {
+  const diagnostic = {
+    event: entry.event || 'notus.error',
+    request_id: entry.request_id || null,
+    route: entry.route || null,
+    error_code: entry.error_code || null,
+    error_name: entry.error_name || null,
+    error: redactDiagnosticText(entry.error || entry.message || '', MAX_ERROR_MESSAGE_CHARS) || null,
+    error_location: entry.error_location || null,
+    error_stack: redactDiagnosticText(entry.error_stack, MAX_ERROR_STACK_CHARS) || null,
+  };
+  return `[${entry.event || 'notus.error'}] ${JSON.stringify(diagnostic)}`;
 }
 
 function writeEntry(entry) {
@@ -102,7 +143,7 @@ function writeEntry(entry) {
     console.warn(`[${entry.event}]`, entry.message || '', entry.request_id ? `request=${entry.request_id}` : '');
   }
   if (entry.level === 'error') {
-    console.error(`[${entry.event}]`, entry.message || '', entry.request_id ? `request=${entry.request_id}` : '');
+    console.error(formatConsoleEntry(entry));
   }
 
   return entry;
@@ -202,5 +243,6 @@ module.exports = {
   ensureLogDir,
   getLogFilePath,
   getLoggerConfig,
+  formatConsoleEntry,
   readLogs,
 };

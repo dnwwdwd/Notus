@@ -14,6 +14,9 @@ const agentControlPlaneMigration = require('./migrations/006_agent_control_plane
 const agentRunTimelineMigration = require('./migrations/007_agent_run_timeline');
 const agentTaskQueueMigration = require('./migrations/008_agent_task_queue');
 const orphanVectorCleanupMigration = require('./migrations/009_cleanup_orphan_vectors');
+const agentExecutionChangesMigration = require('./migrations/010_agent_execution_changes');
+const agentQueueResumeRequestMigration = require('./migrations/011_agent_queue_resume_request');
+const agentResumeJobBindingMigration = require('./migrations/012_agent_resume_job_binding');
 
 let db = null;
 let vecAvailable = false;
@@ -24,8 +27,23 @@ function ensureParentDir(filePath) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
 }
 
+function getBundledWindowsArm64VecExtensionPath({
+  platform = process.platform,
+  arch = process.arch,
+  cwd = process.cwd(),
+} = {}) {
+  if (platform !== 'win32' || arch !== 'arm64') return null;
+  const extensionPath = path.join(cwd, 'native', 'sqlite-vec', 'win32-arm64', 'vec0.dll');
+  return fs.existsSync(extensionPath) ? extensionPath : null;
+}
+
 function loadVecExtension(database) {
-  sqliteVec.load(database);
+  const bundledWindowsArm64Extension = getBundledWindowsArm64VecExtensionPath();
+  if (bundledWindowsArm64Extension) {
+    database.loadExtension(bundledWindowsArm64Extension, 'sqlite3_vec_init');
+  } else {
+    sqliteVec.load(database);
+  }
   database.prepare('SELECT vec_version() AS version').get();
   vecAvailable = true;
 }
@@ -65,7 +83,7 @@ function runMigrations(database) {
     );
   `);
 
-  [agentLoopMigration, agentControlPlaneMigration, agentRunTimelineMigration, agentTaskQueueMigration, orphanVectorCleanupMigration].forEach((migration) => {
+  [agentLoopMigration, agentControlPlaneMigration, agentRunTimelineMigration, agentTaskQueueMigration, orphanVectorCleanupMigration, agentExecutionChangesMigration, agentQueueResumeRequestMigration, agentResumeJobBindingMigration].forEach((migration) => {
     const version = Number(migration.version);
     if (!Number.isFinite(version) || version <= 0 || typeof migration.up !== 'function') return;
     const applied = database.prepare('SELECT version FROM schema_version WHERE version = ?').get(version);
@@ -1012,4 +1030,5 @@ module.exports = {
   setSetting,
   setSettings,
   removeSettings,
+  getBundledWindowsArm64VecExtensionPath,
 };

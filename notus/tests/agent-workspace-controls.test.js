@@ -11,6 +11,7 @@ const resourceEvents = read('utils/agentResourceEvents.js');
 const controller = read('hooks/useAgentLoopController.js');
 const startRoute = read('pages/api/agent/loop/start.js');
 const cancelRoute = read('pages/api/agent/loop/cancel.js');
+const interactionRespondRoute = read('pages/api/interactions/[id]/respond.js');
 const conversationRoute = read('pages/api/conversations/[id].js');
 const agentLoop = read('lib/agentLoop.js');
 assert.ok(workspace.includes("if (parsed?.mode === 'server') return { mode: 'auto' };"));
@@ -48,9 +49,55 @@ assert.ok(drawer.includes('function getCompactPreview(value, limit = 120)'), '�
 assert.ok(drawer.includes("replace(/\\s+/g, ' ')"), '历史搜索摘要必须合并换行和连续空白');
 
 const fileWorkspace = read('components/AgentWorkspace/FileAgentWorkspace.js');
+const clarifyDrawerSource = read('components/ChatArea/ClarifyDrawer.js');
+assert.ok(fileWorkspace.includes('className="notus-file-agent-workspace__content"'), '确认抽屉必须挂在 AI 面板的相对定位内容区内');
+assert.ok(fileWorkspace.includes('className="notus-file-agent-workspace__interaction-layer"'), '待确认问题必须使用覆盖输入区的交互层');
+assert.ok(fileWorkspace.includes('className="notus-file-agent-workspace__interaction-drawer"'), '待确认问题必须放进底部抽屉，而不是普通纵向布局');
+assert.ok(
+  fileWorkspace.indexOf('className="notus-file-agent-workspace__content"')
+    < fileWorkspace.indexOf('className="notus-file-agent-workspace__interaction-layer"')
+    && fileWorkspace.indexOf('className="notus-file-agent-workspace__interaction-layer"')
+      < fileWorkspace.indexOf('<ConversationDrawer'),
+  '确认抽屉必须位于 AI 面板内、历史抽屉之前'
+);
+assert.ok(globalStyles.includes('.notus-file-agent-workspace__interaction-layer {') && globalStyles.includes('pointer-events: none;'), '确认覆盖层不得拦截抽屉以外的面板操作');
+assert.ok(globalStyles.includes('.notus-file-agent-workspace__interaction-drawer {') && globalStyles.includes('align-items: flex-end;'), '确认抽屉必须从输入区上方的底部出现');
+assert.ok(fileWorkspace.includes("notus-file-agent-workspace${activeInteraction ? ' has-interaction' : ''}"), '等待回答时必须标记文件工作区以隐藏 AI 输入框');
+assert.ok(fileWorkspace.includes('collapsible={false}'), '文件工作区的提问卡片 Drawer 不允许收起');
+assert.ok(!clarifyDrawerSource.includes('title="收起，先用普通对话"'), '待回答期间提问卡片不应提供收起入口');
+assert.ok(clarifyDrawerSource.includes('aria-label="取消提问"'), '提问卡片右上角必须提供取消图标');
+assert.ok(clarifyDrawerSource.includes('title="取消提问"'), '取消图标必须提供可理解的悬浮提示');
+assert.ok(clarifyDrawerSource.includes('function getDrawerTitle'), '提问卡片标题必须统一清理产品前缀');
+assert.ok(clarifyDrawerSource.includes("return normalized || '需要你确认'"), '提问卡片默认标题必须为“需要你确认”');
+assert.ok(!clarifyDrawerSource.includes('<Icons.sparkles size={13} />'), '提问卡片标题左侧不应再显示装饰 icon');
+assert.ok(clarifyDrawerSource.includes('const selectOptionAndAdvance'), '选择选项后应自动进入下一题');
+assert.ok(clarifyDrawerSource.includes('aria-label="上一题"'), '上一题必须使用带无障碍名称的图标按钮');
+assert.ok(clarifyDrawerSource.includes('aria-label="下一题"'), '下一题必须使用带无障碍名称的图标按钮');
+assert.ok(!clarifyDrawerSource.includes('上一题</button>') && !clarifyDrawerSource.includes('下一题</Button>'), '题目导航不得显示文字');
+assert.ok(!clarifyDrawerSource.includes('function ReviewRow'), '提问卡片不应再渲染独立审查总览');
+assert.ok(clarifyDrawerSource.includes("state === 'done' ? 'var(--success)'"), '已回答问题 dot 应使用绿色');
+assert.ok(clarifyDrawerSource.includes("state === 'current'"), '当前问题 dot 应使用主题色');
+assert.ok(fileWorkspace.includes('const handleInteractionCancel = useCallback'), '取消提问必须由工作区统一处理提交态和错误提示');
+assert.ok(fileWorkspace.includes("respondToInteraction(interaction, { action: 'cancel' })"), '取消提问必须只发送 cancel 动作');
+assert.ok(interactionRespondRoute.includes("response: { action: 'cancel' }"), '服务端必须记录用户取消提问的动作');
+assert.ok(interactionRespondRoute.includes('createOrGetResumeJob({ sessionId: agentSessionId, interactionId: updated.id, ownerId })'), '取消提问后必须创建原 session 的唯一恢复任务');
+assert.ok(interactionRespondRoute.includes('wakeAnsweredInteraction(cancelled.updated, cancelled.resumeJob)'), '取消提问后必须唤醒原 Agent Worker 继续执行');
+assert.ok(interactionRespondRoute.includes("if (['answered', 'cancelled'].includes(current.status))"), '重复取消提问必须返回同一个恢复任务结果');
+assert.ok(!interactionRespondRoute.includes('requestCancellation(agentSessionId)'), '取消提问不得终止原 Agent session');
+assert.ok(!interactionRespondRoute.includes('cancelTask(agentSessionId)'), '取消提问不得取消原 Agent 队列任务');
+assert.ok(interactionRespondRoute.includes('should_continue: true'), '取消提问后必须继续原 Agent session');
+assert.ok(controller.includes('const markAgentSessionStatus = useCallback'), '取消提问后必须立即更新当前 Agent session 的本地终态');
+assert.ok(fileWorkspace.includes("agentLoop.markAgentSessionStatus?.(cancelledSessionId, 'cancelled', 'cancelled')"), '取消提问后输入框必须立即退出中断按钮状态');
+assert.ok(agentLoop.includes('cancelled: true') && agentLoop.includes("action: 'cancel'"), 'Agent 续跑结果必须只暴露用户取消提问的动作');
+assert.ok(
+  globalStyles.includes('border-radius: var(--radius-xl) var(--radius-xl) 0 0;')
+    || clarifyDrawerSource.includes("borderRadius: 'var(--radius-lg) var(--radius-lg) 0 0'"),
+  '提问 Drawer 必须使用顶部圆角'
+);
 assert.ok(fileWorkspace.includes('control_ticket: targetSession.control_tickets?.resume'), '提问卡回答后的续跑必须携带目标 session 的 resume_session 控制票据');
 assert.ok(fileWorkspace.includes('const queuedControlTicket = queuedSession?.control_tickets?.resume;'), '恢复历史 resume job 前必须取得所属 session 的 resume_session 控制票据');
-assert.ok(fileWorkspace.includes('if (!queuedJob || !queuedControlTicket || autoResumedJobRef.current.has(queuedJob.id)) return;'), '缺少 resume_session 控制票据时不得误用 read 或 resume job 票据发起续跑');
+assert.ok(fileWorkspace.includes('if (!queuedJob || !queuedControlTicket || !queuedSessionCanResume || autoResumedJobRef.current.has(queuedJob.id)) return;'), '缺少 resume_session 控制票据或 session 正在等待新卡片时不得误用 read 或旧 resume job 票据发起续跑');
+assert.ok(fileWorkspace.includes("const queuedSessionCanResume = ['created', 'queued', 'queued_resume', 'waiting_retry', 'waiting_model_recovery']"), '旧 resume job 不得在 waiting_interaction 状态下自动续跑');
 assert.ok(fileWorkspace.includes('const [historySearchQuery, setHistorySearchQuery]'));
 assert.ok(fileWorkspace.includes('const [restoringConversation, setRestoringConversation] = useState(false);'), '恢复状态首屏必须与服务端一致，避免 hydration 不匹配');
 assert.ok(fileWorkspace.includes('if (savedId) setRestoringConversation(true);'), '客户端挂载后有保存会话时必须显示恢复提示');
@@ -147,6 +194,9 @@ assert.ok(workspace.includes('if (FILE_READ_TOOL_NAMES.has(toolName)) return <Ic
 assert.ok(workspace.includes('if (FILE_WRITE_TOOL_NAMES.has(toolName)) return <Icons.fileEdit size={size} />;'), '文件写入和修改预览必须显示文件编辑图标');
 assert.ok(workspace.includes("if (source.includes('mcp')) return <Icons.mcp size={size} />;"), 'MCP 工具必须优先使用独立服务器机架图标');
 assert.ok(workspace.includes("if (source.includes('skill')) return <Icons.skill size={size} />;"), 'Skill 工具必须优先使用独立 Skill 图标');
+assert.ok(workspace.includes("if (source.includes('生成提问卡片')) return <Icons.messagePlus size={size} />;"), '生成提问步骤必须使用消息加号图标');
+assert.ok(workspace.includes("if (source.includes('等待回答提问卡片')) return <Icons.messageQuestion size={size} />;"), '等待回答步骤必须使用问号气泡图标');
+assert.ok(workspace.includes("if (['stopped', 'cancelled'].includes(status)) return <Icons.circleX size={size} />;"), '取消步骤必须使用圆形取消图标');
 assert.ok(workspace.includes('executionTrace={messageTimeline'), '助手回复需要优先使用与自身 session 关联的执行记录');
 assert.ok(workspace.includes('>{revisionCount} 个文件修订</div>'), '累计 Diff 卡主描述必须只显示文件修订数量');
 assert.ok(workspace.includes("`已应用 ${appliedCount} 个`"), '累计 Diff 卡次描述必须显示已应用数量');
@@ -170,6 +220,8 @@ assert.ok(!controller.includes('执行第 ${loop ||'), '内部循环轮次不得
 assert.ok(controller.includes("label: '等待确认修改预览',\n      status: 'waiting'"), '等待预览不能伪装成已处理');
 assert.ok(controller.includes("label: '等待回答提问卡片',\n      status: 'waiting'"), '等待提问不能伪装成已处理');
 assert.ok(toolChainSource.includes('const hasActionRequired'), '工具链头部必须将等待用户操作显示为需要处理');
+assert.ok(toolChainSource.includes('questionAnswer.items'), '工具链提问步骤必须支持展示每个问题及答案');
+assert.ok(workspace.includes('answer.text || answer.custom_text || answer.label || answer.value ||'), '工具链应优先展示自定义回答的实际文本');
 assert.ok(toolChainSource.includes("const isCancelled = sessionStatus === 'cancelled' || tailStatus === 'cancelled';"), '已取消任务必须与需要处理状态分开');
 assert.ok(toolChainSource.includes("isCancelled\n    ? '已取消'"), '已取消任务的执行记录标题必须显示已取消');
 assert.ok(controller.includes("step.id?.startsWith('operation-confirmation-')"), '任务完成后必须结束已处理的文件确认步骤，避免继续显示需要处理');
@@ -186,7 +238,9 @@ assert.ok(!toolChainSource.includes('<span className="notus-agent-toolchain__sum
 assert.ok(globalStyles.includes('.notus-agent-toolchain__icon {\n  flex: 0 0 18px;') && globalStyles.includes('color: var(--accent);'), '所有工具图标必须使用 Notus 主色');
 assert.ok(workspace.includes('onResumeAgentTask?.(sessionId)'), '继续任务必须将目标 session 传回文件工作区');
 assert.ok(fileWorkspace.includes('resumeFailedAgentTask = useCallback(async (targetSessionId = null)'), '文件工作区必须按点击的 session 恢复任务');
-assert.ok(workspace.includes("if (action === 'stop_agent') void onStop?.(sessionId);"));
+assert.ok(!toolChainSource.includes('stop_agent'), '工具链不应再提供停止操作入口');
+assert.ok(!toolChainSource.includes('notus-agent-toolchain__stop'), '工具链不应再渲染停止按钮');
+assert.ok(!globalStyles.includes('.notus-agent-toolchain__stop'), '工具链停止按钮的专用样式必须移除');
 assert.ok(!workspace.includes("{loading ? <button type=\"button\" aria-label=\"停止当前任务\" onClick={() => onStop?.()}"));
 assert.ok(workspace.includes('onInterrupt={onStop}'), '输入框中断必须复用按 session 精确取消的回调');
 assert.ok(workspace.includes('interruptibleSessionId={interruptibleSessionId}'), '输入框必须接收当前可中断任务的 session ID');
@@ -226,7 +280,7 @@ assert.ok(!narrowComposerStyles.includes('order:'), '确认方式换行时不得
 assert.ok(narrowComposerStyles.includes('flex: 0 0 28px;'), '最小宽度下两个确认方式 Tab 必须保持图标紧凑宽度');
 assert.ok(globalStyles.includes('gap: 0 !important;'), '确认方式在窄面板仅显示 icon 时不得保留文字间距');
 assert.ok(workspace.includes("ariaLabel: option.value === 'auto_confirm' ? '自动应用修改' : '手动应用修改'"), '确认方式收敛为 icon 后仍须保留无障碍名称');
-assert.ok(globalStyles.includes('.notus-agent-composer__model {\n    max-width: 96px;'), '窄面板模型选择须缩略显示');
+assert.ok(globalStyles.includes('.notus-agent-composer__model {\n  min-width: 0;\n  max-width: 150px;'), '窄面板模型选择须缩略显示');
 assert.ok(!globalStyles.includes('.notus-agent-composer__tools > * {\n    flex: 0 0 auto;'), '窄面板工具区不得强制所有控制横向滚动');
 assert.ok(workspace.includes('showJumpToBottom = false, onJumpToBottom'), '回底控制必须由输入停靠区接收，避免覆盖消息滚动层');
 assert.ok(workspace.includes('className="notus-agent-composer__jump-to-bottom notus-agent-pressable"'), '回底控制必须渲染在输入停靠区的正常文档流中');

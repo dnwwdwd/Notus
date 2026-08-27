@@ -2,37 +2,105 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '../ui/Button';
 import { Icons } from '../ui/Icons';
 
-const STATUS_META = {
-  pending: {
-    label: '待确认',
-    tone: 'accent',
-  },
-  stale: {
-    label: '已失效',
-    tone: 'default',
-  },
-  failed: {
-    label: '可重试',
-    tone: 'warning',
-  },
-};
+export const NONE_OF_THE_ABOVE_OPTION_ID = '__none_of_the_above__';
 
-function buildInitialAnswers(interaction) {
+function buildFallbackQuestionOptions(label = '', questionId = '') {
+  const text = `${String(questionId || '').trim()} ${String(label || '').trim()}`.trim();
+  if (/\bprimary_intent\b/.test(text)) {
+    return [
+      { id: 'edit', label: '直接修改文档', description: '生成并应用当前任务的文档修改', answer_value: 'edit' },
+      { id: 'text', label: '继续讨论', description: '先讨论方案，不直接修改文档', answer_value: 'text' },
+      { id: 'analyze', label: '先分析文章', description: '只分析现有内容，不写入文档', answer_value: 'analyze' },
+    ];
+  }
+  if (/\bsource_content_ref\b/.test(text)) {
+    return [
+      { id: 'previous_assistant_message', label: '上一条助手回复', description: '沿用刚才生成的内容', answer_value: 'previous_assistant_message' },
+      { id: 'recent_user_message', label: '最近一条用户消息', description: '使用最近一次输入作为来源', answer_value: 'recent_user_message' },
+      { id: 'previous_user_message', label: '更早的用户消息', description: '从更早的对话中选择来源', answer_value: 'previous_user_message' },
+    ];
+  }
+  if (/\btarget_location\b/.test(text)) {
+    return [
+      { id: 'document_end', label: '文末', description: '追加到当前文档最后', answer_value: 'document_end' },
+      { id: 'document_start', label: '文首', description: '放到当前文档开头', answer_value: 'document_start' },
+      { id: 'after_target', label: '指定段落之后', description: '放在选定内容后面', answer_value: 'after_target' },
+    ];
+  }
+  if (/\bwrite_mode\b/.test(text)) {
+    return [
+      { id: 'append_new_blocks', label: '追加新段落', description: '保留原文并在目标位置补充内容', answer_value: 'append_new_blocks' },
+      { id: 'replace_target', label: '替换目标段落', description: '用新内容替换选定部分', answer_value: 'replace_target' },
+      { id: 'insert_before_target', label: '插入到目标前', description: '把新内容放到选定部分之前', answer_value: 'insert_before_target' },
+    ];
+  }
+
+  if (/(是否|要不要|需不需要|需要吗|可以吗|确认|同意|启用|开启|保留|删除|覆盖|写入)/.test(text)) {
+    return [
+      { id: 'yes', label: '是，需要', description: '按当前任务继续执行', answer_value: 'yes' },
+      { id: 'no', label: '否，不需要', description: '不执行这项操作', answer_value: 'no' },
+      { id: 'undecided', label: '暂不确定', description: '先保留当前状态', answer_value: 'undecided' },
+    ];
+  }
+  if (/(位置|哪里|写到|放到|插入|目标|范围|章节|段落)/.test(text)) {
+    return [
+      { id: 'document_end', label: '文末', description: '追加到当前文档最后', answer_value: 'document_end' },
+      { id: 'document_start', label: '文首', description: '放到当前文档开头', answer_value: 'document_start' },
+      { id: 'after_target', label: '指定段落之后', description: '放在选定内容后面', answer_value: 'after_target' },
+    ];
+  }
+  if (/(名称|命名|tag|标签|标题)/i.test(text)) {
+    return [
+      { id: 'keep_current', label: '沿用当前名称', description: '保持已有标题或标签', answer_value: 'keep_current' },
+      { id: 'versioned', label: '使用版本号', description: '按版本信息生成名称', answer_value: 'versioned' },
+      { id: 'descriptive', label: '使用描述性名称', description: '根据内容生成清晰名称', answer_value: 'descriptive' },
+    ];
+  }
+  if (/(风格|格式|语气|长度|详细|版本)/.test(text)) {
+    return [
+      { id: 'concise', label: '简洁版', description: '保留重点，减少铺陈', answer_value: 'concise' },
+      { id: 'detailed', label: '详细版', description: '补充背景和过程', answer_value: 'detailed' },
+      { id: 'keep_current', label: '保持当前格式', description: '沿用已有表达方式', answer_value: 'keep_current' },
+    ];
+  }
+  return [
+    { id: 'recommended', label: '按 Agent 建议', description: '采用当前任务更合适的方案', answer_value: 'recommended' },
+    { id: 'keep_current', label: '保持当前设置', description: '沿用已有内容或配置', answer_value: 'keep_current' },
+    { id: 'undecided', label: '暂不决定', description: '先保留选择，继续整理', answer_value: 'undecided' },
+  ];
+}
+
+function getQuestionOptions(question = {}) {
+  const providedOptions = Array.isArray(question.options)
+    ? question.options.filter((option) => option?.id && option?.label)
+    : [];
+  if (providedOptions.length >= 2) return providedOptions;
+  const ids = new Set(providedOptions.map((option) => option.id));
+  return [
+    ...providedOptions,
+  ...buildFallbackQuestionOptions(question.label || question.question || question.title || question.id, question.id)
+      .filter((option) => !ids.has(option.id)),
+  ].slice(0, 5);
+}
+
+function buildInitialAnswers(interaction, answerDraft = null) {
   const responseAnswers = interaction?.response?.answers && typeof interaction.response.answers === 'object'
     ? interaction.response.answers
     : {};
   const prefilledAnswers = interaction?.payload?.prefilled_answers && typeof interaction.payload.prefilled_answers === 'object'
     ? interaction.payload.prefilled_answers
     : {};
+  const draftAnswers = answerDraft && typeof answerDraft === 'object' ? answerDraft : {};
 
   return (Array.isArray(interaction?.payload?.questions) ? interaction.payload.questions : []).reduce((acc, question) => {
-    const current = responseAnswers[question.id] || prefilledAnswers[question.id] || null;
+    const current = draftAnswers[question.id] || responseAnswers[question.id] || prefilledAnswers[question.id] || null;
     acc[question.id] = {
       optionId: current?.selected_option_id || current?.option_id || current?.value || '',
       optionIds: Array.isArray(current?.option_ids) ? current.option_ids : [],
       text: current?.text || '',
       customText: current?.text || current?.custom_text || '',
       label: current?.label || '',
+      skipped: Boolean(current?.skipped),
     };
     return acc;
   }, {});
@@ -40,23 +108,17 @@ function buildInitialAnswers(interaction) {
 
 function isQuestionAnswered(question, current = {}) {
   if (!question) return false;
+  if (current.skipped) return false;
   if (question.type === 'text_input') return Boolean(String(current.text || current.customText || '').trim());
   return Boolean(String(current.customText || '').trim() || current.optionId);
 }
 
-function isQuestionVisible(question, answers = {}) {
-  const dependency = question?.depends_on || question?.dependsOn;
-  if (!dependency?.question_id || !Array.isArray(dependency.values) || dependency.values.length === 0) return true;
-  const current = answers[dependency.question_id] || {};
-  return dependency.values.includes(String(current.optionId || '').trim());
-}
-
-function visibleQuestions(questions = [], answers = {}) {
-  return questions.filter((question) => isQuestionVisible(question, answers));
+function isQuestionResolved(question, current = {}) {
+  return Boolean(current?.skipped) || isQuestionAnswered(question, current);
 }
 
 function findFirstUnansweredIndex(questions = [], answers = {}) {
-  const index = questions.findIndex((question) => !isQuestionAnswered(question, answers[question.id] || {}));
+  const index = questions.findIndex((question) => !isQuestionResolved(question, answers[question.id] || {}));
   return index >= 0 ? index : 0;
 }
 
@@ -64,26 +126,17 @@ function getQuestionTitle(question = {}) {
   return String(question.question || question.title || question.label || question.id || '').trim();
 }
 
-function buildAnswerPreview(question, current = {}) {
-  const customText = String(current.customText || current.text || '').trim();
-  if (customText) {
-    return {
-      text: customText,
-      custom: true,
-    };
-  }
-  const optionId = String(current.optionId || '').trim();
-  const option = (Array.isArray(question.options) ? question.options : []).find((item) => item.id === optionId) || null;
-  return {
-    text: option?.label || current.label || optionId || '未回答',
-    custom: false,
-  };
+function getDrawerTitle(interaction = {}) {
+  const raw = String(interaction?.payload?.kicker || interaction?.payload?.title || '').trim();
+  const normalized = raw.replace(/^Notus\s*·\s*/i, '').replace(/^Agent\s+/i, '').trim();
+  return normalized || '需要你确认';
 }
 
 function getQuestionStates(questions = [], activeIndex = 0, answers = {}) {
   return questions.map((question, index) => {
     if (index === activeIndex) return 'current';
-    return isQuestionAnswered(question, answers[question.id] || {}) ? 'done' : 'pending';
+    const current = answers[question.id] || {};
+    return isQuestionAnswered(question, current) ? 'done' : 'pending';
   });
 }
 
@@ -94,152 +147,126 @@ function AnswerRow({ buttonRef, selected, dimmed, label, hint, disabled, onClick
       type="button"
       disabled={disabled}
       onClick={onClick}
-      className={`notus-agent-question-card__option notus-agent-pressable${selected ? ' is-selected' : ''}${dimmed ? ' is-dimmed' : ''}`}
+      style={{
+        width: '100%',
+        textAlign: 'left',
+        display: 'flex',
+        alignItems: 'flex-start',
+        gap: 10,
+        padding: '10px 12px',
+        background: selected ? 'var(--accent-subtle)' : 'var(--bg-elevated)',
+        border: selected ? '1px solid var(--accent)' : '1px solid var(--border-primary)',
+        borderRadius: 'var(--radius-md)',
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        transition: 'all var(--transition-fast)',
+        opacity: dimmed ? 0.56 : 1,
+      }}
     >
-      <span className="notus-agent-question-card__option-mark" aria-hidden="true" />
-      <span className="notus-agent-question-card__option-copy">
-        <span className="notus-agent-question-card__option-label">{label}</span>
-        {hint ? <span className="notus-agent-question-card__option-hint">{hint}</span> : null}
-      </span>
+      <div
+        aria-hidden="true"
+        style={{
+          width: 14,
+          height: 14,
+          borderRadius: '50%',
+          marginTop: 2,
+          flexShrink: 0,
+          border: selected ? '4px solid var(--accent)' : '1.5px solid var(--border-primary)',
+          background: selected ? 'var(--bg-elevated)' : 'transparent',
+          transition: 'all var(--transition-fast)',
+        }}
+      />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 'var(--text-sm)', lineHeight: 1.55, color: 'var(--text-primary)', fontWeight: selected ? 500 : 400 }}>
+          {label}
+        </div>
+        {hint ? (
+          <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 3, lineHeight: 1.45 }}>
+            {hint}
+          </div>
+        ) : null}
+      </div>
     </button>
-  );
-}
-
-function QuestionCardHeader({
-  title,
-  summary,
-  expanded,
-  onToggle,
-  status,
-  controlsId,
-}) {
-  return (
-    <button
-      type="button"
-      className="notus-agent-tool-row notus-agent-question-card__toggle"
-      aria-expanded={expanded}
-      aria-controls={controlsId}
-      onClick={onToggle}
-    >
-      <span className="notus-agent-toolchain__icon" aria-hidden="true">
-        <Icons.sparkles size={14} />
-      </span>
-      <span className="notus-agent-toolchain__label">{title}</span>
-      {summary ? <span className="notus-agent-question-card__summary">{summary}</span> : null}
-      {status ? <span className="notus-agent-question-card__status">{status}</span> : null}
-      <Icons.chevronRight size={14} className={expanded ? 'notus-agent-tool-chevron is-open' : 'notus-agent-tool-chevron'} aria-hidden="true" />
-    </button>
-  );
-}
-
-function QuestionProgress({ states = [] }) {
-  return (
-    <div className="notus-agent-question-card__progress" aria-label={`已回答 ${states.filter((state) => state === 'done').length} 题`}>
-      {states.map((state, index) => (
-        <span key={`${state}-${index}`} className={`notus-agent-question-card__progress-dot is-${state}`} />
-      ))}
-    </div>
   );
 }
 
 function Dots({ states = [] }) {
-  return <QuestionProgress states={states} />;
-}
-
-function ReviewRow({
-  question,
-  current,
-  index,
-  editing,
-  disabled,
-  onClick,
-  rowRef,
-}) {
-  const preview = buildAnswerPreview(question, current);
   return (
-    <button
-      ref={rowRef}
-      type="button"
-      disabled={disabled}
-      onClick={onClick}
-      className={`notus-agent-question-card__review-row notus-agent-tool-row${editing ? ' is-editing' : ''}`}
-    >
-      <span className="notus-agent-question-card__review-index" aria-hidden="true">{index + 1}</span>
-      <span className="notus-agent-question-card__review-copy">
-        <span className="notus-agent-question-card__review-question">{getQuestionTitle(question)}</span>
-        <span className="notus-agent-question-card__review-answer">
-          {preview.custom ? <span className="notus-agent-question-card__custom-label">自定义</span> : null}
-          <span>{preview.text || '未回答'}</span>
-        </span>
-      </span>
-      <span className="notus-agent-question-card__review-edit">
-        <Icons.edit size={10} />
-        {editing ? '正在修改' : '修改'}
-      </span>
-    </button>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      {states.map((state, index) => {
+        const baseStyle = {
+          width: 7,
+          height: 7,
+          borderRadius: '50%',
+        };
+        if (state === 'current') {
+          return (
+            <div
+              key={`${state}-${index}`}
+              style={{
+                ...baseStyle,
+                width: 9,
+                height: 9,
+                background: 'var(--accent)',
+                boxShadow: '0 0 0 2px var(--bg-elevated), 0 0 0 3.5px var(--accent)',
+              }}
+            />
+          );
+        }
+        return (
+          <div
+            key={`${state}-${index}`}
+            style={{
+              ...baseStyle,
+              background: state === 'done' ? 'var(--success)' : 'var(--border-primary)',
+            }}
+          />
+        );
+      })}
+    </div>
   );
 }
 
 export function ClarifyDrawer({
   interaction,
-  answerDraft,
-  onAnswerDraftChange,
   onSubmit,
   onRetry,
   onCancel,
   onPhaseChange,
-  onFocusInput,
   submitting = false,
   submitLabel = '开始检索',
   retryLabel = '重试',
   narrow = false,
-  sheet = false,
+  answerDraft = null,
+  onAnswerDraftChange,
 }) {
   const questions = useMemo(
     () => (Array.isArray(interaction?.payload?.questions) ? interaction.payload.questions : []),
     [interaction]
   );
-  const statusMeta = STATUS_META[interaction?.status] || STATUS_META.pending;
   const isPending = interaction?.status === 'pending';
   const isRetryable = interaction?.status === 'failed';
   const isStale = interaction?.status === 'stale';
-  const [answers, setAnswers] = useState(() => answerDraft || buildInitialAnswers(interaction));
-  const [activeIndex, setActiveIndex] = useState(() => findFirstUnansweredIndex(questions, answerDraft || buildInitialAnswers(interaction)));
+  const [answers, setAnswers] = useState(() => buildInitialAnswers(interaction, answerDraft));
+  const [activeIndex, setActiveIndex] = useState(() => findFirstUnansweredIndex(questions, buildInitialAnswers(interaction, answerDraft)));
   const [phase, setPhase] = useState(() => (isRetryable ? 'failed' : isStale ? 'stale' : 'expanded-question'));
-  const [swipeStartY, setSwipeStartY] = useState(null);
   const optionRefs = useRef([]);
   const customInputRef = useRef(null);
-  const reviewRowRefs = useRef([]);
   const answerDraftRef = useRef(answerDraft);
-  const activeQuestions = useMemo(() => visibleQuestions(questions, answers), [answers, questions]);
 
   useEffect(() => {
     answerDraftRef.current = answerDraft;
   }, [answerDraft]);
 
   useEffect(() => {
-    const nextAnswers = answerDraftRef.current || buildInitialAnswers(interaction);
-    const nextQuestions = visibleQuestions(questions, nextAnswers);
-    const restoredAllAnswered = nextQuestions.length > 0
-      && nextQuestions.every((question) => isQuestionAnswered(question, nextAnswers[question.id] || {}));
+    const nextAnswers = buildInitialAnswers(interaction, answerDraftRef.current);
     setAnswers(nextAnswers);
-    setActiveIndex(findFirstUnansweredIndex(nextQuestions, nextAnswers));
-    setPhase(isRetryable ? 'failed' : isStale ? 'stale' : restoredAllAnswered ? 'expanded-review' : 'expanded-question');
-    // 同一张卡片的父级重渲染（切换文件、布局收起）不能清空用户尚未提交的回答。
-    // 卡片 schema 更新会带来新的 interaction id；同一 id 只恢复一次内存草稿。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [interaction?.id, isRetryable, isStale]);
-
-  useEffect(() => {
-    setActiveIndex((current) => Math.min(current, Math.max(activeQuestions.length - 1, 0)));
-  }, [activeQuestions.length]);
+    setActiveIndex(findFirstUnansweredIndex(questions, nextAnswers));
+    setPhase(isRetryable ? 'failed' : isStale ? 'stale' : 'expanded-question');
+  }, [interaction, isRetryable, isStale, questions]);
 
   useEffect(() => {
     onPhaseChange?.(phase);
-    if (phase === 'collapsed') {
-      onFocusInput?.();
-    }
-  }, [onFocusInput, onPhaseChange, phase]);
+  }, [onPhaseChange, phase]);
 
   useEffect(() => {
     if (phase === 'expanded-question') {
@@ -247,70 +274,71 @@ export function ClarifyDrawer({
         optionRefs.current[0]?.focus?.();
         if (!optionRefs.current[0]) customInputRef.current?.focus?.();
       });
-    } else if (phase === 'expanded-review') {
-      window.requestAnimationFrame(() => {
-        reviewRowRefs.current[0]?.focus?.();
-      });
     }
   }, [activeIndex, phase]);
 
-  const answeredCount = useMemo(
-    () => activeQuestions.filter((question) => isQuestionAnswered(question, answers[question.id] || {})).length,
-    [activeQuestions, answers]
+  const resolvedCount = useMemo(
+    () => questions.filter((question) => isQuestionResolved(question, answers[question.id] || {})).length,
+    [answers, questions]
   );
-  const currentQuestion = activeQuestions[activeIndex] || null;
-  const allAnswered = activeQuestions.length > 0 && answeredCount === activeQuestions.length;
-  const expandedPhase = isRetryable ? 'failed' : isStale ? 'stale' : allAnswered ? 'expanded-review' : 'expanded-question';
+  const currentQuestion = questions[activeIndex] || null;
+  const currentQuestionOptions = currentQuestion ? getQuestionOptions(currentQuestion) : [];
+  const allResolved = questions.length > 0 && resolvedCount === questions.length;
   const currentAnswer = currentQuestion ? (answers[currentQuestion.id] || {}) : {};
-  const canAdvanceCurrent = currentQuestion ? isQuestionAnswered(currentQuestion, currentAnswer) : false;
-  const dots = getQuestionStates(activeQuestions, activeIndex, answers);
-  const collapsedSummary = interaction?.payload?.collapsed_summary
-    || (answeredCount > 0 ? `已回答 ${answeredCount} / ${activeQuestions.length}` : '先确认几个问题');
-
+  const dots = getQuestionStates(questions, activeIndex, answers);
   const footerHint = interaction?.payload?.footer_hint
-    || (allAnswered ? '检查无误后再开始' : `${activeQuestions.length} 个问题，约 30 秒`);
-
-  const updateAnswers = (updater) => {
-    setAnswers((previous) => {
-      const current = answerDraftRef.current || previous;
-      const next = typeof updater === 'function' ? updater(current) : updater;
-      answerDraftRef.current = next;
-      onAnswerDraftChange?.(next);
-      return next;
-    });
-  };
+    || (allResolved ? '回答完成后提交' : `${questions.length} 个问题，可以跳过未确定的内容`);
 
   const handleAnswerPatch = (questionId, patch = {}) => {
-    updateAnswers((previous) => ({
-      ...previous,
-      [questionId]: {
-        ...previous[questionId],
-        ...patch,
-      },
-    }));
-  };
-
-  const selectOptionAndAdvance = (question, option) => {
-    if (!question || !option || !isPending) return;
     const nextAnswers = {
       ...answers,
-      [question.id]: {
-        ...(answers[question.id] || {}),
-        optionId: option.id,
-        optionIds: [option.id],
-        text: '',
-        customText: '',
-        label: option.label,
+      [questionId]: {
+        ...answers[questionId],
+        ...patch,
+        skipped: false,
       },
     };
-    updateAnswers(nextAnswers);
-    const nextQuestions = visibleQuestions(questions, nextAnswers);
-    const currentIndex = nextQuestions.findIndex((item) => item.id === question.id);
-    if (currentIndex >= 0 && currentIndex < nextQuestions.length - 1) {
-      setActiveIndex(currentIndex + 1);
-      return;
+    setAnswers(nextAnswers);
+    onAnswerDraftChange?.(nextAnswers);
+  };
+
+  const selectOptionAndAdvance = (questionId, patch = {}) => {
+    const nextAnswers = {
+      ...answers,
+      [questionId]: {
+        ...answers[questionId],
+        ...patch,
+        skipped: false,
+      },
+    };
+    setAnswers(nextAnswers);
+    onAnswerDraftChange?.(nextAnswers);
+    if (!isPending) return;
+    const questionIndex = questions.findIndex((question) => question.id === questionId);
+    if (questionIndex >= 0 && questionIndex < questions.length - 1) {
+      setActiveIndex(questionIndex + 1);
     }
-    setPhase('expanded-review');
+  };
+
+  const skipQuestionAndAdvance = (questionId) => {
+    const nextAnswers = {
+      ...answers,
+      [questionId]: {
+        ...answers[questionId],
+        optionId: '',
+        optionIds: [],
+        text: '',
+        customText: '',
+        label: '未回答',
+        skipped: true,
+      },
+    };
+    setAnswers(nextAnswers);
+    onAnswerDraftChange?.(nextAnswers);
+    const questionIndex = questions.findIndex((question) => question.id === questionId);
+    if (questionIndex >= 0 && questionIndex < questions.length - 1) {
+      setActiveIndex(questionIndex + 1);
+    }
   };
 
   const buildSubmitPayload = () => Object.fromEntries(questions.map((question) => {
@@ -320,65 +348,36 @@ export function ClarifyDrawer({
       option_ids: current.optionIds || [],
       text: current.text || '',
       custom_text: current.customText || '',
+      skipped: Boolean(current.skipped),
     }];
   }));
 
   const handlePrimaryAction = () => {
     if (phase === 'expanded-question') {
-      goToNextQuestion();
+      if (!currentQuestion) return;
+      if (activeIndex < questions.length - 1) {
+        setActiveIndex((prev) => Math.min(prev + 1, questions.length - 1));
+        return;
+      }
+      if (!isPending || submitting) return;
+      onSubmit?.(interaction, buildSubmitPayload());
       return;
     }
-    if (!allAnswered || !isPending || submitting) return;
-    onSubmit?.(interaction, buildSubmitPayload());
-  };
-
-  const goToPreviousQuestion = () => {
-    if (!isPending || phase !== 'expanded-question' || activeIndex <= 0) return;
-    setActiveIndex((prev) => Math.max(prev - 1, 0));
-  };
-
-  const goToNextQuestion = () => {
-    if (!isPending || phase !== 'expanded-question' || !canAdvanceCurrent) return;
-    if (activeIndex < activeQuestions.length - 1) {
-      setActiveIndex((prev) => Math.min(prev + 1, activeQuestions.length - 1));
-      return;
-    }
-    setPhase('expanded-review');
   };
 
   const handleKeyDown = (event) => {
-    if (event.key === 'Escape' && !isStale) {
-      event.preventDefault();
-      setPhase('collapsed');
-      return;
-    }
     if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
       event.preventDefault();
-      if ((phase === 'expanded-review' || phase === 'failed') && allAnswered) {
+      if (phase === 'failed') {
         if (isRetryable) {
           onRetry?.(interaction);
-        } else {
-          onSubmit?.(interaction, buildSubmitPayload());
         }
+      } else if (phase === 'expanded-question' && currentQuestion && activeIndex === questions.length - 1) {
+        onSubmit?.(interaction, buildSubmitPayload());
       }
       return;
     }
-    if (phase === 'expanded-question' && isPending) {
-      const tag = String(event.target?.tagName || '').toLowerCase();
-      if (tag !== 'input' && tag !== 'textarea') {
-        if (event.key === 'ArrowLeft' && activeIndex > 0) {
-          event.preventDefault();
-          goToPreviousQuestion();
-          return;
-        }
-        if (event.key === 'ArrowRight' && canAdvanceCurrent) {
-          event.preventDefault();
-          goToNextQuestion();
-          return;
-        }
-      }
-    }
-    if (event.key === 'Enter' && !event.shiftKey && phase === 'expanded-question' && canAdvanceCurrent) {
+    if (event.key === 'Enter' && !event.shiftKey && phase === 'expanded-question' && currentQuestion) {
       const tag = String(event.target?.tagName || '').toLowerCase();
       if (tag === 'textarea') return;
       event.preventDefault();
@@ -386,80 +385,82 @@ export function ClarifyDrawer({
     }
   };
 
-  const handleTouchStart = (event) => {
-    if (!sheet) return;
-    setSwipeStartY(event.touches?.[0]?.clientY || null);
-  };
-
-  const handleTouchEnd = (event) => {
-    if (!sheet || swipeStartY === null) return;
-    const endY = event.changedTouches?.[0]?.clientY || swipeStartY;
-    const delta = endY - swipeStartY;
-    if (phase === 'collapsed') {
-      if (delta < -40) {
-        setPhase(expandedPhase);
-      }
-    } else if (delta > 56) {
-      setPhase('collapsed');
-    }
-    setSwipeStartY(null);
-  };
-
-  if (!interaction || activeQuestions.length === 0) return null;
-
-  if (phase === 'collapsed') {
-    return (
-      <section className={`notus-agent-question-card is-collapsed${narrow ? ' is-narrow' : ''}`} onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd} aria-label="提问卡片">
-        <QuestionCardHeader
-          title={interaction?.payload?.title || '需要你的回答'}
-          summary={collapsedSummary}
-          status={statusMeta.label}
-          expanded={false}
-          controlsId={`agent-question-${interaction.id}`}
-          onToggle={() => setPhase(isRetryable ? 'failed' : isStale ? 'stale' : allAnswered ? 'expanded-review' : 'expanded-question')}
-        />
-      </section>
-    );
-  }
+  if (!interaction || questions.length === 0) return null;
 
   return (
-    <section
+    <div
       onKeyDown={handleKeyDown}
-      onTouchStart={handleTouchStart}
-      onTouchEnd={handleTouchEnd}
-      className={`notus-agent-question-card${narrow ? ' is-narrow' : ''}`}
-      aria-label="提问卡片"
+      style={{
+        background: 'var(--bg-elevated)',
+        border: '1px solid color-mix(in srgb, var(--accent) 18%, var(--border-primary))',
+        borderBottom: 'none',
+        borderRadius: 'var(--radius-lg) var(--radius-lg) 0 0',
+        boxShadow: '0 -8px 24px -8px rgba(60, 40, 20, 0.12), 0 -2px 6px -2px rgba(60, 40, 20, 0.06)',
+        overflow: 'hidden',
+      }}
     >
-      <QuestionCardHeader
-        title={interaction?.payload?.kicker || interaction?.payload?.title || '需要你的回答'}
-        summary={phase === 'expanded-review' || phase === 'failed' ? `已回答 ${activeQuestions.length} 题` : `第 ${activeIndex + 1} / ${activeQuestions.length} 题`}
-        status={statusMeta.label}
-        expanded
-        controlsId={`agent-question-${interaction.id}`}
-        onToggle={() => setPhase('collapsed')}
-      />
+      <div style={{ display: 'flex', justifyContent: 'center', padding: '6px 0 4px' }}>
+        <div style={{ width: 36, height: 3, borderRadius: 999, background: 'var(--border-primary)' }} />
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '4px 16px 10px', borderBottom: '1px solid var(--border-subtle)' }}>
+        <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-primary)' }}>
+          {getDrawerTitle(interaction)}
+        </span>
+        <div style={{ flex: 1 }} />
+        <span style={{ fontSize: 11, color: 'var(--text-tertiary)', background: 'var(--bg-secondary)', padding: '2px 8px', borderRadius: 'var(--radius-full)' }}>
+          {`${activeIndex + 1} / ${questions.length}`}
+        </span>
+        {isPending && onCancel ? (
+          <button
+            type="button"
+            aria-label="取消提问"
+            title="取消提问"
+            disabled={submitting}
+            onClick={() => onCancel(interaction)}
+            style={{
+              width: 26,
+              height: 26,
+              borderRadius: 'var(--radius-sm)',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: 'var(--text-tertiary)',
+              opacity: submitting ? 0.55 : 1,
+              cursor: submitting ? 'not-allowed' : 'pointer',
+            }}
+          >
+            <Icons.x size={15} />
+          </button>
+        ) : null}
+      </div>
 
       {phase === 'stale' ? (
-        <div id={`agent-question-${interaction.id}`} className="notus-agent-question-card__detail">
-          <div className="notus-agent-question-card__title">
+        <div style={{ padding: narrow ? '14px 14px 16px' : '16px 16px 18px', display: 'grid', gap: 12 }}>
+          <div style={{ fontSize: 'var(--text-base)', fontWeight: 600, color: 'var(--text-primary)' }}>
             当前内容已经变化
           </div>
-          <div className="notus-agent-question-card__description">
-            这张提问卡片对应的上下文已经失效，请重新发起一次请求。
+          <div style={{ fontSize: 'var(--text-sm)', lineHeight: 1.7, color: 'var(--text-secondary)' }}>
+            这张澄清抽屉对应的上下文已经失效，请重新发起一次请求。
           </div>
-          <div className="notus-agent-question-card__actions">
-            <Button type="button" variant="ghost" size="sm" className="notus-agent-pressable" onClick={() => onCancel?.(interaction)}>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <Button type="button" variant="ghost" size="sm" onClick={() => onCancel?.(interaction)}>
               关闭
             </Button>
           </div>
         </div>
       ) : phase === 'expanded-question' ? (
-        <div id={`agent-question-${interaction.id}`} className="notus-agent-question-card__detail">
-          <div className="notus-agent-question-card__title">
+        <div style={{ padding: narrow ? '12px 14px' : '14px 16px' }}>
+          <div style={{ fontSize: narrow ? 15 : 16, lineHeight: 1.55, color: 'var(--text-primary)', fontWeight: 600, letterSpacing: -0.1, marginBottom: 12 }}>
             {getQuestionTitle(currentQuestion)}
           </div>
-          <div className="notus-agent-question-card__options">
-            {(currentQuestion.options || []).map((option, index) => {
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {[
+              ...currentQuestionOptions,
+              ...(currentQuestionOptions.some((option) => option.id === NONE_OF_THE_ABOVE_OPTION_ID)
+                ? []
+                : [{ id: NONE_OF_THE_ABOVE_OPTION_ID, label: '以上选项都不是' }]),
+            ].map((option, index) => {
               const selected = currentAnswer.optionId === option.id && !String(currentAnswer.customText || '').trim();
               return (
                 <AnswerRow
@@ -472,14 +473,28 @@ export function ClarifyDrawer({
                   label={option.label}
                   hint={option.description}
                   disabled={!isPending}
-                  onClick={() => selectOptionAndAdvance(currentQuestion, option)}
+                  onClick={() => selectOptionAndAdvance(currentQuestion.id, {
+                    optionId: option.id,
+                    optionIds: [option.id],
+                    text: currentQuestion.type === 'text_input' ? option.label : '',
+                    customText: '',
+                    label: option.label,
+                    skipped: false,
+                  })}
                 />
               );
             })}
 
-            {currentQuestion.allow_custom || currentQuestion.type === 'text_input' ? (
-              <div className={`notus-agent-question-card__custom${String(currentAnswer.customText || currentAnswer.text || '').trim() ? ' has-value' : ''}`}>
-                <div className="notus-agent-question-card__custom-label">
+            {
+              <div
+                style={{
+                  background: 'var(--bg-elevated)',
+                  border: `1px solid ${String(currentAnswer.customText || currentAnswer.text || '').trim() ? 'var(--accent)' : 'var(--border-primary)'}`,
+                  borderRadius: 'var(--radius-md)',
+                  overflow: 'hidden',
+                }}
+              >
+                <div style={{ padding: '8px 12px 2px', fontSize: 11, color: String(currentAnswer.customText || currentAnswer.text || '').trim() ? 'var(--accent)' : 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: 6 }}>
                   <Icons.edit size={11} />
                   <span>{currentQuestion.type === 'text_input' ? '直接输入答案' : '自定义回答'}</span>
                 </div>
@@ -496,6 +511,8 @@ export function ClarifyDrawer({
                         text: nextText,
                         customText: nextText,
                         optionId: '',
+                        optionIds: [],
+                        label: nextText ? '自定义回答' : '',
                       });
                       return;
                     }
@@ -503,96 +520,109 @@ export function ClarifyDrawer({
                       customText: nextText,
                       text: nextText,
                       optionId: nextText ? 'custom' : '',
+                      optionIds: nextText ? ['custom'] : [],
+                      label: nextText ? '自定义回答' : '',
                     });
                   }}
-                  className="notus-agent-question-card__custom-input"
+                  style={{
+                    width: '100%',
+                    minHeight: 36,
+                    padding: '2px 12px 10px',
+                    border: 'none',
+                    outline: 'none',
+                    background: 'transparent',
+                    color: 'var(--text-primary)',
+                    fontSize: 'var(--text-sm)',
+                    lineHeight: 1.55,
+                  }}
                 />
               </div>
-            ) : null}
+            }
           </div>
         </div>
       ) : (
-        <div id={`agent-question-${interaction.id}`} className="notus-agent-question-card__review">
-          {(isRetryable ? activeQuestions.filter((question) => isQuestionAnswered(question, answers[question.id] || {})) : activeQuestions).map((question, index) => (
-            <ReviewRow
-              key={question.id}
-              rowRef={(node) => {
-                reviewRowRefs.current[index] = node;
-              }}
-              question={question}
-              current={answers[question.id] || {}}
-              index={index}
-              editing={activeIndex === index && phase === 'expanded-review'}
-              disabled={!isPending}
-              onClick={() => {
-                if (!isPending) return;
-                setActiveIndex(index);
-                setPhase('expanded-question');
-              }}
-            />
-          ))}
+        <div style={{ padding: narrow ? '14px 14px 16px' : '16px 16px 18px', display: 'grid', gap: 8 }}>
+          <div style={{ fontSize: 'var(--text-base)', fontWeight: 600, color: 'var(--text-primary)' }}>
+            上次提交没有完成
+          </div>
+          <div style={{ fontSize: 'var(--text-sm)', lineHeight: 1.7, color: 'var(--text-secondary)' }}>
+            可以重新提交当前回答，Agent 会从原任务继续执行。
+          </div>
         </div>
       )}
 
-      <div className="notus-agent-question-card__footer">
+      <div style={{ padding: '10px 14px', borderTop: '1px solid var(--border-subtle)', background: 'var(--bg-secondary)', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         {phase === 'expanded-question' ? <Dots states={dots} /> : null}
-        {phase !== 'expanded-question' && !narrow ? (
-          <span className="notus-agent-question-card__hint">
-            {phase === 'failed' ? '上次续跑失败了，可以直接重试。' : '点任意一行可以回去修改'}
+        {phase === 'failed' && !narrow ? (
+          <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+            上次续跑失败了，可以直接重试。
           </span>
         ) : !narrow ? (
-          <span className="notus-agent-question-card__hint">{footerHint}</span>
+          <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{footerHint}</span>
         ) : null}
-        <div className="notus-agent-question-card__footer-spacer" />
-        {(phase === 'expanded-question' && activeIndex > 0 && isPending) ? (
-          <button
+        <div style={{ flex: 1 }} />
+        {(phase === 'expanded-question' && isPending) ? (
+          <Button
             type="button"
+            variant="secondary"
+            size="sm"
             aria-label="上一题"
-            title="上一题（←）"
-            onClick={goToPreviousQuestion}
-            className="notus-agent-question-card__icon-action notus-agent-pressable"
+            title="上一题"
+            disabled={activeIndex === 0 || submitting}
+            onClick={() => setActiveIndex((prev) => Math.max(prev - 1, 0))}
+            style={{ width: 28, padding: 0, justifyContent: 'center' }}
           >
-            <Icons.chevronRight size={11} style={{ transform: 'rotate(180deg)' }} />
-          </button>
+            <Icons.chevronLeft size={14} />
+          </Button>
         ) : null}
-        {(phase === 'expanded-review' || phase === 'failed') && onCancel ? (
-          <Button type="button" variant="ghost" size="sm" className="notus-agent-pressable" onClick={() => onCancel(interaction)}>
+        {phase === 'failed' && onCancel ? (
+          <Button type="button" variant="ghost" size="sm" onClick={() => onCancel(interaction)}>
             放弃
           </Button>
         ) : null}
+        {isPending && phase === 'expanded-question' ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={submitting}
+            onClick={() => skipQuestionAndAdvance(currentQuestion.id)}
+          >
+            跳过此题
+          </Button>
+        ) : null}
         {isRetryable && phase === 'failed' ? (
-          <Button type="button" variant="primary" size="sm" className="notus-agent-pressable" onClick={() => onRetry?.(interaction)}>
+          <Button type="button" variant="primary" size="sm" onClick={() => onRetry?.(interaction)}>
             {retryLabel}
           </Button>
         ) : null}
-        {isPending && phase === 'expanded-question' && activeIndex < activeQuestions.length - 1 ? (
-          <button
+        {isPending && phase === 'expanded-question' && activeIndex < questions.length - 1 ? (
+          <Button
             type="button"
+            variant="secondary"
+            size="sm"
             aria-label="下一题"
-            title="下一题（→）"
-            disabled={!canAdvanceCurrent}
-            onClick={goToNextQuestion}
-            className="notus-agent-question-card__icon-action notus-agent-pressable"
+            title="下一题"
+            disabled={submitting}
+            onClick={handlePrimaryAction}
+            style={{ width: 28, padding: 0, justifyContent: 'center' }}
           >
-            <Icons.chevronRight size={13} />
-          </button>
+            <Icons.chevronRight size={14} />
+          </Button>
         ) : null}
-        {isPending && !(phase === 'expanded-question' && activeIndex < activeQuestions.length - 1) ? (
+        {isPending && phase === 'expanded-question' && activeIndex === questions.length - 1 ? (
           <Button
             type="button"
             variant="primary"
             size="sm"
             loading={submitting}
-            disabled={phase === 'expanded-question' ? !canAdvanceCurrent : !allAnswered}
+            disabled={submitting}
             onClick={handlePrimaryAction}
-            className="notus-agent-pressable"
           >
-            {phase === 'expanded-question'
-              ? '回顾答案'
-              : submitLabel}
+            {submitLabel}
           </Button>
         ) : null}
       </div>
-    </section>
+    </div>
   );
 }

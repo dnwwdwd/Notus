@@ -1822,7 +1822,6 @@ const McpSettings = () => {
                     <div style={{ minWidth: 0 }}>
                       <div style={{ display: 'flex', gap: 7, alignItems: 'center', flexWrap: 'wrap', fontSize: 14, fontWeight: 700 }}><span>{server.name}</span><Badge tone={server.enabled ? 'success' : 'default'}>{server.enabled ? '已启用' : '已停用'}</Badge></div>
                       <div style={{ marginTop: 4, fontSize: 12, color: '#8A8881', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{server.transport === 'stdio' ? `stdio · ${server.config?.stdio?.command || ''}` : `Streamable HTTP · ${server.config?.http?.url || ''}`}</div>
-                      {server.last_error_message ? <div style={{ marginTop: 4, fontSize: 11, color: 'var(--danger)' }}>{server.last_error_message}</div> : null}
                     </div>
                   </div>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>

@@ -538,8 +538,13 @@ function ToolTraceIcon({ step, size = 15 }) {
   const toolName = String(step?.tool || '').toLowerCase();
   const source = `${step?.tool || ''} ${step?.label || ''}`.toLowerCase();
   if (['failed', 'error'].includes(status)) return <Icons.warn size={size} />;
+  if (['stopped', 'cancelled'].includes(status)) return <Icons.circleX size={size} />;
+  if (source.includes('生成提问卡片')) return <Icons.messagePlus size={size} />;
+  if (source.includes('等待回答提问卡片')) return <Icons.messageQuestion size={size} />;
+  if (source.includes('ask_question_card') || source.includes('提问') || source.includes('问题')) {
+    return step?.questionAnswer ? <Icons.messageCircle size={size} /> : <Icons.messageQuestion size={size} />;
+  }
   if (['waiting', 'action_required'].includes(status)) return <Icons.warn size={size} />;
-  if (['stopped', 'cancelled'].includes(status)) return <Icons.square size={Math.max(10, size - 2)} />;
   if (source.includes('mcp')) return <Icons.mcp size={size} />;
   if (source.includes('skill')) return <Icons.skill size={size} />;
   if (FILE_READ_TOOL_NAMES.has(toolName)) return <Icons.fileText size={size} />;
@@ -551,44 +556,67 @@ function ToolTraceIcon({ step, size = 15 }) {
   if (source.includes('create') || source.includes('新建')) return <Icons.filePlus size={size} />;
   if (source.includes('file') || source.includes('文件') || source.includes('附件')) return <Icons.file size={size} />;
   if (source.includes('web') || source.includes('网页')) return <Icons.globe size={size} />;
-  if (source.includes('ask_question_card') || source.includes('提问') || source.includes('问题')) {
-    return step?.questionAnswer ? <Icons.messageCircle size={size} /> : <Icons.hand size={size} />;
-  }
   return <Icons.code size={size} />;
 }
 
 function buildInteractionHistoryStep(interaction) {
   const questions = Array.isArray(interaction?.payload?.questions) ? interaction.payload.questions : [];
   const answers = interaction?.response?.answers || {};
-  const question = questions[0] || {};
-  const questionText = String(question.question || question.title || question.label || '').trim();
-  const answer = answers?.[question.id] || {};
-  const answerText = String(answer.label || answer.value || answer.text || answer.custom_text || '').trim();
+  const items = questions.map((question) => {
+    const questionText = String(question.question || question.title || question.label || '').trim();
+    const answer = answers?.[question.id] || {};
+    const answerText = answer.skipped
+      ? '未回答（已跳过）'
+      : String(answer.text || answer.custom_text || answer.label || answer.value || '').trim();
+    return {
+      question: questionText || '已保存提问',
+      answer: answerText,
+      skipped: Boolean(answer.skipped),
+    };
+  });
   return {
     id: `interaction-${interaction.id}`,
-    status: interaction?.status === 'failed' ? 'error' : 'done',
+    status: interaction?.status === 'failed' ? 'error' : interaction?.status === 'pending' ? 'waiting' : 'done',
     tool: 'ask_question_card',
     label: interaction?.status === 'answered' ? '已回答问题' : '提问需要处理',
-    createdAt: interaction?.answered_at || interaction?.updated_at || interaction?.created_at || '',
+    createdAt: interaction?.created_at || interaction?.updated_at || interaction?.answered_at || '',
     questionAnswer: {
-      question: questionText || '已保存提问',
-      answer: answerText && answerText !== questionText ? answerText : '',
-      answeredAt: formatMessageTimestamp(interaction?.answered_at || interaction?.updated_at || interaction?.created_at || ''),
+      items,
+      question: items[0]?.question || '已保存提问',
+      answer: items[0]?.answer || '',
+      answeredAt: interaction?.status === 'answered'
+        ? formatMessageTimestamp(interaction?.answered_at || interaction?.updated_at || interaction?.created_at || '')
+        : '',
     },
   };
 }
 
 function mergeInteractionStepsIntoTimeline(steps, interactionSteps) {
   if (!interactionSteps.length) return steps;
-  const lastQuestionStepIndex = steps.reduce((index, step, currentIndex) => {
+  const next = [...steps];
+  const pendingSteps = [];
+  interactionSteps.forEach((interactionStep) => {
+    const matchingIndex = next.findIndex((step) => (
+      String(step?.id || '') === String(interactionStep?.id || '')
+      || (String(step?.tool || '').toLowerCase() === 'ask_question_card'
+        && String(step?.id || '').includes(String(interactionStep?.id || '').replace(/^interaction-/, '')))
+    ));
+    if (matchingIndex >= 0) {
+      next[matchingIndex] = { ...next[matchingIndex], ...interactionStep };
+    } else {
+      pendingSteps.push(interactionStep);
+    }
+  });
+  if (!pendingSteps.length) return next;
+  const lastQuestionStepIndex = next.reduce((index, step, currentIndex) => {
     const source = `${step?.tool || ''} ${step?.label || ''}`.toLowerCase();
     return source.includes('ask_question_card') || source.includes('等待回答') ? currentIndex : index;
   }, -1);
-  if (lastQuestionStepIndex < 0) return steps.concat(interactionSteps);
+  if (lastQuestionStepIndex < 0) return next.concat(pendingSteps);
   return [
-    ...steps.slice(0, lastQuestionStepIndex + 1),
-    ...interactionSteps,
-    ...steps.slice(lastQuestionStepIndex + 1),
+    ...next.slice(0, lastQuestionStepIndex + 1),
+    ...pendingSteps,
+    ...next.slice(lastQuestionStepIndex + 1),
   ];
 }
 
@@ -781,9 +809,14 @@ function ToolChainStep({ step, index, open, onToggle, onAction, onPreviewImages,
       {open ? (
         <div id={`agent-step-${stepId}`} className="notus-agent-toolchain__detail">
           {step.questionAnswer ? <div className="notus-agent-toolchain__question-answer">
-            <div className="notus-agent-toolchain__question-label">问题</div>
-            <div>{step.questionAnswer.question}</div>
-            {step.questionAnswer.answer ? <><div className="notus-agent-toolchain__question-label">回答</div><div>{step.questionAnswer.answer}</div></> : <div className="notus-agent-toolchain__question-saved">回答已保存</div>}
+            {(Array.isArray(step.questionAnswer.items) ? step.questionAnswer.items : [step.questionAnswer]).map((item, itemIndex) => (
+              <div key={`${stepId}-question-${itemIndex}`} className="notus-agent-toolchain__question-item">
+                <div className="notus-agent-toolchain__question-label">问题</div>
+                <div>{item.question || '已保存提问'}</div>
+                <div className="notus-agent-toolchain__question-label">回答</div>
+                <div className={item.answer ? '' : 'notus-agent-toolchain__question-saved'}>{item.answer || '等待用户回答'}</div>
+              </div>
+            ))}
             {step.questionAnswer.answeredAt ? <div className="notus-agent-toolchain__question-time">{step.questionAnswer.answeredAt}</div> : null}
           </div> : null}
           {step.detail ? <div className="notus-agent-toolchain__description">{step.detail}</div> : null}
@@ -900,7 +933,6 @@ function ToolChain({ steps, loading, sessionStatus = '', sessionId = '', started
           <span role="status" aria-live="polite">{statusLabel}</span>
           <Icons.chevronRight size={15} aria-hidden="true" />
         </button>
-        {hasRunning && typeof onAction === 'function' ? <button type="button" className="notus-agent-toolchain__stop notus-agent-pressable" onClick={() => onAction('stop_agent', null, sessionId)} aria-label="停止当前任务">停止</button> : null}
       </div>
       {traceExpanded ? <>
         {renderedSteps.length > 0 ? <div className="notus-agent-toolchain__steps">
@@ -1653,9 +1685,9 @@ function MessageList({ messages, interactions = [], streamText, error = '', load
   const assistantSessionIds = new Set((Array.isArray(messages) ? messages : [])
     .filter((message) => message?.role === 'assistant' && message?.meta?.session_id)
     .map((message) => String(message.meta.session_id)));
-  const answeredInteractions = (Array.isArray(interactions) ? interactions : [])
-    .filter((interaction) => interaction?.status === 'answered');
-  const interactionStepsFor = (sessionId) => answeredInteractions
+  const visibleInteractions = (Array.isArray(interactions) ? interactions : [])
+    .filter((interaction) => ['pending', 'answered', 'failed', 'stale'].includes(interaction?.status));
+  const interactionStepsFor = (sessionId) => visibleInteractions
     .filter((interaction) => String(interaction?.payload?.agent_session_id || '') === String(sessionId || ''))
     .map(buildInteractionHistoryStep);
   const traceFor = (timeline, key, retryMessage = null) => {
@@ -3469,7 +3501,6 @@ export function AgentWorkspace({ messages, interactions = [], streamText, loadin
             onPreviewImages={openMessageImagePreview}
             onPreviewToolchainImages={openToolchainImagePreview}
             onAgentStepAction={(action, _step, sessionId) => {
-              if (action === 'stop_agent') void onStop?.(sessionId);
               if (action === 'resume_agent') void onResumeAgentTask?.(sessionId);
             }}
           />}

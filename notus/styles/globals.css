@@ -402,24 +402,6 @@ a {
   color: var(--text-secondary);
 }
 
-.notus-agent-toolchain__stop {
-  flex: 0 0 auto;
-  padding: 3px 6px;
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--accent);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-  transition: color 120ms ease, background-color 120ms ease, transform 120ms ease;
-}
-
-.notus-agent-toolchain__stop:hover {
-  background: var(--accent-subtle);
-  color: var(--accent-hover);
-}
-
 .notus-agent-toolchain__steps {
   border-top: 1px solid var(--border-subtle);
   border-bottom: 1px solid var(--border-subtle);
@@ -899,6 +881,12 @@ a {
   gap: 2px;
 }
 
+.notus-agent-toolchain__question-item + .notus-agent-toolchain__question-item {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+}
+
 .notus-agent-toolchain__question-label {
   margin-top: 5px;
   color: var(--text-tertiary);
@@ -1227,6 +1215,69 @@ a {
   opacity: 0.5;
 }
 
+/* 文件工作区里的确认交互是覆盖输入区的底部抽屉，不占用对话区的普通布局高度。 */
+.notus-file-agent-workspace__interaction-layer {
+  position: absolute;
+  z-index: 24;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  pointer-events: none;
+}
+
+.notus-file-agent-workspace__interaction-drawer {
+  width: 100%;
+  margin: 0;
+  max-height: min(72%, 620px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  pointer-events: auto;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.notus-file-agent-workspace.has-interaction .notus-agent-composer-dock {
+  display: none;
+}
+
+.notus-file-agent-workspace__interaction-drawer .notus-agent-question-card {
+  margin: 0;
+  border: 0;
+}
+
+.notus-file-agent-workspace__interaction-drawer .notus-agent-question-card__detail {
+  margin: 0;
+  padding: 18px 20px 14px;
+  border-left: 0;
+}
+
+.notus-file-agent-workspace__interaction-drawer .notus-agent-question-card__title {
+  font-size: 16px;
+  line-height: 1.55;
+}
+
+.notus-file-agent-workspace__interaction-drawer .notus-agent-question-card__options {
+  gap: 7px;
+}
+
+.notus-file-agent-workspace__interaction-drawer .notus-agent-question-card__option {
+  min-height: 54px;
+  padding: 10px 11px;
+  border-radius: var(--radius-lg);
+}
+
+.notus-file-agent-workspace__interaction-drawer .notus-agent-question-card__custom {
+  border-radius: var(--radius-lg);
+}
+
+.notus-file-agent-workspace__interaction-drawer .notus-agent-question-card__footer {
+  min-height: 58px;
+  padding: 10px 20px;
+  background: var(--bg-elevated);
+}
+
 
 @keyframes notus-agent-detail-in {
   from { opacity: 0; transform: translateY(-3px); }
@@ -1452,7 +1503,6 @@ a {
   .notus-agent-tool-row,
   .notus-agent-pressable,
   .notus-agent-tool-chevron,
-  .notus-agent-toolchain__stop,
   .notus-agent-toolchain__actions button,
   .notus-agent-toolchain__detail,
   .notus-agent-composer__footer,

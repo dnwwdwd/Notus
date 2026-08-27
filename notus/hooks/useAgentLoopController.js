@@ -771,11 +771,15 @@ export function useAgentLoopController({
     if (!isResume) newTaskSubmitInFlightRef.current = true;
     const resumeJobId = input?.resume_job_id || input?.resumeJobId || '';
     const resumeTicket = input?.resume_ticket || input?.resumeTicket || '';
+    const resumeEventCursor = Math.max(0, Number(input?.event_cursor ?? input?.eventCursor ?? 0) || 0);
+    const subscribeOnly = Boolean(input?.subscribe_only || input?.subscribeOnly);
     const body = isResume
       ? {
         session_id: resumeSessionId,
         session_token: resumeToken,
         control_ticket: input?.control_ticket || input?.controlTicket || sessionRef.current?.control_ticket || undefined,
+        read_ticket: resumeReadTicket || undefined,
+        subscribe_only: subscribeOnly || undefined,
         interaction_id: input?.interaction_id || input?.interactionId || undefined,
         resume_job_id: resumeJobId || undefined,
         resume_ticket: resumeTicket || undefined,
@@ -816,6 +820,7 @@ export function useAgentLoopController({
     runSequenceRef.current = runSequence;
     const subscriptionEpoch = subscriptionEpochRef.current;
     const controller = new AbortController();
+    controller.eventsConnected = false;
     controllersRef.current.add(controller);
     controllerRef.current = controller;
     assistantTextRef.current = '';
@@ -1023,7 +1028,8 @@ export function useAgentLoopController({
         sessionStatus: accepted.status || 'queued',
       });
       if (acceptedConversationId) onConversationId?.(acceptedConversationId);
-      const eventsResponse = await fetch(`/api/agent/sessions/${acceptedSessionId}/events?after=${encodeURIComponent(String(accepted.event_cursor || 0))}`, {
+      const eventCursor = isResume && resumeEventCursor > 0 ? resumeEventCursor : (accepted.event_cursor || 0);
+      const eventsResponse = await fetch(`/api/agent/sessions/${acceptedSessionId}/events?after=${encodeURIComponent(String(eventCursor))}`, {
         headers: {
           ...(acceptedTickets.read ? { 'x-agent-control-ticket': acceptedTickets.read } : {}),
           ...(!acceptedTickets.read && acceptedToken ? { 'x-agent-session-token': acceptedToken } : {}),
@@ -1031,6 +1037,7 @@ export function useAgentLoopController({
         signal: controller.signal,
       });
       if (!eventsResponse.ok) throw new Error(await readErrorResponse(eventsResponse, '订阅 Agent 任务进度失败'));
+      controller.eventsConnected = true;
       await readSse(eventsResponse, async (event) => {
         // 任务以会话为单位订阅。同一对话中后发任务入队时，早先任务仍须继续
         // 更新它自己的执行记录；只有切换对话、卸载或显式解绑才使订阅失效。
@@ -1447,6 +1454,7 @@ export function useAgentLoopController({
       throw nextError;
     } finally {
       if (!isResume) newTaskSubmitInFlightRef.current = false;
+      controller.eventsConnected = false;
       controllersRef.current.delete(controller);
       if (controllerRef.current === controller) {
         controllerRef.current = null;
@@ -1520,8 +1528,8 @@ export function useAgentLoopController({
       startAgentLoop({
         session_id: session.id,
         session_token: session.token,
+        subscribe_only: true,
         read_ticket: session.control_tickets?.read || '',
-        control_ticket: session.control_tickets?.resume || undefined,
         control_tickets: session.control_tickets || {},
       }, { resume: true }).catch((resumeError) => {
         setError(resumeError.message || '继续任务订阅失败');
@@ -1625,6 +1633,24 @@ export function useAgentLoopController({
       onError?.(rollbackError);
     }
   }, [onError, onRollbackSuccess, setActiveAgentSession]);
+
+  const markAgentSessionStatus = useCallback((sessionId, status, reason = status) => {
+    const id = String(sessionId || '');
+    if (!id) return;
+    const known = knownSessionsRef.current.get(id)
+      || (String(sessionRef.current?.id || '') === id ? sessionRef.current : null);
+    const nextSession = { ...(known || { id: Number(id) || id }), status, reason };
+    knownSessionsRef.current.set(id, nextSession);
+    onSessionTimeline?.({ sessionId: id, sessionStatus: status, loading: false });
+    if (String(sessionRef.current?.id || '') !== id) return;
+    setActiveAgentSession(nextSession);
+    setSteps((prev) => upsertStep(completeSteps(prev), buildEventStep({
+      type: status === 'cancelled' ? 'cancelled' : 'loop_done',
+      reason,
+    })));
+    setStreamText('');
+    setLoading(false);
+  }, [onSessionTimeline, setActiveAgentSession, setSteps]);
 
   const stopAgentLoop = useCallback(async (targetSessionId = null) => {
     const sessionId = String(targetSessionId || '');
@@ -1752,6 +1778,16 @@ export function useAgentLoopController({
     setLoading(false);
   }, [clearActiveAgentSession, setActiveAgentSession, setSteps]);
 
+  const hasActiveSessionSubscription = useCallback((sessionId) => {
+    const id = String(sessionId || '');
+    if (!id) return false;
+    return [...controllersRef.current].some((controller) => (
+      String(controller?.agentSessionId || '') === id
+        && controller.eventsConnected === true
+        && !controller.signal.aborted
+    ));
+  }, []);
+
   return {
     pendingAgentTask,
     activeAgentSession,
@@ -1775,7 +1811,9 @@ export function useAgentLoopController({
     rejectOperationSet,
     extendAgentSession,
     rollbackAgentSession,
+    markAgentSessionStatus,
     fetchSessionDetails,
     restoreAgentSession,
+    hasActiveSessionSubscription,
   };
 }

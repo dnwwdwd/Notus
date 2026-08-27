@@ -233,7 +233,7 @@ function ResourceApprovalDrawer({ interaction, submitting, onDecision, onPhaseCh
       questions: [{ id: 'resource_decision', label: detail || '是否继续执行该操作？', type: 'single_select', required: true, allow_custom: false, options: [{ id: 'confirm', label: '确认执行', description: '执行这项资源操作。', answer_value: 'confirm' }, { id: 'cancel', label: '取消', description: '不执行，保留草稿。', answer_value: 'cancel' }] }],
     },
   };
-  return <ClarifyDrawer interaction={cardInteraction} submitting={submitting} submitLabel="确认执行" onPhaseChange={onPhaseChange} onSubmit={(_, answers) => onDecision?.(answers?.resource_decision?.option_id === 'confirm' ? 'confirm' : 'cancel')} onRetry={() => {}} onCancel={() => onDecision?.('cancel')} />;
+  return <ClarifyDrawer interaction={cardInteraction} collapsible={false} submitting={submitting} submitLabel="确认执行" onPhaseChange={onPhaseChange} onSubmit={(_, answers) => onDecision?.(answers?.resource_decision?.option_id === 'confirm' ? 'confirm' : 'cancel')} onRetry={() => {}} onCancel={() => onDecision?.('cancel')} />;
 }
 
 export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles, onFilesChanged, onAgentPanelLockChange, beforeAgentRun, fullWidth = false, onOpenDiffFile }) {
@@ -552,6 +552,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
   }, [activeConversationId, agentLoop.activeAgentSession, liveSessionTimelines, restoredAgentSessions]);
   const restoreAgentSession = agentLoop.restoreAgentSession;
   const resumeAgentLoop = agentLoop.startAgentLoop;
+  const getAgentSession = agentLoop.getAgentSession;
   const activeAgentSessionId = String(agentLoop.activeAgentSession?.id || '');
   const sessionLocked = agentLoop.activeAgentSession?.status === 'running';
   // 只有真实在途请求才锁输入。可恢复错误、断线续跑和额度等待都已经停住，
@@ -610,7 +611,9 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
         subscribedSessionIdsRef.current.add(sessionId);
         resumeAgentLoop({
           session_id: item.id,
-          control_ticket: item.control_tickets?.resume,
+          // 恢复历史运行中的任务只需要接回事件流。不得以会话恢复票据重新
+          // 调度队列，否则迟到的页面恢复可能跳过后续的确认卡片。
+          subscribe_only: true,
           read_ticket: item.control_tickets?.read,
           control_tickets: item.control_tickets,
           llm_config_id: selectedLlmConfigId || undefined,
@@ -621,12 +624,15 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     }
     const queuedJob = agentResumeJobs.find((job) => job.status === 'queued' && job.resume_ticket);
     const queuedSession = queuedJob
-      ? (agentLoop.getAgentSession?.(queuedJob.session_id)
+      ? (getAgentSession?.(queuedJob.session_id)
         || restoredAgentSessions.find((item) => Number(item?.id) === Number(queuedJob.session_id))
         || {})
       : null;
     const queuedControlTicket = queuedSession?.control_tickets?.resume;
-    if (!queuedJob || !queuedControlTicket || autoResumedJobRef.current.has(queuedJob.id)) return;
+    const queuedSessionCanResume = ['created', 'queued', 'queued_resume', 'waiting_retry', 'waiting_model_recovery']
+      .includes(String(queuedSession?.status || ''));
+    // 旧 job 绝不能在下一张卡片的 waiting_interaction 状态下自动续跑。
+    if (!queuedJob || !queuedControlTicket || !queuedSessionCanResume || autoResumedJobRef.current.has(queuedJob.id)) return;
     autoResumedJobRef.current.add(queuedJob.id);
     resumeAgentLoop({
       session_id: queuedJob.session_id,
@@ -639,7 +645,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     }, { resume: true }).catch(() => {
       autoResumedJobRef.current.delete(queuedJob.id);
     });
-  }, [activeAgentSessionId, agentLoop.loading, agentResumeJobs, restoreAgentSession, restoredAgentSessions, resumeAgentLoop, selectedLlmConfigId]);
+  }, [activeAgentSessionId, agentLoop.loading, agentResumeJobs, getAgentSession, restoreAgentSession, restoredAgentSessions, resumeAgentLoop, selectedLlmConfigId]);
 
   const resumeFailedAgentTask = useCallback(async (targetSessionId = null) => {
     if (resumeAgentTaskInFlightRef.current) return;
@@ -823,28 +829,38 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     return payload;
   }, []);
 
-  const resumeInteraction = useCallback(async (interaction, resume = {}) => {
+  const resumeInteraction = useCallback(async (interaction, resume = {}, options = {}) => {
     const session = agentLoop.activeAgentSession || {};
     const sessionId = Number(interaction?.payload?.agent_session_id || session.id || 0);
     const targetSession = agentLoop.getAgentSession?.(sessionId)
       || restoredAgentSessions.find((item) => Number(item?.id) === sessionId)
       || session;
+    const subscribeOnly = Boolean(options.subscribeOnly);
     const resumeJob = resume.resume_job || agentResumeJobs.find((job) => Number(job.interaction_id) === Number(interaction?.id));
     const resumeTicket = resume.resume_ticket || resumeJob?.resume_ticket;
-    if (!sessionId || !resumeJob?.id || !resumeTicket) {
+    const readTicket = targetSession.control_tickets?.read || targetSession.control_ticket;
+    if (!sessionId || (!subscribeOnly && (!resumeJob?.id || !resumeTicket)) || (subscribeOnly && !readTicket)) {
       toast('当前 Agent 任务状态已失效，请重新发起任务', 'warning');
       return;
     }
     await agentLoop.startAgentLoop({
       session_id: sessionId,
-      resume_job_id: resumeJob.id,
-      resume_ticket: resumeTicket,
+      ...(subscribeOnly ? { subscribe_only: true } : {
+        resume_job_id: resumeJob.id,
+        resume_ticket: resumeTicket,
+      }),
+      event_cursor: resume.event_cursor,
       control_ticket: targetSession.control_tickets?.resume,
-      read_ticket: targetSession.control_tickets?.read,
+      read_ticket: readTicket,
       control_tickets: targetSession.control_tickets,
       llm_config_id: selectedLlmConfigId || undefined,
     }, { resume: true });
   }, [agentLoop, agentResumeJobs, restoredAgentSessions, selectedLlmConfigId, toast]);
+
+  const shouldReconnectInteractionSession = useCallback((interaction) => {
+    const sessionId = Number(interaction?.payload?.agent_session_id || 0);
+    return Boolean(sessionId && !agentLoop.hasActiveSessionSubscription?.(sessionId));
+  }, [agentLoop]);
 
   const handleInteractionSubmit = useCallback(async (interaction, answers) => {
     setInteractionSubmittingId(interaction.id);
@@ -857,13 +873,41 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
           return next;
         });
       }
-      if (payload.should_continue) await resumeInteraction(payload.interaction || interaction, payload);
+      // 回答接口已经唤醒同一 session 的后台 Worker。当前 SSE 订阅继续接收
+      // 后续事件，避免为同一 session 增加第二个订阅；刷新后没有订阅时只补建
+      // SSE，不会再次调度任务。卡片的“重试”仍使用实际 resume job。
+      if (payload.should_continue && shouldReconnectInteractionSession(payload.interaction || interaction)) {
+        await resumeInteraction(payload.interaction || interaction, payload, { subscribeOnly: true });
+      }
     } catch (error) {
       toast(error.message || '回答提问卡片失败', 'error');
     } finally {
       setInteractionSubmittingId(null);
     }
-  }, [respondToInteraction, resumeInteraction, toast]);
+  }, [respondToInteraction, resumeInteraction, shouldReconnectInteractionSession, toast]);
+
+  const handleInteractionCancel = useCallback(async (interaction) => {
+    setInteractionSubmittingId(interaction.id);
+    try {
+      const payload = await respondToInteraction(interaction, { action: 'cancel' });
+      setInteractionAnswerDrafts((previous) => {
+        const next = { ...previous };
+        delete next[String(interaction.id)];
+        return next;
+      });
+      if (!payload.should_continue) {
+        const cancelledSessionId = payload.interaction?.payload?.agent_session_id
+          || interaction?.payload?.agent_session_id;
+        agentLoop.markAgentSessionStatus?.(cancelledSessionId, 'cancelled', 'cancelled');
+      } else if (shouldReconnectInteractionSession(payload.interaction || interaction)) {
+        await resumeInteraction(payload.interaction || interaction, payload, { subscribeOnly: true });
+      }
+    } catch (error) {
+      toast(error.message || '取消提问卡片失败', 'error');
+    } finally {
+      setInteractionSubmittingId(null);
+    }
+  }, [agentLoop, respondToInteraction, resumeInteraction, shouldReconnectInteractionSession, toast]);
 
   const handleInteractionAnswerDraftChange = useCallback((interactionId, answers) => {
     if (!interactionId) return;
@@ -874,22 +918,26 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     setInteractionSubmittingId(interaction.id);
     try {
       const payload = await respondToInteraction(interaction, { action: decision });
-      if (payload.should_continue) await resumeInteraction(payload.interaction || interaction, payload);
+      if (payload.should_continue && shouldReconnectInteractionSession(payload.interaction || interaction)) {
+        await resumeInteraction(payload.interaction || interaction, payload, { subscribeOnly: true });
+      }
     } catch (error) {
       toast(error.message || 'MCP 授权失败', 'error');
     } finally {
       setInteractionSubmittingId(null);
     }
-  }, [respondToInteraction, resumeInteraction, toast]);
+  }, [respondToInteraction, resumeInteraction, shouldReconnectInteractionSession, toast]);
 
   const handleResourceApproval = useCallback(async (interaction, decision) => {
     setInteractionSubmittingId(interaction.id);
     try {
       const payload = await respondToInteraction(interaction, { action: decision });
       if (payload.resolution_status === 'resolved') dispatchAgentResourceChange(interaction?.payload?.action);
-      if (payload.should_continue) await resumeInteraction(payload.interaction || interaction, payload);
+      if (payload.should_continue && shouldReconnectInteractionSession(payload.interaction || interaction)) {
+        await resumeInteraction(payload.interaction || interaction, payload, { subscribeOnly: true });
+      }
     } catch (error) { toast(error.message || '资源操作失败', 'error'); } finally { setInteractionSubmittingId(null); }
-  }, [respondToInteraction, resumeInteraction, toast]);
+  }, [respondToInteraction, resumeInteraction, shouldReconnectInteractionSession, toast]);
 
   const displayedMessages = useMemo(() => {
     const latestAssistantIndexBySession = new Map();
@@ -915,14 +963,14 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
   const inputDisabled = !aiUiState.ready;
 
   return (
-    <div className="notus-file-agent-workspace" style={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative', background: 'var(--bg-primary)' }}>
+    <div className={`notus-file-agent-workspace${activeInteraction ? ' has-interaction' : ''}`} style={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative', background: 'var(--bg-primary)' }}>
       <div className="notus-file-agent-workspace__header" style={{ height: 48, padding: '0 12px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', flexShrink: 0 }}>
         <div style={{ display: 'flex', gap: 4 }}>
           <Tooltip content="查看历史对话"><span><IconButton label="查看历史对话" size={30} active={historyDrawerOpen} onClick={() => setHistoryDrawerOpen(true)}><Icons.clock size={14} /></IconButton></span></Tooltip>
           <Tooltip content="新建对话"><span><IconButton label="新建对话" size={30} onClick={handleNewConversation}><Icons.plus size={14} /></IconButton></span></Tooltip>
         </div>
       </div>
-      <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+      <div className="notus-file-agent-workspace__content" style={{ flex: 1, minHeight: 0, position: 'relative' }}>
         <AgentWorkspace
           messages={displayedMessages}
           interactions={pendingInteractions}
@@ -957,12 +1005,14 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
           restoringConversation={restoringConversation}
         />
         {aiUiState.showLockedState ? <AiLockedState compact variant="panel" onAction={() => openSettings('model')} /> : null}
+        {activeInteraction ? (
+          <div className="notus-file-agent-workspace__interaction-layer">
+            <div className="notus-file-agent-workspace__interaction-drawer">
+              {activeInteraction.kind === 'mcp_approval' ? <McpApprovalDrawer interaction={activeInteraction} submitting={interactionSubmittingId === activeInteraction.id} onDecision={(decision) => handleMcpApproval(activeInteraction, decision)} /> : activeInteraction.kind === 'resource_approval' ? <ResourceApprovalDrawer interaction={activeInteraction} submitting={interactionSubmittingId === activeInteraction.id} onPhaseChange={setClarifyPhase} onDecision={(decision) => handleResourceApproval(activeInteraction, decision)} /> : <ClarifyDrawer interaction={activeInteraction} collapsible={false} answerDraft={interactionAnswerDrafts[String(activeInteraction.id)]} onAnswerDraftChange={(answers) => handleInteractionAnswerDraftChange(activeInteraction.id, answers)} submitting={interactionSubmittingId === activeInteraction.id} submitLabel="提交" onPhaseChange={setClarifyPhase} onSubmit={handleInteractionSubmit} onRetry={resumeInteraction} onCancel={handleInteractionCancel} />}
+            </div>
+          </div>
+        ) : null}
       </div>
-      {activeInteraction ? (
-        <div className="notus-agent-interaction-timeline" style={{ position: 'relative', zIndex: 2, padding: '0 12px 12px' }}>
-          {activeInteraction.kind === 'mcp_approval' ? <McpApprovalDrawer interaction={activeInteraction} submitting={interactionSubmittingId === activeInteraction.id} onDecision={(decision) => handleMcpApproval(activeInteraction, decision)} /> : activeInteraction.kind === 'resource_approval' ? <ResourceApprovalDrawer interaction={activeInteraction} submitting={interactionSubmittingId === activeInteraction.id} onPhaseChange={setClarifyPhase} onDecision={(decision) => handleResourceApproval(activeInteraction, decision)} /> : <ClarifyDrawer interaction={activeInteraction} answerDraft={interactionAnswerDrafts[String(activeInteraction.id)]} onAnswerDraftChange={(answers) => handleInteractionAnswerDraftChange(activeInteraction.id, answers)} submitting={interactionSubmittingId === activeInteraction.id} submitLabel="继续执行" onPhaseChange={setClarifyPhase} onSubmit={handleInteractionSubmit} onRetry={resumeInteraction} onCancel={(interaction) => respondToInteraction(interaction, { action: 'cancel' }).catch(() => {})} />}
-        </div>
-      ) : null}
       <ConversationDrawer
         open={historyDrawerOpen}
         onClose={() => { setHistoryDrawerOpen(false); setHistorySearchQuery(''); }}

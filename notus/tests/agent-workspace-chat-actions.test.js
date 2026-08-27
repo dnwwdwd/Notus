@@ -18,7 +18,7 @@ async function runTests() {
     'scrollContainerToBottom(container, \'smooth\')',
     '<Icons.chevronDown size={14} />',
     'function UserMessageRow({ message, disabled, removing = false, onResendMessage, onOpenAttachment, onPreviewMention, onPrefetchMention, onPreviewImages })',
-    'function AssistantMessageRow({ message, disabled, removing = false, onRetryMessage, previousUserMessage',
+    'function AssistantMessageRow({ message, taskChangeSet = null, disabled, removing = false, onRetryMessage, previousUserMessage',
     'aria-label="AI 回复操作"',
     'aria-label="用户消息操作"',
     '已复制用户消息',

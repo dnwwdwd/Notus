@@ -58,12 +58,17 @@ export const ToastProvider = ({ children }) => {
               gap: 10,
               fontSize: 'var(--text-sm)',
               minWidth: 240,
+              maxWidth: 'min(560px, calc(100vw - 32px))',
+              maxHeight: 'min(40vh, 240px)',
+              boxSizing: 'border-box',
+              overflow: 'auto',
+              overflowWrap: 'anywhere',
               animation: 'slideUp var(--transition-normal)',
               pointerEvents: 'all',
             }}
           >
             <span style={{ color: toneColor[t.tone] }}>{toneIcon[t.tone]}</span>
-            <span>{t.msg}</span>
+            <span style={{ minWidth: 0, overflowWrap: 'anywhere' }}>{t.msg}</span>
           </div>
         ))}
       </div>

@@ -156,6 +156,11 @@ assert.ok(settings.includes("{ id: 'global-agent', label: 'Agent 个性', icon: 
   assert.ok(settings.includes('请求 Header'));
   assert.ok(settings.includes('认证值以密钥保存'));
   assert.ok(settings.includes('aria-label={`Header 值 ${index + 1}`}'));
+  assert.ok(settings.includes("toast(error.message || 'MCP 连接测试失败', 'error')"), 'MCP 测试失败必须通过消息提示反馈');
+  assert.ok(!settings.includes('server.last_error_message'), 'MCP 测试错误不得渲染到 Server 列表，避免长错误文本撑开列表');
+  const toast = read('components/ui/Toast.js');
+  assert.ok(toast.includes("maxWidth: 'min(560px, calc(100vw - 32px))'"), '长错误提示必须限制在视口内');
+  assert.ok(toast.includes("overflowWrap: 'anywhere'"), '长错误提示必须允许断行');
 
   const settingsApi = read('pages/api/settings/index.js');
   assert.ok(settingsApi.includes('provider_configs: providerConfigs'));
@@ -257,11 +262,24 @@ assert.ok(settings.includes("{ id: 'global-agent', label: 'Agent 个性', icon: 
   assert.ok(!topBar.includes('点击保存（'));
 
   const clarifyDrawer = read('components/ChatArea/ClarifyDrawer.js');
+  assert.ok(clarifyDrawer.includes('const handleAnswerPatch'));
   assert.ok(clarifyDrawer.includes('const selectOptionAndAdvance'));
-  assert.ok(clarifyDrawer.includes("setPhase('expanded-review')"));
-  assert.ok(clarifyDrawer.includes('<ReviewRow'));
-  assert.ok(clarifyDrawer.includes('notus-agent-question-card__toggle'));
-  assert.ok(clarifyDrawer.includes('notus-agent-question-card__review-row'));
+  assert.ok(clarifyDrawer.includes('NONE_OF_THE_ABOVE_OPTION_ID'));
+  assert.ok(clarifyDrawer.includes("label: '以上选项都不是'"), '每道题必须提供“以上选项都不是”');
+  assert.ok(clarifyDrawer.includes('function buildFallbackQuestionOptions'), '没有候选项时必须生成相关候选');
+  assert.ok(!clarifyDrawer.includes('用自定义输入补充，或跳过这道题。'), '不再显示旧的兜底提示语');
+  assert.ok(clarifyDrawer.includes('const skipQuestionAndAdvance'), '每道题必须允许跳过');
+  assert.ok(clarifyDrawer.includes('skipped: Boolean(current.skipped)'), '跳过状态必须随回答提交');
+  assert.ok(clarifyDrawer.includes('aria-label="上一题"'));
+  assert.ok(clarifyDrawer.includes('aria-label="下一题"'));
+  assert.ok(!clarifyDrawer.includes('上一题</button>') && !clarifyDrawer.includes('下一题</Button>'));
+  assert.ok(!clarifyDrawer.includes('<ReviewRow'));
+  assert.ok(!clarifyDrawer.includes('title="收起，先用普通对话"'));
+  assert.ok(clarifyDrawer.includes('aria-label="取消提问"'));
+  assert.ok(clarifyDrawer.includes('function getDrawerTitle'));
+  assert.ok(!clarifyDrawer.includes('<Icons.sparkles size={13} />'));
+  assert.ok(fileAgentWorkspace.includes('const handleInteractionCancel = useCallback'));
+  assert.ok(!clarifyDrawer.includes('function ReviewRow'));
 
   assert.ok(globalStyles.includes('.notus-agent-question-card__detail'));
   assert.ok(globalStyles.includes('.notus-agent-toolchain__question-answer'));
@@ -270,6 +288,9 @@ assert.ok(settings.includes("{ id: 'global-agent', label: 'Agent 个性', icon: 
   assert.ok(agentWorkspace.includes('function mergeInteractionStepsIntoTimeline'));
   assert.ok(agentWorkspace.includes('const interactionStepsFor'));
   assert.ok(agentWorkspace.includes('Icons.messageCircle'));
+  assert.ok(agentWorkspace.includes('Icons.messagePlus'));
+  assert.ok(agentWorkspace.includes('Icons.messageQuestion'));
+  assert.ok(agentWorkspace.includes('Icons.circleX'));
   assert.ok(!agentWorkspace.includes('function InteractionHistoryNode'));
   assert.ok(agentWorkspace.includes('<Tooltip content="联网搜索">'));
   assert.ok(agentWorkspace.includes("<Tooltip content={mcpAvailable ? 'MCP 工具' : '暂无 MCP 服务'}>"));
@@ -287,6 +308,9 @@ assert.ok(settings.includes("{ id: 'global-agent', label: 'Agent 个性', icon: 
   assert.ok(agentPrompt.includes('scope_paths: [该目录路径]'));
 
   const agentTools = read('lib/agentTools.js');
+  assert.ok(agentTools.includes('至少 2 个、最多 5 个与问题直接相关的候选选项'));
+  assert.ok(agentTools.includes('function buildFallbackQuestionOptions'));
+  assert.ok(!agentTools.includes("id: 'current_document'"), '来源问题兜底不能生成无法解析的当前文档选项');
   assert.ok(agentTools.includes('不要用它判断目录是否存在、目标目录位置或空目录'));
   assert.ok(agentTools.includes('返回子目录、Markdown 文件路径、标题和可选内容预览'));
   assert.ok(agentTools.includes('folders_truncated'));

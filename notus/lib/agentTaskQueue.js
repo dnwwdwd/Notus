@@ -21,6 +21,7 @@ function format(row) {
     status: row.status, queue_order: Number(row.queue_order), input: parse(row.input_json, {}),
     llm_config_id: row.llm_config_id || null, approval_mode: row.approval_mode || 'auto_confirm',
     user_message_id: row.user_message_id ? Number(row.user_message_id) : null, run_id: row.run_id || null,
+    resume_job_id: row.resume_job_id || null,
     attempt_count: Number(row.attempt_count || 0), last_error: parse(row.last_error_json),
     resume_requested: Boolean(row.resume_requested),
     started_at: row.started_at || null, finished_at: row.finished_at || null,
@@ -81,6 +82,7 @@ function updateTask(sessionId, updates = {}) {
   if (Object.prototype.hasOwnProperty.call(updates, 'lastError')) add('last_error_json = ?', updates.lastError ? JSON.stringify(updates.lastError) : null);
   if (Object.prototype.hasOwnProperty.call(updates, 'llmConfigId')) add('llm_config_id = ?', updates.llmConfigId ? String(updates.llmConfigId) : null);
   if (Object.prototype.hasOwnProperty.call(updates, 'finalMessageId')) add('final_message_id = ?', asId(updates.finalMessageId));
+  if (Object.prototype.hasOwnProperty.call(updates, 'resumeJobId')) add('resume_job_id = ?', updates.resumeJobId ? String(updates.resumeJobId) : null);
   if (updates.finished) sets.push("finished_at = datetime('now')");
   if (!sets.length) return getTaskBySession(sid);
   sets.push("updated_at = datetime('now')"); values.push(sid);
@@ -89,11 +91,15 @@ function updateTask(sessionId, updates = {}) {
   return getTaskBySession(sid);
 }
 
-function wakeTask(sessionId, { llmConfigId = null } = {}) {
+function wakeTask(sessionId, { llmConfigId = null, resumeJobId = undefined } = {}) {
   const sid = asId(sessionId);
+  const resumeJobPatch = resumeJobId === undefined ? '' : ', resume_job_id = ?';
+  const values = [llmConfigId ? String(llmConfigId) : null];
+  if (resumeJobId !== undefined) values.push(resumeJobId ? String(resumeJobId) : null);
+  values.push(sid);
   getDb().prepare(`UPDATE agent_task_queue SET status = 'queued', run_id = NULL, last_error_json = NULL,
-    llm_config_id = COALESCE(?, llm_config_id), updated_at = datetime('now')
-    WHERE session_id = ? AND status IN ('waiting_interaction','waiting_operation_confirmation','waiting_limit_confirmation','waiting_retry','waiting_model_recovery')`).run(llmConfigId ? String(llmConfigId) : null, sid);
+    llm_config_id = COALESCE(?, llm_config_id)${resumeJobPatch}, updated_at = datetime('now')
+    WHERE session_id = ? AND status IN ('waiting_interaction','waiting_operation_confirmation','waiting_limit_confirmation','waiting_retry','waiting_model_recovery')`).run(...values);
   return getTaskBySession(sid);
 }
 

@@ -213,7 +213,7 @@ function buildToolDefinitions(session = {}, options = {}) {
             required: { type: 'boolean', default: true },
             options: {
               type: 'array',
-              description: 'single_select 的选项，最多 5 个。',
+              description: '所有问题都必须提供至少 2 个、最多 5 个与问题直接相关的候选选项；文本类问题也不能只依赖自定义输入。',
               items: {
                 type: 'object',
                 properties: {
@@ -394,14 +394,79 @@ function normalizeQuestionId(value = '', index = 0) {
   return normalized || `question_${index + 1}`;
 }
 
+function buildFallbackQuestionOptions(label = '', questionId = '') {
+  const text = `${String(questionId || '').trim()} ${String(label || '').trim()}`.trim();
+  if (/\bprimary_intent\b/.test(text)) {
+    return [
+      { id: 'edit', label: '直接修改文档', description: '生成并应用当前任务的文档修改', answer_value: 'edit' },
+      { id: 'text', label: '继续讨论', description: '先讨论方案，不直接修改文档', answer_value: 'text' },
+      { id: 'analyze', label: '先分析文章', description: '只分析现有内容，不写入文档', answer_value: 'analyze' },
+    ];
+  }
+  if (/\bsource_content_ref\b/.test(text)) {
+    return [
+      { id: 'previous_assistant_message', label: '上一条助手回复', description: '沿用刚才生成的内容', answer_value: 'previous_assistant_message' },
+      { id: 'recent_user_message', label: '最近一条用户消息', description: '使用最近一次输入作为来源', answer_value: 'recent_user_message' },
+      { id: 'previous_user_message', label: '更早的用户消息', description: '从更早的对话中选择来源', answer_value: 'previous_user_message' },
+    ];
+  }
+  if (/\btarget_location\b/.test(text)) {
+    return [
+      { id: 'document_end', label: '文末', description: '追加到当前文档最后', answer_value: 'document_end' },
+      { id: 'document_start', label: '文首', description: '放到当前文档开头', answer_value: 'document_start' },
+      { id: 'after_target', label: '指定段落之后', description: '放在选定内容后面', answer_value: 'after_target' },
+    ];
+  }
+  if (/\bwrite_mode\b/.test(text)) {
+    return [
+      { id: 'append_new_blocks', label: '追加新段落', description: '保留原文并在目标位置补充内容', answer_value: 'append_new_blocks' },
+      { id: 'replace_target', label: '替换目标段落', description: '用新内容替换选定部分', answer_value: 'replace_target' },
+      { id: 'insert_before_target', label: '插入到目标前', description: '把新内容放到选定部分之前', answer_value: 'insert_before_target' },
+    ];
+  }
+  if (/(是否|要不要|需不需要|需要吗|可以吗|确认|同意|启用|开启|保留|删除|覆盖|写入)/.test(text)) {
+    return [
+      { id: 'yes', label: '是，需要', description: '按当前任务继续执行', answer_value: 'yes' },
+      { id: 'no', label: '否，不需要', description: '不执行这项操作', answer_value: 'no' },
+      { id: 'undecided', label: '暂不确定', description: '先保留当前状态', answer_value: 'undecided' },
+    ];
+  }
+  if (/(位置|哪里|写到|放到|插入|目标|范围|章节|段落)/.test(text)) {
+    return [
+      { id: 'document_end', label: '文末', description: '追加到当前文档最后', answer_value: 'document_end' },
+      { id: 'document_start', label: '文首', description: '放到当前文档开头', answer_value: 'document_start' },
+      { id: 'after_target', label: '指定段落之后', description: '放在选定内容后面', answer_value: 'after_target' },
+    ];
+  }
+  if (/(名称|命名|tag|标签|标题)/i.test(text)) {
+    return [
+      { id: 'keep_current', label: '沿用当前名称', description: '保持已有标题或标签', answer_value: 'keep_current' },
+      { id: 'versioned', label: '使用版本号', description: '按版本信息生成名称', answer_value: 'versioned' },
+      { id: 'descriptive', label: '使用描述性名称', description: '根据内容生成名称', answer_value: 'descriptive' },
+    ];
+  }
+  if (/(风格|格式|语气|长度|详细|版本)/.test(text)) {
+    return [
+      { id: 'concise', label: '简洁版', description: '保留重点，减少铺陈', answer_value: 'concise' },
+      { id: 'detailed', label: '详细版', description: '补充背景和过程', answer_value: 'detailed' },
+      { id: 'keep_current', label: '保持当前格式', description: '沿用已有表达方式', answer_value: 'keep_current' },
+    ];
+  }
+  return [
+    { id: 'recommended', label: '按 Agent 建议', description: '采用当前任务更合适的方案', answer_value: 'recommended' },
+    { id: 'keep_current', label: '保持当前设置', description: '沿用已有内容或配置', answer_value: 'keep_current' },
+    { id: 'undecided', label: '暂不决定', description: '先保留选择，继续整理', answer_value: 'undecided' },
+  ];
+}
+
 function normalizeQuestionCardQuestions(questions = []) {
   const used = new Set();
   return (Array.isArray(questions) ? questions : []).slice(0, 3).map((question, index) => {
     let id = normalizeQuestionId(question?.id || question?.slot, index);
     while (used.has(id)) id = `${id}_${index + 1}`;
     used.add(id);
-    const type = String(question?.type || '').trim() === 'single_select' ? 'single_select' : 'text_input';
-    const options = (Array.isArray(question?.options) ? question.options : [])
+    const label = String(question?.label || question?.question || question?.title || id).trim();
+    const providedOptions = (Array.isArray(question?.options) ? question.options : [])
       .slice(0, 5)
       .map((option, optionIndex) => ({
         id: normalizeQuestionId(option?.id || option?.value, optionIndex),
@@ -410,6 +475,12 @@ function normalizeQuestionCardQuestions(questions = []) {
         answer_value: String(option?.answer_value || option?.answerValue || '').trim(),
       }))
       .filter((option) => option.id && option.label);
+    const providedOptionIds = new Set(providedOptions.map((option) => option.id));
+    const fallbackOptions = buildFallbackQuestionOptions(label, id)
+      .filter((option) => !providedOptionIds.has(option.id));
+    const options = (providedOptions.length >= 2
+      ? providedOptions
+      : [...providedOptions, ...fallbackOptions]).slice(0, 5);
     const dependsOn = question?.depends_on || question?.dependsOn || question?.condition || null;
     const dependentQuestionId = String(dependsOn?.question_id || dependsOn?.questionId || '').trim();
     const dependentValues = Array.isArray(dependsOn?.values)
@@ -418,8 +489,8 @@ function normalizeQuestionCardQuestions(questions = []) {
     return {
       id,
       slot: id,
-      label: String(question?.label || question?.question || question?.title || id).trim(),
-      type: type === 'single_select' && options.length > 0 ? 'single_select' : 'text_input',
+      label,
+      type: options.length > 0 ? 'single_select' : 'text_input',
       required: question?.required === false ? false : true,
       options,
       allow_custom: question?.allow_custom === false ? false : true,

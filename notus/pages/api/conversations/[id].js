@@ -26,6 +26,9 @@ export default function handler(req, res) {
   const id = Number(req.query.id);
 
   if (req.method === 'GET') {
+    // 详情中包含短期 capability，任何共享缓存都不能保存该响应。
+    res.setHeader('Cache-Control', 'no-store, no-cache, no-transform');
+    res.setHeader('Pragma', 'no-cache');
     const conversation = getConversation(id);
     if (!conversation) {
       return res.status(404).json({ error: 'Conversation not found', code: 'CONVERSATION_NOT_FOUND', request_id: context.request_id });

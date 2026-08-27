@@ -13,8 +13,13 @@ export default async function handler(req, res) {
   if (!runtime.ok) return res.status(500).json({ error: runtime.error.message, code: 'RUNTIME_ERROR' });
   try {
     const sessionId = Number(req.query.id || 0);
+    res.setHeader('Cache-Control', 'no-store, no-cache, no-transform');
+    res.setHeader('Pragma', 'no-cache');
     const controlTicket = req.headers['x-agent-control-ticket'];
     const token = req.headers['x-agent-session-token'];
+    if (!controlTicket && !token) {
+      return res.status(403).json({ error: 'CAPABILITY_REQUIRED', code: 'CAPABILITY_REQUIRED' });
+    }
     if (controlTicket) {
       const access = validateCapability(controlTicket, { sessionId, action: 'session_read' });
       if (!access.valid) return res.status(403).json({ error: access.reason, code: access.reason });

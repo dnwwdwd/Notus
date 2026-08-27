@@ -62,6 +62,22 @@ function issueCapability({ sessionId, interactionId = null, resumeJobId = null, 
   const encoded = encode(payload);
   const db = getDb();
   db.prepare("DELETE FROM agent_capabilities WHERE expires_at <= datetime('now') OR (consumed_at IS NOT NULL AND consumed_at <= datetime('now', '-1 day'))").run();
+  // 一张待回答卡片或一个待恢复任务只保留最新的一次性票据。SSE 重连和
+  // 对话刷新会重新发送它们，旧票据立即失效，既避免未消费记录不断累积，也
+  // 缩小意外泄露后的有效窗口。最终的状态迁移仍会做条件更新，不能只依赖
+  // 票据去重。
+  if (payload.action === 'respond' && payload.iid) {
+    db.prepare(`
+      DELETE FROM agent_capabilities
+      WHERE session_id = ? AND interaction_id = ? AND action = 'respond' AND consumed_at IS NULL
+    `).run(sid, payload.iid);
+  }
+  if (payload.action === 'resume' && payload.jid) {
+    db.prepare(`
+      DELETE FROM agent_capabilities
+      WHERE session_id = ? AND resume_job_id = ? AND action = 'resume' AND consumed_at IS NULL
+    `).run(sid, payload.jid);
+  }
   db.prepare(`
     INSERT INTO agent_capabilities (
       nonce_hash, session_id, interaction_id, resume_job_id, owner_id, action, expires_at
@@ -125,14 +141,15 @@ function createOrGetResumeJob({ sessionId, interactionId, ownerId = null } = {})
       `).run(id, sid, iid, ownerId ? String(ownerId) : null);
       job = db.prepare('SELECT * FROM agent_resume_jobs WHERE id = ?').get(id);
     }
-    db.prepare(`
-      UPDATE agent_sessions
-      SET status = 'queued_resume', state_version = state_version + 1, updated_at = datetime('now')
-      WHERE id = ? AND status IN ('waiting_interaction', 'queued_resume')
-    `).run(sid);
-    // 提问卡回答仅唤醒持久化任务；是否能执行仍由同会话 FIFO 队列判断。
-    try { require('./agentTaskQueue').wakeTask(sid); } catch {}
-    return job;
+    // 已完成的 resume job 只能用于幂等查询，不能因旧请求再次把 session 唤醒。
+    if (job.status === 'queued') {
+      db.prepare(`
+        UPDATE agent_sessions
+        SET status = 'queued_resume', state_version = state_version + 1, updated_at = datetime('now')
+        WHERE id = ? AND status IN ('waiting_interaction', 'queued_resume')
+      `).run(sid);
+    }
+    return formatResumeJob(job);
   })();
 }
 
@@ -159,6 +176,12 @@ function formatResumeJob(row) {
 
 function getResumeJob(id) {
   return formatResumeJob(getDb().prepare('SELECT * FROM agent_resume_jobs WHERE id = ?').get(String(id || '')));
+}
+
+function getResumeJobByInteraction(interactionId) {
+  const iid = toPositiveInt(interactionId);
+  if (!iid) return null;
+  return formatResumeJob(getDb().prepare('SELECT * FROM agent_resume_jobs WHERE interaction_id = ?').get(iid));
 }
 
 function listResumeJobsByConversation(conversationId) {
@@ -196,9 +219,20 @@ function recoverStaleRunLeases({ conversationId = null } = {}) {
           state_version = state_version + 1, updated_at = datetime('now')
       WHERE id = ? AND status = 'running' AND state_version = ?
     `);
+    const requeueResumeJobs = db.prepare(`
+      UPDATE agent_resume_jobs
+      SET status = 'queued', run_id = NULL, result_json = NULL, error_code = NULL,
+          started_at = NULL, finished_at = NULL, updated_at = datetime('now')
+      WHERE session_id = ? AND status = 'running'
+        AND (? IS NULL OR run_id = ?)
+    `);
     const recovered = [];
     for (const row of staleRows) {
       if (!update.run(row.id, Number(row.state_version || 0)).changes) continue;
+      // 进程可能在 resume job 已标记 running、但 Worker 尚未收尾时退出。
+      // 队列会重新领取该任务，因此对应 job 也必须回到 queued，否则新 Worker
+      // 会把它误判为失效恢复任务并将 session 标记为 failed。
+      requeueResumeJobs.run(row.id, row.active_run_id || null, row.active_run_id || null);
       if (row.active_run_id) activeRuns.delete(String(row.active_run_id));
       recovered.push(Number(row.id));
     }
@@ -322,6 +356,18 @@ function updateResumeJob(id, updates = {}) {
   return getResumeJob(id);
 }
 
+function settleResumeJob(id, sessionStatus) {
+  const status = String(sessionStatus || 'failed');
+  const interrupted = status === 'queued_resume';
+  const resumedToStableState = status === 'completed'
+    || ['waiting_interaction', 'waiting_operation_confirmation', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery'].includes(status);
+  return updateResumeJob(id, {
+    status: interrupted ? 'queued' : resumedToStableState ? 'completed' : 'failed',
+    result: { status },
+    finished: !interrupted,
+  });
+}
+
 function recordRunUsage({ sessionId, runId = null, loopIndex = null, sourceType = 'llm', provider = '', model = '', usage = null, usageSource = 'provider' } = {}) {
   const normalized = normalizeUsage(usage) || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
   getDb().prepare(`
@@ -351,6 +397,7 @@ module.exports = {
   acquireRunLease,
   createOrGetResumeJob,
   getResumeJob,
+  getResumeJobByInteraction,
   getSessionUsage,
   isCancellationRequested,
   issueCapability,
@@ -361,6 +408,7 @@ module.exports = {
   releaseRunLease,
   renewRunLease,
   requestCancellation,
+  settleResumeJob,
   updateResumeJob,
   validateCapability,
 };

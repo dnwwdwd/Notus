@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 
 const routeSource = fs.readFileSync(
-  path.resolve(__dirname, '../pages/api/agent/sessions/[id]/changes.js'),
+  path.resolve(__dirname, '../pages/api/agent/sessions/[id].js'),
   'utf8'
 );
 const workspaceSource = fs.readFileSync(

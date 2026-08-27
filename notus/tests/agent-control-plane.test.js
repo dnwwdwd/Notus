@@ -171,11 +171,18 @@ async function run() {
   assert.strictEqual(releaseRunLease(created.sessionId, 'run-model-recovery', 'running'), true);
 
   getDb().prepare(`
+    UPDATE agent_resume_jobs
+    SET status = 'running', run_id = 'abandoned-run'
+    WHERE id = ?
+  `).run(firstJob.id);
+  getDb().prepare(`
     UPDATE agent_sessions
     SET status = 'running', active_run_id = 'abandoned-run', lease_expires_at = ?
     WHERE id = ?
   `).run(new Date(Date.now() - 60_000).toISOString(), created.sessionId);
   assert.deepStrictEqual(recoverStaleRunLeases({ conversationId: conversation.id }), [created.sessionId]);
+  assert.strictEqual(getDb().prepare('SELECT status FROM agent_resume_jobs WHERE id = ?').get(firstJob.id).status, 'queued', '恢复孤儿 run 时必须把 running resume job 重新排队');
+  assert.strictEqual(getDb().prepare('SELECT run_id FROM agent_resume_jobs WHERE id = ?').get(firstJob.id).run_id, null, '重新排队的 resume job 不能继续携带已失效 run');
   const recoveredSession = getSession(created.sessionId);
   assert.strictEqual(recoveredSession.status, 'queued_resume', '过期 running 必须转为可恢复状态');
   assert.strictEqual(recoveredSession.active_run_id, null);

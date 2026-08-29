@@ -1,6 +1,7 @@
 export const TOOL_DISPLAY = {
   search_knowledge: '检索知识库',
   web_search: '联网搜索',
+  fetch_web_url: '读取网页链接',
   read_file: '读取文件',
   view_images: '查看图片',
   create_note: '新建笔记',

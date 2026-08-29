@@ -31,6 +31,11 @@ const AUTO_CONFIRM = 'auto_confirm';
 const MANUAL_CONFIRM = 'manual_confirm';
 const INTERRUPTIBLE_AGENT_SESSION_STATUSES = new Set(['created', 'queued', 'running']);
 
+function isInternalInteractionAnswerMessage(message = {}) {
+  const meta = message?.meta && typeof message.meta === 'object' ? message.meta : {};
+  return Boolean(meta.interaction_id && meta.interaction_resolution_status);
+}
+
 function readConfirmMode() {
   if (typeof window === 'undefined') return AUTO_CONFIRM;
   try {
@@ -822,10 +827,6 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     });
     const payload = await readApiResponse(response, '回答提问卡片失败');
     if (payload.interaction) setPendingInteractions((previous) => upsertById(previous, payload.interaction));
-    if (payload.answer_message) {
-      const nextMessage = mapConversationMessages([payload.answer_message], 'canvas')[0];
-      if (nextMessage) setMessages((previous) => upsertById(previous, nextMessage));
-    }
     return payload;
   }, []);
 
@@ -940,12 +941,13 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
   }, [respondToInteraction, resumeInteraction, shouldReconnectInteractionSession, toast]);
 
   const displayedMessages = useMemo(() => {
+    const visibleMessages = messages.filter((message) => !isInternalInteractionAnswerMessage(message));
     const latestAssistantIndexBySession = new Map();
-    messages.forEach((message, index) => {
+    visibleMessages.forEach((message, index) => {
       const sessionId = String(message?.meta?.session_id || '');
       if (message?.role === 'assistant' && sessionId) latestAssistantIndexBySession.set(sessionId, index);
     });
-    return messages.map((message, index) => {
+    return visibleMessages.map((message, index) => {
       const operationSetId = String(message?.meta?.operation_set_id || message?.operationSet?.id || '');
       const sessionId = String(message?.meta?.session_id || '');
       const operationSet = taskChangeSetsBySession[sessionId]

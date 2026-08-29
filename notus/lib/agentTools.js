@@ -1,5 +1,7 @@
 const fs = require('fs');
 const path = require('path');
+const dns = require('dns').promises;
+const net = require('net');
 const { getDb } = require('./db');
 const { getEffectiveConfig } = require('./config');
 const { hybridSearch } = require('./retrieval');
@@ -28,7 +30,8 @@ const {
 const { resolveWebSearchConfig } = require('./searchProviderConfigs');
 const { webSearch } = require('./webSearch');
 const { saveWebSearchContext } = require('./webSearchContextStore');
-const { RESULT_LIMITS, limitToolResult, runWithSignal, validateToolInput } = require('./agentToolPolicy');
+const { parseUrl } = require('./attachmentParsing');
+const { RESULT_LIMITS, limitToolResult, redactSecrets, runWithSignal, validateToolInput } = require('./agentToolPolicy');
 const {
   executePlannedResearch,
   getTaskActivity,
@@ -77,6 +80,12 @@ function webSearchToolDefinition() {
   return tool('web_search', '在互联网上搜索实时信息，获取最新网页内容作为参考。仅在用户打开联网搜索时可用；首次调用由服务端以原始词为首项自动执行 3 个查询，证据不足时最多补到 5 个。同一任务会复用缓存，不能通过改词绕过来源级预算。', {
     query: { type: 'string', description: '搜索关键词，建议简洁具体。' },
   }, ['query']);
+}
+
+function fetchWebUrlToolDefinition() {
+  return tool('fetch_web_url', '读取一个公开网页链接的正文，用于检查用户提供或文档正文中的具体链接是否可直接抓取。先用它检查已知链接；需要发现新资料或补充来源时再用 web_search；只有网页需要特殊服务能力且内置读取无法完成时才使用 MCP。页面动态渲染、下载文件、访问限制或正文为空会作为可记录的检查结果返回，不要对同一链接重复调用。', {
+    url: { type: 'string', description: '要读取的完整 HTTP(S) 网页链接。' },
+  }, ['url']);
 }
 
 function agentMcpServerToolDefinition() {
@@ -269,6 +278,7 @@ function buildToolDefinitions(session = {}, options = {}) {
     : definitions;
 
   if (session?.web_search_enabled) {
+    scopedDefinitions.push(fetchWebUrlToolDefinition());
     const config = resolveWebSearchConfig(session.web_search_provider || '');
     if (config.enabled && !config.missing_api_key) {
       scopedDefinitions.push(webSearchToolDefinition());
@@ -386,6 +396,97 @@ async function executeWebSearch({ query } = {}, sessionId, _notesDir, context = 
     success: !planned.error && !planned.provider_error,
     provider: config.provider,
     context_message_id: contextMessageId,
+  };
+}
+
+function isPrivateNetworkAddress(address = '') {
+  const value = String(address || '').toLowerCase().split('%')[0];
+  if (net.isIP(value) === 4) {
+    const parts = value.split('.').map(Number);
+    return parts[0] === 0 || parts[0] === 10 || parts[0] === 127
+      || (parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127)
+      || (parts[0] === 169 && parts[1] === 254)
+      || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31)
+      || (parts[0] === 192 && (parts[1] === 0 || parts[1] === 168))
+      || (parts[0] === 198 && (parts[1] === 18 || parts[1] === 19))
+      || parts[0] >= 224;
+  }
+  const mappedV4 = value.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  if (mappedV4) return isPrivateNetworkAddress(mappedV4[1]);
+  const groups = value.split(':').filter(Boolean);
+  if (groups.includes('ffff') && groups.length >= 3) {
+    const tail = groups.slice(-2).map((item) => Number.parseInt(item, 16));
+    if (tail.every(Number.isFinite)) return isPrivateNetworkAddress(`${tail[0] >> 8}.${tail[0] & 255}.${tail[1] >> 8}.${tail[1] & 255}`);
+  }
+  return value === '::' || value === '::1' || value.startsWith('fe80:') || value.startsWith('fc') || value.startsWith('fd');
+}
+
+async function publicWebUrl(value = '') {
+  let url;
+  try {
+    url = new URL(String(value || '').trim());
+  } catch {
+    return { error: 'URL_INVALID', message: '链接格式无效。' };
+  }
+  if (!['http:', 'https:'].includes(url.protocol)) return { error: 'URL_PROTOCOL_UNSUPPORTED', message: '只支持 HTTP(S) 网页链接。' };
+  const host = String(url.hostname || '').replace(/^\[|\]$/g, '').toLowerCase();
+  if (url.username || url.password) return { error: 'URL_CREDENTIALS_BLOCKED', message: '链接不能包含用户名或密码。' };
+  if (host === 'localhost' || host.endsWith('.local') || isPrivateNetworkAddress(host)) {
+    return { error: 'URL_PRIVATE_NETWORK_BLOCKED', message: '不能读取本机或私有网络地址。' };
+  }
+  try {
+    const records = await dns.lookup(host, { all: true, verbatim: true });
+    if (!records.length || records.some((item) => isPrivateNetworkAddress(item.address))) {
+      return { error: 'URL_PRIVATE_NETWORK_BLOCKED', message: '不能读取解析到本机或私有网络的地址。' };
+    }
+  } catch {
+    return { error: 'URL_HOST_UNRESOLVABLE', message: '链接域名无法解析。' };
+  }
+  url.hash = '';
+  return { url: url.toString() };
+}
+
+function safeExternalUrl(value = '') {
+  try {
+    const url = new URL(String(value || ''));
+    return `${url.protocol}//${url.host}${url.pathname}`;
+  } catch {
+    return '';
+  }
+}
+
+function sanitizeTimelineString(value = '') {
+  return String(value || '')
+    .replace(/https?:\/\/[^\s<>"'`]+/gi, (url) => safeExternalUrl(url) || url)
+    .replace(/\b(authorization|cookie|token|secret|password|api[_-]?key|private[_-]?key)\s*[:=]\s*(?:bearer\s+)?[^\s,;]+/gi, '$1=[REDACTED]');
+}
+
+function sanitizeToolInputForTimeline(value, key = '') {
+  if (Array.isArray(value)) return value.map((item) => sanitizeToolInputForTimeline(item, key));
+  if (!value || typeof value !== 'object') {
+    if (typeof value === 'string') return sanitizeTimelineString(value);
+    return value;
+  }
+  return Object.fromEntries(Object.entries(value).map(([entryKey, entryValue]) => (
+    [entryKey, sanitizeToolInputForTimeline(entryValue, entryKey)]
+  )));
+}
+
+async function executeFetchWebUrl({ url } = {}) {
+  const normalized = await publicWebUrl(url);
+  if (normalized.error) return normalized;
+  const parsed = await parseUrl(normalized.url, { validateUrl: publicWebUrl });
+  const safeUrl = safeExternalUrl(parsed.source || normalized.url);
+  const text = String(parsed.text || '');
+  // 链接抽检中的“不可读取”是需要汇总的事实，不应被当作 Agent 工具异常而中断后续链接检查。
+  return {
+    url: safeUrl,
+    status: parsed.status || 'error',
+    title: String(parsed.metadata?.title || ''),
+    content: text,
+    text_length: text.length,
+    error_code: parsed.errorCode || '',
+    message: parsed.warning || '',
   };
 }
 
@@ -1536,6 +1637,7 @@ function summarizeInput(toolUse = {}) {
   const input = toolUse.input || {};
   if (toolUse.name === 'search_knowledge') return input.query || '';
   if (toolUse.name === 'web_search') return input.query || '';
+  if (toolUse.name === 'fetch_web_url') return JSON.stringify({ url: safeExternalUrl(input.url) });
   if (toolUse.name === 'read_file') return input.path || '';
   if (toolUse.name === 'read_global_agent_file') return `${input.file || ''}.md`;
   if (toolUse.name === 'update_global_agent_file') return `${input.file || ''}.md`;
@@ -1554,7 +1656,7 @@ function summarizeInput(toolUse = {}) {
   if (toolUse.name === 'install_skill_draft' || toolUse.name === 'validate_skill_draft') return input.draft_id || 'Skill 草稿';
   if (toolUse.name === 'update_skill_draft' || toolUse.name === 'get_skill_details' || toolUse.name === 'set_skill_enabled' || toolUse.name === 'update_skill_from_git' || toolUse.name === 'uninstall_skill') return input.skill_id || 'Skill';
   if (toolUse.name.includes('mcp_server')) return input.server_id || input.name || 'MCP Server';
-  return toolUse.name || '';
+  return JSON.stringify(sanitizeToolInputForTimeline(redactSecrets(input)));
 }
 
 function agentSecretEntries(entries = []) {
@@ -1708,6 +1810,7 @@ async function executeToolSafely(toolUse = {}, session, notesDir = getEffectiveC
 const TOOL_EXECUTORS = {
   search_knowledge: executeSearchKnowledge,
   web_search: executeWebSearch,
+  fetch_web_url: executeFetchWebUrl,
   read_file: executeReadFile,
   create_note: executeCreateNote,
   preview_patch_files: executePreviewPatchFiles,
@@ -1747,6 +1850,8 @@ module.exports = {
   executeToolSafely,
   executeSearchKnowledge,
   executeWebSearch,
+  executeFetchWebUrl,
+  publicWebUrl,
   executeReadFile,
   executeCreateNote,
   executePreviewPatchFiles,

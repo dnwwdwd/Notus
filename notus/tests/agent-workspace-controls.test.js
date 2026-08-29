@@ -193,6 +193,7 @@ assert.ok(workspace.includes("const FILE_READ_TOOL_NAMES = new Set(['read_file',
 assert.ok(workspace.includes('if (FILE_READ_TOOL_NAMES.has(toolName)) return <Icons.fileText size={size} />;'), '文件读取工具必须显示带文本行的文件图标');
 assert.ok(workspace.includes('if (FILE_WRITE_TOOL_NAMES.has(toolName)) return <Icons.fileEdit size={size} />;'), '文件写入和修改预览必须显示文件编辑图标');
 assert.ok(workspace.includes("if (source.includes('mcp')) return <Icons.mcp size={size} />;"), 'MCP 工具必须优先使用独立服务器机架图标');
+assert.ok(workspace.includes("if (source.includes('web') || source.includes('网页')) return <Icons.globe size={size} />;"), '网页链接读取步骤必须使用地球图标');
 assert.ok(workspace.includes("if (source.includes('skill')) return <Icons.skill size={size} />;"), 'Skill 工具必须优先使用独立 Skill 图标');
 assert.ok(workspace.includes("if (source.includes('生成提问卡片')) return <Icons.messagePlus size={size} />;"), '生成提问步骤必须使用消息加号图标');
 assert.ok(workspace.includes("if (source.includes('等待回答提问卡片')) return <Icons.messageQuestion size={size} />;"), '等待回答步骤必须使用问号气泡图标');
@@ -258,6 +259,27 @@ assert.ok(controller.includes('const registerAgentSessions = useCallback((sessio
 assert.ok(controller.includes('sessions: affectedSessionIds.map'), '输入框中断任务时必须逐项携带取消凭据，才能同时结束该对话内其他在途任务');
 assert.ok(controller.includes('cancelled_session_ids'), '批量取消响应必须逐个同步为终态，不能让恢复列表继续显示为运行中');
 assert.ok(cancelRoute.includes('requestedSessions') && cancelRoute.includes('sessionsById'), '取消接口必须逐项验证并去重批量取消请求');
+
+const agentTools = read('lib/agentTools.js');
+const agentResearch = read('lib/agentResearch.js');
+const agentSession = read('lib/agentSession.js');
+const agentPrompt = read('lib/agentLoopPrompt.js');
+const agentDisplay = read('utils/agentDisplay.js');
+assert.ok(agentTools.includes("tool('fetch_web_url'"), '打开联网搜索后必须提供内置网页链接读取工具');
+assert.ok(agentTools.includes("if (toolUse.name === 'fetch_web_url') return JSON.stringify({ url: safeExternalUrl(input.url) });"), '网页链接工具记录必须使用脱敏 URL 参数摘要');
+assert.ok(agentTools.includes('function sanitizeToolInputForTimeline'), '外部 MCP 参数摘要必须移除 URL 查询参数');
+assert.ok(agentResearch.includes("if (toolName === 'fetch_web_url' && result.url)"), '网页链接读取结果必须进入资料回执');
+assert.ok(agentPrompt.includes('必须优先调用 fetch_web_url'), '已知链接检查必须优先使用内置读取工具');
+assert.ok(agentPrompt.includes('MCP 只用于 fetch_web_url 和 web_search 无法完成的特殊页面能力'), 'MCP 必须作为网页读取和联网搜索后的特殊能力兜底');
+assert.ok(agentSession.includes('previous?.input_hash === inputHash && previous?.error_code === errorCode'), '连续失败守卫必须区分参数和错误码');
+assert.ok(agentLoop.includes('recordToolFail(session.id, toolUse.name, toolUse.input || {}, result)'), '循环守卫必须使用真实工具参数和结果');
+assert.ok(agentLoop.includes('连续两次使用相同参数失败'), '任务停止时必须说明相同参数的失败原因');
+assert.ok(agentSession.includes('details: Array.isArray(result.details)'), 'Schema 校验失败必须保留字段级详情给工具链显示');
+assert.ok(agentDisplay.includes("fetch_web_url: '读取网页链接'"), '网页链接读取工具必须显示中文动作名');
+assert.ok(controller.includes("toolLabel(event.tool_display_name || event.tool_name)"), '工具链必须优先显示服务端传入的原始 MCP 工具名');
+assert.ok(controller.includes("displayTool: event.tool_display_name || event.tool_name || ''"), '工具链详情必须保存原始 MCP 工具显示名');
+assert.ok(agentLoop.includes('const toolDisplayName = mcpContext.map?.[toolUse.name]?.toolName || toolUse.name;'), 'Agent Loop 必须从 MCP 映射中取得原始工具名作为显示名');
+assert.ok(toolChainSource.includes('{step.displayTool || step.tool}'), '展开后的工具链详情不得显示 MCP 内部别名');
 assert.ok(cancelRoute.includes("action: 'cancel' }, { consume: true }"), '批量取消必须只在全部凭据通过预检后消耗对应 cancel ticket');
 assert.ok(conversationRoute.includes("['created', 'queued', 'running'"), '恢复的排队任务必须重新签发 cancel ticket，不能只给前端一个无法取消的 session ID');
 assert.ok(controller.includes("if (!response.ok) throw new Error(await readErrorResponse(response, '中断 Agent 任务失败'));"), '取消接口失败时不得伪装成已取消');

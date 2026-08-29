@@ -57,6 +57,21 @@ const {
 
 const DEFAULT_LLM_RETRY_LIMIT = 5;
 
+function repeatedToolFailureText(toolUse = {}, result = {}, mcpToolMap = {}) {
+  const mappedName = mcpToolMap?.[toolUse.name]?.toolName;
+  const toolName = mappedName || toolUse.name || '工具';
+  const details = Array.isArray(result?.details)
+    ? result.details.slice(0, 3).map((item) => `${item.path || '/'}：${item.message || item.keyword || '参数无效'}`).filter(Boolean)
+    : [];
+  const reason = result?.error === 'INVALID_TOOL_INPUT'
+    ? `参数未通过 Schema 校验${details.length ? `（${details.join('；')}）` : ''}`
+    : `错误码：${result?.error || 'TOOL_EXECUTION_ERROR'}`;
+  const fallback = String(toolUse.name || '').startsWith('mcp_')
+    ? '已停止重复相同的 MCP 调用；可改正参数，或改用内置链接读取、联网搜索继续。'
+    : '已停止重复相同调用，请调整参数后再继续。';
+  return `${toolName} 连续两次使用相同参数失败：${reason}。${fallback}`;
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -802,11 +817,13 @@ async function runAgentLoop({ sessionId, runId = null, llmConfig, onStream, sign
     pendingDispatch = null;
     for (let toolIndex = startToolIndex; toolIndex < toolUseBlocks.length; toolIndex += 1) {
       const toolUse = toolUseBlocks[toolIndex];
+      const toolDisplayName = mcpContext.map?.[toolUse.name]?.toolName || toolUse.name;
       emit({
         type: 'progress',
         stage: 'tool_start',
         text: `正在执行 ${toolUse.name}。`,
         tool_name: toolUse.name,
+        tool_display_name: toolDisplayName,
         tool_input_summary: summarizeInput(toolUse),
         loop_index: loopIndex,
         execution_segment_id: activeExecutionSegment.id,
@@ -856,6 +873,7 @@ async function runAgentLoop({ sessionId, runId = null, llmConfig, onStream, sign
         stage: 'tool_done',
         text: failed ? `${toolUse.name} 执行失败。` : `${toolUse.name} 执行完成。`,
         tool_name: toolUse.name,
+        tool_display_name: toolDisplayName,
         result_summary: summarizeToolResult(toolUse.name, result),
         loop_index: loopIndex,
         execution_segment_id: activeExecutionSegment.id,
@@ -866,10 +884,10 @@ async function runAgentLoop({ sessionId, runId = null, llmConfig, onStream, sign
       });
 
       if (failed) {
-        if (recordToolFail(session.id, toolUse.name)) {
+        if (recordToolFail(session.id, toolUse.name, toolUse.input || {}, result)) {
           updateExecutionSegment(activeExecutionSegment.id, { status: 'failed', completed: true });
           updateSessionStatus(session.id, 'failed');
-          emit({ type: 'final', text: '同一工具连续失败，任务已停止。', status: 'failed', reason: 'consecutive_tool_failure', tool_name: toolUse.name, loop_index: loopIndex, usage: getSessionUsage(session.id) });
+          emit({ type: 'final', text: repeatedToolFailureText(toolUse, result, mcpContext.map), status: 'failed', reason: 'consecutive_tool_failure', tool_name: toolUse.name, loop_index: loopIndex, usage: getSessionUsage(session.id) });
           return { status: 'failed', reason: 'consecutive_tool_failure' };
         }
       } else {

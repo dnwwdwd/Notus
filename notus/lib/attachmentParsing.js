@@ -12,6 +12,7 @@ const WEB_DOWNLOAD_EXTENSIONS = new Set([
 ]);
 const MIN_WEB_CONTENT_LENGTH = 200;
 const WEB_FETCH_TIMEOUT_MS = 15000;
+const MAX_WEB_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 let LiteParseClass = null;
 
@@ -173,6 +174,32 @@ function normalizeWebText(value = '') {
     .trim();
 }
 
+async function readWebResponseText(response) {
+  const declaredSize = Number(response.headers.get('content-length') || 0);
+  if (Number.isFinite(declaredSize) && declaredSize > MAX_WEB_RESPONSE_BYTES) {
+    throw Object.assign(new Error('网页响应过大。'), { code: 'CONTENT_TOO_LARGE' });
+  }
+  if (!response.body?.getReader) return response.text();
+  const reader = response.body.getReader();
+  const chunks = [];
+  let received = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += value.byteLength;
+      if (received > MAX_WEB_RESPONSE_BYTES) {
+        await reader.cancel();
+        throw Object.assign(new Error('网页响应过大。'), { code: 'CONTENT_TOO_LARGE' });
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
 function extractWithReadability(html, url) {
   const dom = new JSDOM(html, { url });
   const reader = new Readability(dom.window.document);
@@ -224,43 +251,65 @@ function extractWebUrls(text = '') {
   return [...new Set(matches.map(normalizeUrl).filter(Boolean).filter((url) => !isDownloadUrl(url)))];
 }
 
-async function parseUrl(url) {
+async function parseUrl(url, { validateUrl } = {}) {
   const normalizedUrl = normalizeUrl(url);
   const base = buildBase(normalizedUrl || url, 'webpage');
   if (!normalizedUrl) {
     return parseError(url, 'webpage', 'FETCH_FAILED', '链接格式无效。');
   }
-  if (isDownloadUrl(normalizedUrl)) {
-    return parseError(normalizedUrl, 'webpage', 'UNSUPPORTED_FORMAT', '该链接指向文件下载，请先下载后作为附件上传。');
-  }
-
   let response;
   let html;
+  let resolvedUrl = normalizedUrl;
+  for (let redirectCount = 0; redirectCount <= 5; redirectCount += 1) {
+    if (isDownloadUrl(resolvedUrl)) {
+      return parseError(resolvedUrl, 'webpage', 'UNSUPPORTED_FORMAT', '该链接指向文件下载，请先下载后作为附件上传。');
+    }
+    if (typeof validateUrl === 'function') {
+      const validation = await validateUrl(resolvedUrl);
+      if (validation?.error) return parseError(resolvedUrl, 'webpage', validation.error, validation.message || '链接不允许读取。');
+    }
+    try {
+      response = await fetch(resolvedUrl, {
+        signal: AbortSignal.timeout(WEB_FETCH_TIMEOUT_MS),
+        redirect: 'manual',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; Notus/1.0)',
+          Accept: 'text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8',
+        },
+      });
+    } catch (error) {
+      return parseError(resolvedUrl, 'webpage', 'FETCH_FAILED', `无法访问该链接：${error.message}`);
+    }
+    if (![301, 302, 303, 307, 308].includes(response.status)) break;
+    const location = response.headers.get('location');
+    if (!location) return parseError(resolvedUrl, 'webpage', 'FETCH_FAILED', '网页重定向缺少目标地址。');
+    try {
+      resolvedUrl = new URL(location, resolvedUrl).toString();
+    } catch {
+      return parseError(resolvedUrl, 'webpage', 'FETCH_FAILED', '网页重定向地址无效。');
+    }
+  }
+  if (!response || [301, 302, 303, 307, 308].includes(response.status)) {
+    return parseError(resolvedUrl, 'webpage', 'TOO_MANY_REDIRECTS', '网页重定向次数过多。');
+  }
   try {
-    response = await fetch(normalizedUrl, {
-      signal: AbortSignal.timeout(WEB_FETCH_TIMEOUT_MS),
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; Notus/1.0)',
-        Accept: 'text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8',
-      },
-    });
     if (!response.ok) {
-      return parseError(normalizedUrl, 'webpage', 'FETCH_FAILED', `请求失败，HTTP ${response.status}。`);
+      return parseError(resolvedUrl, 'webpage', 'FETCH_FAILED', `请求失败，HTTP ${response.status}。`);
     }
     const contentType = String(response.headers.get('content-type') || '').toLowerCase();
     if (contentType && !contentType.includes('text/html') && !contentType.includes('text/plain') && !contentType.includes('application/xhtml')) {
-      return parseError(normalizedUrl, 'webpage', 'UNSUPPORTED_FORMAT', `该链接返回 ${contentType}，不是可解析网页。`);
+      return parseError(resolvedUrl, 'webpage', 'UNSUPPORTED_FORMAT', `该链接返回 ${contentType}，不是可解析网页。`);
     }
-    html = await response.text();
+    html = await readWebResponseText(response);
   } catch (error) {
-    return parseError(normalizedUrl, 'webpage', 'FETCH_FAILED', `无法访问该链接：${error.message}`);
+    return parseError(resolvedUrl, 'webpage', error.code || 'FETCH_FAILED', `无法访问该链接：${error.message}`);
   }
 
-  const readability = extractWithReadability(html, normalizedUrl);
+  const readability = extractWithReadability(html, resolvedUrl);
   if (readability) {
     return {
       ...base,
-      source: normalizedUrl,
+      source: resolvedUrl,
       status: 'success',
       text: readability.text,
       metadata: readability.title ? { title: readability.title } : undefined,
@@ -272,7 +321,7 @@ async function parseUrl(url) {
   const bodyText = normalizeWebText($('body').text());
   if (bodyText.length < 100) {
     return parseError(
-      normalizedUrl,
+      resolvedUrl,
       'webpage',
       'CSR_PAGE',
       '此页面可能由 JavaScript 动态渲染，无法直接抓取正文。可以复制网页正文后粘贴到输入框。'
@@ -281,12 +330,12 @@ async function parseUrl(url) {
 
   const fallbackText = extractWithCheerio(html);
   if (fallbackText.length < MIN_WEB_CONTENT_LENGTH) {
-    return parseError(normalizedUrl, 'webpage', 'EMPTY_CONTENT', '页面内容过少，无法有效提取正文。');
+    return parseError(resolvedUrl, 'webpage', 'EMPTY_CONTENT', '页面内容过少，无法有效提取正文。');
   }
 
   return {
     ...base,
-    source: normalizedUrl,
+    source: resolvedUrl,
     status: 'partial',
     text: fallbackText,
     warning: '页面结构不标准，已尽量提取正文，内容可能包含少量导航或无关文字。',

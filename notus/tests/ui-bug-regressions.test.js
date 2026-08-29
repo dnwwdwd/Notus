@@ -287,6 +287,11 @@ assert.ok(settings.includes("{ id: 'global-agent', label: 'Agent 个性', icon: 
   assert.ok(agentWorkspace.includes('function buildInteractionHistoryStep'));
   assert.ok(agentWorkspace.includes('function mergeInteractionStepsIntoTimeline'));
   assert.ok(agentWorkspace.includes('const interactionStepsFor'));
+  assert.ok(fileAgentWorkspace.includes('function isInternalInteractionAnswerMessage'), '提问卡片回答摘要必须在消息列表中标记为内部记录');
+  assert.ok(fileAgentWorkspace.includes("messages.filter((message) => !isInternalInteractionAnswerMessage(message))"), '内部回答摘要不得作为独立聊天消息显示');
+  assert.ok(!fileAgentWorkspace.includes('if (payload.answer_message)'), '回答接口返回的内部摘要不得即时插入聊天消息列表');
+  assert.ok(agentWorkspace.includes("if (interaction?.status !== 'answered') return null;"), '待回答卡片由等待步骤承载，只有已回答 interaction 才追加问答步骤');
+  assert.ok(agentWorkspace.includes('const pendingSteps = interactionSteps.filter'), '已回答问题必须追加在原提问步骤后，不能覆盖等待回答步骤');
   assert.ok(agentWorkspace.includes('Icons.messageCircle'));
   assert.ok(agentWorkspace.includes('Icons.messagePlus'));
   assert.ok(agentWorkspace.includes('Icons.messageQuestion'));

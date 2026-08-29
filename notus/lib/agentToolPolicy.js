@@ -8,6 +8,7 @@ const RESULT_LIMITS = {
   read_skill_file: 128 * 1024,
   search_knowledge: 96 * 1024,
   web_search: 64 * 1024,
+  fetch_web_url: 64 * 1024,
   mcp: 64 * 1024,
 };
 

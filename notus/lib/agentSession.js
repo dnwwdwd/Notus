@@ -591,7 +591,13 @@ function clearMessagesCheckpoint(sessionId, checkpointId = null) {
 }
 
 function summarizeToolResult(toolName, result) {
-  if (result?.error) return { error: result.error, message: result.message || result.reason || '' };
+  if (result?.error) return {
+    error: result.error,
+    message: result.message || result.reason || '',
+    details: Array.isArray(result.details)
+      ? result.details.slice(0, 10).map((item) => ({ path: item?.path || '/', keyword: item?.keyword || '', message: item?.message || '' }))
+      : [],
+  };
   switch (toolName) {
     case 'search_knowledge': return {
       query: result?.query || '',
@@ -606,6 +612,14 @@ function summarizeToolResult(toolName, result) {
       context_message_id: result?.context_message_id || null,
       budget: result?.budget || null,
       query_records: Array.isArray(result?.query_records) ? result.query_records.map((item) => ({ query: item.query, phase: item.phase, status: item.status, result_count: item.result_count })) : [],
+    };
+    case 'fetch_web_url': return {
+      url: result?.url || '',
+      status: result?.status || 'error',
+      title: result?.title || '',
+      text_length: Number(result?.text_length || 0),
+      error_code: result?.error_code || '',
+      message: result?.message || '',
     };
     case 'read_file': return { file_path: result?.file_path, char_count: String(result?.content || '').length };
     case 'create_note': return { path: result?.path, created: Boolean(result?.created) };
@@ -647,17 +661,37 @@ function summarizeToolResult(toolName, result) {
 }
 
 function sanitizeToolInputForLog(toolName, toolInput) {
+  const sanitizeString = (value = '') => String(value || '')
+    .replace(/https?:\/\/[^\s<>"'`]+/gi, (url) => {
+      try {
+        const parsed = new URL(url);
+        return `${parsed.protocol}//${parsed.host}${parsed.pathname}`;
+      } catch {
+        return url;
+      }
+    })
+    .replace(/\b(authorization|cookie|token|secret|password|api[_-]?key|private[_-]?key)\s*[:=]\s*(?:bearer\s+)?[^\s,;]+/gi, '$1=[REDACTED]');
+
+  const sanitizeValue = (value, key = '') => {
+    if (Array.isArray(value)) return value.map((item) => sanitizeValue(item, key));
+    if (!value || typeof value !== 'object') {
+      if (typeof value === 'string') return sanitizeString(value);
+      return value;
+    }
+    return Object.fromEntries(Object.entries(value).map(([entryKey, entryValue]) => [entryKey, sanitizeValue(entryValue, entryKey)]));
+  };
+
   if (toolName === 'add_mcp_server') {
     const input = toolInput && typeof toolInput === 'object' ? toolInput : {};
     const sanitizeEntries = (entries = []) => (Array.isArray(entries) ? entries : []).map((entry) => ({ name: String(entry?.name || '').trim(), configured: Boolean(String(entry?.value || '').trim() || entry?.secretId) })).filter((entry) => entry.name);
-    return {
+    return sanitizeValue(redactSecrets({
       name: String(input.name || '').trim(),
       transport: String(input.transport || '').trim(),
       ...(input.http ? { http: { url: String(input.http.url || '').trim(), headers: sanitizeEntries(input.http.headers), connectTimeoutMs: input.http.connectTimeoutMs, requestTimeoutMs: input.http.requestTimeoutMs } } : {}),
       ...(input.stdio ? { stdio: { command: String(input.stdio.command || '').trim(), args: Array.isArray(input.stdio.args) ? input.stdio.args.map(String) : [], cwd: String(input.stdio.cwd || '').trim(), env: sanitizeEntries(input.stdio.env), connectTimeoutMs: input.stdio.connectTimeoutMs } } : {}),
-    };
+    }));
   }
-  return toolInput || null;
+  return sanitizeValue(redactSecrets(toolInput || null));
 }
 
 function redactToolSecretsFromThinking(toolName, toolInput, thinking) {
@@ -686,7 +720,7 @@ function logToolCall({ sessionId, loopIndex, toolName, toolInput, toolResult, th
   );
 }
 
-function updateToolGuard(sessionId, toolName, toolResult, failed) {
+function updateToolGuard(sessionId, toolName, toolResult, failed, toolInput = null) {
   const db = getDb();
   return db.transaction(() => {
     const row = db.prepare('SELECT last_tool_results FROM agent_sessions WHERE id = ?').get(normalizePositiveInt(sessionId));
@@ -694,12 +728,17 @@ function updateToolGuard(sessionId, toolName, toolResult, failed) {
     const previous = stored?.last_event || null;
     const name = String(toolName || 'unknown');
     const hash = sha256(JSON.stringify(toolResult || null));
+    const inputHash = sha256(JSON.stringify(toolInput || null));
+    const errorCode = failed ? String(toolResult?.error || toolResult?.code || 'TOOL_EXECUTION_ERROR') : '';
     const sameSuccessfulResult = !failed && !previous?.failed && previous?.tool_name === name && previous?.result_hash === hash;
-    const consecutiveFailure = failed && previous?.failed && previous?.tool_name === name;
+    const consecutiveFailure = failed && previous?.failed && previous?.tool_name === name
+      && previous?.input_hash === inputHash && previous?.error_code === errorCode;
     const next = {
       last_event: {
         tool_name: name,
         result_hash: hash,
+        input_hash: inputHash,
+        error_code: errorCode,
         failed: Boolean(failed),
         consecutive_same_result: sameSuccessfulResult ? Number(previous.consecutive_same_result || 1) + 1 : (failed ? 0 : 1),
         consecutive_failures: consecutiveFailure ? Number(previous.consecutive_failures || 1) + 1 : (failed ? 1 : 0),
@@ -715,8 +754,8 @@ function detectDeadloop(sessionId, toolName, toolResult) {
   return updateToolGuard(sessionId, toolName, toolResult, false).consecutive_same_result >= 3;
 }
 
-function recordToolFail(sessionId, toolName) {
-  return updateToolGuard(sessionId, toolName, { error: true }, true).consecutive_failures >= 2;
+function recordToolFail(sessionId, toolName, toolInput = null, toolResult = {}) {
+  return updateToolGuard(sessionId, toolName, toolResult, true, toolInput).consecutive_failures >= 2;
 }
 
 function resetToolFail() {
@@ -901,6 +940,7 @@ function sanitizeRunEvent(event = {}) {
     text: truncateTimelineText(event.text || event.final_text || '', type === 'final' ? 64 * 1024 : 16 * 1024),
     loop_index: Math.max(0, Number(event.loop_index || 0)),
     tool_name: String(event.tool_name || '').trim(),
+    tool_display_name: truncateTimelineText(event.tool_display_name || '', 256),
     tool_input_summary: truncateTimelineText(event.tool_input_summary || '', 4 * 1024),
     result_summary: redactSecrets(event.result_summary ?? null),
     failed: Boolean(event.failed),
@@ -1081,6 +1121,7 @@ module.exports = {
   loadMessagesCheckpoint,
   clearMessagesCheckpoint,
   logToolCall,
+  sanitizeToolInputForLog,
   summarizeToolResult,
   detectDeadloop,
   recordToolFail,

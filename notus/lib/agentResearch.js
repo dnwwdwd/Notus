@@ -571,6 +571,23 @@ function registerParsedInputSources({ sessionId, conversationId, parsedAttachmen
 
 function recordToolReceipt(session, toolName, result = {}) {
   if (!session?.id || result?.error) return null;
+  if (toolName === 'fetch_web_url' && result.url) {
+    const success = ['success', 'partial'].includes(String(result.status || ''));
+    return insertResearchReceipt({
+      sessionId: session.id,
+      conversationId: session.conversation_id,
+      sourceType: 'explicit_url',
+      phase: 'tool',
+      sourceTitle: result.title || result.url,
+      sourceRef: result.url,
+      status: success ? result.status : 'error',
+      resultCount: success ? 1 : 0,
+      contentHash: success ? textHash(result.content || '') : '',
+      errorCode: result.error_code || '',
+      summary: success ? `已读取链接材料，提取 ${Number(result.text_length || 0)} 字。` : (result.message || '链接读取失败。'),
+      details: { tool_name: toolName, text_length: Number(result.text_length || 0) },
+    });
+  }
   if (toolName === 'read_file' && result.file_path) {
     return insertResearchReceipt({
       sessionId: session.id,

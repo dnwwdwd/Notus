@@ -361,10 +361,11 @@ function buildEventStep(event = {}) {
       id,
       kind: 'tool',
       ...segment,
-      label: toolLabel(event.tool_name),
+      label: toolLabel(event.tool_display_name || event.tool_name),
       status: 'running',
       detail: '正在执行工具调用。',
       tool: event.tool_name || '',
+      displayTool: event.tool_display_name || event.tool_name || '',
       input: event.tool_input_summary || '',
     };
   }
@@ -375,10 +376,11 @@ function buildEventStep(event = {}) {
       id,
       kind: 'tool',
       ...segment,
-      label: toolLabel(event.tool_name),
+      label: toolLabel(event.tool_display_name || event.tool_name),
       status: event.failed ? 'error' : 'done',
       detail: event.failed ? '工具调用失败。' : '工具调用已完成。',
       tool: event.tool_name || '',
+      displayTool: event.tool_display_name || event.tool_name || '',
       result: typeof event.result_summary === 'string'
         ? event.result_summary
         : JSON.stringify(event.result_summary || {}),

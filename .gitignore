@@ -24,7 +24,7 @@ notus/.notus-desktop-data/
 
 # 本机运行态：其中可能包含 Agent 会话、任务日志和能力密钥，绝不提交。
 .notus-desktop-data/
-agent/
+/agent/
 logs/
 notus.db-shm
 notus.db-wal

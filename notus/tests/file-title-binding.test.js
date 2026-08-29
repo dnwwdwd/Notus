@@ -106,6 +106,24 @@ function runTests() {
   assert.ok(imported.content.includes('title: "导入默认标题"'));
   assert.ok(imported.content.includes('# 导入默认标题'));
 
+  if (process.platform !== 'win32') {
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'notus-outside-notes-'));
+    const linkPath = path.join(tempDir, 'notes', 'outside-link');
+    fs.writeFileSync(path.join(outsideDir, 'outside.md'), '# 外部文件');
+    fs.symlinkSync(outsideDir, linkPath, 'dir');
+
+    assert.throws(
+      () => renameFile('outside-link/outside.md', '不应移动.md'),
+      /symbolic links are not allowed/
+    );
+
+    const safeSource = createFile('安全移动源.md', '# 安全移动源');
+    assert.throws(
+      () => renameFile(safeSource.path, 'outside-link/不应写入.md'),
+      /symbolic links are not allowed/
+    );
+  }
+
   console.log('file title binding tests passed');
 }
 

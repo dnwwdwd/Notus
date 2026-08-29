@@ -42,6 +42,30 @@ function resolveInside(baseDir, relativePath) {
   return { absolutePath: resolved, relativePath: normalized };
 }
 
+function assertNoSymlinkPathSegments(baseDir, absolutePath) {
+  const base = path.resolve(baseDir);
+  const target = path.resolve(absolutePath);
+  if (target !== base && !target.startsWith(`${base}${path.sep}`)) {
+    throw new Error('path escapes notes directory');
+  }
+
+  const relative = path.relative(base, target);
+  const segments = relative ? relative.split(path.sep).filter(Boolean) : [];
+  let current = base;
+
+  for (const segment of segments) {
+    current = path.join(current, segment);
+    try {
+      if (fs.lstatSync(current).isSymbolicLink()) {
+        throw new Error('symbolic links are not allowed');
+      }
+    } catch (error) {
+      if (error?.code === 'ENOENT') break;
+      throw error;
+    }
+  }
+}
+
 function getParentPath(relativePath) {
   const normalized = String(relativePath || '').replace(/\\/g, '/');
   const index = normalized.lastIndexOf('/');
@@ -713,6 +737,8 @@ function renameFolder(oldPath, newPath) {
   const config = getEffectiveConfig();
   const oldFolder = resolveInside(config.notesDir, normalizeFolderPath(oldPath));
   const newFolder = resolveInside(config.notesDir, normalizeFolderPath(newPath));
+  assertNoSymlinkPathSegments(config.notesDir, oldFolder.absolutePath);
+  assertNoSymlinkPathSegments(config.notesDir, newFolder.absolutePath);
   if (oldFolder.relativePath === newFolder.relativePath) {
     if (!fs.existsSync(oldFolder.absolutePath)) throw new Error('folder not found');
     return { type: 'folder', old_path: oldFolder.relativePath, new_path: newFolder.relativePath };
@@ -787,6 +813,8 @@ function renameFile(oldPath, newPath) {
   const config = getEffectiveConfig();
   const oldTarget = resolveInside(config.notesDir, oldPath);
   const newTarget = resolveInside(config.notesDir, ensureMarkdownPath(newPath));
+  assertNoSymlinkPathSegments(config.notesDir, oldTarget.absolutePath);
+  assertNoSymlinkPathSegments(config.notesDir, newTarget.absolutePath);
   if (oldTarget.relativePath === newTarget.relativePath) {
     const current = getFileByPath(oldTarget.relativePath);
     if (!current) throw new Error('file not found');

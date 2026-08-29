@@ -1,5 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useDeferredValue } from 'react';
 import { useRouter } from 'next/router';
+import {
+  DndContext,
+  DragOverlay,
+  KeyboardSensor,
+  PointerSensor,
+  TouchSensor,
+  closestCenter,
+  pointerWithin,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core';
 import { Icons } from '../ui/Icons';
 import { Button } from '../ui/Button';
 import { DropdownSelect } from '../ui/DropdownSelect';
@@ -13,6 +26,7 @@ import { getVisibleDocumentLabel } from '../../lib/documentLabels';
 import { shouldSelectCreatedFileInContext } from '../../lib/sidebarRouting';
 import { sortFilesForDisplay, sortTreeForDisplay } from '../../lib/sidebarSort';
 import { navigateWithFallback } from '../../utils/navigation';
+import { canMoveTreeItem, normalizeTreePath } from '../../utils/sidebarTreeDrag';
 
 function flatTree(nodes, openFolders, searchMode = false, depth = 0) {
   const out = [];
@@ -59,6 +73,19 @@ function isSameOrChildPath(candidatePath, parentPath) {
   const parent = String(parentPath || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
   if (!parent) return false;
   return candidate === parent || candidate.startsWith(`${parent}/`);
+}
+
+function sidebarCollisionDetection(args) {
+  const pointerCollisions = pointerWithin(args);
+  const rowCollisions = pointerCollisions.filter((collision) => collision.id !== 'sidebar-tree-root');
+  return rowCollisions.length > 0 ? rowCollisions : (pointerCollisions.length > 0 ? pointerCollisions : closestCenter(args));
+}
+
+function dragDestinationFromOver(over) {
+  const type = over?.data?.current?.type;
+  if (type === 'root') return '';
+  if (type === 'folder') return String(over?.data?.current?.destination || '');
+  return null;
 }
 
 async function parseErrorResponse(response, fallbackMessage) {
@@ -195,12 +222,64 @@ function useTextOverflow(ref, value) {
   return truncated;
 }
 
-const FileRow = ({ item, isActive, onSelect, onToggle, onContextMenu }) => {
+const FileMoveHandle = ({ item, visible, disabled }) => {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: `sidebar-move:${item.type}:${item.path}`,
+    data: { node: item },
+    disabled,
+  });
+
+  return (
+    <Tooltip content={`拖动以移动${item.type === 'folder' ? '目录' : '文件'}`}>
+      <button
+        ref={setNodeRef}
+        type="button"
+        aria-label={`拖动以移动${item.type === 'folder' ? '目录' : '文件'}：${item.name}`}
+        {...attributes}
+        {...listeners}
+        onClick={(event) => event.stopPropagation()}
+        onDragStart={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        }}
+        style={{
+          width: 20,
+          height: 24,
+          padding: 0,
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: isDragging ? 'var(--accent)' : 'var(--text-tertiary)',
+          background: 'transparent',
+          border: 'none',
+          borderRadius: 'var(--radius-sm)',
+          cursor: disabled ? 'default' : 'grab',
+          opacity: visible || isDragging ? 1 : 0.38,
+          pointerEvents: 'auto',
+          transition: 'opacity var(--transition-fast), color var(--transition-fast), background var(--transition-fast)',
+          flexShrink: 0,
+          touchAction: 'none',
+        }}
+      >
+        <Icons.drag size={14} />
+      </button>
+    </Tooltip>
+  );
+};
+
+const FileRow = ({ item, isActive, onSelect, onToggle, onContextMenu, dragEnabled, activeDragItem }) => {
   const pad = 8 + item.depth * 16;
   const isFolder = item.type === 'folder';
   const label = isFolder ? item.name : getVisibleDocumentLabel(item, '未命名文档');
   const labelRef = useRef(null);
   const labelTruncated = useTextOverflow(labelRef, label);
+  const [hovered, setHovered] = useState(false);
+  const { setNodeRef: setDropNodeRef, isOver } = useDroppable({
+    id: `sidebar-folder:${item.path}`,
+    data: { destination: isFolder ? item.path : null, type: isFolder ? 'folder' : 'file' },
+    disabled: !dragEnabled,
+  });
+  const isDropTarget = isFolder && isOver && canMoveTreeItem(activeDragItem, item.path);
   const mention = {
     id: isFolder ? `folder:${item.path}` : String(item.id || item.path),
     type: isFolder ? 'folder' : 'file',
@@ -210,14 +289,9 @@ const FileRow = ({ item, isActive, onSelect, onToggle, onContextMenu }) => {
 
   return (
     <div
+      ref={setDropNodeRef}
       onClick={() => isFolder ? onToggle(item.path) : onSelect(item)}
       onContextMenu={onContextMenu ? (e) => { e.preventDefault(); onContextMenu(item, e.clientX, e.clientY); } : undefined}
-      draggable={Boolean(mention.path)}
-      onDragStart={(event) => {
-        event.dataTransfer.effectAllowed = 'copy';
-        event.dataTransfer.setData('application/x-notus-mention', JSON.stringify(mention));
-        event.dataTransfer.setData('text/plain', `@${mention.name}`);
-      }}
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -226,36 +300,105 @@ const FileRow = ({ item, isActive, onSelect, onToggle, onContextMenu }) => {
         padding: `0 8px 0 ${pad}px`,
         borderRadius: 'var(--radius-sm)',
         margin: '0 6px',
-        background: isActive ? 'var(--accent-subtle)' : 'transparent',
-        color: isActive ? 'var(--accent)' : 'var(--text-primary)',
+        background: isDropTarget ? 'var(--accent-subtle)' : (isActive ? 'var(--accent-subtle)' : 'transparent'),
+        color: isDropTarget || isActive ? 'var(--accent)' : 'var(--text-primary)',
+        outline: isDropTarget ? '1px solid color-mix(in srgb, var(--accent) 52%, transparent)' : 'none',
+        outlineOffset: -1,
         fontSize: 'var(--text-sm)',
         fontWeight: isActive ? 500 : 400,
         cursor: 'pointer',
         transition: 'background var(--transition-fast)',
         userSelect: 'none',
       }}
-      onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = 'var(--bg-hover)'; }}
-      onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}
+      onMouseEnter={(e) => {
+        setHovered(true);
+        if (!isActive && !isDropTarget) e.currentTarget.style.background = 'var(--bg-hover)';
+      }}
+      onMouseLeave={(e) => {
+        setHovered(false);
+        if (!isActive && !isDropTarget) e.currentTarget.style.background = 'transparent';
+      }}
     >
-      {isFolder ? (
-        <>
-          {item.open
-            ? <Icons.chevronDown size={12} />
-            : <Icons.chevronRight size={12} />}
-          {item.open ? <Icons.folderOpen size={14} /> : <Icons.folder size={14} />}
-        </>
-      ) : (
-        <>
-          <span style={{ width: 12 }} />
-          <Icons.file size={14} />
-        </>
-      )}
-      <Tooltip content={label} disabled={!labelTruncated} triggerStyle={{ flex: 1, minWidth: 0, display: 'block' }}>
-        <span ref={labelRef} style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {label}
-        </span>
-      </Tooltip>
+      <div
+        draggable={Boolean(mention.path)}
+        onDragStart={(event) => {
+          event.dataTransfer.effectAllowed = 'copy';
+          event.dataTransfer.setData('application/x-notus-mention', JSON.stringify(mention));
+          event.dataTransfer.setData('text/plain', `@${mention.name}`);
+        }}
+        style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0 }}
+      >
+        {isFolder ? (
+          <>
+            {item.open
+              ? <Icons.chevronDown size={12} />
+              : <Icons.chevronRight size={12} />}
+            {item.open ? <Icons.folderOpen size={14} /> : <Icons.folder size={14} />}
+          </>
+        ) : (
+          <>
+            <span style={{ width: 12 }} />
+            <Icons.file size={14} />
+          </>
+        )}
+        <Tooltip content={label} disabled={!labelTruncated} triggerStyle={{ flex: 1, minWidth: 0, display: 'block' }}>
+          <span ref={labelRef} style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {label}
+          </span>
+        </Tooltip>
+      </div>
+      <FileMoveHandle item={item} visible={hovered} disabled={!dragEnabled} />
       <FileStatusIndicator status={item.status} />
+    </div>
+  );
+};
+
+const TreeRootDropZone = ({ children, enabled, activeDragItem }) => {
+  const { setNodeRef, isOver } = useDroppable({
+    id: 'sidebar-tree-root',
+    data: { destination: '', type: 'root' },
+    disabled: !enabled,
+  });
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        minHeight: '100%',
+      }}
+    >
+      <div>{children}</div>
+      <div
+        ref={setNodeRef}
+        aria-label="移动到根目录"
+        style={{
+          minHeight: 48,
+          flex: 1,
+          margin: '6px 6px 0',
+          borderRadius: 'var(--radius-sm)',
+          background: isOver && canMoveTreeItem(activeDragItem, '') ? 'color-mix(in srgb, var(--accent) 7%, transparent)' : 'transparent',
+          outline: isOver && canMoveTreeItem(activeDragItem, '') ? '1px dashed color-mix(in srgb, var(--accent) 48%, transparent)' : 'none',
+          outlineOffset: -1,
+          transition: 'background var(--transition-fast), outline-color var(--transition-fast)',
+        }}
+      />
+    </div>
+  );
+};
+
+const TreeDragPreview = ({ item }) => {
+  if (!item) return null;
+  const label = item.type === 'folder' ? item.name : getVisibleDocumentLabel(item, '未命名文档');
+  return (
+    <div style={{
+      display: 'inline-flex', alignItems: 'center', gap: 7, maxWidth: 240, height: 32, padding: '0 10px',
+      borderRadius: 'var(--radius-sm)', background: 'var(--bg-elevated)', color: 'var(--text-primary)',
+      border: '1px solid color-mix(in srgb, var(--accent) 34%, var(--border-primary))', boxShadow: 'var(--shadow-md)',
+      fontSize: 'var(--text-sm)', pointerEvents: 'none',
+    }}>
+      {item.type === 'folder' ? <Icons.folderOpen size={14} /> : <Icons.file size={14} />}
+      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
     </div>
   );
 };
@@ -314,9 +457,18 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
   const [moveNode, setMoveNode] = useState(null);
   const [moveDest, setMoveDest] = useState('');
   const [moveSubmitting, setMoveSubmitting] = useState(false);
+  const [activeMoveDrag, setActiveMoveDrag] = useState(null);
   const contextMenuRef = useRef(null);
   const [hydrated, setHydrated] = useState(false);
   const sidebarScrollByTabRef = useRef(sidebarScrollByTab);
+  const openFoldersRef = useRef(openFolders);
+  const dragExpandTimerRef = useRef(null);
+  const dragExpandPathRef = useRef('');
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 180, tolerance: 6 } }),
+    useSensor(KeyboardSensor)
+  );
 
   const [importOpen, setImportOpen] = useState(false);
   const [importResultOpen, setImportResultOpen] = useState(false);
@@ -334,6 +486,20 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
   const [exportQuery, setExportQuery] = useState('');
   const [selectedExportIds, setSelectedExportIds] = useState(new Set());
   const [exporting, setExporting] = useState(false);
+
+  useEffect(() => {
+    openFoldersRef.current = openFolders;
+  }, [openFolders]);
+
+  const clearDragExpandTimer = useCallback(() => {
+    if (dragExpandTimerRef.current) {
+      window.clearTimeout(dragExpandTimerRef.current);
+      dragExpandTimerRef.current = null;
+    }
+    dragExpandPathRef.current = '';
+  }, []);
+
+  useEffect(() => () => clearDragExpandTimer(), [clearDragExpandTimer]);
 
   useEffect(() => {
     const query = window.matchMedia('(max-width: 960px)');
@@ -457,6 +623,27 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
     });
   }, [activeTab, setSidebarScroll]);
 
+  const queueDragFolderExpand = useCallback((destination = '') => {
+    const targetPath = normalizeTreePath(destination);
+    if (!targetPath || openFoldersRef.current.has(targetPath)) {
+      clearDragExpandTimer();
+      return;
+    }
+    if (dragExpandPathRef.current === targetPath) return;
+    clearDragExpandTimer();
+    dragExpandPathRef.current = targetPath;
+    dragExpandTimerRef.current = window.setTimeout(() => {
+      if (!openFoldersRef.current.has(targetPath)) toggleFolder(targetPath);
+      dragExpandTimerRef.current = null;
+      dragExpandPathRef.current = '';
+    }, 600);
+  }, [clearDragExpandTimer, toggleFolder]);
+
+  const resetTreeDrag = useCallback(() => {
+    clearDragExpandTimer();
+    setActiveMoveDrag(null);
+  }, [clearDragExpandTimer]);
+
   const handleContextRename = useCallback(() => {
     if (!contextMenu) return;
     setRenameNode(contextMenu.node);
@@ -478,6 +665,44 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
     await refreshFiles({ background: false });
     return payload;
   }, [refreshFiles]);
+
+  const handleTreeDragStart = useCallback((event) => {
+    const node = event.active?.data?.current?.node;
+    if (!node || !['file', 'folder'].includes(node.type)) return;
+    setActiveMoveDrag(node);
+  }, []);
+
+  const handleTreeDragOver = useCallback((event) => {
+    const source = event.active?.data?.current?.node;
+    const destination = dragDestinationFromOver(event.over);
+    if (destination === null || !canMoveTreeItem(source, destination)) {
+      clearDragExpandTimer();
+      return;
+    }
+    if (event.over?.data?.current?.type === 'folder') queueDragFolderExpand(destination);
+    else clearDragExpandTimer();
+  }, [clearDragExpandTimer, queueDragFolderExpand]);
+
+  const handleTreeDragEnd = useCallback(async (event) => {
+    const source = event.active?.data?.current?.node;
+    const destination = dragDestinationFromOver(event.over);
+    resetTreeDrag();
+    if (destination === null || !canMoveTreeItem(source, destination)) return;
+
+    setMoveSubmitting(true);
+    try {
+      await applySidebarFileOperation({
+        change_type: source.type === 'folder' ? 'move_folder' : 'move_file',
+        old_path: source.path,
+        dest: destination,
+      });
+      toast(source.type === 'folder' ? '目录已移动' : '文件已移动', 'success');
+    } catch (error) {
+      toast(error.message || (source.type === 'folder' ? '移动目录失败' : '移动文件失败'), 'error');
+    } finally {
+      setMoveSubmitting(false);
+    }
+  }, [applySidebarFileOperation, resetTreeDrag, toast]);
 
   const handleContextMove = useCallback(() => {
     if (!contextMenu?.node || !['file', 'folder'].includes(contextMenu.node.type)) return;
@@ -1672,10 +1897,23 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
       )}
 
       {!isSidebarCollapsed && (
+      <DndContext
+        sensors={sensors}
+        collisionDetection={sidebarCollisionDetection}
+        autoScroll={{
+          acceleration: 12,
+          interval: 8,
+          threshold: { x: 0.1, y: 0.2 },
+        }}
+        onDragStart={handleTreeDragStart}
+        onDragOver={handleTreeDragOver}
+        onDragCancel={resetTreeDrag}
+        onDragEnd={handleTreeDragEnd}
+      >
       <div
         ref={scrollContainerRef}
         onScroll={handleSidebarScroll}
-        style={{ flex: 1, overflow: 'auto', paddingTop: 6 }}
+        style={{ flex: 1, overflow: 'auto', paddingTop: 6, overscrollBehavior: 'contain' }}
       >
         {activeTab === 'toc' ? (
           <div style={{ padding: '4px 0' }}>
@@ -1760,18 +1998,26 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
             )}
           </div>
         ) : (
-          flat.map((n) => (
-            <FileRow
-              key={n.path}
-              item={n}
-              isActive={n.type === 'file' && n.id === activeFileId}
-              onSelect={handleSelectFile}
-              onToggle={toggleFolder}
-              onContextMenu={handleContextMenu}
-            />
-          ))
+          <TreeRootDropZone enabled={!moveSubmitting} activeDragItem={activeMoveDrag}>
+            {flat.map((n) => (
+              <FileRow
+                key={n.path}
+                item={n}
+                isActive={n.type === 'file' && n.id === activeFileId}
+                onSelect={handleSelectFile}
+                onToggle={toggleFolder}
+                onContextMenu={handleContextMenu}
+                dragEnabled={!moveSubmitting}
+                activeDragItem={activeMoveDrag}
+              />
+            ))}
+          </TreeRootDropZone>
         )}
       </div>
+      <DragOverlay dropAnimation={null}>
+        <TreeDragPreview item={activeMoveDrag} />
+      </DragOverlay>
+      </DndContext>
       )}
 
       {/* Right-click context menu */}

@@ -81,12 +81,14 @@ async function run() {
     const iconSource = fs.readFileSync(path.join(__dirname, '../components/ui/Icons.js'), 'utf8');
     const externalRouteSource = fs.readFileSync(path.join(__dirname, '../pages/api/mcp.js'), 'utf8');
     const settingsRouteSource = fs.readFileSync(path.join(__dirname, '../pages/api/settings/mcp/[...path].js'), 'utf8');
+    const manifestSource = fs.readFileSync(path.join(__dirname, '../../lzc-manifest.yml'), 'utf8');
     assert.ok(settingsSource.includes("label: '调用 MCP'"));
     assert.ok(settingsSource.includes("label: 'MCP 服务'"));
     assert.ok(settingsSource.includes('aria-label="复制 Token"'));
     assert.ok(settingsSource.includes("'/api/settings/mcp/tokens'"));
     assert.ok(externalRouteSource.includes('StreamableHTTPServerTransport'));
     assert.ok(settingsRouteSource.includes('listTokens'));
+    assert.ok(manifestSource.includes('    - /api/mcp'));
     assert.ok(settingsSource.includes('待确认变更'));
     assert.ok(iconSource.includes('skill: (p) => <Icon {...p}><path d="m12 2.5 8 4.5v10L12 21.5 4 17V7z"/>'), 'Skill 图标应使用等距立方体轮廓');
     assert.ok(iconSource.includes('<path d="m4 12 8 4.5 8-4.5"/>'), 'Skill 图标应包含等高两层方块的分隔线');

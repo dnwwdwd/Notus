@@ -8,6 +8,7 @@ const read = (relativePath) => fs.readFileSync(path.join(root, relativePath), 'u
 const topBar = read('components/Layout/TopBar.js');
 const filesPage = read('pages/files/index.js');
 const agentWorkspace = read('components/AgentWorkspace/AgentWorkspace.js');
+const sidebar = read('components/Layout/Sidebar.js');
 
 assert.ok(topBar.includes('selectedIcon = false'), 'top bar should support borderless selected icons');
 assert.ok(topBar.includes('className="notus-topbar-icon-button"'), 'top bar icon buttons should use the borderless interaction style');
@@ -46,6 +47,19 @@ assert.ok(filesPage.includes('findFileInTree(await refreshFiles({ background: tr
 const appContext = read('contexts/AppContext.js');
 assert.ok(appContext.includes('workspaceHydrated'), 'app context should expose when persisted workspace state has hydrated');
 assert.ok(appContext.includes('restoredActiveFileId'), 'app context should retain the file selected when the workspace was restored');
+
+assert.ok(sidebar.includes("from '@dnd-kit/core'"), '侧边栏应使用项目既有的 dnd-kit 实现拖拽移动');
+assert.ok(sidebar.includes('autoScroll={{'), '侧边栏拖拽应开启滚动容器自动滚动');
+assert.ok(sidebar.includes('onDragEnd={handleTreeDragEnd}'), '侧边栏拖拽结束应执行移动处理');
+assert.ok(sidebar.includes("change_type: source.type === 'folder' ? 'move_folder' : 'move_file'"), '拖拽应复用文件系统 patch 移动文件或目录');
+assert.ok(sidebar.includes("event.dataTransfer.setData('application/x-notus-mention'"), '新增移动拖拽不能移除既有文件 Mention 拖放');
+assert.ok(sidebar.includes('queueDragFolderExpand(destination)'), '拖拽悬停目录应自动展开目标目录');
+assert.ok(sidebar.includes('setSidebarScroll(activeTab, scrollTop)'), '自动滚动仍应通过既有滚动事件保存侧边栏位置');
+assert.ok(sidebar.includes("type: isFolder ? 'folder' : 'file'"), '文件行必须作为无效落点拦截，不能误落到根目录');
+assert.ok(sidebar.includes('if (destination === null || !canMoveTreeItem(source, destination)) return;'), '文件或无效落点不能提交移动请求');
+assert.ok(sidebar.includes('aria-label="移动到根目录"'), '根目录应使用独立的空白落点，不能覆盖文件行');
+assert.ok(sidebar.includes('draggable={Boolean(mention.path)}'), '文件行正文应继续作为 Mention 原生拖拽源');
+assert.ok(sidebar.includes('<FileMoveHandle item={item}'), '文件移动必须由独立拖动柄发起，避免与 Mention 拖拽冲突');
 
 assert.ok(agentWorkspace.includes('AGENT_INPUT_TEXTAREA_DEFAULT_ROWS = 3'), 'agent input should default to three rows');
 assert.ok(agentWorkspace.includes("const AGENT_CHAT_CONTENT_WIDTH = 'min(860px, calc(100% - 32px))'"), 'agent input and messages should share the agreed responsive content width');

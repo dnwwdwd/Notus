@@ -21,7 +21,8 @@
     "dist:desktop": "npm run build:desktop && electron-builder",
     "dist:desktop:mac:x64": "node desktop/scripts/build-desktop.js --platform=darwin --arch=x64 && electron-builder --mac dmg --x64",
     "dist:desktop:mac:arm64": "node desktop/scripts/build-desktop.js --platform=darwin --arch=arm64 && electron-builder --mac dmg --arm64",
-    "dist:desktop:win:x64": "node desktop/scripts/build-desktop.js --platform=win32 --arch=x64 && electron-builder --win nsis --x64"
+    "dist:desktop:win:x64": "node desktop/scripts/build-desktop.js --platform=win32 --arch=x64 && electron-builder --win nsis --x64",
+    "dist:lpk": "node desktop/scripts/build-lpk.js"
   },
   "devDependencies": {
     "electron": "^36.2.0",

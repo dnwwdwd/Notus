@@ -4,20 +4,36 @@ const { spawn } = require('child_process');
 
 const ELECTRON_VERSION = require('../../node_modules/electron/package.json').version;
 
-function run(command, args, options = {}) {
+// Joins `parts` onto `base` and verifies the resolved path never escapes `base`,
+// preventing path traversal via crafted segments before touching the filesystem.
+function safeJoin(base, ...parts) {
+  for (const part of parts) {
+    if (typeof part !== 'string' || part.includes('..') || path.isAbsolute(part)) {
+      throw new Error(`Refusing to join unsafe path segment: ${part}`);
+    }
+  }
+  const resolvedBase = path.resolve(base);
+  const resolvedTarget = path.resolve(resolvedBase, ...parts);
+  if (resolvedTarget !== resolvedBase && !resolvedTarget.startsWith(resolvedBase + path.sep)) {
+    throw new Error(`Refusing to resolve path outside of ${resolvedBase}: ${resolvedTarget}`);
+  }
+  return resolvedTarget;
+}
+
+// Only two fixed, hardcoded executables are ever spawned by this build script;
+// dedicated wrapper functions (rather than a single generic runner) ensure the
+// executable path passed to child_process.spawn is always a literal, never a variable.
+function runNpm(args, options = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      stdio: 'inherit',
-      shell: process.platform === 'win32',
-      ...options,
-    });
-    child.on('exit', (code) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-      reject(new Error(`${command} ${args.join(' ')} exited with code ${code}`));
-    });
+    const child = spawn('npm', args, { stdio: 'inherit', shell: process.platform === 'win32', ...options });
+    child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`npm ${args.join(' ')} exited with code ${code}`))));
+  });
+}
+
+function runPrebuildInstall(args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('../.bin/prebuild-install', args, { stdio: 'inherit', shell: process.platform === 'win32', ...options });
+    child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`../.bin/prebuild-install ${args.join(' ')} exited with code ${code}`))));
   });
 }
 
@@ -42,8 +58,8 @@ async function copyDirectory(source, target) {
   await fs.promises.mkdir(target, { recursive: true });
   const entries = await fs.promises.readdir(source, { withFileTypes: true });
   for (const entry of entries) {
-    const sourcePath = path.join(source, entry.name);
-    const targetPath = path.join(target, entry.name);
+    const sourcePath = safeJoin(source, entry.name);
+    const targetPath = safeJoin(target, entry.name);
     if (entry.isDirectory()) {
       await copyDirectory(sourcePath, targetPath);
       continue;
@@ -53,22 +69,22 @@ async function copyDirectory(source, target) {
 }
 
 async function prepareDesktopResources(repoRoot) {
-  const appRoot = path.join(repoRoot, 'notus');
-  const resourcesRoot = path.join(repoRoot, 'desktop', 'resources', 'notus');
+  const appRoot = safeJoin(repoRoot, 'notus');
+  const resourcesRoot = safeJoin(repoRoot, 'desktop', 'resources', 'notus');
 
   await fs.promises.rm(resourcesRoot, { recursive: true, force: true });
   await fs.promises.mkdir(resourcesRoot, { recursive: true });
 
-  await copyDirectory(path.join(appRoot, '.next', 'standalone'), resourcesRoot);
-  await copyDirectory(path.join(appRoot, '.next', 'static'), path.join(resourcesRoot, '.next', 'static'));
+  await copyDirectory(safeJoin(appRoot, '.next', 'standalone'), resourcesRoot);
+  await copyDirectory(safeJoin(appRoot, '.next', 'static'), safeJoin(resourcesRoot, '.next', 'static'));
 
-  if (fs.existsSync(path.join(appRoot, 'public'))) {
-    await copyDirectory(path.join(appRoot, 'public'), path.join(resourcesRoot, 'public'));
+  if (fs.existsSync(safeJoin(appRoot, 'public'))) {
+    await copyDirectory(safeJoin(appRoot, 'public'), safeJoin(resourcesRoot, 'public'));
   }
 
   await fs.promises.copyFile(
-    path.join(appRoot, 'package-lock.json'),
-    path.join(resourcesRoot, 'package-lock.json')
+    safeJoin(appRoot, 'package-lock.json'),
+    safeJoin(resourcesRoot, 'package-lock.json')
   );
 
   return resourcesRoot;
@@ -80,7 +96,7 @@ function buildInstallEnv(targetPlatform, targetArch) {
     npm_config_runtime: 'electron',
     npm_config_target: ELECTRON_VERSION,
     npm_config_disturl: 'https://electronjs.org/headers',
-    npm_config_devdir: path.join(process.env.HOME || '', '.electron-gyp'),
+    npm_config_devdir: safeJoin(process.env.HOME || '.', '.electron-gyp'),
     npm_config_update_binary: 'true',
     npm_config_fallback_to_build: 'true',
   };
@@ -103,9 +119,8 @@ function buildInstallEnv(targetPlatform, targetArch) {
 }
 
 async function installProductionDependencies(resourcesRoot, targetPlatform, targetArch) {
-  await fs.promises.rm(path.join(resourcesRoot, 'node_modules'), { recursive: true, force: true });
-  await run(
-    'npm',
+  await fs.promises.rm(safeJoin(resourcesRoot, 'node_modules'), { recursive: true, force: true });
+  await runNpm(
     ['ci', '--omit=dev', '--legacy-peer-deps'],
     {
       cwd: resourcesRoot,
@@ -136,11 +151,11 @@ function getBetterSqlitePrebuildName(targetPlatform, targetArch) {
 }
 
 async function ensureBetterSqliteBinary(resourcesRoot, targetPlatform, targetArch) {
-  const betterSqliteDir = path.join(resourcesRoot, 'node_modules', 'better-sqlite3');
-  const prebuildBinary = path.join(betterSqliteDir, 'build', 'Release', 'better_sqlite3.node');
+  const betterSqliteDir = safeJoin(resourcesRoot, 'node_modules', 'better-sqlite3');
+  const prebuildBinary = safeJoin(betterSqliteDir, 'build', 'Release', 'better_sqlite3.node');
   const prebuildName = getBetterSqlitePrebuildName(targetPlatform, targetArch);
   const prebuildCachePath = prebuildName
-    ? path.join(process.env.HOME || '', '.npm', '_prebuilds', prebuildName)
+    ? safeJoin(process.env.HOME || '.', '.npm', '_prebuilds', prebuildName)
     : null;
 
   if (targetPlatform === process.platform && targetArch === process.arch) {
@@ -150,7 +165,7 @@ async function ensureBetterSqliteBinary(resourcesRoot, targetPlatform, targetArc
   await fs.promises.rm(prebuildBinary, { force: true });
 
   if (prebuildCachePath && fs.existsSync(prebuildCachePath)) {
-    await run('../.bin/prebuild-install', [], {
+    await runPrebuildInstall([], {
       cwd: betterSqliteDir,
       env: {
         ...buildInstallEnv(targetPlatform, targetArch),
@@ -160,7 +175,7 @@ async function ensureBetterSqliteBinary(resourcesRoot, targetPlatform, targetArc
     return;
   }
 
-  await run('../.bin/prebuild-install', [
+  await runPrebuildInstall([
     '--runtime=electron',
     `--target=${ELECTRON_VERSION}`,
     `--platform=${targetPlatform}`,
@@ -187,8 +202,7 @@ async function ensureSqliteVecPackage(resourcesRoot, targetPlatform, targetArch)
   }
 
   const packageName = `sqlite-vec-${packagePlatform}-${targetArch}@0.1.9`;
-  await run(
-    'npm',
+  await runNpm(
     ['install', '--no-save', '--force', packageName],
     {
       cwd: resourcesRoot,
@@ -201,7 +215,7 @@ async function main() {
   const repoRoot = path.resolve(__dirname, '..', '..');
   const { platform: targetPlatform, arch: targetArch } = parseArgs(process.argv.slice(2));
 
-  await run('npm', ['--prefix', 'notus', 'run', 'build'], { cwd: repoRoot });
+  await runNpm(['--prefix', 'notus', 'run', 'build'], { cwd: repoRoot });
   const resourcesRoot = await prepareDesktopResources(repoRoot);
   await installProductionDependencies(resourcesRoot, targetPlatform, targetArch);
   await ensureBetterSqliteBinary(resourcesRoot, targetPlatform, targetArch);

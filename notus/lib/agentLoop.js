@@ -369,7 +369,7 @@ function buildInitialUserContent(session, options = {}) {
   ];
 }
 
-async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId = null, llmConfig, onStream, signal, approvalMode = 'auto_confirm', resumeInteractionId = null, initialImages = [], currentImageRecognition = null } = {}) {
+async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId = null, llmConfig, onStream, signal, approvalMode = 'auto_confirm', resumeInteractionId = null, initialImages = [], currentImageRecognition = null, llmRetryDelayMs = null, llmRetryWait = null } = {}) {
   let session = getSession(sessionId);
   const config = getEffectiveConfig();
   const runtimeMode = getAgentRuntimeMode();
@@ -727,12 +727,14 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
           });
         },
       }, DEFAULT_LLM_RETRY_LIMIT, {
+        ...(typeof llmRetryDelayMs === 'function' ? { retryDelayMs: llmRetryDelayMs } : {}),
+        ...(typeof llmRetryWait === 'function' ? { waitForRetry: llmRetryWait } : {}),
         onRetry: ({ attempt, maxRetries, delayMs, classification }) => {
           recordRequestRetry(activeRequestWindow.id, attempt, classification);
           emit({
             type: 'progress',
             stage: 'llm_retry',
-            text: `模型请求暂时失败，正在进行第 ${attempt}/${maxRetries} 次重试。`,
+            text: `模型请求暂时失败，将在 ${Math.ceil(delayMs / 1000)} 秒后进行第 ${attempt}/${maxRetries} 次重试。`,
             retry_attempt: attempt,
             retry_limit: maxRetries,
             retry_after_ms: delayMs,

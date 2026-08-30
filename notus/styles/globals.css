@@ -1347,18 +1347,31 @@ a {
 
 .notus-agent-composer__actions {
   flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
   gap: 8px;
   transition: gap 160ms ease;
 }
 
-.notus-agent-composer__model {
+.notus-agent-composer__model-wrap {
+  position: relative;
+  flex: 0 1 auto;
   min-width: 0;
-  max-width: 150px;
-  transition: max-width 160ms ease;
+  max-width: 100%;
 }
 
-.notus-agent-composer__model > span {
+.notus-agent-composer__model {
+  width: max-content;
   min-width: 0;
+  max-width: 100%;
+}
+
+.notus-agent-composer__model-label {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .notus-agent-tool-row:active,
@@ -1566,13 +1579,10 @@ a {
 
   .notus-agent-composer__actions {
     justify-content: flex-end;
-    flex: 0 0 auto;
+    flex: 0 1 auto;
+    min-width: 34px;
     padding: 0;
     border: 0;
-  }
-
-  .notus-agent-composer__model {
-    max-width: 96px;
   }
 
   .notus-agent-control-label {
@@ -1651,10 +1661,6 @@ a {
 
   .notus-agent-composer__attachments button:last-child {
     display: none !important;
-  }
-
-  .notus-agent-composer__model {
-    max-width: 64px;
   }
 }
 

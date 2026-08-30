@@ -74,6 +74,7 @@ async function runTests() {
     const result = await runAgentLoop({
       sessionId: session.sessionId,
       llmConfig: { llmContextWindowTokens: 60000 },
+      llmRetryDelayMs: () => 0,
       onStream: (event) => events.push(event),
     });
     assert.strictEqual(result.status, 'completed');

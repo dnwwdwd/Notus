@@ -317,7 +317,8 @@ assert.ok(!narrowComposerStyles.includes('order:'), '确认方式换行时不得
 assert.ok(narrowComposerStyles.includes('flex: 0 0 28px;'), '最小宽度下两个确认方式 Tab 必须保持图标紧凑宽度');
 assert.ok(globalStyles.includes('gap: 0 !important;'), '确认方式在窄面板仅显示 icon 时不得保留文字间距');
 assert.ok(workspace.includes("ariaLabel: option.value === 'auto_confirm' ? '自动应用修改' : '手动应用修改'"), '确认方式收敛为 icon 后仍须保留无障碍名称');
-assert.ok(globalStyles.includes('.notus-agent-composer__model {\n  min-width: 0;\n  max-width: 150px;'), '窄面板模型选择须缩略显示');
+assert.ok(globalStyles.includes('.notus-agent-composer__model-wrap {') && globalStyles.includes('flex: 0 1 auto;'), '模型选择区域必须随输入栏剩余宽度收缩');
+assert.ok(globalStyles.includes('.notus-agent-composer__model-label {') && globalStyles.includes('text-overflow: ellipsis;'), '空间不足时模型名称必须单行省略');
 assert.ok(!globalStyles.includes('.notus-agent-composer__tools > * {\n    flex: 0 0 auto;'), '窄面板工具区不得强制所有控制横向滚动');
 assert.ok(workspace.includes('showJumpToBottom = false, onJumpToBottom'), '回底控制必须由输入停靠区接收，避免覆盖消息滚动层');
 assert.ok(workspace.includes('className="notus-agent-composer__jump-to-bottom notus-agent-pressable"'), '回底控制必须渲染在输入停靠区的正常文档流中');

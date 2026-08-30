@@ -15,7 +15,7 @@ assert.ok(startRoute.includes('function splitMediaInputs(body = {})'));
 assert.ok(startRoute.includes('const mediaItems = Array.isArray(body.media_items)'));
 assert.ok(startRoute.includes('const media = splitMediaInputs(body);'));
 assert.ok(startRoute.includes('attachments: media.attachments, images: media.images, media_items: media.media_items'));
-assert.ok(startRoute.includes('meta: { agent_loop: true, agent_goal: goal, user_query: userQuery, attachments: media.attachments, images: media.images, media_items: media.media_items'));
+assert.ok(startRoute.includes('meta: { agent_loop: true, agent_goal: goal, user_query: userQuery, turn_context: turnContext, attachments: media.attachments, images: media.images, media_items: media.media_items'));
 assert.ok(startRoute.includes('mcp_selection: requestedMcpSelection'));
 assert.ok(startRoute.includes('function persistedImages(images, conversationId, messageId)'));
 assert.ok(startRoute.includes('images: persistedImages(media.images, conversation.id, userMessageId),'));

@@ -17,6 +17,7 @@ const STRUCTURED_REASON_CODES = [
   'ambiguous_position_relation',
   'unsafe_high_risk_edit',
   'ai_arbitration_unavailable',
+  'tool_outcome_unknown',
 ];
 const SLOT_ORDER = ['primary_intent', 'source_content_ref', 'target_location', 'write_mode'];
 

@@ -175,17 +175,19 @@ function getResearchState(sessionId) {
   const row = getDb().prepare('SELECT research_state_json FROM agent_sessions WHERE id = ?').get(id);
   const state = safeJsonParse(row?.research_state_json, {});
   return {
-    version: 1,
+    version: 2,
     sources: {},
+    missions: {},
     ...(state && typeof state === 'object' ? state : {}),
     sources: state?.sources && typeof state.sources === 'object' ? state.sources : {},
+    missions: state?.missions && typeof state.missions === 'object' ? state.missions : {},
   };
 }
 
 function saveResearchState(sessionId, state = {}) {
   const id = normalizePositiveInt(sessionId);
   getDb().prepare("UPDATE agent_sessions SET research_state_json = ?, updated_at = datetime('now') WHERE id = ?")
-    .run(JSON.stringify({ version: 1, sources: {}, ...state }), id);
+    .run(JSON.stringify({ version: 2, sources: {}, missions: {}, ...state }), id);
 }
 
 function sanitizeErrorCode(error) {
@@ -427,11 +429,17 @@ function recordQueryAndResultReceipts({ session, sourceType, query, phase, resul
   });
 }
 
-async function executePlannedResearch({ session, runId = null, sourceType, query, llmConfig, executeQuery, evidence } = {}) {
+async function executePlannedResearch({ session, runId = null, sourceType, query, llmConfig, executeQuery, evidence, missionFingerprint = '' } = {}) {
   const requestedQuery = String(query || '').replace(/\s+/g, ' ').trim();
   if (!requestedQuery) return { error: 'QUERY_REQUIRED', message: '检索需要 query 参数', results: [] };
   const state = getResearchState(session.id);
-  const previous = state.sources?.[sourceType];
+  const requiresTimeEvidence = sourceType === 'web' && /最新|实时|近期|今天|今年|当前(?:价格|版本|状态|数据|新闻|政策)/.test(requestedQuery);
+  const missionKey = String(missionFingerprint || (sourceType === 'web'
+    ? `web-query:${textHash(requestedQuery.toLocaleLowerCase())}`
+    : `session-source:${sourceType}`)).slice(0, 128);
+  const legacyPrevious = state.sources?.[sourceType];
+  const previous = state.missions?.[missionKey]
+    || (!missionFingerprint && sourceType !== 'web' ? legacyPrevious : null);
   if (previous?.completed) {
     const records = (previous.query_records || []).map((record) => ({ ...record, cached: true }));
     const providerError = records.length > 0 && records.every((record) => record.status === 'error')
@@ -439,24 +447,34 @@ async function executePlannedResearch({ session, runId = null, sourceType, query
       : null;
     return {
       query: requestedQuery,
+      mission_fingerprint: missionKey,
       query_plan: previous.query_plan,
       query_records: records,
       budget: buildBudget(previous.query_records, previous),
       results: projectResults(previous.results, sourceType),
       cache_hit: true,
+      time_evidence_insufficient: Boolean(previous.time_evidence_insufficient),
       provider_error: providerError,
       message: providerError
         ? '已复用本次任务的检索失败回执。'
-        : previous.had_evidence ? '已复用本次任务的检索结果。' : '已复用本次任务的空检索结果；没有补充结果。',
+        : previous.time_evidence_insufficient ? '已复用本次任务的检索结果；来源仍缺少可核实的发布日期。'
+          : previous.had_evidence ? '已复用本次任务的检索结果。' : '已复用本次任务的空检索结果；没有补充结果。',
     };
   }
 
   const queryPlan = await buildAgentQueryPlan({ query: requestedQuery, llmConfig, sessionId: session.id, runId });
+  const initialQueries = sourceType === 'web'
+    ? [requestedQuery]
+    : queryPlan.initial_queries;
+  const fallbackQueries = sourceType === 'web'
+    ? uniqueStrings([...queryPlan.initial_queries.slice(1), ...queryPlan.fallback_queries], RESEARCH_LIMIT - 1)
+    : queryPlan.fallback_queries;
   const sourceState = {
+    mission_fingerprint: missionKey,
     original_query: requestedQuery,
     query_plan: {
-      initial_queries: queryPlan.initial_queries,
-      fallback_queries: queryPlan.fallback_queries,
+      initial_queries: initialQueries,
+      fallback_queries: fallbackQueries,
       planner: queryPlan.planner,
       planner_failed: Boolean(queryPlan.planner_failed),
     },
@@ -501,22 +519,25 @@ async function executePlannedResearch({ session, runId = null, sourceType, query
     }
   };
 
-  await runBatch(queryPlan.initial_queries, 'initial');
+  await runBatch(initialQueries, 'initial');
   sourceState.initial_executed = true;
   const hasEvidence = () => sourceState.results.some((item) => {
     const queries = Array.isArray(item.matched_queries) && item.matched_queries.length > 0
       ? item.matched_queries
       : [requestedQuery];
-    return queries.some((matchedQuery) => evidence(item, matchedQuery));
+    return queries.some((matchedQuery) => evidence(item, matchedQuery))
+      && (!requiresTimeEvidence || Boolean(item.publishedAt || item.published_at));
   });
   sourceState.had_evidence = hasEvidence();
   if (!sourceState.had_evidence) {
-    await runBatch(queryPlan.fallback_queries, 'fallback');
+    await runBatch(fallbackQueries, 'fallback');
     sourceState.fallback_executed = true;
     sourceState.had_evidence = hasEvidence();
   }
   sourceState.completed = true;
+  sourceState.time_evidence_insufficient = requiresTimeEvidence && !sourceState.results.some((item) => item.publishedAt || item.published_at);
   state.sources[sourceType] = sourceState;
+  state.missions[missionKey] = sourceState;
   saveResearchState(session.id, state);
   const allProviderRequestsFailed = sourceState.query_records.length > 0
     && sourceState.query_records.every((record) => record.status === 'error');
@@ -531,10 +552,13 @@ async function executePlannedResearch({ session, runId = null, sourceType, query
     budget: buildBudget(sourceState.query_records, sourceState),
     results: projectResults(sourceState.results, sourceType),
     cache_hit: false,
+    mission_fingerprint: missionKey,
+    time_evidence_insufficient: sourceState.time_evidence_insufficient,
     provider_error: providerError || null,
     message: providerError
       ? '检索服务本轮未能返回结果，已记录失败原因。'
-      : sourceState.had_evidence ? '已完成本次任务的批量检索。' : '已完成 5 个查询，没有补充结果。',
+      : sourceState.time_evidence_insufficient ? '已完成有限扩展搜索，但来源缺少可核实的发布日期，时间证据不足。'
+        : sourceState.had_evidence ? '已完成本次任务的批量检索。' : '已完成 5 个查询，没有补充结果。',
   };
 }
 

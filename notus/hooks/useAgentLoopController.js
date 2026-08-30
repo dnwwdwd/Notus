@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getAgentLoopReasonLabel, getAgentToolLabel } from '../utils/agentDisplay';
+import { getAgentLoopReasonLabel, getAgentToolDisplayName, getAgentToolLabel } from '../utils/agentDisplay';
 import { dispatchAgentResourceChange } from '../utils/agentResourceEvents';
 
 function toPositiveInt(value) {
@@ -230,12 +230,12 @@ function buildEventStep(event = {}) {
       ...segment,
       label: actionRequired ? '模型服务需要处理' : '模型请求失败',
       status: 'error',
-      detail: actionRequired ? '请处理模型服务配置后再继续，或重新发送这条任务。' : '任务进度已保留，可以重新发送这条任务。',
+      detail: actionRequired ? '请处理模型服务配置后继续原任务。' : '任务进度已保留，可以从当前执行位置继续。',
       tool: 'llm_request',
       result: event.retry_attempts > 0 ? `已重试 ${event.retry_attempts} 次` : (event.error_code || ''),
       open: true,
       action: event.resumable ? 'resume_agent' : '',
-      actionLabel: actionRequired ? '配置完成后继续' : '继续任务',
+      actionLabel: '继续',
       errorType: 'agent',
       errorMessage,
       errorCode: event.error_code || '',
@@ -357,30 +357,32 @@ function buildEventStep(event = {}) {
   if (event.type === 'tool_start') {
     const segment = executionSegmentFields(event);
     const id = `tool-${segment.executionSegmentId || loop || 'x'}-${Number(event.tool_index || 0)}`;
+    const displayTool = getAgentToolDisplayName(event.tool_display_name || event.tool_name);
     return {
       id,
       kind: 'tool',
       ...segment,
-      label: toolLabel(event.tool_display_name || event.tool_name),
+      label: toolLabel(displayTool),
       status: 'running',
       detail: '正在执行工具调用。',
       tool: event.tool_name || '',
-      displayTool: event.tool_display_name || event.tool_name || '',
+      displayTool,
       input: event.tool_input_summary || '',
     };
   }
   if (event.type === 'tool_done') {
     const segment = executionSegmentFields(event);
     const id = `tool-${segment.executionSegmentId || loop || 'x'}-${Number(event.tool_index || 0)}`;
+    const displayTool = getAgentToolDisplayName(event.tool_display_name || event.tool_name);
     return {
       id,
       kind: 'tool',
       ...segment,
-      label: toolLabel(event.tool_display_name || event.tool_name),
+      label: toolLabel(displayTool),
       status: event.failed ? 'error' : 'done',
       detail: event.failed ? '工具调用失败。' : '工具调用已完成。',
       tool: event.tool_name || '',
-      displayTool: event.tool_display_name || event.tool_name || '',
+      displayTool,
       result: typeof event.result_summary === 'string'
         ? event.result_summary
         : JSON.stringify(event.result_summary || {}),
@@ -635,6 +637,7 @@ export function useAgentLoopController({
   const subscriptionEpochRef = useRef(0);
   const stepsRef = useRef([]);
   const assistantTextRef = useRef('');
+  const terminalSessionEventsRef = useRef(new Set());
   const filesMayHaveChangedRef = useRef(false);
   const newTaskSubmitInFlightRef = useRef(false);
 
@@ -646,6 +649,7 @@ export function useAgentLoopController({
     controllersRef.current.forEach((controller) => controller.abort());
     controllersRef.current.clear();
     knownSessionsRef.current.clear();
+    terminalSessionEventsRef.current.clear();
     controllerRef.current = null;
   }, []);
 
@@ -694,6 +698,7 @@ export function useAgentLoopController({
     controllersRef.current.forEach((controller) => controller.abort());
     controllersRef.current.clear();
     knownSessionsRef.current.clear();
+    terminalSessionEventsRef.current.clear();
     controllerRef.current = null;
     setPendingAgentTask(null);
     setActiveAgentSession(null);
@@ -796,7 +801,7 @@ export function useAgentLoopController({
         authorized_ops: input?.authorized_ops || ['modify', 'create'],
         approval_mode: input?.approval_mode || input?.approvalMode || 'auto_confirm',
         conversation_id: input?.conversation_id || undefined,
-        active_file_id: input?.active_file_id || undefined,
+        turn_context: input?.turn_context || input?.turnContext || (input?.active_file_id ? { active_file_id: input.active_file_id } : undefined),
         llm_config_id: input?.llm_config_id || input?.llmConfigId || undefined,
         attachments: Array.isArray(input?.attachments) ? input.attachments : [],
         images: Array.isArray(input?.images) ? input.images : [],
@@ -1045,6 +1050,10 @@ export function useAgentLoopController({
         // 更新它自己的执行记录；只有切换对话、卸载或显式解绑才使订阅失效。
         if (!isSubscriptionActive()) return;
         const eventSessionId = String(event.session_id || acceptedSessionId || timeline.sessionId || '');
+        if (event.type === 'final' && eventSessionId) {
+          if (terminalSessionEventsRef.current.has(eventSessionId)) return;
+          terminalSessionEventsRef.current.add(eventSessionId);
+        }
         const streamTextBeforeEvent = timeline.streamText;
         const eventTimeline = publishTimeline(event, {
           sessionId: eventSessionId,

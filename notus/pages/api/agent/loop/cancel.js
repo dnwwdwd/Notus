@@ -1,7 +1,10 @@
 const { ensureRuntime } = require('../../../../lib/runtime');
 const { getSession, validateSessionAccess } = require('../../../../lib/agentSession');
 const { requestCancellation, validateCapability } = require('../../../../lib/agentControlPlane');
-const { cancelTask } = require('../../../../lib/agentTaskQueue');
+const { cancelTask, getTaskBySession } = require('../../../../lib/agentTaskQueue');
+const { getSessionTurnFrame } = require('../../../../lib/agentTurnFrames');
+const { agentRuntimeAtLeast } = require('../../../../lib/agentRuntimeMode');
+const { recordRuntimeFact } = require('../../../../lib/agentRuntimeFacts');
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed', code: 'METHOD_NOT_ALLOWED' });
@@ -38,8 +41,14 @@ export default async function handler(req, res) {
   });
   const cancelledSessionIds = requested.map((item) => item.sessionId);
   cancelledSessionIds.forEach((id) => {
+    const session = getSession(id);
+    const task = getTaskBySession(id);
+    const frame = getSessionTurnFrame(id);
     requestCancellation(id);
     cancelTask(id);
+    if (agentRuntimeAtLeast('facts')) {
+      recordRuntimeFact({ eventKey: `task:${task?.id || id}:cancel-requested`, conversationId: session.conversation_id, sessionId: id, taskId: task?.id, turnFrameId: frame?.id, actor: 'user', factType: 'task_cancel_requested', payload: {} });
+    }
   });
   return res.status(200).json({
     success: true,

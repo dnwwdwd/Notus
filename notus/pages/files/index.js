@@ -741,6 +741,7 @@ export default function FilesPage() {
     <FileAgentWorkspace
       allFiles={allFiles}
       fileTree={files}
+      activeFileId={activeFile?.id || null}
       refreshFiles={refreshFiles}
       onFilesChanged={handleAgentFilesChanged}
       onAgentPanelLockChange={setAgentPanelLock}

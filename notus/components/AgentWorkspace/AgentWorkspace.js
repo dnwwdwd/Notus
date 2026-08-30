@@ -686,20 +686,9 @@ function normalizeAgentErrorDetails(value, errorCode = '', requestId = '') {
   };
 }
 
-function AgentErrorCard({ title = '任务没有完成', message, errorCode = '', requestId = '', retryMessage = null, onRetry, onResume, resumeLabel = '继续任务' }) {
-  const [retrying, setRetrying] = useState(false);
+function AgentErrorCard({ title = '任务没有完成', message, errorCode = '', requestId = '', onResume, resumeLabel = '继续' }) {
   const details = useMemo(() => normalizeAgentErrorDetails(message, errorCode, requestId), [errorCode, message, requestId]);
-  const canRetry = Boolean(retryMessage?.content) && typeof onRetry === 'function';
-
-  const handleRetry = useCallback(async () => {
-    if (!canRetry || retrying) return;
-    setRetrying(true);
-    try {
-      await onRetry(retryMessage, { reason: 'retry' });
-    } finally {
-      setRetrying(false);
-    }
-  }, [canRetry, onRetry, retryMessage, retrying]);
+  const canResume = typeof onResume === 'function';
 
   return (
     <section className="notus-agent-error-card" role="alert" aria-label="Agent 错误信息">
@@ -716,15 +705,13 @@ function AgentErrorCard({ title = '任务没有完成', message, errorCode = '',
           ) : null}
         </div>
       </div>
-      <div className="notus-agent-error-card__footer">
+      {canResume ? <div className="notus-agent-error-card__footer">
         <div className="notus-agent-error-card__actions">
-          {typeof onResume === 'function' ? <button type="button" className="notus-agent-error-card__secondary notus-agent-pressable" onClick={onResume}>{resumeLabel}</button> : null}
-          <button type="button" className="notus-agent-error-card__primary notus-agent-pressable" onClick={() => { void handleRetry(); }} disabled={!canRetry || retrying}>
-            {retrying ? <InlineActionSpinner size={14} color="#fff" /> : <Icons.refresh size={14} />}
-            <span>{retrying ? '重新发送中' : '重试'}</span>
+          <button type="button" className="notus-agent-error-card__primary notus-agent-pressable" onClick={onResume}>
+            <span>{resumeLabel}</span>
           </button>
         </div>
-      </div>
+      </div> : null}
     </section>
   );
 }
@@ -842,7 +829,7 @@ function ToolChainStep({ step, index, open, onToggle, onAction, onPreviewImages,
   );
 }
 
-function ToolChain({ steps, loading, sessionStatus = '', sessionId = '', startedAt = '', finishedAt = '', errorMessage = '', onAction, onRetryMessage, retryMessage = null, onPreviewImages }) {
+function ToolChain({ steps, loading, sessionStatus = '', sessionId = '', startedAt = '', finishedAt = '', errorMessage = '', onAction, onPreviewImages }) {
   // 只展示服务端已经确认的真实动作，内部循环、排队和推测性 loading 不进入执行记录。
   const visibleSteps = useMemo(() => (Array.isArray(steps) ? steps : []), [steps]);
   const agentErrorStep = [...visibleSteps].reverse().find((step) => step?.errorType === 'agent') || null;
@@ -944,12 +931,10 @@ function ToolChain({ steps, loading, sessionStatus = '', sessionId = '', started
             message={displayedErrorStep.errorMessage || displayedErrorStep.detail}
             errorCode={displayedErrorStep.errorCode}
             requestId={displayedErrorStep.requestId}
-            retryMessage={retryMessage}
-            onRetry={onRetryMessage}
             onResume={displayedErrorStep.action && typeof onAction === 'function'
               ? () => onAction(displayedErrorStep.action, displayedErrorStep, sessionId)
               : undefined}
-            resumeLabel={displayedErrorStep.actionLabel || '继续任务'}
+            resumeLabel="继续"
           />
         ) : null}
       </> : null}
@@ -1153,8 +1138,12 @@ function OperationSetCard({ operationSet, onOpenDetail }) {
   );
 }
 
+function hasTaskChangeSetChanges(changeSet) {
+  return Number(changeSet?.file_count || 0) + Number(changeSet?.directory_count || 0) > 0;
+}
+
 function TaskChangeSetCard({ changeSet, onOpenDetail }) {
-  if (!changeSet || Number(changeSet.file_count || 0) + Number(changeSet.directory_count || 0) === 0) return null;
+  if (!hasTaskChangeSetChanges(changeSet)) return null;
   const fileCount = Number(changeSet.file_count || 0);
   const directoryCount = Number(changeSet.directory_count || 0);
   const revisionCount = fileCount + directoryCount;
@@ -1618,7 +1607,7 @@ function AssistantMessageRow({ message, taskChangeSet = null, disabled, removing
         </div>
       ) : null}
       <TaskReceiptCards researchSummary={message.meta?.research_summary} writeSummary={message.meta?.write_summary} />
-      <div aria-label="AI 回复操作" style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', gap: 8, marginTop: 10, minHeight: 30 }}>
+      {message.content ? <div aria-label="AI 回复操作" style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', gap: 8, marginTop: 10, minHeight: 30 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
           <CopyMessageButton text={message.content} disabled={false} successMessage="已复制 AI 回复" />
           <MessageIconButton label="重试" onClick={() => { void handleRetry(); }} disabled={disabled || !canRetry || retrying}>
@@ -1626,14 +1615,14 @@ function AssistantMessageRow({ message, taskChangeSet = null, disabled, removing
           </MessageIconButton>
         </div>
         <MessageTimestamp value={timestamp} align="right" inline />
-      </div>
-      {taskChangeSet || message.taskChangeSet ? <TaskChangeSetCard changeSet={taskChangeSet || message.taskChangeSet} onOpenDetail={onOpenTaskChangeSet} /> : null}
-      {!taskChangeSet && !message.taskChangeSet && message.operationSet ? <OperationSetCard operationSet={message.operationSet} onOpenDetail={onOpenOperationSet} /> : null}
+      </div> : null}
+      {hasTaskChangeSetChanges(taskChangeSet || message.taskChangeSet) ? <TaskChangeSetCard changeSet={taskChangeSet || message.taskChangeSet} onOpenDetail={onOpenTaskChangeSet} /> : null}
+      {!hasTaskChangeSetChanges(taskChangeSet || message.taskChangeSet) && message.operationSet ? <OperationSetCard operationSet={message.operationSet} onOpenDetail={onOpenOperationSet} /> : null}
     </div>
   );
 }
 
-function AgentTaskTimeline({ activeSteps, loading, streamText, sessionStatus = '', sessionId = '', startedAt = '', finishedAt = '', errorMessage = '', retryMessage = null, onRetryMessage, onAction, onPreviewImages }) {
+function AgentTaskTimeline({ activeSteps, loading, streamText, sessionStatus = '', sessionId = '', startedAt = '', finishedAt = '', errorMessage = '', onAction, onPreviewImages }) {
   const hasSteps = Array.isArray(activeSteps) && activeSteps.length > 0;
   const isStarting = !hasSteps && !streamText && (loading || ['created', 'queued'].includes(sessionStatus));
   const hasTrace = hasSteps || Boolean(startedAt);
@@ -1642,7 +1631,7 @@ function AgentTaskTimeline({ activeSteps, loading, streamText, sessionStatus = '
   return (
     <div className="notus-agent-task-timeline">
       {isStarting && !hasTrace ? <div className="notus-agent-task-timeline__pending" role="status" aria-live="polite">任务正在提交</div> : null}
-      {hasTrace || errorMessage ? <ToolChain steps={activeSteps} loading={loading} sessionStatus={sessionStatus} sessionId={sessionId} startedAt={startedAt} finishedAt={finishedAt} errorMessage={errorMessage} retryMessage={retryMessage} onRetryMessage={onRetryMessage} onAction={onAction} onPreviewImages={onPreviewImages} /> : null}
+      {hasTrace || errorMessage ? <ToolChain steps={activeSteps} loading={loading} sessionStatus={sessionStatus} sessionId={sessionId} startedAt={startedAt} finishedAt={finishedAt} errorMessage={errorMessage} onAction={onAction} onPreviewImages={onPreviewImages} /> : null}
       {streamText ? (
         <div className="notus-agent-task-timeline__draft">
           {!loading ? <div className="notus-agent-task-timeline__draft-label">中断前已生成的回复</div> : null}
@@ -1679,7 +1668,7 @@ function MessageList({ messages, interactions = [], streamText, error = '', load
     .filter((interaction) => String(interaction?.payload?.agent_session_id || '') === String(sessionId || ''))
     .map(buildInteractionHistoryStep)
     .filter(Boolean);
-  const traceFor = (timeline, key, retryMessage = null) => {
+  const traceFor = (timeline, key) => {
     if (!timeline) return null;
     const steps = mergeInteractionStepsIntoTimeline(
       Array.isArray(timeline.activeSteps) ? timeline.activeSteps : [],
@@ -1688,12 +1677,9 @@ function MessageList({ messages, interactions = [], streamText, error = '', load
     const draft = String(timeline.streamText || '');
     const timelineError = String(timeline.errorMessage || '').trim();
     if (steps.length === 0 && !draft && !timeline.loading && !timelineError && !timeline.startedAt) return null;
-    return <AgentTaskTimeline key={key} activeSteps={steps} loading={Boolean(timeline.loading)} streamText={draft} errorMessage={timelineError} retryMessage={retryMessage} onRetryMessage={onRetryMessage} sessionStatus={timeline.sessionStatus || ''} sessionId={timeline.sessionId || ''} startedAt={timeline.startedAt || ''} finishedAt={timeline.finishedAt || ''} onAction={onAgentStepAction} onPreviewImages={onPreviewToolchainImages} />;
+    return <AgentTaskTimeline key={key} activeSteps={steps} loading={Boolean(timeline.loading)} streamText={draft} errorMessage={timelineError} sessionStatus={timeline.sessionStatus || ''} sessionId={timeline.sessionId || ''} startedAt={timeline.startedAt || ''} finishedAt={timeline.finishedAt || ''} onAction={onAgentStepAction} onPreviewImages={onPreviewToolchainImages} />;
   };
   const currentTimelineSource = sessionTimelines?.[currentSessionKey] || null;
-  const currentRetryMessage = currentTimelineSource?.userMessageId
-    ? (messages.find((message) => String(message?.id || '') === String(currentTimelineSource.userMessageId)) || null)
-    : ([...messages].reverse().find((message) => message?.role === 'user') || null);
   const currentTimeline = currentTimelineSource || hasAgentActivity ? {
     ...currentTimelineSource,
     sessionId: currentSessionKey || currentTimelineSource?.sessionId || '',
@@ -1706,7 +1692,7 @@ function MessageList({ messages, interactions = [], streamText, error = '', load
     startedAt: currentTimelineSource?.startedAt || '',
     finishedAt: currentTimelineSource?.finishedAt || '',
   } : null;
-  const executionTrace = traceFor(currentTimeline, `active-${currentSessionKey || 'pending'}`, currentRetryMessage);
+  const executionTrace = traceFor(currentTimeline, `active-${currentSessionKey || 'pending'}`);
   if (messages.length === 0 && !hasAgentActivity) {
     return (
       <div style={{ minHeight: '42vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', color: C.tertiary }}>
@@ -1727,7 +1713,7 @@ function MessageList({ messages, interactions = [], streamText, error = '', load
             .sort((left, right) => Number(right?.sessionId || 0) - Number(left?.sessionId || 0))[0] || null;
           const userSessionKey = String(userTimeline?.sessionId || '');
           const userTrace = userTimeline && !assistantSessionIds.has(userSessionKey)
-            ? traceFor(userSessionKey && userSessionKey === currentSessionKey ? currentTimeline : userTimeline, `user-${userSessionKey}`, message)
+            ? traceFor(userSessionKey && userSessionKey === currentSessionKey ? currentTimeline : userTimeline, `user-${userSessionKey}`)
             : (index === lastMessageIndex && hasAgentActivity ? executionTrace : null);
           const userTaskChangeSet = userSessionKey && !assistantSessionIds.has(userSessionKey)
             ? taskChangeSetsBySession[userSessionKey]
@@ -1745,7 +1731,7 @@ function MessageList({ messages, interactions = [], streamText, error = '', load
                 onPreviewImages={onPreviewImages}
               />
               {userTrace}
-              {userTaskChangeSet ? <TaskChangeSetCard changeSet={userTaskChangeSet} onOpenDetail={onOpenTaskChangeSet} /> : null}
+              {hasTaskChangeSetChanges(userTaskChangeSet) ? <TaskChangeSetCard changeSet={userTaskChangeSet} onOpenDetail={onOpenTaskChangeSet} /> : null}
             </Fragment>
           );
         }
@@ -1756,7 +1742,9 @@ function MessageList({ messages, interactions = [], streamText, error = '', load
           <AssistantMessageRow
             key={message.id}
             message={message}
-            taskChangeSet={taskChangeSetsBySession[messageSessionKey] || message.taskChangeSet || null}
+            taskChangeSet={hasTaskChangeSetChanges(taskChangeSetsBySession[messageSessionKey] || message.taskChangeSet)
+              ? (taskChangeSetsBySession[messageSessionKey] || message.taskChangeSet)
+              : null}
             disabled={actionDisabled}
             removing={removing}
             onRetryMessage={onRetryMessage}
@@ -1766,7 +1754,7 @@ function MessageList({ messages, interactions = [], streamText, error = '', load
             onCitationClick={onCitationClick}
             citationSelection={citationSelection}
             executionTrace={messageTimeline
-              ? traceFor(messageSessionKey === currentSessionKey ? currentTimeline : messageTimeline, `assistant-${messageSessionKey}`, previousUserMessage)
+              ? traceFor(messageSessionKey === currentSessionKey ? currentTimeline : messageTimeline, `assistant-${messageSessionKey}`)
               : (index === lastMessageIndex && hasAgentActivity ? executionTrace : null)}
           />
         );
@@ -1809,6 +1797,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
   const [dismissedMentionKey, setDismissedMentionKey] = useState('');
   const [isComposing, setIsComposing] = useState(false);
   const [mentionDropActive, setMentionDropActive] = useState(false);
+  const [modelLabelTruncated, setModelLabelTruncated] = useState(false);
   const fileInputRef = useRef(null);
   const imageInputRef = useRef(null);
   const composerRef = useRef(null);
@@ -1818,11 +1807,13 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
   const selectedMediaCountRef = useRef({ image: 0, attachment: 0 });
   const previewUrlsRef = useRef(new Set());
   const modelSearchRef = useRef(null);
+  const modelLabelRef = useRef(null);
   const composerDraftHydratedRef = useRef(false);
   const composerDraftSaveTimerRef = useRef(null);
   const composerInteractionRef = useRef(false);
   const mentionDropCounterRef = useRef(0);
   const selectedConfig = useMemo(() => llmConfigs.find((item) => String(item.id) === String(selectedConfigId)) || llmConfigs[0] || null, [llmConfigs, selectedConfigId]);
+  const selectedModelLabel = useMemo(() => modelLabel(selectedConfig), [selectedConfig]);
   const toast = useToast();
   const parsedAttachmentMode = attachmentMode === 'parsed';
   // 任务已改为后台队列，运行中仍允许立即输入下一条消息；上传完成前才阻止提交。
@@ -1865,6 +1856,24 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
       }))
       .filter((group) => group.configs.length > 0);
   }, [groupedConfigs, modelQuery]);
+
+  const updateModelLabelTruncation = useCallback(() => {
+    const label = modelLabelRef.current;
+    setModelLabelTruncated(Boolean(label && label.scrollWidth > label.clientWidth + 1));
+  }, []);
+
+  useEffect(() => {
+    updateModelLabelTruncation();
+    const label = modelLabelRef.current;
+    if (!label) return undefined;
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', updateModelLabelTruncation);
+      return () => window.removeEventListener('resize', updateModelLabelTruncation);
+    }
+    const observer = new ResizeObserver(updateModelLabelTruncation);
+    observer.observe(label);
+    return () => observer.disconnect();
+  }, [selectedModelLabel, updateModelLabelTruncation]);
 
   useEffect(() => {
     if (!modelOpen) {
@@ -2846,8 +2855,8 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
             </div>
           </div>
           <div className="notus-agent-composer__actions">
-            <div style={{ position: 'relative' }}>
-              <Tooltip content={modelLabel(selectedConfig)} disabled={!selectedConfig}><span style={{ display: 'inline-flex', minWidth: 0 }}><button type="button" className="notus-agent-composer__model" onClick={() => { setSearchOpen(false); setMcpOpen(false); setModelOpen((prev) => !prev); }} disabled={busy || disabled || llmConfigs.length === 0} style={transitionButton({ height: 28, padding: '0 8px', borderRadius: 8, background: 'transparent', color: C.secondary, display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 13, fontWeight: 700, opacity: llmConfigs.length === 0 || disabled ? 0.55 : 1 })}><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{modelLabel(selectedConfig)}</span><Icons.chevronDown size={13} /></button></span></Tooltip>
+            <div className="notus-agent-composer__model-wrap">
+              <Tooltip content={selectedModelLabel} disabled={!selectedConfig || !modelLabelTruncated} triggerStyle={{ minWidth: 0, maxWidth: '100%' }}><button type="button" className="notus-agent-composer__model" onClick={() => { setSearchOpen(false); setMcpOpen(false); setModelOpen((prev) => !prev); }} disabled={busy || disabled || llmConfigs.length === 0} style={transitionButton({ height: 28, padding: '0 8px', borderRadius: 8, background: 'transparent', color: C.secondary, display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 13, fontWeight: 700, opacity: llmConfigs.length === 0 || disabled ? 0.55 : 1 })}><span ref={modelLabelRef} className="notus-agent-composer__model-label">{selectedModelLabel}</span><Icons.chevronDown size={13} style={{ flex: '0 0 auto' }} /></button></Tooltip>
               {modelOpen ? (
                 <>
                   <button type="button" aria-label="关闭模型下拉" onClick={() => setModelOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 19, border: 0, background: 'transparent', padding: 0 }} />

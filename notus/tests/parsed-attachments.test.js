@@ -124,6 +124,7 @@ async function runTests() {
   assert.deepStrictEqual(imageResults, [], '图片不能进入文本附件解析');
   assert.deepStrictEqual(imageEvents, [], '图片不能产生附件解析步骤');
   assert.deepStrictEqual(extractWebUrls('参考 https://example.com/a 和 https://example.com/file.pdf'), ['https://example.com/a']);
+  assert.deepStrictEqual(extractWebUrls('不要访问 https://example.com，只确认你不会访问。'), ['https://example.com/']);
 
   const originalFetch = global.fetch;
   const githubFetchCalls = [];

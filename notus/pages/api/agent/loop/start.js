@@ -8,6 +8,7 @@ const { wakeAgentTaskWorker } = require('../../../../lib/agentTaskWorker');
 const { makeConversationImageReference } = require('../../../../lib/conversationImages');
 const { allowsLocalHttpMcp } = require('../../../../lib/directLoopbackRequest');
 const { mergeAgentMedia } = require('../../../../lib/agentMedia');
+const { getFileById } = require('../../../../lib/files');
 
 // 与既有恢复协议保持兼容：模型重试和已确认的轮次上限均可由“继续任务”唤醒。
 // 提问卡、资源确认、文件修改确认必须各自走确认接口，不能用通用会话票据绕过。
@@ -118,7 +119,18 @@ export default async function handler(req, res) {
     if (!goal) return res.status(400).json({ error: 'goal is required', code: 'GOAL_REQUIRED', request_id: context.request_id });
     const displayQuery = String(body.display_query ?? body.displayQuery ?? body.user_query ?? body.userQuery ?? body.input_text ?? body.inputText ?? goal).trim();
     const userQuery = String(body.user_query ?? body.userQuery ?? body.input_text ?? body.inputText ?? displayQuery).trim();
-    const conversation = ensureConversation({ conversationId: Number(body.conversation_id || 0) || null, kind: body.kind || 'agent', title: displayQuery || goal, fileId: body.active_file_id || null });
+    const requestedActiveFileId = Number(
+      body.turn_context?.active_file_id
+      ?? body.turnContext?.activeFileId
+      ?? body.active_file_id
+      ?? 0
+    ) || null;
+    const activeFile = requestedActiveFileId ? getFileById(requestedActiveFileId) : null;
+    if (requestedActiveFileId && !activeFile) {
+      return res.status(400).json({ error: '当前文件不存在', code: 'ACTIVE_FILE_NOT_FOUND', request_id: context.request_id });
+    }
+    const turnContext = { active_file_id: activeFile?.id || null };
+    const conversation = ensureConversation({ conversationId: Number(body.conversation_id || 0) || null, kind: body.kind || 'agent', title: displayQuery || goal });
     // “继续任务/重试”会恢复原 session；用户在输入框发起新 prompt 则明确放弃该对话
     // 中等待决定的模型失败任务，避免 FIFO 永久停在等待态。
     const supersededSessionIds = supersedePendingUserActionTasks(conversation.id);
@@ -134,7 +146,7 @@ export default async function handler(req, res) {
       : null;
     const userMessageId = appendUserMessage ? appendConversationMessage({
       conversationId: conversation.id, role: 'user', content: displayQuery || goal,
-      meta: { agent_loop: true, agent_goal: goal, user_query: userQuery, attachments: media.attachments, images: media.images, media_items: media.media_items, mentions: Array.isArray(body.mentions) ? body.mentions : [], mention_segments: Array.isArray(body.mention_segments ?? body.mentionSegments) ? (body.mention_segments ?? body.mentionSegments) : [], web_search_enabled: Boolean(body.web_search_enabled ?? body.webSearchEnabled), search_provider: body.search_provider || body.searchProvider || null, mcp_selection: requestedMcpSelection, hide_user_message_bubble: Boolean(body.hide_user_message_bubble ?? body.hideUserMessageBubble) },
+      meta: { agent_loop: true, agent_goal: goal, user_query: userQuery, turn_context: turnContext, attachments: media.attachments, images: media.images, media_items: media.media_items, mentions: Array.isArray(body.mentions) ? body.mentions : [], mention_segments: Array.isArray(body.mention_segments ?? body.mentionSegments) ? (body.mention_segments ?? body.mentionSegments) : [], web_search_enabled: Boolean(body.web_search_enabled ?? body.webSearchEnabled), search_provider: body.search_provider || body.searchProvider || null, mcp_selection: requestedMcpSelection, hide_user_message_bubble: Boolean(body.hide_user_message_bubble ?? body.hideUserMessageBubble) },
     }) : reusableUserMessageId;
     const created = createSession({ goal, authorizedPaths: [''], authorizedOps: body.authorized_ops || ['modify', 'create'], conversationId: conversation.id, softLimit: body.soft_limit || 15, hardLimit: body.hard_limit || 30, searchKnowledgeLimit: body.search_knowledge_limit === undefined ? 5 : body.search_knowledge_limit, webSearchEnabled: Boolean(body.web_search_enabled ?? body.webSearchEnabled), webSearchProvider: String(body.search_provider || body.searchProvider || ''), toolProfile: String(body.tool_profile || body.toolProfile || '') === 'read_only' ? 'read_only' : 'default', skillMentions: Array.isArray(body.skill_mentions ?? body.skillMentions) ? (body.skill_mentions ?? body.skillMentions) : [], mcpSelection: requestedMcpSelection, mcpSessionPermissions: { allow_local_http: allowsLocalHttpMcp(req) } });
     const task = createTask({
@@ -143,7 +155,7 @@ export default async function handler(req, res) {
       userMessageId: userMessageId,
       llmConfigId: body.llm_config_id || null,
       approvalMode: body.approval_mode || body.approvalMode || 'auto_confirm',
-      input: { ...body, goal, user_query: userQuery, display_query: displayQuery, attachments: media.attachments, images: media.images, media_items: media.media_items },
+      input: { ...body, active_file_id: undefined, activeFileId: undefined, turnContext: undefined, turn_context: turnContext, goal, user_query: userQuery, display_query: displayQuery, attachments: media.attachments, images: media.images, media_items: media.media_items },
     });
     touchConversation(conversation.id);
     wakeAgentTaskWorker();

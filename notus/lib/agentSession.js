@@ -467,6 +467,9 @@ function compactMessagesForStorage(messages = []) {
 }
 
 function saveMessagesCheckpoint(sessionId, messages, lastResponseContent, appliedToolUseId, runId = '', options = {}) {
+  const { agentRuntimeAtLeast, getAgentRuntimeMode } = require('./agentRuntimeMode');
+  const runtimeMode = getAgentRuntimeMode();
+  const toolResultProjectionVersion = agentRuntimeAtLeast('context', runtimeMode) ? 1 : 0;
   const checkpoint = {
     messages: compactMessagesForStorage(messages),
     last_response_content: lastResponseContent,
@@ -479,8 +482,9 @@ function saveMessagesCheckpoint(sessionId, messages, lastResponseContent, applie
       INSERT INTO agent_checkpoints (
         session_id, run_id, messages_json, last_response_content_json, tool_use_id,
         phase, execution_segment_id, llm_request_window_id, tool_results_json,
-        next_tool_index, pending_operation_set_id, resume_tool_result_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        next_tool_index, pending_operation_set_id, resume_tool_result_json,
+        runtime_mode, tool_result_projection_version
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       sid,
       String(runId || '') || null,
@@ -493,7 +497,9 @@ function saveMessagesCheckpoint(sessionId, messages, lastResponseContent, applie
       JSON.stringify(Array.isArray(options.toolResults) ? options.toolResults : []),
       Math.max(0, Number(options.nextToolIndex) || 0),
       normalizePositiveInt(options.pendingOperationSetId),
-      options.resumeToolResult == null ? null : JSON.stringify(options.resumeToolResult)
+      options.resumeToolResult == null ? null : JSON.stringify(options.resumeToolResult),
+      runtimeMode,
+      toolResultProjectionVersion
     );
     const checkpointId = Number(result.lastInsertRowid);
     db.prepare(`
@@ -532,6 +538,8 @@ function loadMessagesCheckpoint(sessionId) {
       nextToolIndex: Math.max(0, Number(current.next_tool_index || 0)),
       pendingOperationSetId: normalizePositiveInt(current.pending_operation_set_id),
       resumeToolResult: safeJsonParse(current.resume_tool_result_json, null),
+      runtimeMode: current.runtime_mode || 'legacy',
+      toolResultProjectionVersion: Math.max(0, Number(current.tool_result_projection_version || 0)),
     };
   }
   const row = db.prepare('SELECT messages_checkpoint, checkpoint_tool_use_id FROM agent_sessions WHERE id = ?').get(sid);
@@ -543,6 +551,8 @@ function loadMessagesCheckpoint(sessionId) {
     messages: Array.isArray(checkpoint.messages) ? checkpoint.messages : [],
     lastResponseContent: checkpoint.last_response_content || [],
     appliedToolUseId: row.checkpoint_tool_use_id || '',
+    runtimeMode: 'legacy',
+    toolResultProjectionVersion: 0,
   };
 }
 
@@ -646,7 +656,11 @@ function summarizeToolResult(toolName, result) {
     case 'set_skill_enabled': return { skill: result?.skill ? { id: result.skill.id, name: result.skill.name, enabled: Boolean(result.skill.enabled), managed: Boolean(result.skill.managed) } : null };
     case 'update_skill_from_git': return { job_id: result?.job_id || '', skill: result?.skill ? { id: result.skill.id, name: result.skill.name, enabled: Boolean(result.skill.enabled) } : null };
     case 'uninstall_skill': return { approval_required: Boolean(result?.approval_required), interaction_id: result?.interaction_id || null };
-    case 'install_skill_from_git': return { installed: (result?.installed || []).map((item) => ({ id: item.id, name: item.name, enabled: Boolean(item.enabled) })) };
+    case 'install_skill_from_git': return {
+      approval_required: Boolean(result?.approval_required),
+      interaction_id: result?.interaction_id || null,
+      installed: (result?.installed || []).map((item) => ({ id: item.id, name: item.name, enabled: Boolean(item.enabled) })),
+    };
     case 'add_mcp_server': return {
       server: result?.server ? { id: result.server.id, name: result.server.name, transport: result.server.transport, enabled: Boolean(result.server.enabled) } : null,
       test: result?.test ? { ok: Boolean(result.test.ok), tool_count: Number(result.test.tool_count || 0), error_code: result.test.error_code || '', message: result.test.message || '' } : null,

@@ -1,7 +1,7 @@
 const assert = require('assert');
 const { limitToolResult, runWithSignal, validateToolInput } = require('../lib/agentToolPolicy');
 const { sanitizeRunEvent, sanitizeToolInputForLog } = require('../lib/agentSession');
-const { publicWebUrl, summarizeInput } = require('../lib/agentTools');
+const { publicNetworkLookup, publicWebUrl, summarizeInput } = require('../lib/agentTools');
 const { parseUrl } = require('../lib/attachmentParsing');
 
 async function run() {
@@ -54,6 +54,8 @@ async function run() {
   assert.strictEqual((await publicWebUrl('http://127.0.0.1:3000/private')).error, 'URL_PRIVATE_NETWORK_BLOCKED');
   assert.strictEqual((await publicWebUrl('http://[::ffff:127.0.0.1]/private')).error, 'URL_PRIVATE_NETWORK_BLOCKED');
   assert.strictEqual((await publicWebUrl('https://user:pass@example.com/private')).error, 'URL_CREDENTIALS_BLOCKED');
+  const privateLookupError = await new Promise((resolve) => publicNetworkLookup('127.0.0.1', {}, (error) => resolve(error)));
+  assert.strictEqual(privateLookupError?.code, 'URL_PRIVATE_NETWORK_BLOCKED', '实际建连时必须再次拒绝私有网络地址');
   const timelineInput = summarizeInput({
     name: 'mcp_fetch_web_content',
     input: { endpoint: 'https://example.com/article?api_key=secret', request: 'Authorization: Bearer secret-value' },

@@ -16,6 +16,7 @@ function ensureDirs(config) {
   fs.mkdirSync(config.logDir, { recursive: true });
   fs.mkdirSync(config.sessionDir, { recursive: true });
   fs.mkdirSync(config.agentDir, { recursive: true });
+  fs.mkdirSync(config.toolResultDir, { recursive: true });
 }
 
 function scheduleRetries() {
@@ -36,6 +37,11 @@ function ensureRuntime({ startBackground = true } = {}) {
     const config = readEnvConfig();
     ensureDirs(config);
     initDb();
+    try {
+      require('./agentToolResultStore').cleanupOrphanedToolResultFiles();
+    } catch (error) {
+      logger.warn('agent_tool_results.cleanup_failed', { error });
+    }
     try {
       require('./skills').initializeSkills();
     } catch (error) {

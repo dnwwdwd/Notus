@@ -21,6 +21,11 @@ const { getOperationSetById, markOperationSetStatus } = require('../../../../lib
 const { markTaskChangeSetFinished, resolveOperationSet, resumeNonManualOperationConfirmation } = require('../../../../lib/agentTaskChangeSets');
 const { getTaskBySession, settleTaskRun } = require('../../../../lib/agentTaskQueue');
 const { wakeAgentTaskWorker } = require('../../../../lib/agentTaskWorker');
+const { getSessionTurnFrame } = require('../../../../lib/agentTurnFrames');
+const { agentRuntimeAtLeast } = require('../../../../lib/agentRuntimeMode');
+const { recordRuntimeFact, recordToolCallPrepared, recordToolCallTerminal } = require('../../../../lib/agentRuntimeFacts');
+const { archiveToolResult } = require('../../../../lib/agentToolResultStore');
+const { sha256 } = require('../../../../lib/files');
 
 function normalizePositiveInt(value) {
   const number = Number(value);
@@ -115,6 +120,13 @@ export default async function handler(req, res) {
     });
   }
 
+  const taskBeforeOperation = getTaskBySession(sessionId);
+  const turnFrame = getSessionTurnFrame(sessionId);
+  const operationInvocationKey = `operation-set:${operationSetId}:${action}:${patchIndex ?? (filePath || 'all')}`;
+  if (agentRuntimeAtLeast('shadow')) {
+    recordToolCallPrepared({ conversationId: access.session.conversation_id, sessionId, taskId: taskBeforeOperation?.id, turnFrameId: turnFrame?.id, actor: 'user', toolCallId: `operation-set-${operationSetId}`, invocationKey: operationInvocationKey, toolName: `operation_set_${action}`, inputDigest: sha256(JSON.stringify({ operationSetId, action, patchIndex, filePath, force: Boolean(force) })), replayPolicy: 'operation_set', control: { operation_set_id: Number(operationSetId), action: String(action || '') } });
+  }
+
   let result;
   const isFileRevision = String(currentConversation.operationSet?.revision_type || currentConversation.operationSet?.type || currentConversation.operationSet?.mode || '') === 'file_revision';
   if (isFileRevision) {
@@ -141,6 +153,10 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: `unsupported action: ${action}`, code: 'UNSUPPORTED_ACTION' });
   }
 
+  if (agentRuntimeAtLeast('shadow')) {
+    const artifact = await archiveToolResult({ conversationId: access.session.conversation_id, sessionId, taskId: taskBeforeOperation?.id, turnFrameId: turnFrame?.id, toolCallId: `operation-set-${operationSetId}`, invocationKey: operationInvocationKey, toolName: `operation_set_${action}`, actor: 'runtime', result });
+    recordToolCallTerminal({ conversationId: access.session.conversation_id, sessionId, taskId: taskBeforeOperation?.id, turnFrameId: turnFrame?.id, actor: 'user', toolCallId: `operation-set-${operationSetId}`, invocationKey: operationInvocationKey, factType: result.conflict || !result.success ? 'tool_call_failed' : 'tool_call_completed', payload: { tool_name: `operation_set_${action}`, operation_set_id: Number(operationSetId), resource_changed: Boolean(result.success && !String(action).startsWith('discard')), result_ref: artifact?.status === 'ready' ? artifact.result_ref : null, artifact_status: artifact?.status || 'archive_failed' } });
+  }
   if (result.conflict) return res.status(409).json(result);
   if (!result.success) return res.status(400).json(result);
   const latestOperationSet = getOperationSetById(operationSetId);
@@ -175,6 +191,9 @@ export default async function handler(req, res) {
     updateSessionStatus(sessionId, 'completed');
     changeSet = markTaskChangeSetFinished(sessionId, 'completed') || changeSet;
     settleTaskRun(sessionId, 'completed', { finished: true });
+  }
+  if (agentRuntimeAtLeast('facts')) {
+    recordRuntimeFact({ eventKey: `operation-set:${operationSetId}:${action}:state`, conversationId: access.session.conversation_id, sessionId, taskId: taskBeforeOperation?.id, turnFrameId: turnFrame?.id, actor: 'user', factType: String(action).startsWith('rollback') ? 'operation_rolled_back' : String(action).startsWith('discard') ? 'operation_discarded' : 'operation_applied', payload: { operation_set_id: Number(operationSetId), action, status: latestOperationSet?.status || '' } });
   }
   return res.status(200).json({
     ...result,

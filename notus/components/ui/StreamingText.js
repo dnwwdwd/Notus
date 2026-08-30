@@ -4,10 +4,21 @@ import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeHighlight from 'rehype-highlight';
 import rehypeKatex from 'rehype-katex';
+import { splitBareUrlLabel } from '../../utils/markdownLinks';
+
+const StreamingMarkdownLink = ({ href, children, ...props }) => {
+  const childList = Array.isArray(children) ? children : [children];
+  const visibleText = childList.length === 1 && typeof childList[0] === 'string' ? childList[0] : '';
+  const split = splitBareUrlLabel(visibleText);
+  if (split) {
+    return <><a href={split.url} {...props}>{split.url}</a>{split.suffix}</>;
+  }
+  return <a href={href} {...props}>{children}</a>;
+};
 
 export const StreamingText = ({ text, streaming, className = '', style = {} }) => (
   <div className={className} style={{ fontSize: 'var(--text-sm)', lineHeight: 1.7, color: 'var(--text-primary)', maxWidth: '100%', minWidth: 0, overflow: 'hidden', ...style }}>
-    <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeHighlight, rehypeKatex]}>
+    <ReactMarkdown components={{ a: StreamingMarkdownLink }} remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeHighlight, rehypeKatex]}>
       {text || ''}
     </ReactMarkdown>
     {streaming && (

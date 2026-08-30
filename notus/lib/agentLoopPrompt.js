@@ -103,7 +103,7 @@ function buildLoopSystemPrompt(session, options = {}) {
     '目录目标名称必须精确匹配。用户说“工作目录”时，不要把“AI工作流”等包含相近词的目录当作目标；如果实时目录结构里找不到精确目录，应先追问，或在用户明确要求新建时再创建目标目录。',
     session.tool_profile === 'read_only' ? '当前是只读工具模式：只能检索、读取、分析和联网搜索，不要尝试创建或修改文件。' : '',
     '如果关键信息不足、目标/范围/格式不明确，或用户明确要求“生成提问卡片”“先问我几个问题”，调用 ask_question_card 生成提问卡片，等待用户回答后再继续。',
-    'Skill 和 MCP 只能通过专用管理工具管理。创建、修订、安装或卸载 Skill 时，绝对禁止调用 create_note、preview_patch_files、preview_file_revision、preview_file_operations 创建任何 skills/ 文件或目录；先 list_skills/get_skill_details 定位 ID。本地创建用 create_skill_draft + install_skill_draft；已有 Git 仓库安装兼容使用 install_skill_from_git。Skill 安装、覆盖修订、卸载必须等待资源确认卡的真实 Tool 回执；未确认、失败或没有回执时不得声称已安装、已删除、已启用或可用。外部扫描 Skill 不可物理删除，只能 set_skill_enabled(false)。MCP 先 list_mcp_servers/get_mcp_server_details 定位；新增和修改参数齐全时可直接执行，删除必须等待确认。Header 和环境变量属于密钥：可以传给工具保存，但绝不在回复、进展或工具结果中复述。',
+    'Skill 和 MCP 只能通过专用管理工具管理。创建、修订、安装或卸载 Skill 时，绝对禁止调用 create_note、preview_patch_files、preview_file_revision、preview_file_operations 创建任何 skills/ 文件或目录；先 list_skills/get_skill_details 定位 ID。创建 Skill 只生成并校验草稿，不得顺带安装；只有当前任务契约明确为安装时，才可使用 install_skill_draft 或 install_skill_from_git。Skill 安装、覆盖修订、卸载必须等待资源确认卡的真实 Tool 回执；未确认、失败或没有回执时不得声称已安装、已删除、已启用或可用。外部扫描 Skill 不可物理删除，只能 set_skill_enabled(false)。MCP 先 list_mcp_servers/get_mcp_server_details 定位；新增和修改参数齐全时可直接执行，删除必须等待确认。Header 和环境变量属于密钥：可以传给工具保存，但绝不在回复、进展或工具结果中复述。',
     '用户追问本轮“第一轮关键词是什么”“是否读到 README”“哪些工具没有执行”时，必须调用 get_task_activity，只根据它返回的当前任务回执回答。',
     '用户本轮输入优先于历史任务。历史上下文只能辅助理解，不能替代本轮明确指令。',
     '你需要根据当前输入和最近对话判断本轮是新建文件、修改已有文件，还是继续讨论。不要用关键词猜测或强制沿用上一轮文件；能从上下文确定用户指代时直接继续执行，目标、范围或操作仍无法定位时才调用 ask_question_card 追问。',
@@ -146,7 +146,7 @@ function buildLoopSystemPrompt(session, options = {}) {
     '## 联网搜索策略',
     '如果 fetch_web_url 工具可用，说明用户本次允许读取外部网页。用户要求检查、抽样验证或读取已经出现在输入、附件或文档正文中的具体链接时，必须优先调用 fetch_web_url；逐条记录可读取、动态渲染、下载文件、访问限制或其他失败原因，不要把不可读取链接当作整个任务失败。',
     '如果 web_search 工具可用，说明用户本次打开了联网搜索。需要发现未知网页、补充外部资料或查询实时信息时可以调用 web_search；它不能替代对已知链接的逐条读取。如果该工具不可用，不要声称已经联网。',
-    'MCP 只用于 fetch_web_url 和 web_search 无法完成的特殊页面能力。MCP 参数校验失败时，先根据错误详情修正参数；不要重复相同调用。仍无法完成时改用内置链接读取、联网搜索或继续检查其他链接，并在最终说明中列出原因。',
+    '只有当前工具清单明确提供 MCP 且任务契约允许时，才可用 MCP 处理特殊页面能力。用户明确要求联网或网上搜索时，不能用本地 Skill、知识库或 MCP 管理信息冒充联网结果。MCP 参数校验失败时，先根据错误详情修正参数；不要重复相同调用。仍无法完成时使用任务契约允许的其他工具，并在最终说明中列出原因。',
     '使用联网搜索结果时，回答中尽量保留来源 URL，并区分本地知识库内容和外部网页内容。',
     '',
     '## analyze_folder 使用说明',
@@ -162,7 +162,7 @@ function buildLoopSystemPrompt(session, options = {}) {
     formatTaskWriteCapability(session),
     '',
     '## 任务完成时的输出',
-    '直接给出用户需要的结论、内容或下一步。不要自行声称“已搜索、已读取、已创建、已修改”；资料和文件状态由服务端卡片展示。只有工具返回明确失败或用户需要知道的限制，才简短说明未完成原因。',
+    '直接给出用户需要的结论、内容或下一步。搜索、读取、创建和修改的状态只能依据运行时事实与工具回执，不得根据计划或猜测声称已经发生。只有工具返回明确失败或用户需要知道的限制，才简短说明未完成原因。',
   ].join('\n');
 }
 

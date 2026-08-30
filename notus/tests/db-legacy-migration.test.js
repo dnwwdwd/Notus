@@ -78,6 +78,22 @@ function seedLegacyDatabase(dbPath) {
 }
 
 function runTests() {
+  const previouslyMigratedDb = new Database(':memory:');
+  previouslyMigratedDb.exec(`
+    CREATE TABLE agent_checkpoints (id INTEGER PRIMARY KEY AUTOINCREMENT);
+    CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at TEXT);
+    INSERT INTO schema_version (version, applied_at) VALUES (13, datetime('now'));
+  `);
+  const checkpointProjectionMigration = require('../lib/migrations/014_agent_checkpoint_projection_columns');
+  const hasMigrationColumn = (database, table, column) => database.prepare(`PRAGMA table_info(${table})`).all().some((row) => row.name === column);
+  const hasMigrationTable = (database, table) => Boolean(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table));
+  checkpointProjectionMigration.up(previouslyMigratedDb, { hasColumn: hasMigrationColumn, tableExists: hasMigrationTable });
+  checkpointProjectionMigration.up(previouslyMigratedDb, { hasColumn: hasMigrationColumn, tableExists: hasMigrationTable });
+  const upgradedCheckpointColumns = previouslyMigratedDb.prepare('PRAGMA table_info(agent_checkpoints)').all().map((row) => row.name);
+  assert.ok(upgradedCheckpointColumns.includes('runtime_mode'));
+  assert.ok(upgradedCheckpointColumns.includes('tool_result_projection_version'));
+  previouslyMigratedDb.close();
+
   const tempDir = buildTempWorkspace();
   const dbPath = path.join(tempDir, 'notus.db');
   const notesDir = path.join(tempDir, 'notes');
@@ -106,6 +122,7 @@ function runTests() {
   const messageColumns = db.prepare('PRAGMA table_info(messages)').all().map((row) => row.name);
   const agentSessionColumns = db.prepare('PRAGMA table_info(agent_sessions)').all().map((row) => row.name);
   const agentQueueColumns = db.prepare('PRAGMA table_info(agent_task_queue)').all().map((row) => row.name);
+  const checkpointColumns = db.prepare('PRAGMA table_info(agent_checkpoints)').all().map((row) => row.name);
   const files = getAllFiles();
 
   [
@@ -141,6 +158,10 @@ function runTests() {
     assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table), `missing table ${table}`);
   });
   assert.ok(agentQueueColumns.includes('resume_job_id'), 'missing agent_task_queue.resume_job_id');
+  ['runtime_mode', 'tool_result_projection_version'].forEach((column) => {
+    assert.ok(checkpointColumns.includes(column), `missing agent_checkpoints.${column}`);
+  });
+  assert.ok(db.prepare('SELECT version FROM schema_version WHERE version = 14').get(), 'missing migration 014');
   const conversationId = db.prepare("INSERT INTO conversations (kind, title) VALUES ('canvas', '系统消息测试')").run().lastInsertRowid;
   assert.doesNotThrow(() => {
     db.prepare(`

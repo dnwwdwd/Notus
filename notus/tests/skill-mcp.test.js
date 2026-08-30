@@ -31,6 +31,7 @@ async function run() {
   const { createSession, getSession, logToolCall, listRunLogs } = require('../lib/agentSession');
   const { getSkillMcpCapabilities } = require('../lib/platform/capabilities');
   const { getDb } = require('../lib/db');
+  const { createConversation } = require('../lib/conversations');
   const { saveServer, getServer, listServers, removeServer, isToolCacheStale, prepareMcpTools } = require('../lib/mcp');
   const { buildToolDefinitions, executeAddMcpServer, executeInstallSkillFromGit } = require('../lib/agentTools');
   const { buildLoopSystemPrompt } = require('../lib/agentLoopPrompt');
@@ -42,8 +43,10 @@ async function run() {
     assert.equal(capabilities.mcp.stdio, true);
     assert.equal(capabilities.skills.discoverExternalRoots, true);
 
+    const conversation = createConversation({ kind: 'canvas', title: 'Skill 与 MCP 测试' });
     const created = createSession({
       goal: '整理研究笔记',
+      conversationId: conversation.id,
       authorizedPaths: [''],
       skillMentions: ['skill-a'],
       mcpSelection: { mode: 'auto' },
@@ -194,13 +197,19 @@ async function run() {
         attemptedRefs.push(ref);
         fs.writeFileSync(path.join(dir, 'SKILL.md'), '---\nname: git-skill\ndescription: Git 安装测试\n---\n\n测试内容\n');
       };
-      const installed = await executeInstallSkillFromGit({ repository_url: 'https://example.com/git-skill.git' });
+      const approval = await executeInstallSkillFromGit({ repository_url: 'https://example.com/git-skill.git' }, session.id);
+      assert.deepEqual(attemptedRefs, [], '确认前不得访问 Git 仓库');
+      assert.equal(approval.approval_required, true);
+      assert.equal(approval.interaction.payload.action, 'skill_install_git');
+      assert.equal(approval.interaction.payload.repository_url, 'https://example.com/git-skill.git');
+      const installedResult = await installFromGit({ repositoryUrl: 'https://example.com/git-skill.git', conflictPolicy: 'reject' });
+      const installed = { installed: installedResult.skills };
       assert.deepEqual(attemptedRefs, ['main']);
       assert.equal(installed.installed.length, 1);
       assert.equal(installed.installed[0].name, 'git-skill');
       assert.equal(getSkill(installed.installed[0].id).can_update, true);
       await assert.rejects(
-        () => executeInstallSkillFromGit({ repository_url: 'https://example.com/git-skill.git' }),
+        () => installFromGit({ repositoryUrl: 'https://example.com/git-skill.git', conflictPolicy: 'reject' }),
         (error) => error.code === 'SKILL_ALREADY_EXISTS'
       );
       setSkillEnabled(installed.installed[0].id, false);

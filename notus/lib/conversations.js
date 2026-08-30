@@ -94,7 +94,17 @@ function deleteConversation(id) {
   const conversation = getConversation(id);
   if (!conversation) return false;
   const db = getDb();
+  const resultArtifacts = db.prepare(`
+    SELECT relative_path
+    FROM agent_tool_result_artifacts
+    WHERE conversation_id = ? AND relative_path IS NOT NULL
+  `).all(conversation.id);
   db.prepare('DELETE FROM conversations WHERE id = ?').run(conversation.id);
+  try {
+    require('./agentToolResultStore').removeArtifactFiles(resultArtifacts);
+  } catch {
+    // 数据库已完成删除。未能删除的文件由启动清理器处理。
+  }
   return true;
 }
 

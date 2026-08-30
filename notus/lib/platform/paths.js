@@ -17,6 +17,7 @@ function buildDefaultLayout(runtimeTarget, cwd = process.cwd()) {
       logDir: path.join(dataRoot, 'logs'),
       sessionDir: path.join(dataRoot, 'session'),
       agentDir: path.join(dataRoot, 'agent'),
+      toolResultDir: path.join(dataRoot, 'agent-tool-results'),
     };
   }
 
@@ -30,6 +31,7 @@ function buildDefaultLayout(runtimeTarget, cwd = process.cwd()) {
       logDir: '/lzcapp/var/logs',
       sessionDir: '/lzcapp/cache/notus/session',
       agentDir: path.join(dataRoot, 'agent'),
+      toolResultDir: path.join(dataRoot, 'agent-tool-results'),
     };
   }
 
@@ -42,6 +44,7 @@ function buildDefaultLayout(runtimeTarget, cwd = process.cwd()) {
     logDir: path.join(dataRoot, 'logs'),
     sessionDir: path.join(dataRoot, '.session'),
     agentDir: path.join(dataRoot, 'agent'),
+    toolResultDir: path.join(dataRoot, 'agent-tool-results'),
   };
 }
 
@@ -54,6 +57,7 @@ function derivePathsFromDataRoot(runtimeTarget, dataRoot) {
       logDir: path.join(dataRoot, 'logs'),
       sessionDir: path.join(dataRoot, '.session'),
       agentDir: path.join(dataRoot, 'agent'),
+      toolResultDir: path.join(dataRoot, 'agent-tool-results'),
     };
   }
 
@@ -65,6 +69,7 @@ function derivePathsFromDataRoot(runtimeTarget, dataRoot) {
       logDir: path.join(dataRoot, 'logs'),
       sessionDir: '/lzcapp/cache/notus/session',
       agentDir: path.join(dataRoot, 'agent'),
+      toolResultDir: path.join(dataRoot, 'agent-tool-results'),
     };
   }
 
@@ -75,6 +80,7 @@ function derivePathsFromDataRoot(runtimeTarget, dataRoot) {
     logDir: path.join(dataRoot, 'logs'),
     sessionDir: path.join(dataRoot, 'session'),
     agentDir: path.join(dataRoot, 'agent'),
+    toolResultDir: path.join(dataRoot, 'agent-tool-results'),
   };
 }
 
@@ -94,6 +100,9 @@ function resolvePlatformPaths(env = process.env, options = {}) {
     logDir: absolutePath(env.LOG_DIR, derived.logDir, cwd),
     sessionDir: absolutePath(env.SESSION_DIR, derived.sessionDir, cwd),
     agentDir: absolutePath(env.AGENT_DIR, derived.agentDir, cwd),
+    // 工具结果清理器会删除自身管理的孤立文件，因此目录必须固定在 dataRoot 内，
+    // 不允许通过环境变量指向工作区、用户目录或共享目录。
+    toolResultDir: path.join(dataRoot, 'agent-tool-results'),
   };
 }
 

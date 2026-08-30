@@ -1,6 +1,8 @@
 const { createAppError } = require('../../errors');
 const { estimateTextTokens } = require('../../llmBudget');
 const { buildInteractionsModule } = require('./interactions');
+const { buildIntentModule } = require('./intent');
+const { buildCompletionModule } = require('./completion');
 const { buildOutputModule } = require('./output');
 const { buildPolicyModule } = require('./policy');
 const { buildResearchModule } = require('./research');
@@ -11,6 +13,7 @@ const { PROMPT_VERSION } = require('./version');
 
 function renderAgentLoopPrompt(session, options = {}) {
   const candidates = [
+    buildIntentModule(session, options), buildCompletionModule(session, options),
     buildPolicyModule(session, options), buildInteractionsModule(session, options),
     buildWorkspaceModule(options), buildWritingModule(options), buildResearchModule(options),
     buildResourcesModule(options), buildOutputModule(session, options),

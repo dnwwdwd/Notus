@@ -15,8 +15,15 @@ export const TOOL_DISPLAY = {
   add_mcp_server: '新增 MCP Server',
 };
 
+export function getAgentToolDisplayName(name = '') {
+  const normalized = String(name || '').trim();
+  const match = normalized.match(/^mcp_[a-f0-9]{12}_([A-Za-z0-9_-]+)$/i);
+  return match?.[1] || normalized;
+}
+
 export function getAgentToolLabel(name = '') {
-  return TOOL_DISPLAY[name] || name || '模型回复';
+  const displayName = getAgentToolDisplayName(name);
+  return TOOL_DISPLAY[displayName] || displayName || '模型回复';
 }
 
 export function getAgentLoopReasonLabel(reason = '') {

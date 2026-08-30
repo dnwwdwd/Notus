@@ -1,7 +1,7 @@
 const path = require('path');
 const { getEffectiveConfig } = require('./config');
 const { parseDocument, parseUrl, extractWebUrls, SUPPORTED_EXTENSIONS } = require('./attachmentParsing');
-const { hasAttachment, saveAttachment } = require('./parsedAttachmentStore');
+const { contentDigest, findAttachment, saveAttachment } = require('./parsedAttachmentStore');
 
 function normalizePositiveInt(value) {
   const next = Number(value);
@@ -42,7 +42,22 @@ function summarizeParseResult(result = {}, extra = {}) {
     pageCount: result.pageCount ?? null,
     textLength: String(result.text || '').length,
     duplicate: Boolean(extra.duplicate),
+    messageId: normalizePositiveInt(extra.messageId),
+    contentHash: String(extra.contentHash || ''),
   };
+}
+
+function normalizeExternalUrl(value = '') {
+  try {
+    const url = new URL(String(value || '').trim());
+    if (!['http:', 'https:'].includes(url.protocol)) return '';
+    url.username = '';
+    url.password = '';
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return '';
+  }
 }
 
 function parseGitHubRepositoryUrl(value = '') {
@@ -178,7 +193,7 @@ async function parseGitHubRepositoryReadme(value = '') {
   }
 }
 
-async function parseUploadedAttachment(conversationId, attachment = {}) {
+async function parseUploadedAttachment(conversationId, attachment = {}, { sourceMessageId = null } = {}) {
   const displayName = sanitizeFileName(attachment.name || attachment.file_name || attachment.filename);
   const ext = path.extname(displayName).toLowerCase();
   if (!SUPPORTED_EXTENSIONS.has(ext)) {
@@ -190,17 +205,6 @@ async function parseUploadedAttachment(conversationId, attachment = {}) {
       errorCode: 'UNSUPPORTED_FORMAT',
       warning: `不支持的文件格式：${ext || '未知'}。当前支持 PDF、DOCX、MD、TXT、CSV。`,
       parsedAt: new Date().toISOString(),
-    };
-  }
-  if (hasAttachment(conversationId, displayName)) {
-    return {
-      source: displayName,
-      type: 'plaintext',
-      status: 'success',
-      text: '',
-      warning: '该文件已在本次对话中导入，无需重复解析。',
-      parsedAt: new Date().toISOString(),
-      duplicate: true,
     };
   }
   const filePath = resolveUploadedAttachmentPath(attachment.stored_name || attachment.storedName);
@@ -216,28 +220,41 @@ async function parseUploadedAttachment(conversationId, attachment = {}) {
     };
   }
   const result = await parseDocument(filePath, displayName);
-  if (result.status !== 'error') saveAttachment(conversationId, result);
-  return result;
+  if (result.status === 'error') return result;
+  const contentHash = contentDigest(result.text || '');
+  const existingMessageId = findAttachment(conversationId, result.source || displayName, { contentHash });
+  if (existingMessageId) {
+    return { ...result, text: '', duplicate: true, messageId: existingMessageId, contentHash, warning: '相同内容的文件已在本次对话中导入，无需重复解析。' };
+  }
+  const messageId = saveAttachment(conversationId, result, { sourceMessageId });
+  return { ...result, messageId, contentHash };
 }
 
-async function parseWebUrlForConversation(conversationId, url) {
-  if (hasAttachment(conversationId, url)) {
+async function parseWebUrlForConversation(conversationId, url, { sourceMessageId = null } = {}) {
+  const normalizedUrl = normalizeExternalUrl(url);
+  if (!normalizedUrl) return { source: '', type: 'webpage', status: 'error', text: '', errorCode: 'URL_INVALID', warning: '链接格式无效。' };
+  const existingMessageId = findAttachment(conversationId, normalizedUrl);
+  if (existingMessageId) {
     return {
-      source: url,
+      source: normalizedUrl,
       type: 'webpage',
       status: 'success',
       text: '',
       warning: '该链接已在本次对话中导入，无需重复抓取。',
       parsedAt: new Date().toISOString(),
       duplicate: true,
+      messageId: existingMessageId,
     };
   }
-  const result = await parseGitHubRepositoryReadme(url) || await parseUrl(url);
-  if (result.status !== 'error') saveAttachment(conversationId, result);
-  return result;
+  const result = await parseGitHubRepositoryReadme(normalizedUrl) || await parseUrl(normalizedUrl);
+  if (result.status === 'error') return result;
+  const normalizedResult = { ...result, source: normalizedUrl };
+  const contentHash = contentDigest(normalizedResult.text || '');
+  const messageId = saveAttachment(conversationId, normalizedResult, { sourceMessageId });
+  return { ...normalizedResult, messageId, contentHash, duplicate: !messageId };
 }
 
-async function parseAgentInputSources({ conversationId, attachments = [], userInputText, text = '', onEvent } = {}) {
+async function parseAgentInputSources({ conversationId, attachments = [], userInputText, text = '', selectedUrls, sourceMessageId = null, onEvent } = {}) {
   const normalizedConversationId = normalizePositiveInt(conversationId);
   if (!normalizedConversationId) return [];
   const results = [];
@@ -249,17 +266,19 @@ async function parseAgentInputSources({ conversationId, attachments = [], userIn
   for (const attachment of uploadedAttachments) {
     const source = sanitizeFileName(attachment?.name || attachment?.file_name || attachment?.filename);
     emit({ type: 'attachment_parse_start', source, source_kind: attachment?.source_kind || 'file' });
-    const result = await parseUploadedAttachment(normalizedConversationId, attachment);
-    const summary = summarizeParseResult(result, { source });
+    const result = await parseUploadedAttachment(normalizedConversationId, attachment, { sourceMessageId });
+    const summary = summarizeParseResult(result, { source, duplicate: result.duplicate, messageId: result.messageId, contentHash: result.contentHash });
     results.push(summary);
     emit({ ...summary, type: 'attachment_parse_done', source_kind: attachment?.source_kind || 'file' });
   }
 
-  const urls = extractWebUrls(sourceText);
+  const urls = selectedUrls === undefined
+    ? extractWebUrls(sourceText)
+    : [...new Set((Array.isArray(selectedUrls) ? selectedUrls : []).map(normalizeExternalUrl).filter(Boolean))];
   for (const url of urls) {
     emit({ type: 'attachment_parse_start', source: url, source_kind: 'url' });
-    const result = await parseWebUrlForConversation(normalizedConversationId, url);
-    const summary = summarizeParseResult(result, { source: url, type: 'webpage' });
+    const result = await parseWebUrlForConversation(normalizedConversationId, url, { sourceMessageId });
+    const summary = summarizeParseResult(result, { source: url, type: 'webpage', duplicate: result.duplicate, messageId: result.messageId, contentHash: result.contentHash });
     results.push(summary);
     emit({ ...summary, type: 'attachment_parse_done', source_kind: 'url' });
   }
@@ -273,6 +292,7 @@ module.exports = {
   parseWebUrlForConversation,
   parseGitHubRepositoryReadme,
   parseGitHubRepositoryUrl,
+  normalizeExternalUrl,
   resolveUploadedAttachmentPath,
   sanitizeFileName,
   summarizeParseResult,

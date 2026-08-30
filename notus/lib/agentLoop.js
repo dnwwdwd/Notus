@@ -54,8 +54,16 @@ const {
   recordToolReceipt,
   recordWriteReceipt,
 } = require('./agentResearch');
+const { agentRuntimeAtLeast, getAgentRuntimeMode } = require('./agentRuntimeMode');
+const { getSessionTurnFrame } = require('./agentTurnFrames');
+const { projectAgentContext } = require('./agentContextProjector');
+const { projectToolDefinitions, requiredToolNames, toolReplayPolicy } = require('./agentToolProfile');
+const { getInvocationState, reconcileUnresolvedToolCalls, recordRuntimeFact, recordToolCallPrepared, recordToolCallTerminal, shouldTreatToolFailureAsOutcomeUnknown } = require('./agentRuntimeFacts');
+const { archiveToolResult, projectToolResultForModel, readArtifactResultForRuntime } = require('./agentToolResultStore');
+const { evaluateCompletion } = require('./agentCompletionEvaluator');
 
 const DEFAULT_LLM_RETRY_LIMIT = 5;
+const DEFAULT_LLM_RETRY_DELAY_MS = 30_000;
 
 function repeatedToolFailureText(toolUse = {}, result = {}, mcpToolMap = {}) {
   const mappedName = mcpToolMap?.[toolUse.name]?.toolName;
@@ -72,12 +80,35 @@ function repeatedToolFailureText(toolUse = {}, result = {}, mcpToolMap = {}) {
   return `${toolName} 连续两次使用相同参数失败：${reason}。${fallback}`;
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function waitForRetry(ms, signal) {
+  const delayMs = Math.max(0, Number(ms) || 0);
+  if (delayMs === 0) return Promise.resolve();
+  if (signal?.aborted) {
+    return Promise.reject(Object.assign(new Error('模型请求已取消'), { code: 'ABORTED' }));
+  }
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener?.('abort', onAbort);
+      reject(Object.assign(new Error('模型请求已取消'), { code: 'ABORTED' }));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener?.('abort', onAbort);
+      resolve();
+    }, delayMs);
+    signal?.addEventListener?.('abort', onAbort, { once: true });
+  });
 }
 
 function safeJsonParse(value, fallback = null) {
   try { return JSON.parse(value); } catch { return fallback; }
+}
+
+function checkpointContainsToolResults(checkpoint = {}) {
+  if ((Array.isArray(checkpoint.toolResults) ? checkpoint.toolResults : []).some((item) => item?.type === 'tool_result')) return true;
+  return (Array.isArray(checkpoint.messages) ? checkpoint.messages : []).some((message) => (
+    Array.isArray(message?.content) && message.content.some((item) => item?.type === 'tool_result')
+  ));
 }
 
 function buildCompactSummary(parsed) {
@@ -197,6 +228,7 @@ function classifyLLMError(error = {}) {
 
 async function callLLMWithRetry(request, maxRetries = DEFAULT_LLM_RETRY_LIMIT, options = {}) {
   let lastError;
+  const retryWait = typeof options.waitForRetry === 'function' ? options.waitForRetry : waitForRetry;
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     try {
       return await completeToolChat(request);
@@ -204,9 +236,9 @@ async function callLLMWithRetry(request, maxRetries = DEFAULT_LLM_RETRY_LIMIT, o
       lastError = error;
       const classification = classifyLLMError(error);
       if (classification.retryable && attempt < maxRetries) {
-        const delayMs = Math.max(0, Number(options.retryDelayMs?.(attempt) ?? (1000 * Math.pow(2, attempt))));
+        const delayMs = Math.max(0, Number(options.retryDelayMs?.(attempt) ?? DEFAULT_LLM_RETRY_DELAY_MS));
         options.onRetry?.({ attempt: attempt + 1, maxRetries, delayMs, classification });
-        if (delayMs > 0) await sleep(delayMs);
+        if (delayMs > 0) await retryWait(delayMs, request.signal);
         continue;
       }
       error.llmErrorCategory = classification.category;
@@ -337,9 +369,11 @@ function buildInitialUserContent(session, options = {}) {
   ];
 }
 
-async function runAgentLoop({ sessionId, runId = null, llmConfig, onStream, signal, approvalMode = 'auto_confirm', resumeInteractionId = null, initialImages = [], currentImageRecognition = null } = {}) {
+async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId = null, llmConfig, onStream, signal, approvalMode = 'auto_confirm', resumeInteractionId = null, initialImages = [], currentImageRecognition = null } = {}) {
   let session = getSession(sessionId);
   const config = getEffectiveConfig();
+  const runtimeMode = getAgentRuntimeMode();
+  let effectiveFrame = turnFrame || (agentRuntimeAtLeast('shadow', runtimeMode) ? getSessionTurnFrame(sessionId) : null);
   const rawEmit = typeof onStream === 'function' ? onStream : () => {};
   const emit = (event) => {
     // 时间线写入失败不能掩盖主任务结果；正常路径下每个用户可见的 v2 事件
@@ -354,54 +388,80 @@ async function runAgentLoop({ sessionId, runId = null, llmConfig, onStream, sign
   };
   const normalizedApprovalMode = normalizeApprovalMode(approvalMode);
 
-  const styleContext = await loadStyleContext(session);
+  const styleContext = !agentRuntimeAtLeast('profile', runtimeMode) || effectiveFrame?.intent?.task_kind === 'file_write'
+    ? await loadStyleContext(session)
+    : null;
   const globalAgentContext = buildGlobalAgentContext(session.goal);
-  const resourceContext = buildConversationResourceContext(session.conversation_id);
-  const skillCatalog = eligibleSkillSummaries(session.goal, session.skill_mentions || []);
-  const mcpContext = await prepareMcpTools(session.mcp_selection || { mode: 'off' }, session.goal, session.mcp_session_permissions || {});
-  const tools = buildToolDefinitions(session, { mcpTools: mcpContext.tools });
+  const resourceContext = agentRuntimeAtLeast('context', runtimeMode) ? null : buildConversationResourceContext(session.conversation_id);
+  const skillCatalog = !agentRuntimeAtLeast('profile', runtimeMode) || effectiveFrame?.intent?.source_policy?.local_skills !== 'forbidden'
+    ? eligibleSkillSummaries(session.goal, session.skill_mentions || [])
+    : [];
+  const mcpSelection = session.mcp_selection || { mode: 'off' };
+  const mcpDisallowedByFrame = effectiveFrame?.intent?.source_policy?.web === 'required'
+    || ['skill_discovery', 'web_research'].includes(String(effectiveFrame?.intent?.task_kind || ''));
+  const mcpContext = agentRuntimeAtLeast('profile', runtimeMode)
+    && (String(mcpSelection.mode || 'off') === 'off' || mcpDisallowedByFrame)
+    ? { tools: [], map: {}, instructions: [] }
+    : await prepareMcpTools(mcpSelection, session.goal, session.mcp_session_permissions || {});
+  const allTools = buildToolDefinitions(session, { mcpTools: mcpContext.tools });
+  const tools = agentRuntimeAtLeast('profile', runtimeMode)
+    ? projectToolDefinitions(allTools, effectiveFrame)
+    : allTools;
   session = setSessionRuntimeVersions(session.id, {
     promptVersion: config.agentPromptVersion || 'agent-loop-v2',
     toolsetVersion: sha256(JSON.stringify(tools)).slice(0, 16),
     tokenBudgetTotal: Number(llmConfig?.llmContextWindowTokens || config.llmContextWindowTokens || 60000),
   });
-  const attachmentContext = session.conversation_id
+  const attachmentContext = !agentRuntimeAtLeast('context', runtimeMode) && session.conversation_id
     ? formatAttachmentsForPrompt(loadAttachments(session.conversation_id))
     : '';
-  const webSearchContext = session.conversation_id && session.web_search_enabled
+  const webSearchContext = !agentRuntimeAtLeast('context', runtimeMode) && session.conversation_id && session.web_search_enabled
     ? formatWebSearchContextsForPrompt(session.conversation_id)
     : '';
-  const researchReceiptContext = formatResearchReceiptsForPrompt(session.id);
-  const promptOptions = {
+  const researchReceiptContext = agentRuntimeAtLeast('context', runtimeMode) ? '' : formatResearchReceiptsForPrompt(session.id);
+  const basePromptOptions = {
     styleContext,
     globalAgentContext,
     resourceContext,
     skillCatalog,
     mcpInstructions: mcpContext.instructions,
-    taskMaterialContext: [attachmentContext, webSearchContext, researchReceiptContext].filter(Boolean).join('\n\n'),
-    taskMaterials: [
-      attachmentContext ? { sourceType: 'attachment', sourceId: `conversation-${session.conversation_id}-attachments`, content: attachmentContext } : null,
-      webSearchContext ? { sourceType: 'web', sourceId: `conversation-${session.conversation_id}-web`, content: webSearchContext } : null,
-      researchReceiptContext ? { sourceType: 'knowledge', sourceId: `session-${session.id}-research-receipts`, content: researchReceiptContext } : null,
-    ].filter(Boolean),
+    intentContract: effectiveFrame ? require('./agentSemanticRuntime').formatTurnFrameForPrompt(effectiveFrame) : '',
     contextWindowTokens: Number(llmConfig?.llmContextWindowTokens || config.llmContextWindowTokens || 60000),
   };
-  const renderedPrompt = session.prompt_version === 'legacy-v1'
-    ? { text: buildLoopSystemPrompt(session, promptOptions), version: 'legacy-v1', moduleIds: ['legacy-v1'] }
-    : renderAgentLoopPrompt(session, promptOptions);
-  const systemPrompt = renderedPrompt.text;
-  const restrictedPrompt = session.prompt_version === 'legacy-v1'
-    ? systemPrompt
-    : renderAgentLoopPrompt(session, {
+  const renderRequestPrompt = ({ restricted = false, completionCorrection = '' } = {}) => {
+    if (agentRuntimeAtLeast('context', runtimeMode)) {
+      effectiveFrame = getSessionTurnFrame(session.id) || effectiveFrame;
+    }
+    const projectedContext = agentRuntimeAtLeast('context', runtimeMode)
+      ? projectAgentContext(effectiveFrame)
+      : null;
+    const promptOptions = {
+      ...basePromptOptions,
+      taskMaterialContext: projectedContext?.taskMaterialContext || [attachmentContext, webSearchContext, researchReceiptContext].filter(Boolean).join('\n\n'),
+      taskMaterials: projectedContext?.taskMaterials || [
+        attachmentContext ? { sourceType: 'attachment', sourceId: `conversation-${session.conversation_id}-attachments`, content: attachmentContext } : null,
+        webSearchContext ? { sourceType: 'web', sourceId: `conversation-${session.conversation_id}-web`, content: webSearchContext } : null,
+        researchReceiptContext ? { sourceType: 'knowledge', sourceId: `session-${session.id}-research-receipts`, content: researchReceiptContext } : null,
+      ].filter(Boolean),
+    };
+    const options = restricted ? {
       ...promptOptions,
       styleContext: null,
       globalAgentContext: null,
       resourceContext: null,
       skillCatalog: [],
       mcpInstructions: [],
-      taskMaterials: promptOptions.taskMaterials.filter((item) => item.sourceType === 'attachment'),
+      taskMaterials: agentRuntimeAtLeast('context', runtimeMode)
+        ? promptOptions.taskMaterials
+        : promptOptions.taskMaterials.filter((item) => item.sourceType === 'attachment'),
       taskMaterialContext: '',
-    }).text;
+      completionCorrection,
+    } : { ...promptOptions, completionCorrection };
+    return session.prompt_version === 'legacy-v1'
+      ? { text: buildLoopSystemPrompt(session, options), version: 'legacy-v1', moduleIds: ['legacy-v1'] }
+      : renderAgentLoopPrompt(session, options);
+  };
+  const renderedPrompt = renderRequestPrompt();
   logToolCall({
     sessionId: session.id,
     loopIndex: Number(session.loop_count || 0),
@@ -411,6 +471,17 @@ async function runAgentLoop({ sessionId, runId = null, llmConfig, onStream, sign
     status: 'metadata',
   });
   const checkpoint = loadMessagesCheckpoint(session.id);
+  if (
+    checkpoint
+    && agentRuntimeAtLeast('context', runtimeMode)
+    && Number(checkpoint.toolResultProjectionVersion || 0) < 1
+    && checkpointContainsToolResults(checkpoint)
+  ) {
+    updateSessionStatus(session.id, 'failed');
+    const finalText = '旧任务检查点包含未外置的工具结果，无法在当前安全上下文模式下继续。请从原用户消息重新发起任务。';
+    emit({ type: 'final', text: finalText, status: 'failed', reason: 'checkpoint_projection_incompatible', usage: getSessionUsage(session.id) });
+    return { status: 'failed', reason: 'checkpoint_projection_incompatible', final_text: finalText };
+  }
   let checkpointToCommit = checkpoint?.id || null;
   let messages;
   if (checkpoint) {
@@ -473,6 +544,8 @@ async function runAgentLoop({ sessionId, runId = null, llmConfig, onStream, sign
   let loopIndex = Number(session.loop_count || 0);
   let noToolRounds = 0;
   let budgetRestricted = false;
+  let completionCorrection = '';
+  let completionCorrectionCount = 0;
   // 自动应用预览后，模型通常还会生成一轮面向用户的总结。保留最近一次
   // 变更集，才能把最终消息和可回看的 Diff 卡准确关联起来。
   let latestOperationSetId = null;
@@ -581,17 +654,31 @@ async function runAgentLoop({ sessionId, runId = null, llmConfig, onStream, sign
       return { status: 'waiting_limit_confirmation', reason: 'token_budget_reached', usage: usageBefore };
     }
     const contextWindow = Number(llmConfig?.llmContextWindowTokens || config.llmContextWindowTokens || 60000);
-    const usageRatio = usageBefore.total_tokens / tokenBudgetTotal;
-    if (usageRatio >= 0.85 && !budgetRestricted) {
-      budgetRestricted = true;
-      emit({ type: 'progress', stage: 'budget_restricted', text: '累计预算已超过 85%，已停止加载可选材料和可选工具。', loop_index: loopIndex });
+    const normalPrompt = renderRequestPrompt({ completionCorrection });
+    const normalTools = agentRuntimeAtLeast('profile', runtimeMode)
+      ? projectToolDefinitions(allTools, effectiveFrame)
+      : tools;
+    const estimatedRequestTokens = estimateChatRequestTokens({ system: normalPrompt.text, messages, tools: normalTools });
+    const requestPressure = estimatedRequestTokens / Math.max(contextWindow, 1);
+    const nextBudgetRestricted = requestPressure >= 0.85;
+    if (nextBudgetRestricted && !budgetRestricted) {
+      emit({ type: 'progress', stage: 'budget_restricted', text: '本次请求上下文接近模型上限，已停止加载可选材料和可选工具。', loop_index: loopIndex });
     }
-    const compactedMessages = usageBefore.total_tokens >= tokenBudgetTotal * 0.7
+    budgetRestricted = nextBudgetRestricted;
+    const compactedMessages = requestPressure >= 0.72
       ? compactMessages(messages, Math.floor(contextWindow * 0.6))
       : messages;
+    const requiredNames = requiredToolNames(effectiveFrame?.intent || {});
+    if (String(mcpSelection.mode || 'off') === 'server') {
+      Object.keys(mcpContext.map || {}).forEach((name) => requiredNames.add(name));
+    }
+    const pressureOptionalNames = new Set(['web_search', 'fetch_web_url', 'load_skill', 'read_skill_file', 'list_skills', 'get_skill_details', 'create_skill_draft', 'validate_skill_draft', 'install_skill_draft', 'update_skill_draft', 'set_skill_enabled', 'update_skill_from_git', 'uninstall_skill', 'install_skill_from_git', 'add_mcp_server', 'list_mcp_servers', 'get_mcp_server_details', 'update_mcp_server', 'test_mcp_server', 'set_mcp_server_enabled', 'remove_mcp_server']);
     const requestTools = budgetRestricted
-      ? tools.filter((tool) => !tool.mcp && !['web_search', 'load_skill', 'read_skill_file', 'list_skills', 'get_skill_details', 'create_skill_draft', 'validate_skill_draft', 'install_skill_draft', 'update_skill_draft', 'set_skill_enabled', 'update_skill_from_git', 'uninstall_skill', 'install_skill_from_git', 'add_mcp_server', 'list_mcp_servers', 'get_mcp_server_details', 'update_mcp_server', 'test_mcp_server', 'set_mcp_server_enabled', 'remove_mcp_server'].includes(tool.name))
-      : tools;
+      ? normalTools.filter((tool) => requiredNames.has(tool.name) || (!tool.mcp && !pressureOptionalNames.has(tool.name)))
+      : normalTools;
+    const requestPrompt = budgetRestricted
+      ? renderRequestPrompt({ restricted: true, completionCorrection })
+      : normalPrompt;
     activeRequestWindow = beginRequestWindow(activeExecutionSegment.id, {
       runId,
       llmConfigId: llmConfig?.id || llmConfig?.llmConfigId || null,
@@ -613,7 +700,7 @@ async function runAgentLoop({ sessionId, runId = null, llmConfig, onStream, sign
     });
     try {
       response = await callLLMWithRetry({
-        system: budgetRestricted ? restrictedPrompt : systemPrompt,
+        system: requestPrompt.text,
         messages: compactedMessages,
         tools: requestTools,
         llmConfig,
@@ -771,6 +858,39 @@ async function runAgentLoop({ sessionId, runId = null, llmConfig, onStream, sign
 
     if (isGoalAchieved(stopReason, toolUseBlocks)) {
       logToolCall({ sessionId: session.id, loopIndex, toolName: null, toolInput: null, toolResult: null, thinking, status: 'success', durationMs: 0 });
+      if (agentRuntimeAtLeast('enforced', runtimeMode)) {
+        const completion = evaluateCompletion({
+          sessionId: session.id,
+          frame: effectiveFrame,
+          finalText: thinking,
+          correctionCount: completionCorrectionCount,
+        });
+        if (!completion.complete && completion.correctable) {
+          completionCorrection = completion.feedback;
+          completionCorrectionCount += 1;
+          recordRuntimeFact({
+            eventKey: `task:${taskId || session.id}:completion-correction:${completionCorrectionCount}`,
+            conversationId: session.conversation_id,
+            sessionId: session.id,
+            taskId,
+            turnFrameId: effectiveFrame?.id,
+            runId,
+            actor: 'runtime',
+            factType: 'completion_correction_requested',
+            modelVisible: true,
+            payload: { reasons: completion.reasons },
+          });
+          emit({ type: 'progress', stage: 'completion_check', text: '完成检查发现仍有缺失步骤，正在补充一次。', loop_index: loopIndex });
+          continue;
+        }
+        if (!completion.complete) {
+          const finalText = `任务尚未完成：${completion.reasons.join('；')}。`;
+          updateSessionStatus(session.id, 'failed');
+          recordRuntimeFact({ eventKey: `task:${taskId || session.id}:completion-incomplete`, conversationId: session.conversation_id, sessionId: session.id, taskId, turnFrameId: effectiveFrame?.id, runId, actor: 'runtime', factType: 'completion_incomplete', payload: { reasons: completion.reasons } });
+          emit({ type: 'final', text: finalText, status: 'failed', reason: 'incomplete', loop_index: loopIndex, operation_set_id: latestOperationSetId, usage: getSessionUsage(session.id) });
+          return { status: 'failed', reason: 'incomplete', final_text: finalText, operation_set_id: latestOperationSetId, usage: getSessionUsage(session.id) };
+        }
+      }
       updateSessionStatus(session.id, 'completed');
       markTaskChangeSetFinished(session.id, 'completed');
       const finalText = thinking || '任务已完成。';
@@ -818,6 +938,9 @@ async function runAgentLoop({ sessionId, runId = null, llmConfig, onStream, sign
     for (let toolIndex = startToolIndex; toolIndex < toolUseBlocks.length; toolIndex += 1) {
       const toolUse = toolUseBlocks[toolIndex];
       const toolDisplayName = mcpContext.map?.[toolUse.name]?.toolName || toolUse.name;
+      const invocationKey = `${session.id}:${toolUse.id}`;
+      const externalMcp = Boolean(mcpContext.map?.[toolUse.name]);
+      const replayPolicy = toolReplayPolicy(toolUse.name, { externalMcp });
       emit({
         type: 'progress',
         stage: 'tool_start',
@@ -832,8 +955,51 @@ async function runAgentLoop({ sessionId, runId = null, llmConfig, onStream, sign
         tool_index: toolIndex,
       });
       const startedAt = Date.now();
+      if (agentRuntimeAtLeast('shadow', runtimeMode)) {
+        recordToolCallPrepared({
+          conversationId: session.conversation_id,
+          sessionId: session.id,
+          taskId,
+          turnFrameId: effectiveFrame?.id,
+          runId,
+          executionSegmentId: activeExecutionSegment.id,
+          requestWindowId: activeRequestWindow?.id,
+          actor: 'model',
+          toolCallId: toolUse.id,
+          invocationKey,
+          toolName: toolUse.name,
+          inputDigest: sha256(JSON.stringify(toolUse.input || {})),
+          replayPolicy,
+          externalMcp,
+          effectKind: [
+            'install_skill_from_git', 'install_skill_draft', 'update_skill_draft', 'set_skill_enabled',
+            'update_skill_from_git', 'uninstall_skill', 'add_mcp_server', 'update_mcp_server',
+            'set_mcp_server_enabled', 'remove_mcp_server',
+          ].includes(toolUse.name) ? 'resource_mutation' : '',
+        });
+      }
       const existingOperationSet = getOperationSetByToolUse(session.id, toolUse.id);
-      let result = existingOperationSet
+      const invocationState = agentRuntimeAtLeast('facts', runtimeMode) ? getInvocationState(invocationKey) : { terminal: null };
+      const recoveredInvocation = invocationState.terminal && replayPolicy === 'non_replayable'
+        && invocationState.terminal.fact_type !== 'tool_call_outcome_unknown'
+        ? await readArtifactResultForRuntime({
+          conversationId: session.conversation_id,
+          sessionId: session.id,
+          invocationKey,
+        })
+        : null;
+      let rawResult = null;
+      let result = invocationState.terminal?.fact_type === 'tool_call_outcome_unknown'
+        ? invocationState.resolution?.payload?.resolution === 'confirmed_success'
+          ? { recovered: true, outcome_confirmed: 'success', message: '用户已核实该外部操作成功；未自动重放。' }
+          : invocationState.resolution?.payload?.resolution === 'confirmed_failed'
+          ? { error: 'TOOL_OUTCOME_CONFIRMED_FAILED', recovered: true, message: '用户已核实该外部操作没有成功；未自动重放。' }
+          : { error: 'TOOL_OUTCOME_UNKNOWN', message: '该工具上次执行后的外部结果无法确认，不能自动重放。' }
+        : recoveredInvocation?.result !== null && recoveredInvocation?.result !== undefined
+        ? recoveredInvocation.result
+        : recoveredInvocation
+        ? { error: 'TOOL_RESULT_PAYLOAD_UNAVAILABLE', message: '该工具已经执行，但保存的结果载荷无法读取，不能自动重放。' }
+        : existingOperationSet
         ? {
           operation_set_id: existingOperationSet.id,
           patch_count: existingOperationSet.patches.length,
@@ -847,14 +1013,74 @@ async function runAgentLoop({ sessionId, runId = null, llmConfig, onStream, sign
           toolDefinitions: tools,
           llmConfig,
           runId,
+          turnFrame: effectiveFrame,
           toolUseId: toolUse.id,
           executionSegmentId: activeExecutionSegment.id,
           signal,
           toolTimeoutMs: config.agentToolTimeoutMs,
           mcpTimeoutMs: config.agentMcpTimeoutMs,
+          onRawResult: (value) => { rawResult = value; },
         });
+      if (rawResult === null) rawResult = existingOperationSet ? { ...result, operation_set: existingOperationSet } : result;
+      let resultArtifact = recoveredInvocation?.artifact || null;
+      let modelVisibleResult = result;
+      if (agentRuntimeAtLeast('shadow', runtimeMode) && toolUse.name !== 'read_tool_result' && !recoveredInvocation) {
+        resultArtifact = await archiveToolResult({
+          conversationId: session.conversation_id,
+          sessionId: session.id,
+          taskId,
+          turnFrameId: effectiveFrame?.id,
+          toolCallId: toolUse.id,
+          invocationKey,
+          toolName: toolUse.name,
+          actor: 'model',
+          result: rawResult,
+        });
+      }
+      if (toolUse.name !== 'read_tool_result') {
+        modelVisibleResult = projectToolResultForModel({
+          useReceipt: agentRuntimeAtLeast('context', runtimeMode),
+          toolName: toolUse.name,
+          result,
+          artifact: resultArtifact,
+        });
+      }
       const durationMs = Date.now() - startedAt;
       const failed = Boolean(result?.error);
+      const outcomeUnknown = failed && shouldTreatToolFailureAsOutcomeUnknown({
+        replayPolicy,
+        externalMcp,
+        errorCode: result?.error,
+      });
+
+      if (agentRuntimeAtLeast('shadow', runtimeMode)) {
+        const resourceChangeTools = new Set([
+          'install_skill_from_git', 'install_skill_draft', 'update_skill_draft', 'set_skill_enabled',
+          'update_skill_from_git', 'uninstall_skill', 'add_mcp_server', 'update_mcp_server',
+          'set_mcp_server_enabled', 'remove_mcp_server', 'update_global_agent_file',
+        ]);
+        recordToolCallTerminal({
+          conversationId: session.conversation_id,
+          sessionId: session.id,
+          taskId,
+          turnFrameId: effectiveFrame?.id,
+          runId,
+          executionSegmentId: activeExecutionSegment.id,
+          requestWindowId: activeRequestWindow?.id,
+          actor: 'model',
+          toolCallId: toolUse.id,
+          invocationKey,
+          factType: outcomeUnknown ? 'tool_call_outcome_unknown' : failed ? 'tool_call_failed' : 'tool_call_completed',
+          payload: {
+            tool_name: toolUse.name,
+            result_ref: resultArtifact?.status === 'ready' ? resultArtifact.result_ref : null,
+            artifact_status: resultArtifact?.status || (toolUse.name === 'read_tool_result' ? 'inline' : 'archive_failed'),
+            error_code: result?.error || '',
+            resource_changed: !failed && !result?.approval_required && resourceChangeTools.has(toolUse.name),
+            operation_set_id: result?.operation_set_id || null,
+          },
+        });
+      }
 
       logToolCall({
         sessionId: session.id,
@@ -883,6 +1109,47 @@ async function runAgentLoop({ sessionId, runId = null, llmConfig, onStream, sign
         failed,
       });
 
+      if (outcomeUnknown) {
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: toolUse.id,
+          content: JSON.stringify(modelVisibleResult),
+          is_error: true,
+        });
+        const reconciliation = reconcileUnresolvedToolCalls();
+        const interaction = reconciliation.interactions.find((item) => item?.payload?.invocation_key === invocationKey) || null;
+        currentToolResults = toolResults;
+        currentNextToolIndex = toolIndex + 1;
+        saveMessagesCheckpoint(session.id, messages, content, toolUse.id, runId, {
+          phase: 'waiting_interaction',
+          executionSegmentId: activeExecutionSegment.id,
+          llmRequestWindowId: activeRequestWindow?.id,
+          toolResults,
+          nextToolIndex: currentNextToolIndex,
+        });
+        updateExecutionSegment(activeExecutionSegment.id, { status: 'completed', completed: true });
+        updateSessionStatus(session.id, 'waiting_interaction');
+        if (interaction) {
+          emit({
+            type: 'artifact',
+            artifact_type: 'interaction',
+            loop_index: loopIndex,
+            interaction,
+            reason: 'tool_outcome_unknown',
+            execution_segment_id: activeExecutionSegment.id,
+            segment_sequence_no: activeExecutionSegment.sequence_no,
+          });
+        }
+        return { status: 'waiting_interaction', reason: 'tool_outcome_unknown', interaction, interaction_id: interaction?.id || null };
+      }
+
+      if (agentRuntimeAtLeast('context', runtimeMode) && toolUse.name !== 'read_tool_result' && resultArtifact?.status !== 'ready') {
+        updateExecutionSegment(activeExecutionSegment.id, { status: 'failed', completed: true });
+        updateSessionStatus(session.id, 'failed');
+        emit({ type: 'final', text: '工具已经执行，但完整结果无法安全保存，后续步骤已停止。外部操作状态以执行记录为准。', status: 'failed', reason: 'tool_result_payload_unavailable', tool_name: toolUse.name, loop_index: loopIndex, usage: getSessionUsage(session.id) });
+        return { status: 'failed', reason: 'tool_result_payload_unavailable' };
+      }
+
       if (failed) {
         if (recordToolFail(session.id, toolUse.name, toolUse.input || {}, result)) {
           updateExecutionSegment(activeExecutionSegment.id, { status: 'failed', completed: true });
@@ -903,7 +1170,7 @@ async function runAgentLoop({ sessionId, runId = null, llmConfig, onStream, sign
       toolResults.push({
         type: 'tool_result',
         tool_use_id: toolUse.id,
-        content: JSON.stringify(result),
+        content: JSON.stringify(modelVisibleResult),
         is_error: failed,
       });
       if ((toolUse.name === 'ask_question_card' || result?.approval_required) && !failed) {
@@ -992,10 +1259,33 @@ async function runAgentLoop({ sessionId, runId = null, llmConfig, onStream, sign
           status: actualApplied ? 'applied' : 'pending',
         }, actualApplied ? 'applied' : 'pending');
 
+        if (agentRuntimeAtLeast('shadow', runtimeMode)) {
+          resultArtifact = await archiveToolResult({
+            conversationId: session.conversation_id,
+            sessionId: session.id,
+            taskId,
+            turnFrameId: effectiveFrame?.id,
+            toolCallId: toolUse.id,
+            invocationKey,
+            toolName: toolUse.name,
+            actor: 'model',
+            result: mergedPreviewResult,
+            replace: true,
+          });
+        }
+        if (agentRuntimeAtLeast('context', runtimeMode) && resultArtifact?.status !== 'ready') {
+          updateExecutionSegment(activeExecutionSegment.id, { status: 'failed', completed: true });
+          updateSessionStatus(session.id, 'failed');
+          emit({ type: 'final', text: '文件操作已经执行，但完整结果无法安全保存，后续步骤已停止。请根据文件预览和执行记录核实结果。', status: 'failed', reason: 'tool_result_payload_unavailable', tool_name: toolUse.name, loop_index: loopIndex, operation_set_id: result.operation_set_id });
+          return { status: 'failed', reason: 'tool_result_payload_unavailable', operation_set_id: result.operation_set_id };
+        }
+        const mergedModelVisibleResult = agentRuntimeAtLeast('context', runtimeMode)
+          ? projectToolResultForModel({ useReceipt: true, toolName: toolUse.name, result: mergedPreviewResult, artifact: resultArtifact })
+          : mergedPreviewResult;
         toolResults[toolResults.length - 1] = {
           type: 'tool_result',
           tool_use_id: toolUse.id,
-          content: JSON.stringify(mergedPreviewResult),
+          content: JSON.stringify(mergedModelVisibleResult),
           is_error: false,
         };
         const finalThinking = buildPreviewCompletionText(toolUse.name, {
@@ -1123,6 +1413,7 @@ module.exports = {
   compactMessages,
   classifyLLMError,
   callLLMWithRetry,
+  DEFAULT_LLM_RETRY_DELAY_MS,
   DEFAULT_LLM_RETRY_LIMIT,
   parseResponse,
   runAgentLoop,

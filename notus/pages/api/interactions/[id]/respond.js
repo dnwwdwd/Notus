@@ -22,6 +22,13 @@ const {
 } = require('../../../../lib/agentControlPlane');
 const { wakeTask } = require('../../../../lib/agentTaskQueue');
 const { wakeAgentTaskWorker } = require('../../../../lib/agentTaskWorker');
+const { getTaskBySession } = require('../../../../lib/agentTaskQueue');
+const { getSessionTurnFrame } = require('../../../../lib/agentTurnFrames');
+const { agentRuntimeAtLeast } = require('../../../../lib/agentRuntimeMode');
+const { recordRuntimeFact, recordToolCallPrepared, recordToolCallTerminal } = require('../../../../lib/agentRuntimeFacts');
+const { archiveToolResult } = require('../../../../lib/agentToolResultStore');
+const { sha256 } = require('../../../../lib/files');
+const { isResourceMutationTool } = require('../../../../lib/agentCompletionEvaluator');
 
 function getAgentSessionId(interaction) {
   if (interaction?.source !== 'agent_loop') return null;
@@ -152,6 +159,21 @@ function buildCorrectionStateFromResponse(interaction, normalizedResponse) {
 
 function applyResourceApproval(payload, action) {
   if (action !== 'confirm') return { cancelled: true, action: payload.action };
+  if (payload.action === 'skill_install_git') {
+    return require('../../../../lib/skills').installFromGit({
+      repositoryUrl: String(payload.repository_url || '').trim(),
+      conflictPolicy: 'reject',
+    }).then((installed) => ({
+      approved: true,
+      action: payload.action,
+      installed: (installed.skills || []).map((skill) => ({
+        id: skill.id,
+        name: skill.name,
+        description: skill.description,
+        enabled: Boolean(skill.enabled),
+      })),
+    }));
+  }
   if (payload.action === 'skill_install' || payload.action === 'skill_update') {
     const skill = require('../../../../lib/skills').installSkillDraft(payload.draft_id, payload.action === 'skill_update' ? 'replace' : 'reject');
     return { approved: true, action: payload.action, skill: { id: skill.id, name: skill.name, enabled: skill.enabled } };
@@ -231,20 +253,49 @@ export default async function handler(req, res) {
     }
     if (!claimed) return respondWithCurrentInteraction(res, interaction.id, context.request_id);
 
+    const resourceTask = agentSessionId ? getTaskBySession(agentSessionId) : null;
+    const resourceFrame = agentSessionId ? getSessionTurnFrame(agentSessionId) : null;
+    const resourceInvocationKey = `interaction:${interaction.id}:resource`;
+    if (agentRuntimeAtLeast('shadow') && agentSessionId) {
+      recordToolCallPrepared({
+        conversationId: interaction.conversation_id,
+        sessionId: agentSessionId,
+        taskId: resourceTask?.id,
+        turnFrameId: resourceFrame?.id,
+        actor: 'runtime',
+        toolCallId: `interaction-${interaction.id}`,
+        invocationKey: resourceInvocationKey,
+        toolName: claimed.payload?.action || 'resource_approval',
+        inputDigest: sha256(JSON.stringify({ interaction_id: interaction.id, action, resource_action: claimed.payload?.action || '' })),
+        replayPolicy: 'non_replayable',
+        effectKind: 'resource_mutation',
+        control: { interaction_id: interaction.id, action: 'resource_approval', decision: String(action || '') },
+      });
+    }
     let result;
     try {
       result = await applyResourceApproval(claimed.payload || {}, action);
     } catch (error) {
-      const failed = updateInteractionWhen(interaction.id, ['processing'], {
-        status: 'failed',
-        response: { approved: false, error: error.code || 'RESOURCE_ACTION_FAILED', message: error.message },
-      });
+      const failed = getDb().transaction(() => {
+        if (agentRuntimeAtLeast('shadow') && agentSessionId) {
+          recordToolCallTerminal({ conversationId: interaction.conversation_id, sessionId: agentSessionId, taskId: resourceTask?.id, turnFrameId: resourceFrame?.id, actor: 'runtime', toolCallId: `interaction-${interaction.id}`, invocationKey: resourceInvocationKey, factType: 'tool_call_failed', payload: { tool_name: claimed.payload?.action || 'resource_approval', error_code: error.code || 'RESOURCE_ACTION_FAILED' } });
+        }
+        return updateInteractionWhen(interaction.id, ['processing'], {
+          status: 'failed',
+          response: { approved: false, error: error.code || 'RESOURCE_ACTION_FAILED', message: error.message },
+        });
+      })();
       return res.status(error.status || 400).json({
         error: error.message,
         code: error.code || 'RESOURCE_ACTION_FAILED',
         interaction: failed || getInteractionById(interaction.id),
         request_id: context.request_id,
       });
+    }
+
+    let resourceArtifact = null;
+    if (agentRuntimeAtLeast('shadow') && agentSessionId) {
+      resourceArtifact = await archiveToolResult({ conversationId: interaction.conversation_id, sessionId: agentSessionId, taskId: resourceTask?.id, turnFrameId: resourceFrame?.id, toolCallId: `interaction-${interaction.id}`, invocationKey: resourceInvocationKey, toolName: claimed.payload?.action || 'resource_approval', actor: 'runtime', result });
     }
 
     const finalized = getDb().transaction(() => {
@@ -254,9 +305,25 @@ export default async function handler(req, res) {
         answeredAt: new Date().toISOString(),
       });
       if (!updated) return null;
+      if (agentRuntimeAtLeast('shadow') && agentSessionId) {
+        recordToolCallTerminal({
+          conversationId: interaction.conversation_id,
+          sessionId: agentSessionId,
+          taskId: resourceTask?.id,
+          turnFrameId: resourceFrame?.id,
+          actor: 'runtime',
+          toolCallId: `interaction-${interaction.id}`,
+          invocationKey: resourceInvocationKey,
+          factType: action === 'confirm' ? 'tool_call_completed' : 'tool_call_cancelled',
+          payload: { tool_name: claimed.payload?.action || 'resource_approval', resource_changed: action === 'confirm', result_ref: resourceArtifact?.status === 'ready' ? resourceArtifact.result_ref : null, artifact_status: resourceArtifact?.status || 'archive_failed' },
+        });
+      }
       const resumeJob = agentSessionId
         ? createOrGetResumeJob({ sessionId: agentSessionId, interactionId: updated.id, ownerId })
         : null;
+      if (agentSessionId && resumeJob?.id && resumeJob.status === 'queued') {
+        wakeTask(agentSessionId, { resumeJobId: resumeJob.id });
+      }
       const eventCursor = agentSessionId ? getLatestRunEventId(agentSessionId) : null;
       return { updated, resumeJob, eventCursor };
     })();
@@ -296,6 +363,11 @@ export default async function handler(req, res) {
       return res.status(error.status || 409).json({ error: error.message, code: error.code || 'INTERACTION_RESPONSE_FAILED', request_id: context.request_id });
     }
     if (!cancelled?.updated) return respondWithCurrentInteraction(res, interaction.id, context.request_id);
+    if (agentRuntimeAtLeast('facts') && agentSessionId) {
+      const frame = getSessionTurnFrame(agentSessionId);
+      const task = getTaskBySession(agentSessionId);
+      recordRuntimeFact({ eventKey: `interaction:${interaction.id}:cancelled`, conversationId: interaction.conversation_id, sessionId: agentSessionId, taskId: task?.id, turnFrameId: frame?.id, actor: 'user', factType: 'interaction_cancelled', payload: { interaction_id: interaction.id, origin: interaction.payload?.origin || '' } });
+    }
     wakeAnsweredInteraction(cancelled.updated, cancelled.resumeJob);
     return res.status(200).json({
       interaction: cancelled.updated,
@@ -420,6 +492,35 @@ export default async function handler(req, res) {
     });
   }
   if (!finalized) return respondWithCurrentInteraction(res, interaction.id, context.request_id);
+
+  if (agentRuntimeAtLeast('facts') && agentSessionId && finalized.updatedInteraction?.status === 'answered') {
+    const frame = getSessionTurnFrame(agentSessionId);
+    const task = getTaskBySession(agentSessionId);
+    recordRuntimeFact({ eventKey: `interaction:${interaction.id}:answered`, conversationId: interaction.conversation_id, sessionId: agentSessionId, taskId: task?.id, turnFrameId: frame?.id, actor: 'user', factType: 'interaction_answered', payload: { interaction_id: interaction.id, origin: interaction.payload?.origin || '', answer_message_id: finalized.answerMessageId } });
+    if (interaction.payload?.origin === 'tool_outcome_recovery') {
+      const invocationKey = String(interaction.payload?.invocation_key || '').trim();
+      const resolution = String(normalizedResponse.answers?.tool_outcome?.value || '').trim();
+      recordRuntimeFact({
+        eventKey: `${invocationKey}:user-resolution:${interaction.id}`,
+        conversationId: interaction.conversation_id,
+        sessionId: agentSessionId,
+        taskId: task?.id,
+        turnFrameId: frame?.id,
+        actor: 'user',
+        factType: ['confirmed_success', 'confirmed_failed'].includes(resolution)
+          ? 'tool_call_outcome_resolved'
+          : 'tool_call_outcome_unresolved',
+        toolCallId: interaction.payload?.tool_call_id || null,
+        invocationKey,
+        payload: {
+          interaction_id: interaction.id,
+          resolution,
+          tool_name: interaction.payload?.tool_name || '',
+          resource_changed: resolution === 'confirmed_success' && isResourceMutationTool(interaction.payload?.tool_name || ''),
+        },
+      });
+    }
+  }
 
   const answerMessage = getConversationMessageById(finalized.answerMessageId);
   if (finalized.resumeJob) wakeAnsweredInteraction(finalized.updatedInteraction, finalized.resumeJob);

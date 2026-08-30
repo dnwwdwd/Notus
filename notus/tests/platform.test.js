@@ -14,6 +14,7 @@ function runTests() {
   assert.strictEqual(webPaths.assetsDir, '/tmp/notus-data/assets');
   assert.strictEqual(webPaths.dbPath, '/tmp/notus-data/notus.db');
   assert.strictEqual(webPaths.agentDir, '/tmp/notus-data/agent');
+  assert.strictEqual(webPaths.toolResultDir, '/tmp/notus-data/agent-tool-results');
 
   const explicitPaths = resolvePlatformPaths(
     {
@@ -21,6 +22,7 @@ function runTests() {
       NOTUS_DATA_ROOT: '/tmp/notus-managed',
       NOTES_DIR: '/custom/notes',
       DB_PATH: '/custom/index.db',
+      AGENT_TOOL_RESULT_DIR: '/custom/shared-directory',
     },
     { cwd: '/tmp/notus-electron', runtimeTarget: 'electron' }
   );
@@ -28,12 +30,14 @@ function runTests() {
   assert.strictEqual(explicitPaths.dbPath, '/custom/index.db');
   assert.strictEqual(explicitPaths.assetsDir, '/tmp/notus-managed/assets');
   assert.strictEqual(explicitPaths.agentDir, '/tmp/notus-managed/agent');
+  assert.strictEqual(explicitPaths.toolResultDir, '/tmp/notus-managed/agent-tool-results');
 
   const lazycatPaths = resolvePlatformPaths(
     { NOTUS_RUNTIME_TARGET: 'lazycat' },
     { cwd, runtimeTarget: 'lazycat' }
   );
   assert.strictEqual(lazycatPaths.agentDir, '/lzcapp/var/notus/agent');
+  assert.strictEqual(lazycatPaths.toolResultDir, '/lzcapp/var/notus/agent-tool-results');
 
   const lazycatProfile = getPlatformProfile({
     NOTES_DIR: '/lzcapp/var/notes',

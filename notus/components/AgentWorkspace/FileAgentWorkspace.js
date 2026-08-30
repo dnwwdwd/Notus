@@ -241,7 +241,7 @@ function ResourceApprovalDrawer({ interaction, submitting, onDecision, onPhaseCh
   return <ClarifyDrawer interaction={cardInteraction} collapsible={false} submitting={submitting} submitLabel="确认执行" onPhaseChange={onPhaseChange} onSubmit={(_, answers) => onDecision?.(answers?.resource_decision?.option_id === 'confirm' ? 'confirm' : 'cancel')} onRetry={() => {}} onCancel={() => onDecision?.('cancel')} />;
 }
 
-export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles, onFilesChanged, onAgentPanelLockChange, beforeAgentRun, fullWidth = false, onOpenDiffFile }) {
+export function FileAgentWorkspace({ allFiles = [], fileTree = [], activeFileId = null, refreshFiles, onFilesChanged, onAgentPanelLockChange, beforeAgentRun, fullWidth = false, onOpenDiffFile }) {
   const { openSettings } = useSettingsDialog();
   const toast = useToast();
   const { status: appStatus, loading: appStatusLoading } = useAppStatus();
@@ -721,6 +721,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
     display_query: query,
     kind: 'canvas',
     conversation_id: activeConversationId || undefined,
+    turn_context: { active_file_id: Number(activeFileId || 0) || null },
     llm_config_id: options.llmConfigId || selectedLlmConfigId || undefined,
     authorized_ops: ['modify', 'create'],
     attachments: options.attachments || [],
@@ -741,7 +742,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], refreshFiles,
       refreshConversationList(accepted?.conversationId || null).catch(() => {});
     },
     };
-  }, [activeConversationId, refreshConversationList, selectedLlmConfigId]);
+  }, [activeConversationId, activeFileId, refreshConversationList, selectedLlmConfigId]);
 
   const handleSend = useCallback(async (query, options = {}) => {
     const llmConfigId = options.llmConfigId || selectedLlmConfigId;

@@ -247,11 +247,11 @@ function isDownloadUrl(url) {
 }
 
 function extractWebUrls(text = '') {
-  const matches = String(text || '').match(/https?:\/\/[^\s<>"'`]+/gi) || [];
+  const matches = String(text || '').match(/https?:\/\/[^\s<>"'`，。；：！？、（）【】《》“”‘’,;!]+/gi) || [];
   return [...new Set(matches.map(normalizeUrl).filter(Boolean).filter((url) => !isDownloadUrl(url)))];
 }
 
-async function parseUrl(url, { validateUrl } = {}) {
+async function parseUrl(url, { validateUrl, fetchImpl = fetch } = {}) {
   const normalizedUrl = normalizeUrl(url);
   const base = buildBase(normalizedUrl || url, 'webpage');
   if (!normalizedUrl) {
@@ -269,7 +269,7 @@ async function parseUrl(url, { validateUrl } = {}) {
       if (validation?.error) return parseError(resolvedUrl, 'webpage', validation.error, validation.message || '链接不允许读取。');
     }
     try {
-      response = await fetch(resolvedUrl, {
+      response = await fetchImpl(resolvedUrl, {
         signal: AbortSignal.timeout(WEB_FETCH_TIMEOUT_MS),
         redirect: 'manual',
         headers: {

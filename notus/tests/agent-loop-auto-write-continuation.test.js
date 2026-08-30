@@ -16,6 +16,7 @@ async function runTests() {
   process.env.DB_PATH = path.join(tempRoot, 'notus.db');
   process.env.LOG_DIR = path.join(tempRoot, 'logs');
   process.env.SESSION_DIR = path.join(tempRoot, 'session');
+  process.env.NOTUS_AGENT_RUNTIME_MODE = 'enforced';
 
   [
     '../lib/db', '../lib/config', '../lib/files', '../lib/conversations',
@@ -27,12 +28,14 @@ async function runTests() {
   const llmPath = require.resolve('../lib/llm');
   const originalLlm = require.cache[llmPath];
   let llmCallCount = 0;
+  const llmRequests = [];
   require.cache[llmPath] = {
     id: llmPath,
     filename: llmPath,
     loaded: true,
     exports: {
-      completeToolChat: async () => {
+      completeToolChat: async (request = {}) => {
+        llmRequests.push(request);
         llmCallCount += 1;
         if (llmCallCount <= 2) {
           const second = llmCallCount === 2;
@@ -97,7 +100,16 @@ async function runTests() {
     const checkpoint = loadMessagesCheckpoint(session.sessionId);
     assert.strictEqual(checkpoint.phase, 'dispatching_tools');
     assert.strictEqual(checkpoint.nextToolIndex, 1);
-    assert.strictEqual(JSON.parse(checkpoint.toolResults[0].content).applied, true);
+    const persistedReceipt = JSON.parse(checkpoint.toolResults[0].content);
+    assert.strictEqual(persistedReceipt.status, 'success');
+    assert.match(persistedReceipt.result_ref, /^tool-result:\/\//);
+    const persistedResult = await require('../lib/agentToolResultStore').readToolResult({
+      conversationId: conversation.id,
+      sessionId: session.sessionId,
+      resultRef: persistedReceipt.result_ref,
+      jsonPointer: '/applied',
+    });
+    assert.strictEqual(persistedResult.content, 'true', JSON.stringify(persistedResult));
 
     const result = await runAgentLoop({
       sessionId: session.sessionId,
@@ -108,6 +120,9 @@ async function runTests() {
 
     assert.strictEqual(result.status, 'completed');
     assert.strictEqual(llmCallCount, 3);
+    const finalProviderRequest = JSON.stringify(llmRequests[2]);
+    assert.ok(finalProviderRequest.includes('tool-result://'));
+    assert.ok(!finalProviderRequest.includes('"operation_set":{"id"'), '模型请求不能携带完整常规工具结果。');
     assert.strictEqual(getSession(session.sessionId).status, 'completed');
     assert.ok(getFileByPath('one.md'));
     assert.ok(getFileByPath('two.md'));

@@ -1,4 +1,5 @@
 const { getDb } = require('./db');
+const crypto = require('crypto');
 
 const MAX_CHARS_PER_SOURCE = 12000;
 const MAX_PROMPT_CHARS = 48000;
@@ -31,32 +32,45 @@ function normalizeSource(value) {
   return String(value || '').trim();
 }
 
-function hasAttachment(conversationId, source) {
+function contentDigest(value = '') {
+  return crypto.createHash('sha256').update(String(value || '')).digest('hex');
+}
+
+function findAttachment(conversationId, source, { contentHash = '' } = {}) {
   const normalizedConversationId = normalizePositiveInt(conversationId);
   const normalizedSource = normalizeSource(source);
-  if (!normalizedConversationId || !normalizedSource) return false;
+  if (!normalizedConversationId || !normalizedSource) return null;
+  const normalizedHash = String(contentHash || '').trim();
   const row = getDb().prepare(`
     SELECT id
     FROM messages
     WHERE conversation_id = ?
       AND type = 'parsed_attachment'
       AND json_extract(meta, '$.source') = ?
+      ${normalizedHash ? "AND json_extract(meta, '$.contentHash') = ?" : ''}
     LIMIT 1
-  `).get(normalizedConversationId, normalizedSource);
-  return Boolean(row);
+  `).get(normalizedConversationId, normalizedSource, ...(normalizedHash ? [normalizedHash] : []));
+  return row ? Number(row.id) : null;
 }
 
-function saveAttachment(conversationId, parsedContent) {
+function hasAttachment(conversationId, source, options = {}) {
+  return Boolean(findAttachment(conversationId, source, options));
+}
+
+function saveAttachment(conversationId, parsedContent, { sourceMessageId = null } = {}) {
   const normalizedConversationId = normalizePositiveInt(conversationId);
   const source = normalizeSource(parsedContent?.source);
   const text = String(parsedContent?.text || '');
   if (!normalizedConversationId) throw new Error('conversation_id is required');
   if (!source) throw new Error('attachment source is required');
   if (!text.trim()) return null;
-  if (hasAttachment(normalizedConversationId, source)) return null;
+  const contentHash = contentDigest(text);
+  if (hasAttachment(normalizedConversationId, source, { contentHash })) return null;
 
   const meta = {
     source,
+    contentHash,
+    sourceMessageId: normalizePositiveInt(sourceMessageId),
     contentType: parsedContent.type || 'plaintext',
     pageCount: parsedContent.pageCount ?? null,
     status: parsedContent.status || 'success',
@@ -96,6 +110,8 @@ function loadAttachments(conversationId) {
       warning: meta.warning || null,
       errorCode: meta.errorCode || null,
       metadata: meta.metadata || null,
+      contentHash: String(meta.contentHash || contentDigest(row.content || '')),
+      sourceMessageId: normalizePositiveInt(meta.sourceMessageId),
       parsedAt: meta.parsedAt || row.created_at || '',
       text: String(row.content || ''),
     };
@@ -161,6 +177,8 @@ module.exports = {
   MAX_CHARS_PER_SOURCE,
   MAX_PROMPT_CHARS,
   formatAttachmentsForPrompt,
+  contentDigest,
+  findAttachment,
   hasAttachment,
   loadAttachments,
   saveAttachment,

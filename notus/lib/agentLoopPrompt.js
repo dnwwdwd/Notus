@@ -136,6 +136,7 @@ function buildLoopSystemPrompt(session, options = {}) {
     '',
     formatResourceContext(options.resourceContext),
     '',
+    require('./memoryPolicy').MEMORY_POLICY,
     formatGlobalAgentContext(options.globalAgentContext),
     '',
     taskMaterialContext,

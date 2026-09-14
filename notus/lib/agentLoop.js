@@ -381,9 +381,15 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
     const safeEvent = sanitizeRunEvent(event);
     if (!safeEvent) return;
     try {
-      const eventId = recordRunEvent({ sessionId, runId, event: safeEvent });
+      const eventId = require('./db').getDb().transaction(() => {
+        const id = recordRunEvent({ sessionId, runId, event: safeEvent });
+        if (safeEvent.type === 'final' && safeEvent.status === 'completed') updateSessionStatus(sessionId, 'completed');
+        return id;
+      })();
       broadcastRunEvent({ sessionId, runId, event: safeEvent, eventId });
-    } catch {}
+    } catch (error) {
+      if (safeEvent.type === 'final') throw error;
+    }
     rawEmit(safeEvent);
   };
   const normalizedApprovalMode = normalizeApprovalMode(approvalMode);
@@ -391,7 +397,6 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
   const styleContext = !agentRuntimeAtLeast('profile', runtimeMode) || effectiveFrame?.intent?.task_kind === 'file_write'
     ? await loadStyleContext(session)
     : null;
-  const globalAgentContext = buildGlobalAgentContext(session.goal);
   const resourceContext = agentRuntimeAtLeast('context', runtimeMode) ? null : buildConversationResourceContext(session.conversation_id);
   const skillCatalog = !agentRuntimeAtLeast('profile', runtimeMode) || effectiveFrame?.intent?.source_policy?.local_skills !== 'forbidden'
     ? eligibleSkillSummaries(session.goal, session.skill_mentions || [])
@@ -421,7 +426,6 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
   const researchReceiptContext = agentRuntimeAtLeast('context', runtimeMode) ? '' : formatResearchReceiptsForPrompt(session.id);
   const basePromptOptions = {
     styleContext,
-    globalAgentContext,
     resourceContext,
     skillCatalog,
     mcpInstructions: mcpContext.instructions,
@@ -437,6 +441,7 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
       : null;
     const promptOptions = {
       ...basePromptOptions,
+      globalAgentContext: buildGlobalAgentContext(session.goal, { memoryTokens: restricted ? 800 : Math.min(4800, Math.floor(basePromptOptions.contextWindowTokens * 0.08)) }),
       taskMaterialContext: projectedContext?.taskMaterialContext || [attachmentContext, webSearchContext, researchReceiptContext].filter(Boolean).join('\n\n'),
       taskMaterials: projectedContext?.taskMaterials || [
         attachmentContext ? { sourceType: 'attachment', sourceId: `conversation-${session.conversation_id}-attachments`, content: attachmentContext } : null,
@@ -447,7 +452,7 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
     const options = restricted ? {
       ...promptOptions,
       styleContext: null,
-      globalAgentContext: null,
+      globalAgentContext: { ...promptOptions.globalAgentContext, soul: '', style: '', writing: false },
       resourceContext: null,
       skillCatalog: [],
       mcpInstructions: [],
@@ -893,7 +898,6 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
           return { status: 'failed', reason: 'incomplete', final_text: finalText, operation_set_id: latestOperationSetId, usage: getSessionUsage(session.id) };
         }
       }
-      updateSessionStatus(session.id, 'completed');
       markTaskChangeSetFinished(session.id, 'completed');
       const finalText = thinking || '任务已完成。';
       const usage = getSessionUsage(session.id);
@@ -940,6 +944,8 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
     for (let toolIndex = startToolIndex; toolIndex < toolUseBlocks.length; toolIndex += 1) {
       const toolUse = toolUseBlocks[toolIndex];
       const toolDisplayName = mcpContext.map?.[toolUse.name]?.toolName || toolUse.name;
+      const memoryDisplayName = toolUse.input?.file === 'memory' && ['read_global_agent_file', 'update_global_agent_file'].includes(toolUse.name)
+        ? (toolUse.name === 'read_global_agent_file' ? '读取记忆' : '更新记忆') : '';
       const invocationKey = `${session.id}:${toolUse.id}`;
       const externalMcp = Boolean(mcpContext.map?.[toolUse.name]);
       const replayPolicy = toolReplayPolicy(toolUse.name, { externalMcp });
@@ -948,7 +954,7 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
         stage: 'tool_start',
         text: `正在执行 ${toolUse.name}。`,
         tool_name: toolUse.name,
-        tool_display_name: toolDisplayName,
+        tool_display_name: memoryDisplayName || toolDisplayName,
         tool_input_summary: summarizeInput(toolUse),
         loop_index: loopIndex,
         execution_segment_id: activeExecutionSegment.id,
@@ -1101,7 +1107,7 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
         stage: 'tool_done',
         text: failed ? `${toolUse.name} 执行失败。` : `${toolUse.name} 执行完成。`,
         tool_name: toolUse.name,
-        tool_display_name: toolDisplayName,
+        tool_display_name: memoryDisplayName || toolDisplayName,
         result_summary: summarizeToolResult(toolUse.name, result),
         loop_index: loopIndex,
         execution_segment_id: activeExecutionSegment.id,
@@ -1330,8 +1336,7 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
           // 保留 operation set 与任务变更集供用户随时应用、废弃或回滚，但不再保存
           // 可恢复 checkpoint 或阻塞同会话队列，避免应用后再额外请求模型生成收尾总结。
           updateExecutionSegment(activeExecutionSegment.id, { status: 'completed', completed: true });
-          updateSessionStatus(session.id, 'completed');
-          markTaskChangeSetFinished(session.id, 'completed');
+              markTaskChangeSetFinished(session.id, 'completed');
           if (checkpointToCommit) clearMessagesCheckpoint(session.id, checkpointToCommit);
           checkpointToCommit = null;
           const usage = getSessionUsage(session.id);

@@ -51,13 +51,13 @@ const interactionA = createInteraction({
   payload: { agent_session_id: session.sessionId, questions: [] },
 });
 
-// SSE 重连会重新签发票据，但旧票据不得继续有效，也不能据此产生第二次回答。
+// SSE 重连可重新签发票据；多个页面可首答，但不能重复执行同一交互。
 const firstTicket = issueCapability({ sessionId: session.sessionId, interactionId: interactionA.id, action: 'respond' });
 const secondTicket = issueCapability({ sessionId: session.sessionId, interactionId: interactionA.id, action: 'respond' });
 assert.strictEqual(
-  validateCapability(firstTicket, { sessionId: session.sessionId, interactionId: interactionA.id, action: 'respond' }).reason,
-  'CAPABILITY_INVALID',
-  '新的 SSE 回放票据必须使旧回答票据失效'
+  validateCapability(firstTicket, { sessionId: session.sessionId, interactionId: interactionA.id, action: 'respond' }).valid,
+  true,
+  '新的 SSE 回放不能使其他页面的有效回答票据失效'
 );
 assert.strictEqual(
   validateCapability(secondTicket, { sessionId: session.sessionId, interactionId: interactionA.id, action: 'respond' }).valid,
@@ -93,9 +93,9 @@ assert.strictEqual(
     interactionId: interactionA.id,
     resumeJobId: resumeA.id,
     action: 'resume',
-  }).reason,
-  'CAPABILITY_INVALID',
-  '对话刷新生成的新恢复票据必须使旧恢复票据失效'
+  }).valid,
+  true,
+  '对话刷新不能使其他页面的有效恢复票据失效'
 );
 assert.strictEqual(
   validateCapability(secondResumeTicket, {

@@ -74,7 +74,7 @@ function seedFixtures(db, buildSearchText, notesDir) {
       [`# ${doc.title}`, '', ...doc.blocks.map((block) => block.content)].join('\n\n'),
       'utf8'
     );
-    const fileResult = insertFile.run(doc.path, doc.title, `${doc.title}-hash`);
+    const fileResult = insertFile.run(doc.path, doc.title, require('../lib/files').sha256(fs.readFileSync(absolutePath, 'utf8')));
     const fileId = Number(fileResult.lastInsertRowid);
     let currentHeading = '';
     let line = 1;

@@ -245,6 +245,7 @@ function saveFile(fileType, content, { expectedHash, source = 'user_settings', a
     if (!expectedHash || expectedHash !== current.hash) {
       throw error('文件已被其他操作修改，请重新载入后再保存', 'AGENT_FILE_VERSION_CONFLICT');
     }
+    if (next === current.content) return { ...statusFor(type), content: current.content, unchanged: true };
     const { filePath } = ensureDirectories(type);
     atomicWrite(filePath, next);
     const record = readFresh(type, { recordExternal: false });
@@ -310,24 +311,36 @@ function splitSections(content = '') {
 
 function selectMemory(content, query, budget) {
   if (estimateTextTokens(content) <= budget) return content;
-  const queryTerms = String(query || '').toLowerCase().split(/[\s，。；、,.!?！？]+/).filter((item) => item.length >= 2);
-  const scored = splitSections(content).map((section, index) => {
-    const text = section.content.join('\n');
-    const haystack = `${section.heading}\n${text}`.toLowerCase();
-    const stable = /用户偏好|长期项目|已确认决策|重要经验|常用技术栈/.test(section.heading) ? 2 : 0;
-    const matched = queryTerms.reduce((score, term) => score + (haystack.includes(term) ? 3 : 0), 0);
-    return { text, score: stable + matched, index };
+  const queryText = String(query || '').toLowerCase();
+  const queryTerms = [...new Set([
+    ...(queryText.match(/[a-z0-9_-]{2,}/g) || []),
+    ...(queryText.match(/[\u4e00-\u9fff]{2,}/g) || []).flatMap(word => Array.from({ length: word.length - 1 }, (_, index) => word.slice(index, index + 2))),
+  ])];
+  const scored = splitSections(content).flatMap((section, sectionIndex) => {
+    const body = section.content.filter(line => !/^#{1,2}\s/.test(line)).join('\n').trim();
+    return body.split(/\n\s*\n|\n(?=[-*]\s)/).filter(Boolean).map((entry, index) => {
+      const text = [section.heading ? `## ${section.heading}` : '', entry].filter(Boolean).join('\n');
+      const haystack = text.toLowerCase();
+      const stable = /用户偏好|常用技术栈/.test(section.heading) ? 4 : 0;
+      const matched = queryTerms.reduce((score, term) => score + (haystack.includes(term) ? 1 : 0), 0);
+      return { text, score: stable + matched * 3, index: sectionIndex * 10000 + index };
+    });
   }).sort((left, right) => right.score - left.score || left.index - right.index);
   const selected = [];
   let used = 0;
-  for (const section of scored) {
-    const tokens = estimateTextTokens(section.text);
-    if (used + tokens > budget && selected.length > 0) continue;
-    selected.push(section.text);
-    used += tokens;
-    if (used >= budget) break;
+  for (const entry of scored) {
+    if (!entry.score) continue;
+    const remaining = budget - used - (selected.length ? 2 : 0);
+    if (remaining <= 0) break;
+    let text = trimTextToTokenBudget(entry.text, Math.min(remaining, Math.max(100, Math.floor(budget / 2))));
+    // 通用裁剪器带最小字符数；记忆条目仍必须服从剩余预算。
+    while (estimateTextTokens(text) > remaining) text = text.slice(0, Math.floor(text.length * 0.9));
+    if (!text.trim()) continue;
+    selected.push(text);
+    used += estimateTextTokens(text) + (selected.length > 1 ? 2 : 0);
   }
-  return trimTextToTokenBudget(selected.join('\n\n') || content, budget, '\n[全局记忆已按上下文预算选择章节]');
+  return trimTextToTokenBudget(selected.join('\n\n'), budget);
+
 }
 
 function isWritingTask(goal = '') {
@@ -352,7 +365,7 @@ function buildGlobalAgentContext(goal = '', options = {}) {
   const writing = options.writing === undefined ? isWritingTask(goal) : Boolean(options.writing);
   const output = {
     soul: trimTextToTokenBudget(soul, FILE_LIMITS.soul.promptTokens),
-    memory: selectMemory(memory, goal, FILE_LIMITS.memory.promptTokens),
+    memory: selectMemory(memory, goal, options.memoryTokens || FILE_LIMITS.memory.promptTokens),
     style: '',
     writing,
     errors,
@@ -361,9 +374,22 @@ function buildGlobalAgentContext(goal = '', options = {}) {
   return output;
 }
 
-function agentUpdateAllowed(fileType, goal = '') {
+function agentUpdateAllowed(fileType, goal = '', evidence = '') {
   const text = String(goal || '').toLowerCase();
-  if (fileType === 'memory') return /(记住|记下|写入记忆|加入记忆|保存到记忆)/.test(text);
+  if (fileType === 'memory') {
+    const directText = String(goal || '').replace(/```[\s\S]*?```/g, '').replace(/^\s*>.*$/gm, '').replace(/“[^”]*”|「[^」]*」|"[^"]*"/g, '');
+    if (/(?:不要|不必|不用|别|禁止|不允许).{0,12}(?:记住|记下|记忆|记录|保存)|do not (?:remember|save|record)|don't (?:remember|save|record)/i.test(directText)) return false;
+    if (directText.split(/[。！？；;!\n]/).some(sentence => /(?:记住|记下|写入记忆|加入记忆|保存到记忆|忘掉|忘记|删除.{0,8}记忆|remember|forget)/i.test(sentence)
+      && !/(?:假设|假如|例如|比如|引用|原文|他说|她说|网页|附件|翻译|suppose|quoted)/i.test(sentence))) return true;
+    const quote = String(evidence || '').trim()
+      .replace(/^(?:用户原话|原话|evidence)\s*[:：]\s*/i, '')
+      .replace(/^["“「]|["”」]$/g, '').replace(/[。！？；;!]+$/, '');
+    // 使用完整来源句判断临时/引用语境，防止只摘出偏好片段丢失限定。
+    const sentences = directText.split(/[。！？；;!\n]/).filter(sentence => sentence.includes(quote));
+    return quote.length >= 4 && sentences.some(sentence =>
+      !/(?:这次|本次|暂时|临时|试试|假设|假如|例如|比如|引用|原文|他说|她说|网页|附件|this time|for now|suppose)/i.test(sentence));
+
+  }
   if (fileType === 'style') return /(以后|长期|今后).{0,16}(写法|写作|风格|语气|格式)|(?:写作风格|风格).{0,16}(修改|更新|调整|改成)/.test(text);
   return /(修改|更新|调整).{0,12}(人格|性格|soul)|(?:人格|性格).{0,12}(修改|更新|调整)/.test(text);
 }

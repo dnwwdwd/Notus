@@ -541,6 +541,8 @@ async function restoreFromZip(zipPath) {
   const rollbackRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'notus-rollback-'));
   const journal = [];
   let maintenance = false;
+  let runtimeStopped = false;
+  let preserveRollback = false;
   try {
     await validateZip(zipPath, stage);
     beginDataMaintenance('restore');
@@ -549,6 +551,7 @@ async function restoreFromZip(zipPath) {
     if (active.sessions.length || active.tasks.length) throw backupError('当前存在未结束的 Agent 任务，请等待任务完成后再还原', 'BACKUP_ACTIVE_TASKS', 409);
     const config = getEffectiveConfig();
     const targets = getBackupTargets(config);
+    runtimeStopped = true;
     await stopRuntime();
     await swapPath(path.join(stage, 'notes'), targets.notes, rollbackRoot, journal);
     await swapPath(path.join(stage, 'assets'), targets.assets, rollbackRoot, journal);
@@ -576,11 +579,13 @@ async function restoreFromZip(zipPath) {
     await fsp.rm(rollbackRoot, { recursive: true, force: true }).catch(() => {});
     return { ok: true, requires_reload: true, summary };
   } catch (error) {
-    if (maintenance) {
+    if (maintenance && runtimeStopped) {
       await stopRuntime().catch(() => {});
       let rollbackError = null;
       try { await rollbackSwaps(journal); } catch (cause) { rollbackError = cause; }
-      const restarted = ensureRuntime({ allowMaintenance: true });
+      preserveRollback = Boolean(rollbackError);
+      if (rollbackError) await fsp.writeFile(path.join(rollbackRoot, 'recovery.json'), JSON.stringify({ journal }, null, 2)).catch(() => {});
+      const restarted = rollbackError ? { ok: false } : ensureRuntime({ allowMaintenance: true });
       if (rollbackError) error = backupError('备份还原失败，旧数据回滚未完成', 'BACKUP_RESTORE_FAILED', 500);
       else if (!restarted.ok) error = backupError('备份还原失败，旧数据已恢复但运行时未能重新启动', 'BACKUP_RESTORE_FAILED', 500);
       endDataMaintenance();
@@ -590,7 +595,7 @@ async function restoreFromZip(zipPath) {
       : backupError('备份还原失败，旧数据已恢复', 'BACKUP_RESTORE_FAILED', 500);
   } finally {
     await fsp.rm(stage, { recursive: true, force: true }).catch(() => {});
-    await fsp.rm(rollbackRoot, { recursive: true, force: true }).catch(() => {});
+    if (!preserveRollback) await fsp.rm(rollbackRoot, { recursive: true, force: true }).catch(() => {});
     if (maintenance) endDataMaintenance();
   }
 }

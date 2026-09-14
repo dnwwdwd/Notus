@@ -454,6 +454,14 @@ async function applyFileRevision(operationSetId, sessionId, { auto = false } = {
       fileId: file.id,
       mediaChanges: existingMediaChanges,
     });
+    const latestSet = getRevisionStorageSet(set.id);
+    if (latestSet?.status === 'applied') return { success: true, applied: true, changed_files: [], operation_set: getOperationSetById(set.id) };
+    if (latestSet?.status !== 'pending') return { success: false, error: 'REVISION_NOT_PENDING' };
+    const currentFile = getFileByPath(filePath);
+    if (!currentFile || currentFile.id !== file.id || hashRevisionContent(normalizeRevisionContent(currentFile.content || '')) !== set.revision_base_hash) {
+      const stale = updateRevisionFailure(set, 'stale', '文件内容已变化，需要重新生成预览');
+      return { success: false, conflict: true, error: 'REVISION_STALE', operation_set: stale };
+    }
     const savedFile = updateFile(file.id, normalizeRevisionContent(materialized.content));
     const finalPath = savedFile.path;
     const nextFile = getFileByPath(finalPath);

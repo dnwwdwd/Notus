@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const { getDb, isVecAvailable } = require('./db');
+const { getDb, isVecAvailable, resetVec } = require('./db');
 const { getEmbeddings } = require('./embeddings');
 const { getEffectiveConfig } = require('./config');
 const { ensureError } = require('./errors');
@@ -304,6 +304,13 @@ async function indexFileNow(inputPath) {
     });
   }
 
+  // 异步分块/向量化期间可能保存、移动或删除文件，旧结果不得标记新版本完成。
+  const currentFile = db.prepare('SELECT id FROM files WHERE path = ?').get(relativePath);
+  let currentHash = null;
+  try { currentHash = sha256(readMarkdownFile(relativePath)); } catch {}
+  if (Number(currentFile?.id) !== Number(fileId) || currentHash !== hash) {
+    return { fileId, skipped: true, stale: true, chunksCount: 0 };
+  }
   const insertChunk = db.prepare(`
     INSERT INTO chunks (
       file_id, content, type, position, line_start, line_end, heading_path,
@@ -406,16 +413,24 @@ async function indexFileNow(inputPath) {
 async function indexFile(inputPath) {
   const relativePath = resolveIndexPath(inputPath);
   const inFlight = inFlightIndexByPath.get(relativePath);
-  if (inFlight) return inFlight;
-
-  const task = indexFileNow(relativePath);
-  inFlightIndexByPath.set(relativePath, task);
+  if (inFlight) {
+    inFlight.dirty = true;
+    return inFlight.promise;
+  }
+  const entry = { dirty: false, promise: null };
+  entry.promise = (async () => {
+    let result;
+    do {
+      entry.dirty = false;
+      result = await indexFileNow(relativePath);
+    } while (entry.dirty);
+    return result;
+  })();
+  inFlightIndexByPath.set(relativePath, entry);
   try {
-    return await task;
+    return await entry.promise;
   } finally {
-    if (inFlightIndexByPath.get(relativePath) === task) {
-      inFlightIndexByPath.delete(relativePath);
-    }
+    if (inFlightIndexByPath.get(relativePath) === entry) inFlightIndexByPath.delete(relativePath);
   }
 }
 
@@ -549,10 +564,12 @@ async function rebuildIndex(onProgress, options = {}) {
     const config = getEffectiveConfig();
     fs.mkdirSync(config.notesDir, { recursive: true });
     setStyleBackfillPaused(true);
-    if (options.clear !== false) clearIndex();
-    const paths = listMarkdownFiles();
     try {
-      return await indexBatch(paths, onProgress);
+      if (options.clear !== false) {
+        clearIndex();
+        if (isVecAvailable()) resetVec(config.embeddingDim);
+      }
+      return await indexBatch(listMarkdownFiles(), onProgress);
     } finally {
       setStyleBackfillPaused(false);
     }

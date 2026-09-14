@@ -1,3 +1,4 @@
+import { refreshAgentSessionAccess } from '../utils/agentSessionAccess';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getAgentLoopReasonLabel, getAgentToolDisplayName, getAgentToolLabel } from '../utils/agentDisplay';
 import { dispatchAgentResourceChange } from '../utils/agentResourceEvents';
@@ -770,6 +771,14 @@ export function useAgentLoopController({
   }, [onFilesMayHaveChanged]);
 
   const startAgentLoop = useCallback(async (input, options = {}) => {
+    const accessEpoch = subscriptionEpochRef.current;
+    const targetId = toPositiveInt(input?.session_id || input?.id);
+    const targetConversationId = input?.conversation_id || knownSessionsRef.current.get(String(targetId))?.conversation_id || (Number(sessionRef.current?.id) === targetId ? sessionRef.current?.conversation_id : null);
+    if (targetId && targetConversationId) {
+      const fresh = await refreshAgentSessionAccess(targetConversationId, targetId);
+      if (accessEpoch !== subscriptionEpochRef.current) return;
+      input = { ...input, control_tickets: fresh.control_tickets, read_ticket: fresh.control_tickets?.read, control_ticket: fresh.control_tickets?.resume };
+    }
     const resumeSessionId = toPositiveInt(input?.session_id || input?.id);
     const resumeToken = input?.session_token || input?.token || sessionRef.current?.token || '';
     const resumeReadTicket = input?.read_ticket || input?.readTicket || input?.control_tickets?.read || '';
@@ -1496,7 +1505,11 @@ export function useAgentLoopController({
   }, [pendingAgentTask, startAgentLoop]);
 
   const runOperationSetAction = useCallback(async (operationSet, action, options = {}) => {
-    const session = sessionRef.current;
+    const accessEpoch = subscriptionEpochRef.current;
+    const sessionId = operationSet?.agent_session_id || sessionRef.current?.id;
+    const conversationId = operationSet?.conversation_id || sessionRef.current?.conversation_id;
+    const session = await refreshAgentSessionAccess(conversationId, sessionId, { signal: options.signal });
+    if (accessEpoch !== subscriptionEpochRef.current) return null;
     const operateTicket = session?.control_tickets?.operate;
     if (!session?.id || (!session?.token && !operateTicket)) throw new Error('缺少 Agent 任务状态，无法处理预览');
     const operationSetId = operationSet?.id || session.operation_set_id;
@@ -1528,6 +1541,7 @@ export function useAgentLoopController({
       }
       throw new Error(payload.error || payload.code || '处理修改失败');
     }
+    if (accessEpoch !== subscriptionEpochRef.current) return null;
     onOperationSetHandled?.(operationSetId, action, payload.operation_set || null);
     if (payload.task_change_set) onTaskChangeSet?.(payload.task_change_set);
     if (['apply', 'apply_all', 'apply_file'].includes(action)) {
@@ -1535,7 +1549,7 @@ export function useAgentLoopController({
     } else if (action === 'rollback_file') {
       await onRollbackSuccess?.(payload, operationSet);
     }
-    if (payload.session) setActiveAgentSession({ ...payload.session, token: session.token, control_tickets: session.control_tickets });
+    if (payload.session && Number(sessionRef.current?.id) === Number(session.id)) setActiveAgentSession({ ...payload.session, token: session.token, control_tickets: session.control_tickets });
     // 仅自动确认模式下的高风险批次会返回 task_resumed；手动 Diff 始终为 false，
     // 因此不会在应用后重新订阅或请求无意义的模型收尾。
     if (payload.task_resumed && !controllerRef.current) {
@@ -1582,6 +1596,7 @@ export function useAgentLoopController({
         control_ticket: session.control_tickets?.operate || undefined,
         operation_set_id: operationSetId || undefined,
         action: 'reject',
+        current_conversation_id: session.conversation_id,
       }),
     });
     if (!response.ok) {
@@ -1592,9 +1607,12 @@ export function useAgentLoopController({
   }, [onOperationSetHandled, setActiveAgentSession]);
 
   const extendAgentSession = useCallback(async (sessionInput = null) => {
+    const accessEpoch = subscriptionEpochRef.current;
     try {
-      const session = sessionInput || sessionRef.current;
-      const token = session?.token || sessionRef.current?.token;
+      const target = sessionInput || sessionRef.current;
+      const session = await refreshAgentSessionAccess(target?.conversation_id, target?.id);
+      if (accessEpoch !== subscriptionEpochRef.current) return;
+      const token = session?.token;
       const extendTicket = session?.control_tickets?.extend;
       if (!session?.id || (!token && !extendTicket)) return;
       const response = await fetch('/api/agent/loop/apply', {
@@ -1612,10 +1630,13 @@ export function useAgentLoopController({
       if (!response.ok || !payload.success) {
         throw new Error(payload.error || payload.code || '继续执行失败');
       }
+      if (accessEpoch !== subscriptionEpochRef.current) return;
       await startAgentLoop({
         session_id: session.id,
+        conversation_id: session.conversation_id,
         session_token: token,
-        control_ticket: session.control_tickets?.resume,
+        subscribe_only: true,
+        read_ticket: session.control_tickets?.read,
       }, { resume: true });
     } catch (extendError) {
       const message = extendError.message || '继续执行失败';

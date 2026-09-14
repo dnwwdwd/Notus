@@ -109,7 +109,7 @@ assert.ok(fileWorkspace.includes("params.set('q', String(query).trim())"));
 assert.ok(fileWorkspace.includes('没有匹配的历史对话'));
 assert.ok(fileWorkspace.includes('agentLoopRef.current?.clearActiveAgentSession()'), '切换对话前必须解绑旧 Agent UI 状态');
 assert.ok(/restoredConversationRef\.current = true;\r?\n    conversationLoadSequenceRef\.current \+= 1;/.test(fileWorkspace), '用户新建对话后不得被初始化中的旧对话恢复请求写回');
-assert.ok(fileWorkspace.includes("const sessionLocked = agentLoop.activeAgentSession?.status === 'running'"), '可恢复等待状态不得永久禁用输入框');
+assert.ok(fileWorkspace.includes("const inputDisabled = !aiUiState.ready;"), '可恢复等待状态不得永久禁用输入框');
 assert.ok(fileWorkspace.includes('const [agentConfirmMode, setAgentConfirmMode] = useState(AUTO_CONFIRM);'), '确认模式首屏必须使用服务端与浏览器一致的默认值');
 assert.ok(fileWorkspace.includes('setAgentConfirmMode(readConfirmMode());'), '浏览器挂载后必须恢复本地确认模式偏好');
 assert.ok(!fileWorkspace.includes('useState(() => readConfirmMode())'), '确认模式不得在 Hydration 初始化阶段读取 localStorage');

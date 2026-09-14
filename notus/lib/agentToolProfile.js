@@ -34,7 +34,7 @@ function allowedToolNames(intent = {}) {
   const webAllowed = intent.source_policy?.web !== 'forbidden';
   const knowledgeAllowed = intent.source_policy?.knowledge !== 'forbidden';
   const localSkillsAllowed = intent.source_policy?.local_skills !== 'forbidden';
-  const base = new Set(CONTROL_TOOLS);
+  const base = new Set([...CONTROL_TOOLS, 'read_global_agent_file', 'update_global_agent_file']);
   const add = (...names) => names.forEach((name) => base.add(name));
 
   if (taskKind === 'skill_discovery') {

@@ -565,12 +565,13 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], activeFileId 
   const resumeAgentLoop = agentLoop.startAgentLoop;
   const getAgentSession = agentLoop.getAgentSession;
   const activeAgentSessionId = String(agentLoop.activeAgentSession?.id || '');
-  const sessionLocked = agentLoop.activeAgentSession?.status === 'running';
   // 只有真实在途请求才锁输入。可恢复错误、断线续跑和额度等待都已经停住，
   // 应保留工具链续跑入口，同时允许用户发送新消息或切到新对话。
-  // 任务独立于界面可见性；只在正在提交同一张卡片时短暂阻止重复切换。
-  const agentPanelLocked = Boolean(interactionSubmittingId);
-  const agentPanelLockMessage = sessionLocked ? '任务仍在后台执行，正在保存提问卡片回答，请稍候。' : '正在保存提问卡片回答，请稍候。';
+  const waitingForAnswer = activeInteraction?.status === 'pending';
+  const agentPanelLocked = Boolean(interactionSubmittingId || interruptibleSessionId || waitingForAnswer);
+  const agentPanelLockMessage = interactionSubmittingId
+    ? '正在保存提问卡片回答，请稍候。'
+    : waitingForAnswer ? '请先处理提问或确认卡片，再收起 AI 面板。' : 'Agent 正在执行任务，请完成或中断后再收起 AI 面板。';
   const agentPresentationRef = useRef({
     activeSession: agentLoop.activeAgentSession,
     activeSteps: agentLoop.activeSteps,
@@ -622,6 +623,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], activeFileId 
         subscribedSessionIdsRef.current.add(sessionId);
         resumeAgentLoop({
           session_id: item.id,
+          conversation_id: item.conversation_id,
           // 恢复历史运行中的任务只需要接回事件流。不得以会话恢复票据重新
           // 调度队列，否则迟到的页面恢复可能跳过后续的确认卡片。
           subscribe_only: true,
@@ -647,6 +649,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], activeFileId 
     autoResumedJobRef.current.add(queuedJob.id);
     resumeAgentLoop({
       session_id: queuedJob.session_id,
+      conversation_id: queuedSession.conversation_id,
       resume_job_id: queuedJob.id,
       resume_ticket: queuedJob.resume_ticket,
       control_ticket: queuedControlTicket,
@@ -673,6 +676,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], activeFileId 
     try {
       await agentLoop.startAgentLoop({
         session_id: session.id,
+        conversation_id: session.conversation_id,
         session_token: session.token,
         control_ticket: resumeTicket,
         read_ticket: session.control_tickets?.read,
@@ -965,7 +969,6 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], activeFileId 
       const taskChangeSet = latestAssistantIndexBySession.get(sessionId) === index
         ? (hasTaskChangeSet ? taskChangeSetCandidate : null)
         : null;
-      if (!operationSet && !taskChangeSet) return message;
       return { ...message, operationSet, taskChangeSet };
     });
   }, [messages, operationSetById, operationSetBySessionId, taskChangeSetsBySession]);
@@ -983,6 +986,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], activeFileId 
       </div>
       <div className="notus-file-agent-workspace__content" style={{ flex: 1, minHeight: 0, position: 'relative' }}>
         <AgentWorkspace
+          conversationId={activeConversationId}
           messages={displayedMessages}
           interactions={pendingInteractions}
           streamText={agentLoop.streamText}

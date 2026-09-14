@@ -1,13 +1,13 @@
+import { refreshAgentSessionAccess } from '../../utils/agentSessionAccess';
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Button } from '../ui/Button';
 import { TextInput } from '../ui/Input';
 import { Toggle } from '../ui/Toggle';
 import { Dialog } from '../ui/Dialog';
-import { Icons } from '../ui/Icons';
+import { Icons, SKILL_ICON_PATHS } from '../ui/Icons';
 import { ImagePreviewOverlay } from '../ui/ImagePreviewOverlay';
 import { MentionItem } from './MentionItem';
-import { MentionPreviewDialog, prefetchMentionDocument } from './MentionPreviewDialog';
 import { Tooltip } from '../ui/Tooltip';
 import { SourceCard } from '../ui/SourceCard';
 import { useToast } from '../ui/Toast';
@@ -547,6 +547,8 @@ function ToolTraceIcon({ step, size = 15 }) {
   if (['waiting', 'action_required'].includes(status)) return <Icons.warn size={size} />;
   if (source.includes('mcp')) return <Icons.mcp size={size} />;
   if (source.includes('skill')) return <Icons.skill size={size} />;
+  if (source.includes('更新记忆')) return <Icons.brainEdit size={size} />;
+  if (source.includes('读取记忆')) return <Icons.memoryRead size={size} />;
   if (FILE_READ_TOOL_NAMES.has(toolName)) return <Icons.fileText size={size} />;
   if (FILE_WRITE_TOOL_NAMES.has(toolName)) return <Icons.fileEdit size={size} />;
   if (source.includes('正在思考')) return <Icons.brain size={size} />;
@@ -1202,7 +1204,8 @@ function diffSidebarFileName(path) {
   return normalized.split('/').filter(Boolean).pop() || '全文';
 }
 
-function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRollbackFile, onDiscardFile, onOpenFile }) {
+function DiffDialog({ onOpenBatch, onOperationUpdated, operationSet, open, onClose, onApplyAll, onApplyFile, onRollbackFile, onDiscardFile, onOpenFile }) {
+  const toast = useToast();
   const operations = operationItems(operationSet);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [busyKey, setBusyKey] = useState('');
@@ -1242,11 +1245,15 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
     const key = `${kind}-${activeOperation.patchIndex}`;
     setBusyKey(key);
     try {
-      if (kind === 'apply') await onApplyFile?.(operationSet, activeOperation.patchIndex);
-      else if (kind === 'discard') await onDiscardFile?.(operationSet, activeOperation.patchIndex);
-      else await onRollbackFile?.(operationSet, activeOperation.patchIndex);
+      let result;
+      if (kind === 'apply') result = await onApplyFile?.(operationSet, activeOperation.patchIndex);
+      else if (kind === 'discard') result = await onDiscardFile?.(operationSet, activeOperation.patchIndex);
+      else result = await onRollbackFile?.(operationSet, activeOperation.patchIndex);
+      if (!taskCumulative && result?.operation_set) onOperationUpdated?.(result.operation_set);
       if (taskCumulative && kind === 'discard') onClose?.();
       moveToNextPending();
+    } catch (error) {
+      toast(error.message || '处理修改失败', 'error');
     } finally {
       setBusyKey('');
     }
@@ -1256,6 +1263,8 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
     try {
       await onApplyAll?.(operationSet);
       onClose?.();
+    } catch (error) {
+      toast(error.message || '处理修改失败', 'error');
     } finally {
       setBusyKey('');
     }
@@ -1370,6 +1379,7 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
                 {canDiscard ? (
                   <button type="button" disabled={Boolean(busyKey)} onClick={() => runFileAction('discard')} style={transitionButton({ height: 32, padding: '0 11px', borderRadius: 9, background: C.muted, color: C.secondary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: busyKey ? 'not-allowed' : 'pointer' })}>废弃预览</button>
                 ) : null}
+                {taskCumulative && operationSet?.batches?.length ? operationSet.batches.slice().reverse().map((batch) => <button key={batch.id} type="button" disabled={Boolean(busyKey)} onClick={() => onOpenBatch?.(batch)} style={transitionButton({ padding: '6px 10px', borderRadius: 6, background: C.muted, color: C.secondary, cursor: 'pointer' })}>批次 {batch.batch_sequence_no} 详情</button>) : null}
                 {!taskCumulative ? <button type="button" disabled={!canRollback || Boolean(busyKey)} onClick={() => runFileAction('rollback')} style={transitionButton({ height: 32, padding: '0 11px', borderRadius: 9, background: canRollback ? 'rgba(254,202,202,0.65)' : C.muted, color: canRollback ? '#991B1B' : C.tertiary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: (!canRollback || busyKey) ? 'not-allowed' : 'pointer' })}>回滚修改</button> : null}
                 {!taskCumulative ? <button type="button" disabled={!canApply || Boolean(busyKey)} onClick={() => runFileAction('apply')} style={transitionButton({ height: 32, padding: '0 12px', borderRadius: 9, background: canApply ? '#16A34A' : C.muted, color: canApply ? '#fff' : C.tertiary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: (!canApply || busyKey) ? 'not-allowed' : 'pointer' })}>应用修改</button> : null}
                 <button type="button" disabled={!canApplyAll || Boolean(busyKey)} onClick={runApplyAll} style={transitionButton({ height: 32, padding: '0 13px', borderRadius: 9, background: canApplyAll ? C.accent : C.muted, color: canApplyAll ? '#fff' : C.tertiary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: (!canApplyAll || busyKey) ? 'not-allowed' : 'pointer' })}>全部应用</button>
@@ -1383,7 +1393,7 @@ function DiffDialog({ operationSet, open, onClose, onApplyAll, onApplyFile, onRo
   return typeof document === 'undefined' ? null : createPortal(dialog, document.body);
 }
 
-function UserMessageRow({ message, disabled, removing = false, onResendMessage, onOpenAttachment, onPreviewMention, onPrefetchMention, onPreviewImages }) {
+function UserMessageRow({ message, disabled, removing = false, onResendMessage, onOpenAttachment, onPreviewMention, onPreviewImages }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(String(message.content || ''));
   const [sending, setSending] = useState(false);
@@ -1484,7 +1494,7 @@ function UserMessageRow({ message, disabled, removing = false, onResendMessage, 
         <div data-message-bubble="true" style={{ maxWidth: '80%', minWidth: 0, padding: '13px 18px', borderRadius: '20px 20px 6px 20px', background: C.muted, color: C.text, fontSize: 15, lineHeight: 1.7, overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
           <div className="notus-message-mention-flow">
             {submittedContent === null ? (message.mentionSegments || []).map((segment, index) => segment.type === 'mention' ? (
-              <MentionItem key={`${segment.mention?.id || index}-${index}`} {...segment.mention} inline readonly onPreview={onPreviewMention} onPrefetch={onPrefetchMention} />
+              <MentionItem key={`${segment.mention?.id || index}-${index}`} {...segment.mention} inline readonly onPreview={onPreviewMention} />
             ) : <span key={`text-${index}`} style={{ whiteSpace: 'pre-wrap' }}>{segment.text}</span>) : <span style={{ whiteSpace: 'pre-wrap' }}>{displayContent}</span>}
           </div>
         </div>
@@ -1653,7 +1663,7 @@ function mergeAgentTimelineSteps(restoredSteps = [], activeSteps = []) {
   }, [...(Array.isArray(restoredSteps) ? restoredSteps : [])]);
 }
 
-function MessageList({ messages, interactions = [], streamText, error = '', loading, activeSteps, activeSessionId = null, activeSessionStatus = '', sessionTimelines = {}, taskChangeSetsBySession = {}, removingMessageIds, onOpenOperationSet, onOpenTaskChangeSet, onCitationClick, citationSelection, actionDisabled = false, onResendMessage, onRetryMessage, onOpenAttachment, onPreviewMention, onPrefetchMention, onPreviewImages, onPreviewToolchainImages, onAgentStepAction }) {
+function MessageList({ messages, interactions = [], streamText, error = '', loading, activeSteps, activeSessionId = null, activeSessionStatus = '', sessionTimelines = {}, taskChangeSetsBySession = {}, removingMessageIds, onOpenOperationSet, onOpenTaskChangeSet, onCitationClick, citationSelection, actionDisabled = false, onResendMessage, onRetryMessage, onOpenAttachment, onPreviewMention, onPreviewImages, onPreviewToolchainImages, onAgentStepAction }) {
   const hasPersistedTimeline = Array.isArray(activeSteps) && activeSteps.length > 0;
   const hasAgentActivity = hasPersistedTimeline || Boolean(streamText) || Boolean(error) || Boolean(loading)
     || ['created', 'queued', 'running'].includes(activeSessionStatus);
@@ -1727,7 +1737,6 @@ function MessageList({ messages, interactions = [], streamText, error = '', load
                 onResendMessage={onResendMessage}
                 onOpenAttachment={onOpenAttachment}
                 onPreviewMention={onPreviewMention}
-                onPrefetchMention={onPrefetchMention}
                 onPreviewImages={onPreviewImages}
               />
               {userTrace}
@@ -1742,9 +1751,7 @@ function MessageList({ messages, interactions = [], streamText, error = '', load
           <AssistantMessageRow
             key={message.id}
             message={message}
-            taskChangeSet={hasTaskChangeSetChanges(taskChangeSetsBySession[messageSessionKey] || message.taskChangeSet)
-              ? (taskChangeSetsBySession[messageSessionKey] || message.taskChangeSet)
-              : null}
+            taskChangeSet={message.taskChangeSet}
             disabled={actionDisabled}
             removing={removing}
             onRetryMessage={onRetryMessage}
@@ -1780,7 +1787,7 @@ function AgentConfirmModeSelect({ value, onChange, disabled }) {
   );
 }
 
-function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigChange, onSend, onInterrupt, interruptibleSessionId = null, searchConfig, searchPreference, onSearchPreferenceChange, onRequireSearchConfig, onRequireMcpConfig, mcpSelection = { mode: 'off' }, onMcpSelectionChange, mcpAvailable = false, mcpAvailabilityChecked = false, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [], onPreviewMention, onPrefetchMention, showJumpToBottom = false, onJumpToBottom }) {
+function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigChange, onSend, onInterrupt, interruptibleSessionId = null, searchConfig, searchPreference, onSearchPreferenceChange, onRequireSearchConfig, onRequireMcpConfig, mcpSelection = { mode: 'off' }, onMcpSelectionChange, mcpAvailable = false, mcpAvailabilityChecked = false, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [], onPreviewMention, showJumpToBottom = false, onJumpToBottom }) {
   const [composerState, setComposerState] = useState({ content: '', mentions: [], segments: [] });
   const [files, setFiles] = useState([]);
   const [imagePreview, setImagePreview] = useState(null);
@@ -1958,8 +1965,9 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
     chip.setAttribute('role', 'button');
     chip.setAttribute('data-notus-mention', encodeURIComponent(JSON.stringify(mention)));
     const isSkill = mention.type === 'skill';
+    const isFile = mention.type === 'file';
     chip.setAttribute('title', isSkill ? (mention.description || '未提供 Skill 描述') : `${mention.name}\n${mention.path}`);
-    chip.setAttribute('aria-label', isSkill ? `Skill：${mention.name}` : `预览${mention.type === 'folder' ? '目录' : '笔记'}：${mention.name}`);
+    chip.setAttribute('aria-label', isSkill ? `Skill：${mention.name}` : (isFile ? `在编辑器中打开：${mention.name}` : `目录：${mention.name}`));
     const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     icon.setAttribute('viewBox', '0 0 24 24');
     icon.setAttribute('fill', 'none');
@@ -1967,13 +1975,14 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
     icon.setAttribute('stroke-width', '1.7');
     icon.setAttribute('stroke-linecap', 'round');
     icon.setAttribute('stroke-linejoin', 'round');
-    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    path.setAttribute('d', mention.type === 'folder'
+    const iconPaths = mention.type === 'skill' ? SKILL_ICON_PATHS : [mention.type === 'folder'
       ? 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2M3 7v11a2 2 0 0 0 2 2h13.5a2 2 0 0 0 1.9-1.4l2-6A1 1 0 0 0 21.5 11H5a2 2 0 0 0-2 2V7z'
-      : mention.type === 'skill'
-        ? 'M4 5.5A2.5 2.5 0 0 1 6.5 3H11v16H6.5A2.5 2.5 0 0 0 4 21zM20 5.5A2.5 2.5 0 0 0 17.5 3H13v16h4.5A2.5 2.5 0 0 1 20 21z'
-        : 'M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9zM14 3v6h6');
-    icon.appendChild(path);
+      : 'M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9zM14 3v6h6'];
+    iconPaths.forEach((d) => {
+      const iconPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      iconPath.setAttribute('d', d);
+      icon.appendChild(iconPath);
+    });
     const label = document.createElement('span');
     label.className = 'notus-mention-item__label';
     label.textContent = mention.name;
@@ -2008,18 +2017,16 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
     const openPreview = (event) => {
       event.preventDefault();
       event.stopPropagation();
-      if (isSkill) return;
+      if (!isFile) return;
       onPreviewMention?.(mention);
     };
     chip.addEventListener('mousedown', (event) => event.preventDefault());
-    chip.addEventListener('mouseenter', () => { if (!isSkill) onPrefetchMention?.(mention); });
-    chip.addEventListener('focus', () => { if (!isSkill) onPrefetchMention?.(mention); });
     chip.addEventListener('click', openPreview);
     chip.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' || event.key === ' ') openPreview(event);
     });
     return chip;
-  }, [onPrefetchMention, onPreviewMention, restoreComposerCaret, syncComposerState]);
+  }, [onPreviewMention, restoreComposerCaret, syncComposerState]);
 
   const restoreComposerDom = useCallback((segments = []) => {
     const root = composerRef.current;
@@ -2347,6 +2354,30 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
     }
     insertMention(mention, range);
   }, [insertMention]);
+
+  useEffect(() => {
+    const root = composerRef.current;
+    if (!root) return undefined;
+    const handleSidebarMentionDrop = (event) => {
+      if (busy || disabled) return;
+      const detail = event?.detail || {};
+      const mention = detail.mention;
+      if (!mention?.path) return;
+      let range = null;
+      const position = document.caretPositionFromPoint?.(detail.clientX, detail.clientY);
+      if (position && root.contains(position.offsetNode)) {
+        range = document.createRange();
+        range.setStart(position.offsetNode, position.offset);
+        range.collapse(true);
+      } else {
+        const caretRange = document.caretRangeFromPoint?.(detail.clientX, detail.clientY) || null;
+        if (caretRange && root.contains(caretRange.startContainer)) range = caretRange;
+      }
+      insertMention(mention, range);
+    };
+    root.addEventListener('notus:sidebar-mention-drop', handleSidebarMentionDrop);
+    return () => root.removeEventListener('notus:sidebar-mention-drop', handleSidebarMentionDrop);
+  }, [busy, disabled, insertMention]);
 
   const addFiles = (fileList, options = {}) => {
     const rejected = [];
@@ -2727,6 +2758,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
             role="textbox"
             aria-multiline="true"
             aria-label={placeholder || '在此输入以唤起 Agent Loop...'}
+            data-notus-agent-composer
             data-placeholder={placeholder || '在此输入以唤起 Agent Loop...'}
             suppressContentEditableWarning
             onFocus={() => setFocused(true)}
@@ -3086,7 +3118,7 @@ function SearchConfigView({ config, onSaved, onBack, selectProvider }) {
   );
 }
 
-export function AgentWorkspace({ messages, interactions = [], streamText, loading, error, activeSteps, activeSessionId = null, activeSessionStatus = '', sessionTimelines = {}, taskChangeSetsBySession = {}, interruptibleSessionId = null, llmConfigs, selectedConfigId, onConfigChange, onSend, onStop, onResumeAgentTask, onConversationRewritten, onApplyOperationSet, onApplyOperationFile, onRollbackOperationFile, onDiscardOperationFile, onCitationClick, citationSelection, disabled, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [], fullWidth = false, onOpenDiffFile, restoringConversation = false }) {
+export function AgentWorkspace({ messages, conversationId = null, interactions = [], streamText, loading, error, activeSteps, activeSessionId = null, activeSessionStatus = '', sessionTimelines = {}, taskChangeSetsBySession = {}, interruptibleSessionId = null, llmConfigs, selectedConfigId, onConfigChange, onSend, onStop, onResumeAgentTask, onConversationRewritten, onApplyOperationSet, onApplyOperationFile, onRollbackOperationFile, onDiscardOperationFile, onCitationClick, citationSelection, disabled, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [], fullWidth = false, onOpenDiffFile, restoringConversation = false }) {
   const { openSettings } = useSettingsDialog();
   const toast = useToast();
   const [searchConfig, setSearchConfig] = useState({ enabled: false, selected_provider: 'firecrawl', modes: {}, counts: {}, api_key_set: {}, providers: SEARCH_PROVIDER_FALLBACKS });
@@ -3096,19 +3128,26 @@ export function AgentWorkspace({ messages, interactions = [], streamText, loadin
   const [searchViewProvider, setSearchViewProvider] = useState('');
   const [searchPromptReason, setSearchPromptReason] = useState('disabled');
   const [detailOperationSet, setDetailOperationSet] = useState(null);
+  const detailRequestRef = useRef(0);
+  useEffect(() => {
+    detailRequestRef.current += 1;
+    setDetailOperationSet(null);
+    setLoadingTaskChangeSetId(null);
+  }, [conversationId]);
   const [loadingTaskChangeSetId, setLoadingTaskChangeSetId] = useState(null);
   const [attachmentDetail, setAttachmentDetail] = useState(null);
-  const [previewMention, setPreviewMention] = useState(null);
 
   const openTaskChangeSet = useCallback(async (changeSet) => {
     const sessionId = Number(changeSet?.session_id || 0);
     if (!sessionId || loadingTaskChangeSetId) return;
+    const requestId = ++detailRequestRef.current;
     setLoadingTaskChangeSetId(changeSet.id || sessionId);
     try {
+      const fresh = await refreshAgentSessionAccess(changeSet.conversation_id || conversationId, sessionId);
       const response = await fetch(`/api/agent/sessions/${sessionId}/changes`, {
         cache: 'no-store',
         headers: {
-          ...(changeSet.read_control_ticket ? { 'x-agent-control-ticket': changeSet.read_control_ticket } : {}),
+          'x-agent-control-ticket': fresh.control_tickets.read,
           ...(!changeSet.read_control_ticket && changeSet.session_token ? { 'x-agent-session-token': changeSet.session_token } : {}),
         },
       });
@@ -3116,13 +3155,14 @@ export function AgentWorkspace({ messages, interactions = [], streamText, loadin
       if (!response.ok || !payload.task_change_set?.operation_set_view) {
         throw new Error(payload.error || '读取累计修改失败');
       }
-      setDetailOperationSet(payload.task_change_set.operation_set_view);
+      if (requestId !== detailRequestRef.current) return;
+      setDetailOperationSet({ ...payload.task_change_set.operation_set_view, batches: payload.task_change_set.operation_sets });
     } catch (error) {
       toast(error.message || '读取累计修改失败', 'error');
     } finally {
-      setLoadingTaskChangeSetId(null);
+      if (requestId === detailRequestRef.current) setLoadingTaskChangeSetId(null);
     }
-  }, [loadingTaskChangeSetId, toast]);
+  }, [conversationId, loadingTaskChangeSetId, toast]);
 
   useEffect(() => {
     setDetailOperationSet((current) => {
@@ -3134,7 +3174,10 @@ export function AgentWorkspace({ messages, interactions = [], streamText, loadin
     });
   }, [messages]);
   const [messageImagePreview, setMessageImagePreview] = useState(null);
-  const handlePrefetchMention = useCallback((mention) => prefetchMentionDocument(mention), []);
+  const handleOpenMention = useCallback((mention) => {
+    if (mention?.type !== 'file' || !mention?.path) return;
+    onOpenDiffFile?.(mention.path);
+  }, [onOpenDiffFile]);
   const [mcpSelection, setMcpSelection] = useState(() => readMcpSelectionPreference());
   const [mcpAvailable, setMcpAvailable] = useState(false);
   const [mcpAvailabilityChecked, setMcpAvailabilityChecked] = useState(false);
@@ -3494,8 +3537,7 @@ export function AgentWorkspace({ messages, interactions = [], streamText, loadin
             onResendMessage={handleResendMessage}
             onRetryMessage={handleResendMessage}
             onOpenAttachment={handleOpenAttachment}
-            onPreviewMention={setPreviewMention}
-            onPrefetchMention={handlePrefetchMention}
+            onPreviewMention={handleOpenMention}
             onPreviewImages={openMessageImagePreview}
             onPreviewToolchainImages={openToolchainImagePreview}
             onAgentStepAction={(action, _step, sessionId) => {
@@ -3505,14 +3547,13 @@ export function AgentWorkspace({ messages, interactions = [], streamText, loadin
           <div style={{ height: 12 }} />
         </div>
       </main>
-      <AgentInput loading={Boolean(loading)} disabled={Boolean(disabled)} llmConfigs={llmConfigs || []} selectedConfigId={selectedConfigId} onConfigChange={onConfigChange} onSend={onSend} onInterrupt={onStop} interruptibleSessionId={interruptibleSessionId} searchConfig={searchConfig} searchPreference={searchPreference} onSearchPreferenceChange={handleSearchPreferenceChange} onRequireSearchConfig={requireSearchConfig} onRequireMcpConfig={() => setMcpPromptOpen(true)} mcpSelection={mcpSelection} onMcpSelectionChange={handleMcpSelectionChange} mcpAvailable={mcpAvailable} mcpAvailabilityChecked={mcpAvailabilityChecked} placeholder={placeholder} agentConfirmMode={agentConfirmMode} onAgentConfirmModeChange={onAgentConfirmModeChange} attachmentMode={attachmentMode} mentionOptions={mentionOptions} onPreviewMention={setPreviewMention} onPrefetchMention={handlePrefetchMention} showJumpToBottom={showJumpToBottom && (visibleMessages.length > 0 || loading)} onJumpToBottom={() => {
+      <AgentInput loading={Boolean(loading)} disabled={Boolean(disabled)} llmConfigs={llmConfigs || []} selectedConfigId={selectedConfigId} onConfigChange={onConfigChange} onSend={onSend} onInterrupt={onStop} interruptibleSessionId={interruptibleSessionId} searchConfig={searchConfig} searchPreference={searchPreference} onSearchPreferenceChange={handleSearchPreferenceChange} onRequireSearchConfig={requireSearchConfig} onRequireMcpConfig={() => setMcpPromptOpen(true)} mcpSelection={mcpSelection} onMcpSelectionChange={handleMcpSelectionChange} mcpAvailable={mcpAvailable} mcpAvailabilityChecked={mcpAvailabilityChecked} placeholder={placeholder} agentConfirmMode={agentConfirmMode} onAgentConfirmModeChange={onAgentConfirmModeChange} attachmentMode={attachmentMode} mentionOptions={mentionOptions} onPreviewMention={handleOpenMention} showJumpToBottom={showJumpToBottom && (visibleMessages.length > 0 || loading)} onJumpToBottom={() => {
         const container = scrollContainerRef.current;
         if (!container) return;
         scrollContainerToBottom(container, 'smooth');
         shouldStickToBottomRef.current = true;
         setShowJumpToBottom(false);
       }} />
-      <MentionPreviewDialog mention={previewMention} onClose={() => setPreviewMention(null)} onOpenDocument={onOpenDiffFile} />
       <Dialog open={searchPromptOpen} onClose={() => setSearchPromptOpen(false)} title={promptTitle} maxWidth={420} footer={<><Button variant="ghost" onClick={() => setSearchPromptOpen(false)}>取消</Button><Button variant="primary" onClick={() => { setSearchPromptOpen(false); openSettings('search', { provider: promptProvider?.id }); }}>前往设置</Button></>}>
         <div style={{ fontSize: 14, color: C.secondary, lineHeight: 1.8 }}>{promptMessage}</div>
       </Dialog>
@@ -3522,7 +3563,9 @@ export function AgentWorkspace({ messages, interactions = [], streamText, loadin
       <DiffDialog
         open={Boolean(detailOperationSet)}
         operationSet={detailOperationSet}
-        onClose={() => setDetailOperationSet(null)}
+        onClose={() => { detailRequestRef.current += 1; setDetailOperationSet(null); }}
+        onOpenBatch={setDetailOperationSet}
+        onOperationUpdated={(updated) => setDetailOperationSet((current) => (current && Number(current.id) === Number(updated.id) && Number(current.agent_session_id) === Number(updated.agent_session_id) ? updated : current))}
         onApplyAll={onApplyOperationSet}
         onApplyFile={onApplyOperationFile}
         onRollbackFile={onRollbackOperationFile}

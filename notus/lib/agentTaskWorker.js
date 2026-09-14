@@ -10,7 +10,7 @@ const { buildResearchSummary, buildWriteSummary, correctConflictingSourceClaims,
 const { createInteraction, getInteractionById, updateInteraction } = require('./conversationInteractions');
 const { acquireRunLease, registerActiveRun, releaseRunLease, renewRunLease, recordRunUsage, recoverStaleRunLeases, settleResumeJob } = require('./agentControlPlane');
 const { assertAttachmentLimits, assertImageContextSize, assertImageLimits, getImageInputBlocks, MAX_ANTHROPIC_IMAGE_CONTEXT_BYTES } = require('./conversationImages');
-const { claimRunnableTasks, updateTask, settleTaskRun, recoverOrphanedTasks, getTaskBySession } = require('./agentTaskQueue');
+const { persistTaskFinalMessage, claimRunnableTasks, updateTask, settleTaskRun, recoverOrphanedTasks, getTaskBySession } = require('./agentTaskQueue');
 const { publish } = require('./agentRunEventBus');
 const { getDb } = require('./db');
 const { updateResumeJob } = require('./agentControlPlane');
@@ -316,11 +316,11 @@ async function execute(task) {
       updateInteraction(loopResult.interaction.id, { messageId });
     }
     if (['completed', 'failed', 'cancelled'].includes(status)) {
-      const existing = getTaskBySession(sessionId);
-      if (!existing?.final_message_id) {
-        const messageId = appendConversationMessage({ conversationId, role: 'assistant', content: assistantText.trim() || loopResult?.final_text || `Agent 任务已${status === 'completed' ? '完成' : status === 'cancelled' ? '取消' : '结束'}。`, meta: { agent_loop: true, session_id: sessionId, status, operation_set_id: loopResult?.operation_set_id || null, research_summary: buildResearchSummary(sessionId), write_summary: buildWriteSummary(sessionId), usage: finalEvent?.usage || loopResult?.usage || null } });
-        updateTask(sessionId, { finalMessageId: messageId });
-      }
+      persistTaskFinalMessage(sessionId, {
+        content: assistantText.trim() || loopResult?.final_text || `Agent 任务已${status === 'completed' ? '完成' : status === 'cancelled' ? '取消' : '结束'}。`,
+        status,
+        meta: { operation_set_id: loopResult?.operation_set_id || null, research_summary: buildResearchSummary(sessionId), write_summary: buildWriteSummary(sessionId), usage: finalEvent?.usage || loopResult?.usage || null },
+      });
     }
     touchConversation(conversationId);
     settleTaskRun(sessionId, status, { finished: ['completed', 'failed', 'cancelled'].includes(status) });

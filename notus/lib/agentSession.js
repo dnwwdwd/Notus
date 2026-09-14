@@ -1093,13 +1093,30 @@ function countSnapshots(sessionId) {
 
 function markStaleWaitingSessions(maxAgeMs = 60 * 60 * 1000) {
   const cutoff = new Date(Date.now() - maxAgeMs).toISOString().slice(0, 19).replace('T', ' ');
-  const result = getDb().prepare(`
-    UPDATE agent_sessions
-    SET status = 'cancelled', updated_at = datetime('now')
-    WHERE status IN ('waiting_interaction', 'waiting_limit_confirmation', 'waiting_confirm')
-      AND waiting_since IS NOT NULL AND waiting_since < ?
-  `).run(cutoff);
-  return Number(result.changes || 0);
+  const db = getDb();
+  const expired = db.transaction(() => {
+    const rows = db.prepare(`SELECT id FROM agent_sessions
+      WHERE status IN ('waiting_interaction', 'waiting_limit_confirmation', 'waiting_confirm')
+        AND waiting_since IS NOT NULL AND waiting_since < ?`).all(cutoff);
+    rows.forEach(({ id }) => {
+      db.prepare(`UPDATE agent_sessions SET status = 'cancelled', cancel_requested_at = datetime('now'),
+        active_run_id = NULL, lease_expires_at = NULL, state_version = state_version + 1,
+        updated_at = datetime('now') WHERE id = ?`).run(id);
+      require('./agentTaskQueue').cancelTask(id);
+      db.prepare(`UPDATE agent_resume_jobs SET status='cancelled', run_id=NULL, finished_at=datetime('now'), updated_at=datetime('now')
+        WHERE session_id=? AND status IN ('queued','running')`).run(id);
+      db.prepare(`UPDATE conversation_interactions SET status = 'cancelled', updated_at = datetime('now')
+        WHERE json_extract(payload_json, '$.agent_session_id') = ? AND status IN ('pending', 'failed', 'stale')`).run(id);
+    });
+    return rows;
+  })();
+  expired.forEach(({ id }) => {
+    const text = '等待确认已超时，任务已取消。';
+    require('./agentTaskChangeSets').markTaskChangeSetFinished(id, 'cancelled');
+    require('./agentTaskQueue').persistTaskFinalMessage(id, { content: text, status: 'cancelled' });
+    require('./agentRunEventBus').publish({ sessionId: id, event: { type: 'final', status: 'cancelled', reason: 'expired', text } });
+  });
+  return expired.length;
 }
 
 function ensureSessionActive(sessionId) {

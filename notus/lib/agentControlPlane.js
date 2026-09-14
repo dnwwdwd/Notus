@@ -71,22 +71,7 @@ function issueCapability({ sessionId, interactionId = null, resumeJobId = null, 
   const encoded = encode(payload);
   const db = getDb();
   db.prepare("DELETE FROM agent_capabilities WHERE expires_at <= datetime('now') OR (consumed_at IS NOT NULL AND consumed_at <= datetime('now', '-1 day'))").run();
-  // 一张待回答卡片或一个待恢复任务只保留最新的一次性票据。SSE 重连和
-  // 对话刷新会重新发送它们，旧票据立即失效，既避免未消费记录不断累积，也
-  // 缩小意外泄露后的有效窗口。最终的状态迁移仍会做条件更新，不能只依赖
-  // 票据去重。
-  if (payload.action === 'respond' && payload.iid) {
-    db.prepare(`
-      DELETE FROM agent_capabilities
-      WHERE session_id = ? AND interaction_id = ? AND action = 'respond' AND consumed_at IS NULL
-    `).run(sid, payload.iid);
-  }
-  if (payload.action === 'resume' && payload.jid) {
-    db.prepare(`
-      DELETE FROM agent_capabilities
-      WHERE session_id = ? AND resume_job_id = ? AND action = 'resume' AND consumed_at IS NULL
-    `).run(sid, payload.jid);
-  }
+  // 多个页面可持有有效票据；交互条件更新和 resume job 保证只执行一次。
   db.prepare(`
     INSERT INTO agent_capabilities (
       nonce_hash, session_id, interaction_id, resume_job_id, owner_id, action, expires_at

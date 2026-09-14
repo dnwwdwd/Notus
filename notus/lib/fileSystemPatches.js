@@ -8,9 +8,7 @@ const {
   ensureMarkdownPath,
   folderExists,
   getBaseName,
-  getParentPath,
   listMarkdownFilesUnderFolder,
-  moveFolder,
   normalizeFolderPath,
   renameFile,
   renameFolder,
@@ -156,7 +154,7 @@ function removeEmptyFolder(folderPath, force = false) {
   return { removed: true };
 }
 
-async function applyFileSystemPatch(rawPatch = {}, options = {}) {
+function applyFileSystemPatch(rawPatch = {}, options = {}) {
   let patch;
   try {
     patch = normalizeFileSystemPatch(rawPatch, { captureDeleteSnapshot: true });
@@ -186,9 +184,7 @@ async function applyFileSystemPatch(rawPatch = {}, options = {}) {
 
     if (patch.change_type === 'move_folder' || patch.change_type === 'rename_folder') {
       const before = listMarkdownFilesUnderFolder(patch.old_path);
-      const moved = patch.change_type === 'move_folder'
-        ? moveFolder(patch.old_path, getParentPath(patch.new_path))
-        : renameFolder(patch.old_path, patch.new_path);
+      const moved = renameFolder(patch.old_path, patch.new_path);
       const after = before.map((filePath) => `${moved.new_path}/${filePath.slice(`${moved.old_path}/`.length)}`);
       after.forEach(scheduleIndex);
       return { success: true, changed_files: after, patch };
@@ -200,7 +196,7 @@ async function applyFileSystemPatch(rawPatch = {}, options = {}) {
   }
 }
 
-async function rollbackFileSystemPatch(rawPatch = {}, options = {}) {
+function rollbackFileSystemPatch(rawPatch = {}, options = {}) {
   let patch;
   try {
     patch = normalizeFileSystemPatch(rawPatch);

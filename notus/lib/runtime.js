@@ -143,11 +143,10 @@ async function stopRuntime() {
 }
 
 function getRuntimeStatus() {
-  const result = ensureRuntime();
   return {
-    ok: result.ok,
-    vecAvailable: result.vecAvailable,
-    error: result.error?.message || runtimeError?.message || null,
+    ok: runtimeStarted && !maintenanceMode && !runtimeError,
+    vecAvailable: runtimeStarted && isVecAvailable(),
+    error: runtimeError?.message || null,
   };
 }
 

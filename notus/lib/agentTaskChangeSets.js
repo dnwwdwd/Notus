@@ -65,7 +65,7 @@ function getCounts(changeSetId, db = getDb()) {
       SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_count,
       SUM(CASE WHEN status = 'applied' THEN 1 ELSE 0 END) AS applied_count,
       SUM(CASE WHEN status = 'conflict' THEN 1 ELSE 0 END) AS conflict_count
-    FROM agent_task_change_items WHERE change_set_id = ?
+    FROM agent_task_change_items WHERE change_set_id = ? AND NOT (base_exists = applied_exists AND base_path = applied_path AND base_hash = applied_hash AND pending_exists = applied_exists AND pending_path = applied_path AND pending_hash = applied_hash)
   `).get(changeSetId) || {};
   const operationSetIds = db.prepare(`
     SELECT id FROM canvas_operation_sets WHERE task_change_set_id = ? ORDER BY batch_sequence_no ASC
@@ -103,12 +103,59 @@ function getCounts(changeSetId, db = getDb()) {
   };
 }
 
+
+function rebuildTaskChangeItems(db, changeSet) {
+  const sets = db.prepare('SELECT * FROM canvas_operation_sets WHERE task_change_set_id = ? ORDER BY batch_sequence_no, id').all(changeSet.id)
+    .map((raw) => ({ raw, patches: getOperationSetById(raw.id)?.patches || [] }));
+  const rows = db.prepare('SELECT * FROM agent_task_change_items WHERE change_set_id = ?').all(changeSet.id);
+  let changed = false;
+  db.transaction(() => {
+    rows.forEach((item) => {
+      const baseline = { exists: Boolean(item.base_exists), path: item.base_path, hash: item.base_hash, content: item.base_content };
+      let applied = baseline;
+      let pending = baseline;
+      sets.filter(({ raw }) => Number(raw.batch_sequence_no) >= Number(item.first_batch_no)).forEach(({ raw, patches }) => {
+        const project = (snapshot, includePending) => {
+          const source = { ...item, applied_exists: snapshot.exists, applied_path: snapshot.path, applied_content: snapshot.content };
+          const preview = includePending && ['pending', 'partial', 'apply_failed', 'stale', 'rollback_conflict'].includes(raw.status);
+          const effectiveRaw = preview && raw.revision_type === 'file_revision' ? { ...raw, status: 'applied' } : raw;
+          const effectivePatches = patches.map((patch) => includePending && !['cancelled', 'discarded', 'superseded', 'rolled_back'].includes(raw.status) && ['pending', 'failed'].includes(patch.status || 'pending')
+            ? { ...patch, status: 'applied' } : patch);
+          return buildExpectedSnapshot(source, effectivePatches, effectiveRaw);
+        };
+        applied = project(applied, false);
+        pending = project(pending, true);
+      });
+      const disk = readDiskSnapshot(item.resource_kind, applied.path);
+      const status = !snapshotsMatch(applied, disk, item.resource_kind) ? 'conflict'
+        : !snapshotsMatch(applied, pending, item.resource_kind) ? 'pending' : 'applied';
+      if (status === 'conflict') applied = { exists: Boolean(item.applied_exists), path: item.applied_path, hash: item.applied_hash, content: item.applied_content };
+      const values = [applied.exists ? 1 : 0, applied.path, applied.hash, applied.content,
+        pending.exists ? 1 : 0, pending.path, pending.hash, pending.content, status];
+      const previous = [item.applied_exists, item.applied_path, item.applied_hash, item.applied_content,
+        item.pending_exists, item.pending_path, item.pending_hash, item.pending_content, item.status];
+      if (JSON.stringify(values) === JSON.stringify(previous)) return;
+      db.prepare(`UPDATE agent_task_change_items SET applied_exists=?, applied_path=?, applied_hash=?, applied_content=?,
+        pending_exists=?, pending_path=?, pending_hash=?, pending_content=?, status=?, updated_at=datetime('now') WHERE id=?`).run(...values, item.id);
+      changed = true;
+    });
+    if (changed) {
+      const counts = db.prepare(`SELECT SUM(status='pending') AS pending, SUM(status='conflict') AS conflict
+        FROM agent_task_change_items WHERE change_set_id=?`).get(changeSet.id);
+      db.prepare(`UPDATE agent_task_change_sets SET status=?, version=version+1, updated_at=datetime('now') WHERE id=?`)
+        .run(counts.conflict ? 'conflict' : counts.pending ? 'pending' : 'applied', changeSet.id);
+    }
+  })();
+}
+
 function getTaskChangeSetBySession(sessionId) {
   const sid = normalizePositiveInt(sessionId);
   if (!sid) return null;
   const db = getDb();
   const row = db.prepare('SELECT * FROM agent_task_change_sets WHERE session_id = ?').get(sid);
-  return row ? formatSummary(row, getCounts(row.id, db)) : null;
+  if (!row) return null;
+  rebuildTaskChangeItems(db, row);
+  return formatSummary(db.prepare('SELECT * FROM agent_task_change_sets WHERE id = ?').get(row.id), getCounts(row.id, db));
 }
 
 function ensureTaskChangeSet({ sessionId, conversationId = null, approvalMode = 'auto_confirm' } = {}) {
@@ -357,15 +404,21 @@ function buildExpectedSnapshot(item, patches, rawSet) {
   let currentPath = String(item.applied_path || item.base_path || item.pending_path || '');
   let content = String(item.applied_content || '');
   const aliases = new Set([item.resource_key, item.base_path, item.applied_path, item.pending_path].map((value) => String(value || '')).filter(Boolean));
-  if (String(rawSet?.revision_type || '') === 'file_revision' && ['applied', 'partial'].includes(String(rawSet.status || ''))) {
+  if (String(rawSet?.revision_type || '') === 'file_revision' && aliases.has(String(rawSet.revision_file_path || '')) && ['applied', 'partial'].includes(String(rawSet.status || ''))) {
     exists = true;
     currentPath = String(rawSet.revision_file_path || currentPath);
     content = String(rawSet.revision_draft_content || '');
   }
   (Array.isArray(patches) ? patches : []).forEach((patch) => {
-    if (!patchTouchesAliases(patch, aliases)) return;
+    const folderMove = ['move_folder', 'rename_folder'].includes(patch?.change_type) && currentPath.startsWith(`${patch.old_path}/`);
+    if (!folderMove && !patchTouchesAliases(patch, aliases)) return;
     const status = String(patch?.status || 'pending');
     if (!['applied', 'auto_applied'].includes(status)) return;
+    if (folderMove) {
+      currentPath = `${patch.new_path}/${currentPath.slice(patch.old_path.length + 1)}`;
+      aliases.add(currentPath);
+      return;
+    }
     const nextPath = String(patch?.new_path || patch?.file_path || patch?.folder_path || '');
     const oldPath = String(patch?.old_path || patch?.file_path || patch?.folder_path || '');
     if (oldPath) aliases.add(oldPath);
@@ -409,8 +462,6 @@ function resolveOperationSetInDb(db, { operationSetId, sessionId, resolution, to
   if (!setId || !sid) throw new Error('operation_set_id and session_id are required');
   const set = db.prepare('SELECT * FROM canvas_operation_sets WHERE id = ? AND agent_session_id = ?').get(setId, sid);
   if (!set?.task_change_set_id) return getTaskChangeSetBySession(sid);
-  const operationSet = getOperationSetById(setId);
-  const patches = Array.isArray(operationSet?.patches) ? operationSet.patches : [];
     db.prepare(`
       INSERT INTO agent_operation_resolutions (session_id, operation_set_id, resolution, tool_result_json)
       VALUES (?, ?, ?, ?)
@@ -420,56 +471,6 @@ function resolveOperationSetInDb(db, { operationSetId, sessionId, resolution, to
         status = 'resolved',
         updated_at = datetime('now')
     `).run(sid, setId, String(resolution || 'discarded'), JSON.stringify(toolResult || {}));
-  const items = db.prepare(`
-    SELECT * FROM agent_task_change_items WHERE change_set_id = ? AND last_batch_no = ?
-  `).all(set.task_change_set_id, Number(set.batch_sequence_no || 0));
-  items.forEach((item) => {
-    const snapshot = buildExpectedSnapshot(item, patches, set);
-    const diskSnapshot = readDiskSnapshot(item.resource_kind, snapshot.path);
-    if (!snapshotsMatch(snapshot, diskSnapshot, item.resource_kind)) {
-      db.prepare(`
-        UPDATE agent_task_change_items
-        SET pending_exists = ?, pending_path = ?, pending_hash = ?, pending_content = ?,
-            status = 'conflict', updated_at = datetime('now')
-        WHERE id = ?
-      `).run(snapshot.exists ? 1 : 0, snapshot.path, snapshot.hash, snapshot.content, item.id);
-      return;
-    }
-    db.prepare(`
-      UPDATE agent_task_change_items
-      SET applied_exists = ?, applied_path = ?, applied_hash = ?, applied_content = ?,
-          pending_exists = ?, pending_path = ?, pending_hash = ?, pending_content = ?,
-          status = 'applied', updated_at = datetime('now')
-      WHERE id = ?
-    `).run(
-      snapshot.exists ? 1 : 0,
-      snapshot.path,
-      snapshot.hash,
-      snapshot.content,
-      snapshot.exists ? 1 : 0,
-      snapshot.path,
-      snapshot.hash,
-      snapshot.content,
-      item.id
-    );
-  });
-    db.prepare(`
-      DELETE FROM agent_task_change_items
-      WHERE change_set_id = ?
-        AND base_exists = applied_exists
-        AND base_path = applied_path
-        AND base_hash = applied_hash
-        AND pending_exists = applied_exists
-        AND pending_path = applied_path
-        AND pending_hash = applied_hash
-    `).run(set.task_change_set_id);
-    const pending = db.prepare("SELECT COUNT(*) AS value FROM agent_task_change_items WHERE change_set_id = ? AND status = 'pending'").get(set.task_change_set_id);
-    const conflicts = db.prepare("SELECT COUNT(*) AS value FROM agent_task_change_items WHERE change_set_id = ? AND status = 'conflict'").get(set.task_change_set_id);
-    db.prepare(`
-      UPDATE agent_task_change_sets
-      SET status = ?, version = version + 1, updated_at = datetime('now')
-      WHERE id = ?
-    `).run(Number(conflicts?.value || 0) > 0 ? 'conflict' : (Number(pending?.value || 0) > 0 ? 'pending' : 'applied'), set.task_change_set_id);
   return getTaskChangeSetBySession(sid);
 }
 
@@ -547,7 +548,7 @@ function getTaskChangeSetDetail(sessionId) {
   const db = getDb();
   const items = db.prepare(`
     SELECT * FROM agent_task_change_items
-    WHERE change_set_id = ? ORDER BY first_batch_no ASC, id ASC
+    WHERE change_set_id = ? AND NOT (base_exists = applied_exists AND base_path = applied_path AND base_hash = applied_hash AND pending_exists = applied_exists AND pending_path = applied_path AND pending_hash = applied_hash) ORDER BY first_batch_no ASC, id ASC
   `).all(summary.id).map((row) => ({
     id: Number(row.id),
     resource_key: row.resource_key,
@@ -572,6 +573,7 @@ function getTaskChangeSetDetail(sessionId) {
     SELECT id, status, batch_sequence_no, execution_segment_id, tool_use_id, created_at, updated_at
     FROM canvas_operation_sets WHERE task_change_set_id = ? ORDER BY batch_sequence_no ASC
   `).all(summary.id).map((row) => ({
+    ...getOperationSetById(row.id),
     id: Number(row.id),
     status: row.status,
     batch_sequence_no: Number(row.batch_sequence_no),

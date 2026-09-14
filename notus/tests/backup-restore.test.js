@@ -215,6 +215,26 @@ async function run() {
     assert.equal(backup.normalizedArchivePath('../escape'), null);
     assert.equal(backup.normalizedArchivePath('/absolute'), null);
     assert.equal(backup.normalizedArchivePath('notes/./escape'), null);
+    // 在隔离副本中模拟替换失败且旧笔记无法移回；旧数据与恢复日志必须保留。
+    const originalRename = fsp.rename;
+    let retainedRoot = null;
+    fsp.rename = async (source, target) => {
+      if (source === config.assetsDir) throw Object.assign(new Error('test swap failure'), { code: 'EACCES' });
+      if (target === config.notesDir && String(source).includes('notus-rollback-')) {
+        retainedRoot = path.dirname(source);
+        throw Object.assign(new Error('test rollback failure'), { code: 'EACCES' });
+      }
+      return originalRename(source, target);
+    };
+    try {
+      await assertRejectsCode(backup.restoreFromZip(archivePath), 'BACKUP_RESTORE_FAILED');
+      assert.ok(retainedRoot && fs.existsSync(retainedRoot));
+      assert.equal(fs.readFileSync(path.join(retainedRoot, '0/keep.md'), 'utf8'), '# 原始笔记\n');
+      assert.ok(JSON.parse(fs.readFileSync(path.join(retainedRoot, 'recovery.json'), 'utf8')).journal.length > 0);
+    } finally {
+      fsp.rename = originalRename;
+      if (retainedRoot) await fsp.rm(retainedRoot, { recursive: true, force: true });
+    }
     console.log('backup restore tests passed');
   } finally {
     await runtime.stopRuntime().catch(() => {});

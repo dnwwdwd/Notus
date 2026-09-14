@@ -18,8 +18,8 @@ const {
 } = require('../../../../lib/agentSession');
 const { validateCapability } = require('../../../../lib/agentControlPlane');
 const { getOperationSetById, markOperationSetStatus } = require('../../../../lib/canvasOperationSets');
-const { markTaskChangeSetFinished, resolveOperationSet, resumeNonManualOperationConfirmation } = require('../../../../lib/agentTaskChangeSets');
-const { getTaskBySession, settleTaskRun } = require('../../../../lib/agentTaskQueue');
+const { getTaskChangeSetBySession, markTaskChangeSetFinished, resolveOperationSet, resumeNonManualOperationConfirmation } = require('../../../../lib/agentTaskChangeSets');
+const { getTaskBySession, settleTaskRun, requestTaskResume, cancelTask } = require('../../../../lib/agentTaskQueue');
 const { wakeAgentTaskWorker } = require('../../../../lib/agentTaskWorker');
 const { getSessionTurnFrame } = require('../../../../lib/agentTurnFrames');
 const { agentRuntimeAtLeast } = require('../../../../lib/agentRuntimeMode');
@@ -50,6 +50,9 @@ function validateCurrentConversation(operationSetId, session, currentConversatio
       code: 'OPERATION_SET_NOT_FOUND',
       error: '预览记录不存在或已过期',
     };
+  }
+  if (Number(operationSet.agent_session_id) !== Number(session?.id)) {
+    return { valid: false, status: 403, code: 'SESSION_OPERATION_SET_MISMATCH', error: '这组修改不属于该任务' };
   }
   const sessionConversationId = normalizePositiveInt(session?.conversation_id);
   const operationConversationId = normalizePositiveInt(operationSet.conversation_id);
@@ -97,18 +100,26 @@ export default async function handler(req, res) {
   if (!sessionId) return res.status(400).json({ error: 'session_id is required', code: 'SESSION_ID_REQUIRED' });
   const expectedAction = action === 'extend' ? 'extend' : 'operate';
   const access = controlTicket
-    ? validateCapability(controlTicket, { sessionId, action: expectedAction }, { consume: action === 'extend' })
+    ? validateCapability(controlTicket, { sessionId, action: expectedAction })
     : validateSessionAccess(sessionId, sessionToken || req.headers['x-agent-session-token']);
   if (!access.valid) return res.status(403).json({ error: access.reason, code: access.reason });
+  access.session = getSession(sessionId);
+  if (!access.session) return res.status(404).json({ error: 'SESSION_NOT_FOUND', code: 'SESSION_NOT_FOUND' });
   if (action === 'extend') {
-    extendHardLimit(sessionId, extraLoops);
-    const session = extendTokenBudget(sessionId, 0.25);
-    return res.status(200).json({ success: true, new_hard_limit: session.hard_limit, new_token_budget_total: session.token_budget_total });
-  }
-  if (action === 'reject') {
-    if (operationSetId) markOperationSetStatus(operationSetId, 'cancelled');
-    updateSessionStatus(sessionId, 'cancelled');
-    return res.status(200).json({ success: true });
+    if (!access.consumed && access.session.status !== 'waiting_limit_confirmation') {
+      return res.status(409).json({ error: 'SESSION_NOT_WAITING_LIMIT', code: 'SESSION_NOT_WAITING_LIMIT' });
+    }
+    const session = require('../../../../lib/db').getDb().transaction(() => {
+      if (controlTicket && validateCapability(controlTicket, { sessionId, action: expectedAction }, { consume: true }).consumed) return getSession(sessionId);
+      if (!access.consumed) {
+        extendHardLimit(sessionId, extraLoops);
+        extendTokenBudget(sessionId, 0.25);
+        requestTaskResume(sessionId);
+      }
+      return getSession(sessionId);
+    })();
+    wakeAgentTaskWorker();
+    return res.status(200).json({ success: true, task_resumed: true, new_hard_limit: session.hard_limit, new_token_budget_total: session.token_budget_total });
   }
   if (!operationSetId) return res.status(400).json({ error: 'operation_set_id is required', code: 'OPERATION_SET_ID_REQUIRED' });
   const currentConversation = validateCurrentConversation(operationSetId, access.session, currentConversationId);
@@ -120,6 +131,16 @@ export default async function handler(req, res) {
     });
   }
 
+  if (action === 'reject') {
+    require('../../../../lib/db').getDb().transaction(() => {
+      markOperationSetStatus(operationSetId, 'cancelled');
+      if (!['completed', 'cancelled', 'failed'].includes(access.session.status)) {
+        updateSessionStatus(sessionId, 'cancelled');
+        cancelTask(sessionId);
+      }
+    })();
+    return res.status(200).json({ success: true });
+  }
   const taskBeforeOperation = getTaskBySession(sessionId);
   const turnFrame = getSessionTurnFrame(sessionId);
   const operationInvocationKey = `operation-set:${operationSetId}:${action}:${patchIndex ?? (filePath || 'all')}`;
@@ -157,12 +178,13 @@ export default async function handler(req, res) {
     const artifact = await archiveToolResult({ conversationId: access.session.conversation_id, sessionId, taskId: taskBeforeOperation?.id, turnFrameId: turnFrame?.id, toolCallId: `operation-set-${operationSetId}`, invocationKey: operationInvocationKey, toolName: `operation_set_${action}`, actor: 'runtime', result });
     recordToolCallTerminal({ conversationId: access.session.conversation_id, sessionId, taskId: taskBeforeOperation?.id, turnFrameId: turnFrame?.id, actor: 'user', toolCallId: `operation-set-${operationSetId}`, invocationKey: operationInvocationKey, factType: result.conflict || !result.success ? 'tool_call_failed' : 'tool_call_completed', payload: { tool_name: `operation_set_${action}`, operation_set_id: Number(operationSetId), resource_changed: Boolean(result.success && !String(action).startsWith('discard')), result_ref: artifact?.status === 'ready' ? artifact.result_ref : null, artifact_status: artifact?.status || 'archive_failed' } });
   }
+  result.task_change_set = getTaskChangeSetBySession(sessionId);
   if (result.conflict) return res.status(409).json(result);
   if (!result.success) return res.status(400).json(result);
   const latestOperationSet = getOperationSetById(operationSetId);
   const task = getTaskBySession(sessionId);
   const isManualDiff = String(task?.approval_mode || '') === 'manual_confirm';
-  let changeSet = null;
+  let changeSet = result.task_change_set;
   let resumed = false;
   const resolvesManualPreview = ['apply', 'apply_all', 'apply_file', 'discard_file', 'discard_pending'].includes(action)
     && isOperationSetResolved(latestOperationSet);

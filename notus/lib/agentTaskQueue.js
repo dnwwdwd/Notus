@@ -3,7 +3,7 @@ const { getDb } = require('./db');
 const TERMINAL = new Set(['completed', 'cancelled', 'failed']);
 const BLOCKING = new Set(['queued', 'running', 'waiting_interaction', 'waiting_operation_confirmation', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery']);
 const USER_ACTION_WAITING = ['waiting_interaction', 'waiting_operation_confirmation', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery'];
-const SUPERSEDEABLE_SESSION_STATUSES = ['created', 'queued', ...USER_ACTION_WAITING];
+const SUPERSEDEABLE_SESSION_STATUSES = [...USER_ACTION_WAITING];
 
 function asId(value) {
   const id = Number(value);
@@ -146,7 +146,7 @@ function settleTaskRun(sessionId, status, { finished = false } = {}) {
 
 function cancelTask(sessionId) {
   const sid = asId(sessionId);
-  getDb().prepare("UPDATE agent_task_queue SET status = 'cancelled', finished_at = datetime('now'), updated_at = datetime('now') WHERE session_id = ? AND status NOT IN ('completed','cancelled','failed')").run(sid);
+  getDb().prepare("UPDATE agent_task_queue SET status = 'cancelled', run_id = NULL, resume_requested = 0, finished_at = datetime('now'), updated_at = datetime('now') WHERE session_id = ? AND status NOT IN ('completed','cancelled','failed')").run(sid);
   return getTaskBySession(sid);
 }
 
@@ -160,8 +160,8 @@ function supersedePendingUserActionTasks(conversationId) {
       FROM agent_task_queue q
       INNER JOIN agent_sessions s ON s.id = q.session_id
       WHERE q.conversation_id = ?
-        AND q.status IN ('created', 'queued', 'waiting_interaction', 'waiting_operation_confirmation', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery')
-        AND s.status IN ('created', 'queued', 'waiting_interaction', 'waiting_operation_confirmation', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery')
+        AND q.status IN ('waiting_interaction', 'waiting_operation_confirmation', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery')
+        AND s.status IN ('waiting_interaction', 'waiting_operation_confirmation', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery')
       ORDER BY q.queue_order ASC
     `).all(cid);
     const sessionIds = rows.map((row) => Number(row.session_id)).filter(Boolean);
@@ -176,7 +176,7 @@ function supersedePendingUserActionTasks(conversationId) {
           state_version = state_version + 1,
           updated_at = datetime('now')
       WHERE id IN (${placeholders})
-        AND status IN ('created', 'queued', 'waiting_interaction', 'waiting_operation_confirmation', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery')
+        AND status IN ('waiting_interaction', 'waiting_operation_confirmation', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery')
     `).run(...sessionIds);
     db.prepare(`
       UPDATE agent_task_queue
@@ -185,7 +185,7 @@ function supersedePendingUserActionTasks(conversationId) {
           finished_at = COALESCE(finished_at, datetime('now')),
           updated_at = datetime('now')
       WHERE session_id IN (${placeholders})
-        AND status IN ('created', 'queued', 'waiting_interaction', 'waiting_operation_confirmation', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery')
+        AND status IN ('waiting_interaction', 'waiting_operation_confirmation', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery')
     `).run(...sessionIds);
     db.prepare(`
       UPDATE conversation_interactions
@@ -197,9 +197,35 @@ function supersedePendingUserActionTasks(conversationId) {
   })();
 }
 
+// 消息与队列关联在同一事务中保存；恢复时按 session 查找已有最终消息。
+function persistTaskFinalMessage(sessionId, { content, status, meta = {} } = {}) {
+  const db = getDb();
+  return db.transaction(() => {
+    const task = getTaskBySession(sessionId);
+    if (!task) return null;
+    if (task.final_message_id) return task.final_message_id;
+    const existing = db.prepare(`SELECT id FROM messages WHERE conversation_id=? AND role='assistant'
+      AND json_extract(meta, '$.session_id')=? AND json_extract(meta, '$.status') IN ('completed','failed','cancelled')
+      ORDER BY id DESC LIMIT 1`).get(task.conversation_id, Number(sessionId));
+    const messageId = existing?.id || require('./conversations').appendConversationMessage({
+      conversationId: task.conversation_id, role: 'assistant', content: content || '任务已结束，未保存最终回复正文。',
+      meta: { ...meta, agent_loop: true, session_id: Number(sessionId), status },
+    });
+    db.prepare("UPDATE agent_task_queue SET final_message_id=?, updated_at=datetime('now') WHERE session_id=?").run(messageId, sessionId);
+    return messageId;
+  })();
+}
+
 function recoverOrphanedTasks() {
   const db = getDb();
   return db.transaction(() => {
+    const ended = db.prepare(`SELECT q.session_id, s.status FROM agent_task_queue q JOIN agent_sessions s ON s.id=q.session_id
+      WHERE q.final_message_id IS NULL AND s.status IN ('completed','failed','cancelled')`).all();
+    ended.forEach((row) => {
+      const event = db.prepare("SELECT payload_json FROM agent_run_events WHERE session_id=? AND event_type='final' ORDER BY id DESC LIMIT 1").get(row.session_id);
+      const payload = parse(event?.payload_json, {});
+      persistTaskFinalMessage(row.session_id, { content: payload.text, status: row.status, meta: { usage: payload.usage || null, operation_set_id: payload.operation_set_id || null } });
+    });
     const missingSession = db.prepare(`
       UPDATE agent_task_queue
       SET status = 'cancelled',
@@ -245,4 +271,4 @@ function listTasksByConversation(conversationId) {
   return getDb().prepare('SELECT * FROM agent_task_queue WHERE conversation_id = ? ORDER BY queue_order ASC').all(asId(conversationId)).map(format);
 }
 
-module.exports = { TERMINAL, BLOCKING, USER_ACTION_WAITING, SUPERSEDEABLE_SESSION_STATUSES, createTask, getTaskBySession, getQueuePosition, claimRunnableTasks, updateTask, wakeTask, requestTaskResume, settleTaskRun, cancelTask, supersedePendingUserActionTasks, recoverOrphanedTasks, listTasksByConversation };
+module.exports = { persistTaskFinalMessage, TERMINAL, BLOCKING, USER_ACTION_WAITING, SUPERSEDEABLE_SESSION_STATUSES, createTask, getTaskBySession, getQueuePosition, claimRunnableTasks, updateTask, wakeTask, requestTaskResume, settleTaskRun, cancelTask, supersedePendingUserActionTasks, recoverOrphanedTasks, listTasksByConversation };

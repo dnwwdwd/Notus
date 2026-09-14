@@ -14,6 +14,7 @@ import { AgentLoopLogList } from '../AgentLoop/AgentLoopLogList';
 import { LlmConfigCardsSection } from './LlmConfigCardsSection';
 import packageMeta from '../../package.json';
 import { usePlatform } from '../../contexts/PlatformContext';
+import { useApp } from '../../contexts/AppContext';
 import { findEmbeddingModelMeta, inferEmbeddingProvider } from '../../lib/embeddingForm';
 import { useShortcuts, normalizeShortcut, DEFAULT_SHORTCUTS } from '../../contexts/ShortcutsContext';
 import { navigateWithFallback } from '../../utils/navigation';
@@ -1155,6 +1156,7 @@ function getRuntimeLabel(runtimeTarget) {
 
 const Storage = () => {
   const toast = useToast();
+  const { refreshFiles } = useApp();
   const { profile, capabilities } = usePlatform();
   const backupInputRef = useRef(null);
   const [confirmClear, setConfirmClear] = useState(false);
@@ -1173,7 +1175,10 @@ const Storage = () => {
   const refreshStatus = async () => {
     const statusResponse = await fetch('/api/index/status');
     const status = await statusResponse.json();
-    if (statusResponse.ok) setIndexStatus(status);
+    if (!statusResponse.ok) throw new Error(status.error || '读取索引状态失败');
+    setIndexStatus(status);
+    await refreshFiles({ background: true });
+    return status;
   };
 
   useEffect(() => {
@@ -1207,8 +1212,8 @@ const Storage = () => {
           if (payload.type === 'error') throw new Error(payload.error);
         });
       }
-      await refreshStatus();
-      toast('索引重建完成', 'success');
+      const status = await refreshStatus();
+      toast(status.failed ? `索引重建结束，${status.failed} 个文件失败，请查看并重试。` : '索引重建完成', status.failed ? 'warning' : 'success');
     } catch (error) {
       toast(error.message || '索引重建失败', 'error');
     } finally {
@@ -1410,7 +1415,7 @@ const Storage = () => {
         onClose={() => setConfirmRebuild(false)}
         onConfirm={handleRebuild}
         title="重建索引"
-        message="将重新处理所有笔记文件，这可能需要几分钟。期间知识库查询仍可正常使用旧索引。"
+        message="将清除现有索引并重新处理所有笔记文件，这可能需要几分钟。期间知识库检索结果可能不完整，原始笔记不受影响。"
         confirmLabel="开始重建"
       />
       <ConfirmDialog

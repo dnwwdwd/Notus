@@ -72,14 +72,16 @@ updateTask(waitingSession.sessionId, { status: 'waiting_retry' });
 const queuedSession = createSession({ goal: '旧的排队任务', authorizedPaths: [''], conversationId: continuedConversation.id });
 createTask({ sessionId: queuedSession.sessionId, conversationId: continuedConversation.id, input: { goal: '旧的排队任务' } });
 updateSessionStatus(queuedSession.sessionId, 'queued');
-assert.deepEqual(supersedePendingUserActionTasks(continuedConversation.id), [waitingSession.sessionId, queuedSession.sessionId], '发送新 prompt 必须结束同一对话内等待和排队的旧任务');
+assert.deepEqual(supersedePendingUserActionTasks(continuedConversation.id), [waitingSession.sessionId], '发送新 prompt 可以替代待用户处理的任务，但保留正常队列');
 assert.equal(getDb().prepare('SELECT status FROM agent_sessions WHERE id = ?').get(waitingSession.sessionId).status, 'cancelled', '被新 prompt 替代的旧 session 必须终态');
 assert.equal(getDb().prepare('SELECT status FROM agent_task_queue WHERE session_id = ?').get(waitingSession.sessionId).status, 'cancelled', '被新 prompt 替代的旧队列任务必须终态');
-assert.equal(getDb().prepare('SELECT status FROM agent_sessions WHERE id = ?').get(queuedSession.sessionId).status, 'cancelled', '新 prompt 必须同时结束重复排队的旧 session');
-assert.equal(getDb().prepare('SELECT status FROM agent_task_queue WHERE session_id = ?').get(queuedSession.sessionId).status, 'cancelled', '新 prompt 必须同时结束重复排队的旧队列任务');
+assert.equal(getDb().prepare('SELECT status FROM agent_sessions WHERE id = ?').get(queuedSession.sessionId).status, 'queued', '正常排队 session 必须保留');
+assert.equal(getDb().prepare('SELECT status FROM agent_task_queue WHERE session_id = ?').get(queuedSession.sessionId).status, 'queued', '正常排队任务必须保留');
 const continuedSession = createSession({ goal: '继续对话的新 prompt', authorizedPaths: [''], conversationId: continuedConversation.id });
 createTask({ sessionId: continuedSession.sessionId, conversationId: continuedConversation.id, input: { goal: '继续对话的新 prompt' } });
-assert.deepEqual(claimRunnableTasks().map((task) => task.session_id), [continuedSession.sessionId], '结束旧等待任务后，新 prompt 必须可被 Worker 领取');
+assert.deepEqual(claimRunnableTasks().map((task) => task.session_id), [queuedSession.sessionId], '正常队列按顺序执行，不被新消息取消');
+updateTask(queuedSession.sessionId, { status: 'completed', finished: true });
+assert.ok(claimRunnableTasks().some((task) => task.session_id === continuedSession.sessionId));
 updateTask(continuedSession.sessionId, { status: 'completed', finished: true });
 
 const questionSession = createSession({ goal: '等待提问回答', authorizedPaths: [''], conversationId: continuedConversation.id });
@@ -94,3 +96,11 @@ assert.deepEqual(supersedePendingUserActionTasks(continuedConversation.id), [que
 assert.equal(getDb().prepare('SELECT status FROM conversation_interactions WHERE id = ?').get(pendingInteraction.lastInsertRowid).status, 'cancelled', '替代提问任务时必须同时关闭旧提问卡片');
 
 console.log('agent task queue tests passed');
+
+const expired = createSession({ goal: '过期等待', authorizedPaths: [''], conversationId: conversation.id });
+createTask({ sessionId: expired.sessionId, conversationId: conversation.id });
+updateSessionStatus(expired.sessionId, 'waiting_interaction');
+updateTask(expired.sessionId, { status: 'waiting_interaction' });
+getDb().prepare("UPDATE agent_sessions SET waiting_since=datetime('now','-2 hours') WHERE id=?").run(expired.sessionId);
+require('../lib/agentSession').markStaleWaitingSessions();
+assert.equal(require('../lib/agentTaskQueue').getTaskBySession(expired.sessionId).status, 'cancelled', '过期清理必须同步结束队列');

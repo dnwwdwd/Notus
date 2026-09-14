@@ -1,3 +1,4 @@
+export const SKILL_ICON_PATHS = ['m12 2.5 8 4.5v10L12 21.5 4 17V7z', 'm4 7 8 4.5L20 7M12 11.5v10', 'm4 12 8 4.5 8-4.5'];
 import Image from 'next/image';
 
 // Icon set for Notus — stroke-based SVG icons, currentColor
@@ -50,7 +51,7 @@ export const Icons = {
   split: (p) => <Icon {...p}><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/></Icon>,
   sparkles: (p) => <Icon {...p}><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/></Icon>,
   plug: (p) => <Icon {...p}><path d="M8 3v6M16 3v6M6 9h12v3a6 6 0 0 1-6 6v3M9 21h6"/></Icon>,
-  skill: (p) => <Icon {...p}><path d="m12 2.5 8 4.5v10L12 21.5 4 17V7z"/><path d="m4 7 8 4.5L20 7M12 11.5v10"/><path d="m4 12 8 4.5 8-4.5"/></Icon>,
+  skill: (p) => <Icon {...p}>{SKILL_ICON_PATHS.map((d) => <path key={d} d={d}/>)}</Icon>,
   mcp: (p) => <Icon {...p}><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7h.01M10 7h.01M14 7h4M7 17h.01M10 17h.01M14 17h4"/></Icon>,
   keyboard: (p) => <Icon {...p}><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 10h.01M10 10h.01M13 10h.01M16 10h.01M7 14h.01M10 14h.01M13 14h4"/></Icon>,
   zap: (p) => <Icon {...p}><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></Icon>,
@@ -71,6 +72,8 @@ export const Icons = {
   edit: (p) => <Icon {...p}><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></Icon>,
   robot: (p) => <Icon {...p}><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M12 4v4M8 14h.01M16 14h.01M9 18h6M2 13v3M22 13v3"/></Icon>,
   cpu: (p) => <Icon {...p}><rect x="7" y="7" width="10" height="10" rx="2"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 15h3M1 9h3M1 15h3M10 10h4v4h-4z"/></Icon>,
+  memoryRead: (p) => <Icon {...p}><path d="M12 10v11M12 21c-3-2-6-2-10-2V8c4 0 7 0 10 2 3-2 6-2 10-2v11c-4 0-7 0-10 2"/><path d="M8 5a5 5 0 0 1 9-1M8 2v3h3"/></Icon>,
+  brainEdit: (p) => <Icon {...p}><path d="M9 4a3 3 0 0 0-3 3 3 3 0 0 0-2 5 3 3 0 0 0 2 5 3 3 0 0 0 6 0V7a3 3 0 0 0-3-3zM12 7a3 3 0 0 1 6 0 3 3 0 0 1 3 3M8 10h4M8 14h4"/><path d="m15 17 5-5 2 2-5 5-3 1zM19 13l2 2"/></Icon>,
   brain: (p) => <Icon {...p}><path d="M9 4a3 3 0 0 0-3 3 3 3 0 0 0-2 5 3 3 0 0 0 2 5 3 3 0 0 0 6 0V7a3 3 0 0 0-3-3z"/><path d="M15 4a3 3 0 0 1 3 3 3 3 0 0 1 2 5 3 3 0 0 1-2 5 3 3 0 0 1-6 0V7a3 3 0 0 1 3-3z"/><path d="M8 10h4M12 14H8M16 10h-4M12 14h4"/></Icon>,
   home: (p) => <Icon {...p}><path d="m3 10 9-7 9 7v10a2 2 0 0 1-2 2h-4v-7h-6v7H5a2 2 0 0 1-2-2z"/></Icon>,
   refresh: (p) => <Icon {...p}><path d="M21 12a9 9 0 0 1-15 6.7L3 16M3 12a9 9 0 0 1 15-6.7L21 8M21 3v5h-5M3 21v-5h5"/></Icon>,

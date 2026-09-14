@@ -5,7 +5,7 @@ export function MentionItem({ id, type = 'file', name, path, description = '', r
   // 与侧边文件树展开目录保持同一图标语义。
   const Icon = type === 'folder' ? Icons.folderOpen : type === 'skill' ? Icons.skill : Icons.file;
   const isSkill = type === 'skill';
-  const interactive = typeof onPreview === 'function' && !isSkill;
+  const interactive = typeof onPreview === 'function' && type === 'file';
   const label = String(name || (type === 'folder' ? '未命名目录' : type === 'skill' ? '未命名 Skill' : '未命名文件'));
   const title = isSkill ? (description || '未提供 Skill 描述') : (path ? `${label}\n${path}` : label);
 
@@ -36,7 +36,7 @@ export function MentionItem({ id, type = 'file', name, path, description = '', r
         openPreview();
       } : undefined}
       onKeyDown={onKeyDown}
-      aria-label={interactive ? `预览${type === 'folder' ? '目录' : '笔记'}：${label}` : (isSkill ? `Skill：${label}` : undefined)}
+      aria-label={interactive ? `在编辑器中打开：${label}` : (isSkill ? `Skill：${label}` : undefined)}
       style={{ cursor: interactive ? 'pointer' : 'default' }}
     >
       <Icon size={16} stroke={1.7} style={{ color: 'var(--accent)', flexShrink: 0 }} />

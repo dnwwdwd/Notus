@@ -88,6 +88,39 @@ function dragDestinationFromOver(over) {
   return null;
 }
 
+function treeItemToMention(item = {}) {
+  const isFolder = item.type === 'folder';
+  const path = String(item.path || '');
+  return {
+    id: isFolder ? `folder:${path}` : String(item.id || path),
+    type: isFolder ? 'folder' : 'file',
+    name: isFolder ? String(item.name || path) : getFileNameLabel(item, '未命名文档'),
+    path,
+  };
+}
+
+function getExternalDropPoint(event, selector) {
+  if (typeof document === 'undefined') return null;
+  const activator = event?.activatorEvent;
+  const delta = event?.delta;
+  const translatedRect = event?.active?.rect?.current?.translated;
+  const candidates = [
+    {
+      clientX: Number(activator?.clientX) + Number(delta?.x || 0),
+      clientY: Number(activator?.clientY) + Number(delta?.y || 0),
+    },
+    translatedRect ? {
+      clientX: Number(translatedRect.left) + Number(translatedRect.width || 0) / 2,
+      clientY: Number(translatedRect.top) + Number(translatedRect.height || 0) / 2,
+    } : null,
+  ];
+  return candidates.filter(Boolean).reduce((match, point) => {
+    if (match || !Number.isFinite(point.clientX) || !Number.isFinite(point.clientY)) return match;
+    const target = document.elementFromPoint(point.clientX, point.clientY)?.closest?.(selector);
+    return target ? { ...point, target } : null;
+  }, null);
+}
+
 async function parseErrorResponse(response, fallbackMessage) {
   try {
     const payload = await response.json();
@@ -222,74 +255,35 @@ function useTextOverflow(ref, value) {
   return truncated;
 }
 
-const FileMoveHandle = ({ item, visible, disabled }) => {
-  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
-    id: `sidebar-move:${item.type}:${item.path}`,
-    data: { node: item },
-    disabled,
-  });
-
-  return (
-    <Tooltip content={`拖动以移动${item.type === 'folder' ? '目录' : '文件'}`}>
-      <button
-        ref={setNodeRef}
-        type="button"
-        aria-label={`拖动以移动${item.type === 'folder' ? '目录' : '文件'}：${item.name}`}
-        {...attributes}
-        {...listeners}
-        onClick={(event) => event.stopPropagation()}
-        onDragStart={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-        }}
-        style={{
-          width: 20,
-          height: 24,
-          padding: 0,
-          display: 'inline-flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          color: isDragging ? 'var(--accent)' : 'var(--text-tertiary)',
-          background: 'transparent',
-          border: 'none',
-          borderRadius: 'var(--radius-sm)',
-          cursor: disabled ? 'default' : 'grab',
-          opacity: visible || isDragging ? 1 : 0.38,
-          pointerEvents: 'auto',
-          transition: 'opacity var(--transition-fast), color var(--transition-fast), background var(--transition-fast)',
-          flexShrink: 0,
-          touchAction: 'none',
-        }}
-      >
-        <Icons.drag size={14} />
-      </button>
-    </Tooltip>
-  );
-};
-
 const FileRow = ({ item, isActive, onSelect, onToggle, onContextMenu, dragEnabled, activeDragItem }) => {
   const pad = 8 + item.depth * 16;
   const isFolder = item.type === 'folder';
   const label = isFolder ? item.name : getFileNameLabel(item, '未命名文档');
   const labelRef = useRef(null);
   const labelTruncated = useTextOverflow(labelRef, label);
-  const [hovered, setHovered] = useState(false);
+  const { attributes, listeners, setNodeRef: setDragNodeRef, isDragging } = useDraggable({
+    id: `sidebar-move:${item.type}:${item.path}`,
+    data: { node: item },
+    disabled: !dragEnabled,
+  });
   const { setNodeRef: setDropNodeRef, isOver } = useDroppable({
     id: `sidebar-folder:${item.path}`,
     data: { destination: isFolder ? item.path : null, type: isFolder ? 'folder' : 'file' },
     disabled: !dragEnabled,
   });
+  const setRowNodeRef = useCallback((node) => {
+    setDragNodeRef(node);
+    setDropNodeRef(node);
+  }, [setDragNodeRef, setDropNodeRef]);
   const isDropTarget = isFolder && isOver && canMoveTreeItem(activeDragItem, item.path);
-  const mention = {
-    id: isFolder ? `folder:${item.path}` : String(item.id || item.path),
-    type: isFolder ? 'folder' : 'file',
-    name: label,
-    path: String(item.path || ''),
-  };
+  const mention = treeItemToMention(item);
 
   return (
     <div
-      ref={setDropNodeRef}
+      ref={setRowNodeRef}
+      aria-label={`拖动以移动${isFolder ? '目录' : '文件'}：${label}`}
+      {...attributes}
+      {...listeners}
       onClick={() => isFolder ? onToggle(item.path) : onSelect(item)}
       onContextMenu={onContextMenu ? (e) => { e.preventDefault(); onContextMenu(item, e.clientX, e.clientY); } : undefined}
       style={{
@@ -306,16 +300,16 @@ const FileRow = ({ item, isActive, onSelect, onToggle, onContextMenu, dragEnable
         outlineOffset: -1,
         fontSize: 'var(--text-sm)',
         fontWeight: isActive ? 500 : 400,
-        cursor: 'pointer',
-        transition: 'background var(--transition-fast)',
+        cursor: dragEnabled ? (isDragging ? 'grabbing' : 'grab') : 'pointer',
+        opacity: isDragging ? 0.58 : 1,
+        transition: 'background var(--transition-fast), opacity var(--transition-fast)',
         userSelect: 'none',
+        touchAction: 'pan-y',
       }}
       onMouseEnter={(e) => {
-        setHovered(true);
         if (!isActive && !isDropTarget) e.currentTarget.style.background = 'var(--bg-hover)';
       }}
       onMouseLeave={(e) => {
-        setHovered(false);
         if (!isActive && !isDropTarget) e.currentTarget.style.background = 'transparent';
       }}
     >
@@ -347,7 +341,6 @@ const FileRow = ({ item, isActive, onSelect, onToggle, onContextMenu, dragEnable
           </span>
         </Tooltip>
       </div>
-      <FileMoveHandle item={item} visible={hovered} disabled={!dragEnabled} />
       <FileStatusIndicator status={item.status} />
     </div>
   );
@@ -428,7 +421,6 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
     sidebarActiveTab,
     sidebarScrollByTab,
     selectFile,
-    clearFileSelection,
     setSidebarActiveTab,
     setSidebarScroll,
     toggleSidebarCollapsed,
@@ -685,8 +677,26 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
 
   const handleTreeDragEnd = useCallback(async (event) => {
     const source = event.active?.data?.current?.node;
+    const composerDropPoint = getExternalDropPoint(event, '[data-notus-agent-composer]');
+    const editorDropPoint = getExternalDropPoint(event, '[data-notus-editor-drop]');
     const destination = dragDestinationFromOver(event.over);
     resetTreeDrag();
+    if (composerDropPoint && source) {
+      const { target, ...dropPoint } = composerDropPoint;
+      target.dispatchEvent(new CustomEvent('notus:sidebar-mention-drop', {
+        bubbles: true,
+        detail: { mention: treeItemToMention(source), ...dropPoint },
+      }));
+      return;
+    }
+    if (editorDropPoint && source?.type === 'file') {
+      const { target, ...dropPoint } = editorDropPoint;
+      target.dispatchEvent(new CustomEvent('notus:sidebar-editor-file-drop', {
+        bubbles: true,
+        detail: { mention: treeItemToMention(source), ...dropPoint },
+      }));
+      return;
+    }
     if (destination === null || !canMoveTreeItem(source, destination)) return;
 
     setMoveSubmitting(true);
@@ -875,24 +885,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
 
   const handleSelectFile = (file) => {
     if (Number(file?.id) === Number(activeFileId)) {
-      const clearSelection = () => {
-        if (navigateOnFileSelect && router.pathname === `/${currentPage}` && router.asPath !== `/${currentPage}`) {
-          navigateWithFallback(router, `/${currentPage}`, { mode: 'router' })
-            .catch(() => {})
-            .finally(() => clearFileSelection());
-          return;
-        }
-        clearFileSelection();
-      };
-      if (requestAction) {
-        if (requestAction.length >= 2) {
-          requestAction(file, clearSelection);
-          return;
-        }
-        requestAction(clearSelection);
-        return;
-      }
-      clearSelection();
+      if (isMobileViewport) setMobileSidebarOpen(false);
       return;
     }
     const action = () => {

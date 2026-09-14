@@ -19,7 +19,7 @@ const icons = read('components/ui/Icons.js');
 assert.ok(filesPage.includes('const expandEditorForFile'), '所有打开文件入口都应复用编辑器展开逻辑');
 assert.ok(filesPage.includes('expandEditorForFile();\n    if (Number(activeFileId)'), 'Diff 打开当前文件时也应展开编辑器');
 assert.ok(filesPage.includes('onAgentPanelLockChange={setAgentPanelLock}'), '文件页应接收 Agent 面板锁定状态');
-assert.ok(filesPage.includes("beforeAgentRun={() => (activeFile && saveState === 'dirty' ? handleSave() : true)}"), '未打开文件时不能因残留的保存状态阻断 Agent 发送');
+assert.ok(filesPage.includes("beforeAgentRun={() => (activeFile && saveState !== 'saved' ? handleSave() : true)}"), '未打开文件时不能因残留的保存状态阻断 Agent 发送');
 assert.ok(layout.includes('collapseRight = false'), '双栏布局应支持隐藏右侧面板而不卸载子树');
 assert.ok(fileWorkspace.includes('interactionAnswerDrafts'), '提问卡答案应保存在文件工作区内存');
 assert.ok(fileWorkspace.includes('agentPanelLocked'), '提交提问卡答案时应短暂锁定 AI 面板');

@@ -9,6 +9,7 @@ const FILE_TREE_CACHE_KEY = 'notus-file-tree-cache';
 const WORKSPACE_STATE_KEY = 'notus-workspace-state';
 const DEFAULT_WORKSPACE_STATE = {
   activeFileId: null,
+  openFileIds: [],
   activePage: 'files',
   openFolders: [],
   sidebarCollapsed: false,
@@ -114,6 +115,7 @@ export function AppProvider({ children }) {
   const filesRef = useRef(files);
   const workspaceHydratedRef = useRef(false);
   const activeFileIdRef = useRef(initialWorkspaceState.activeFileId);
+  const openFileIdsRef = useRef(initialWorkspaceState.openFileIds);
   const activePageRef = useRef(initialWorkspaceState.activePage);
   const openFoldersRef = useRef(new Set(initialWorkspaceState.openFolders));
   const sidebarCollapsedRef = useRef(initialWorkspaceState.sidebarCollapsed);
@@ -122,6 +124,7 @@ export function AppProvider({ children }) {
   const pendingCitationRef = useRef(initialWorkspaceState.pendingCitation);
   const [openFolders, setOpenFolders] = useState(() => new Set(initialWorkspaceState.openFolders));
   const [activeFileId, setActiveFileId] = useState(initialWorkspaceState.activeFileId);
+  const [openFileIds, setOpenFileIds] = useState(initialWorkspaceState.openFileIds);
   const [activeFile, setActiveFile] = useState(null);
   const [activePage, setActivePage] = useState(initialWorkspaceState.activePage);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(initialWorkspaceState.sidebarCollapsed);
@@ -136,6 +139,7 @@ export function AppProvider({ children }) {
     const baseState = workspaceHydratedRef.current
       ? {
         activeFileId: activeFileIdRef.current,
+        openFileIds: openFileIdsRef.current,
         activePage: activePageRef.current,
         openFolders: [...openFoldersRef.current],
         sidebarCollapsed: sidebarCollapsedRef.current,
@@ -161,6 +165,7 @@ export function AppProvider({ children }) {
     }
 
     activeFileIdRef.current = nextWorkspaceState.activeFileId;
+    openFileIdsRef.current = nextWorkspaceState.openFileIds;
     activePageRef.current = nextWorkspaceState.activePage;
     openFoldersRef.current = new Set(nextWorkspaceState.openFolders);
     sidebarCollapsedRef.current = nextWorkspaceState.sidebarCollapsed;
@@ -171,6 +176,7 @@ export function AppProvider({ children }) {
 
     setRestoredActiveFileId(nextWorkspaceState.activeFileId);
     setActiveFileId(nextWorkspaceState.activeFileId);
+    setOpenFileIds(nextWorkspaceState.openFileIds);
     setActivePage(nextWorkspaceState.activePage);
     setOpenFolders(new Set(nextWorkspaceState.openFolders));
     setSidebarCollapsed(nextWorkspaceState.sidebarCollapsed);
@@ -190,6 +196,10 @@ export function AppProvider({ children }) {
   useEffect(() => {
     activeFileIdRef.current = activeFileId;
   }, [activeFileId]);
+
+  useEffect(() => {
+    openFileIdsRef.current = openFileIds;
+  }, [openFileIds]);
 
   useEffect(() => {
     openFoldersRef.current = openFolders;
@@ -233,14 +243,35 @@ export function AppProvider({ children }) {
       setHasLoadedFilesOnce(true);
 
       const flat = flattenTree(tree);
-      if (activeFileIdRef.current) {
-        const nextActiveFile = flat.find((item) => item.type === 'file' && item.id === activeFileIdRef.current) || null;
-        setActiveFile(nextActiveFile);
-        if (!nextActiveFile) {
-          setActiveFileId(null);
-          persistWorkspaceState({ activeFileId: null, pendingCitation: null });
-        }
+      const availableFileIds = new Set(flat.filter((item) => item.type === 'file').map((item) => Number(item.id)));
+      let nextActiveFileId = activeFileIdRef.current;
+      const activeFileMissing = nextActiveFileId && !availableFileIds.has(Number(nextActiveFileId));
+      const nextOpenFileIds = openFileIdsRef.current.filter((fileId) => (
+        availableFileIds.has(Number(fileId)) || Number(fileId) === Number(nextActiveFileId)
+      ));
+      const tabsChanged = nextOpenFileIds.length !== openFileIdsRef.current.length;
+      const activeFileChanged = nextActiveFileId !== activeFileIdRef.current;
+      if (tabsChanged) {
+        openFileIdsRef.current = nextOpenFileIds;
+        setOpenFileIds(nextOpenFileIds);
       }
+      if (activeFileChanged) {
+        activeFileIdRef.current = nextActiveFileId;
+        setActiveFileId(nextActiveFileId);
+        setPendingCitation(null);
+        pendingCitationRef.current = null;
+      }
+      if (tabsChanged || activeFileChanged) {
+        persistWorkspaceState({
+          openFileIds: nextOpenFileIds,
+          activeFileId: nextActiveFileId,
+          pendingCitation: nextActiveFileId ? pendingCitationRef.current : null,
+        });
+      }
+      const nextActiveFile = activeFileMissing
+        ? null
+        : (flat.find((item) => item.type === 'file' && Number(item.id) === Number(nextActiveFileId)) || null);
+      setActiveFile(nextActiveFile);
 
       return tree;
     } finally {
@@ -290,7 +321,13 @@ export function AppProvider({ children }) {
       }
       : null;
 
+    activeFileIdRef.current = nextFileId;
     setActiveFileId(nextFileId);
+    const nextOpenFileIds = openFileIdsRef.current.includes(nextFileId)
+      ? openFileIdsRef.current
+      : [...openFileIdsRef.current, nextFileId];
+    openFileIdsRef.current = nextOpenFileIds;
+    setOpenFileIds(nextOpenFileIds);
     setActiveFile(file);
     setPendingCitation(nextPendingCitation);
     setOpenFolders((prev) => {
@@ -298,6 +335,7 @@ export function AppProvider({ children }) {
       getAncestorPaths(file.path).forEach((folderPath) => next.add(folderPath));
       persistWorkspaceState({
         activeFileId: nextFileId,
+        openFileIds: nextOpenFileIds,
         openFolders: [...next],
         pendingCitation: nextPendingCitation,
       });
@@ -312,6 +350,36 @@ export function AppProvider({ children }) {
     setActiveFile(null);
     setPendingCitation(null);
     persistWorkspaceState({ activeFileId: null, pendingCitation: null });
+  }, [persistWorkspaceState]);
+
+  const closeFileTab = useCallback((fileId) => {
+    const targetFileId = Number(fileId);
+    if (!Number.isFinite(targetFileId) || targetFileId <= 0) return null;
+    const currentTabs = openFileIdsRef.current;
+    const closingIndex = currentTabs.indexOf(targetFileId);
+    if (closingIndex < 0) return null;
+    const nextOpenFileIds = currentTabs.filter((item) => item !== targetFileId);
+    const closingActiveFile = Number(activeFileIdRef.current) === targetFileId;
+    const nextActiveFileId = closingActiveFile
+      ? (nextOpenFileIds[closingIndex] || nextOpenFileIds[closingIndex - 1] || null)
+      : activeFileIdRef.current;
+    openFileIdsRef.current = nextOpenFileIds;
+    activeFileIdRef.current = nextActiveFileId;
+    setOpenFileIds(nextOpenFileIds);
+    setActiveFileId(nextActiveFileId);
+    const nextActiveFile = flattenTree(filesRef.current)
+      .find((item) => item.type === 'file' && Number(item.id) === Number(nextActiveFileId)) || null;
+    setActiveFile(nextActiveFile);
+    if (closingActiveFile) {
+      pendingCitationRef.current = null;
+      setPendingCitation(null);
+    }
+    persistWorkspaceState({
+      openFileIds: nextOpenFileIds,
+      activeFileId: nextActiveFileId,
+      pendingCitation: closingActiveFile ? null : pendingCitationRef.current,
+    });
+    return nextActiveFile;
   }, [persistWorkspaceState]);
 
   const setActiveWorkspacePage = useCallback((page) => {
@@ -478,12 +546,14 @@ export function AppProvider({ children }) {
         toggleFolder,
         activeFileId,
         activeFile,
+        openFileIds,
         sidebarCollapsed,
         sidebarActiveTab,
         sidebarScrollByTab,
         pendingCitation,
         workspaceState: {
           activeFileId,
+          openFileIds,
           activePage,
           openFolders: [...openFolders],
           sidebarCollapsed,
@@ -493,6 +563,7 @@ export function AppProvider({ children }) {
         },
         refreshFiles,
         selectFile,
+        closeFileTab,
         clearFileSelection,
         clearPendingCitation,
         setActiveWorkspacePage,

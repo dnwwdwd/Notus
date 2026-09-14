@@ -64,6 +64,8 @@ function runTests() {
   assert.ok(sidebar.includes("label: '移动目录'"));
   assert.ok(sidebar.includes("change_type: moveNode.type === 'folder' ? 'move_folder' : 'move_file'"));
   assert.ok(sidebar.includes('isSameOrChildPath(option.value, moveNode.path)'));
+  assert.ok(sidebar.includes('ref={setRowNodeRef}'), '文件树整行必须作为移动拖拽源');
+  assert.ok(!sidebar.includes('const FileMoveHandle'), '文件树不应保留独立拖动柄');
   assert.ok(!sidebar.includes("renameNode?.type === 'folder' ? '生成预览' : '确认'"));
   assert.ok(sidebar.includes("{ label: '上传文件'"), '目录右键菜单必须提供上传文件入口');
   assert.ok(sidebar.includes("{ label: '下载目录'"), '目录右键菜单必须提供目录 ZIP 下载入口');
@@ -218,9 +220,9 @@ assert.ok(settings.includes("{ id: 'global-agent', label: 'Agent 个性', icon: 
   assert.ok(agentWorkspace.includes('const removeChip = (event) =>'));
   assert.ok(agentWorkspace.includes('removeButton.setAttribute(\'aria-label\', `移除 mention：${mention.name}`)'));
   assert.ok(agentWorkspace.includes('restoreComposerCaret(trailingText, 0);'));
-  assert.ok(agentWorkspace.includes("'m12 2.5 8 4.5v10L12 21.5 4 17V7z', 'm4 7 8 4.5L20 7M12 11.5v10', 'm4 12 8 4.5 8-4.5'"), '输入框动态 Skill Mention 必须复用统一的等距立方体图标路径');
+  assert.ok(agentWorkspace.includes("mention.type === 'skill' ? SKILL_ICON_PATHS"), '输入框动态 Skill Mention 必须复用统一的等距立方体图标路径');
   assert.ok(!agentWorkspace.includes('M4 5.5A2.5 2.5 0 0 1 6.5 3H11v16H6.5'), '输入框动态 Skill Mention 不得继续使用旧书本图标');
-  assert.ok(icons.includes('skill: (p) => <Icon {...p}><path d="m12 2.5 8 4.5v10L12 21.5 4 17V7z"/>'), 'Skill Mention 的统一目标图标必须来自 Icons.skill');
+  assert.ok(icons.includes('SKILL_ICON_PATHS.map'), 'Skill Mention 的统一目标图标必须来自 Icons.skill');
   assert.ok(globalStyles.includes('.notus-agent-composer .notus-mention-item--inline .notus-mention-item__remove'));
   assert.ok(agentWorkspace.includes('function AgentWorkspace({'));
   assert.ok(agentWorkspace.includes('mentionOptions={mentionOptions}'));
@@ -245,13 +247,18 @@ assert.ok(settings.includes("{ id: 'global-agent', label: 'Agent 个性', icon: 
   assert.ok(segmentedTabs.includes("className = ''"));
   assert.ok(segmentedTabs.includes("'notus-segmented-tabs', responsiveLabels ? 'notus-segmented-tabs--responsive-labels' : '', className"));
 
-  const mentionPreview = read('components/AgentWorkspace/MentionPreviewDialog.js');
-  assert.ok(mentionPreview.includes('function visibleMentionMarkdown(content = \'\')'));
-  assert.ok(mentionPreview.includes("dialogStyle={{ maxHeight: 'calc(100dvh - 32px)'"));
-  assert.ok(mentionPreview.includes('const mentionContentCache = new Map();'));
-  assert.ok(mentionPreview.includes('export function prefetchMentionDocument'));
-  assert.ok(mentionPreview.includes('setContent(payload.content);'));
-  assert.ok(mentionPreview.includes('notus-mention-preview__title-link'));
+  const documentTabs = read('components/Editor/DocumentTabs.js');
+  assert.ok(documentTabs.includes('role="tablist"'));
+  assert.ok(documentTabs.includes('aria-controls="notus-editor-tabpanel"'));
+  assert.ok(documentTabs.includes("border: 'none'"), '标签栏不应添加分隔边框');
+  assert.ok(documentTabs.includes("borderRadius: 'var(--radius-md)'"), '标签应使用圆角外观');
+  assert.ok(documentTabs.includes('onDoubleClick={() => openRename(file)}'));
+  assert.ok(documentTabs.includes('onContextMenu={(event) => {'));
+  assert.ok(documentTabs.includes('title="重命名文件"'));
+  assert.ok(documentTabs.includes('height: 48'));
+  assert.ok(!agentWorkspace.includes('MentionPreviewDialog'), '文件 Mention 不应再打开预览弹窗');
+  assert.ok(agentWorkspace.includes('const handleOpenMention = useCallback((mention) => {'));
+  assert.ok(agentWorkspace.includes('onOpenDiffFile?.(mention.path);'));
 
   assert.ok(fileAgentWorkspace.includes("window.addEventListener('notus-skills-changed', refreshSkills);"));
   assert.ok(fileAgentWorkspace.includes("window.removeEventListener('notus-skills-changed', refreshSkills);"));
@@ -270,10 +277,17 @@ assert.ok(settings.includes("{ id: 'global-agent', label: 'Agent 个性', icon: 
   assert.ok(filesPage.includes('const renderedWorkspacePanels = {'));
   assert.ok(filesPage.includes('const renderedEditorAutoCollapsed = editorAutoCollapsed'));
   assert.ok(filesPage.includes("toast('该文档已删除或不存在', 'info')"));
-  assert.ok(filesPage.includes("toast('该文档已打开', 'info')"));
   assert.ok(filesPage.includes('onOpenDiffFile={handleOpenDiffFile}'));
   assert.ok(filesPage.includes('function findFileInTree(nodes = [], path = \'\')'));
   assert.ok(filesPage.includes('findFileInTree(await refreshFiles({ background: true }), normalizedPath)'));
+  assert.ok(filesPage.includes('<DocumentTabs'));
+  assert.ok(filesPage.includes('onOpenFileLink={handleOpenEditorLink}'));
+  assert.ok(!filesPage.includes('aria-label="文章标题"'));
+  assert.ok(wysiwygEditor.includes("event.dataTransfer?.getData('application/x-notus-mention')"));
+  assert.ok(wysiwygEditor.includes("protocols: ['notus']"), '内部文件链接必须显式注册协议');
+  assert.ok(wysiwygEditor.includes('isAllowedUri: isAllowedEditorLink'), '内部协议必须只允许受控文件 ID');
+  assert.ok(wysiwygEditor.includes("notus:sidebar-editor-file-drop"), '编辑器必须接收整行拖放事件');
+  assert.ok(wysiwygEditor.includes('internalFileLinkHref(targetFileId)'));
 
   const topBar = read('components/Layout/TopBar.js');
   assert.ok(!topBar.includes('displayShortcut('));

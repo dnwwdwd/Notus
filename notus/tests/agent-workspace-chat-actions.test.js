@@ -17,7 +17,7 @@ async function runTests() {
     'aria-label="滚动到最新消息"',
     'scrollContainerToBottom(container, \'smooth\')',
     '<Icons.chevronDown size={14} />',
-    'function UserMessageRow({ message, disabled, removing = false, onResendMessage, onOpenAttachment, onPreviewMention, onPrefetchMention, onPreviewImages })',
+    'function UserMessageRow({ message, disabled, removing = false, onResendMessage, onOpenAttachment, onPreviewMention, onPreviewImages })',
     'function AssistantMessageRow({ message, taskChangeSet = null, disabled, removing = false, onRetryMessage, previousUserMessage',
     'aria-label="AI 回复操作"',
     'aria-label="用户消息操作"',

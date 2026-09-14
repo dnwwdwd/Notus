@@ -1,9 +1,10 @@
 // /files — File management + WYSIWYG markdown editor (Tiptap)
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import { useRouter } from 'next/router';
 import { Shell } from '../../components/Layout/Shell';
 import { EditorToolbar } from '../../components/Editor/EditorToolbar';
+import { DocumentTabs } from '../../components/Editor/DocumentTabs';
 import { FileAgentWorkspace } from '../../components/AgentWorkspace/FileAgentWorkspace';
 import { UnindexedFilesDialog } from '../../components/Indexing/UnindexedFilesDialog';
 import { EmptyState } from '../../components/ui/EmptyState';
@@ -66,13 +67,6 @@ function splitEditorTitleAndBody(visibleContent = '', fallbackTitle = '') {
   };
 }
 
-function mergeEditorTitleAndBody(title = '', body = '') {
-  const normalizedTitle = String(title || '').replace(/^#+\s*/, '').trim();
-  const normalizedBody = String(body || '').replace(/\r\n/g, '\n').replace(/^\n+/, '');
-  if (!normalizedTitle) return normalizedBody;
-  return normalizedBody ? `# ${normalizedTitle}\n\n${normalizedBody}` : `# ${normalizedTitle}\n`;
-}
-
 function clampFilesLayout(value) {
   const parsed = Number.parseFloat(value);
   if (!Number.isFinite(parsed)) return FILES_LAYOUT_DEFAULT;
@@ -84,6 +78,16 @@ function findFileInTree(nodes = [], path = '') {
   for (const node of Array.isArray(nodes) ? nodes : []) {
     if (node?.type === 'file' && String(node.path || '').replace(/\\/g, '/') === normalizedPath) return node;
     const nested = findFileInTree(node?.children || [], normalizedPath);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+function findFileByIdInTree(nodes = [], fileId) {
+  const targetFileId = Number(fileId);
+  for (const node of Array.isArray(nodes) ? nodes : []) {
+    if (node?.type === 'file' && Number(node.id) === targetFileId) return node;
+    const nested = findFileByIdInTree(node?.children || [], targetFileId);
     if (nested) return nested;
   }
   return null;
@@ -143,25 +147,34 @@ export default function FilesPage() {
   const {
     activeFile,
     activeFileId: workspaceActiveFileId,
+    openFileIds,
     allFiles,
     files,
     pendingCitation,
     clearPendingCitation,
     selectFile,
+    closeFileTab,
     refreshFiles,
     getCachedContent,
     setCachedContent,
     clearCachedContent,
     workspaceHydrated,
+    hasLoadedFilesOnce,
     restoredActiveFileId,
   } = useApp();
-  const activeFileId = activeFile?.id;
+  const activeFileId = workspaceActiveFileId;
+  const activeFileIdRef = useRef(activeFileId);
+  activeFileIdRef.current = activeFileId;
+  const loadedFileIdRef = useRef(null);
+  const savePromiseRef = useRef(null);
   const contentRef = useRef('');
   const persistedContentRef = useRef('');
   const documentTitleRef = useRef('');
   const persistedTitleRef = useRef('');
   const hiddenFrontmatterRef = useRef('');
   const pendingNavRef = useRef(null);
+  const routeSyncFileIdRef = useRef(null);
+  const missingFileGuardRef = useRef(null);
   const restorePositionRef = useRef(false);
   const savePositionTimerRef = useRef(null);
 
@@ -183,6 +196,7 @@ export default function FilesPage() {
   const hasOpenedFileRef = useRef(false);
   const hasRestoredStartupFileRef = useRef(false);
   const lastSelectedFileIdRef = useRef(null);
+  const requestOpenFileRef = useRef(null);
 
   const loadFile = useCallback(async (fileId) => {
     // Check in-memory cache first for instant navigation
@@ -299,8 +313,12 @@ export default function FilesPage() {
 
   const handleAgentFilesChanged = useCallback(async () => {
     if (activeFileId) clearCachedContent(activeFileId);
+    if (contentRef.current !== persistedContentRef.current || documentTitleRef.current !== persistedTitleRef.current || savePromiseRef.current) {
+      toast('文件已更新，当前未保存的编辑已保留。', 'info');
+      return;
+    }
     setAgentFileChangeVersion((previous) => previous + 1);
-  }, [activeFileId, clearCachedContent]);
+  }, [activeFileId, clearCachedContent, toast]);
 
   const expandEditorForFile = useCallback(() => {
     setEditorAutoCollapsed(false);
@@ -332,26 +350,8 @@ export default function FilesPage() {
       toast('该文档已删除或不存在', 'info');
       return;
     }
-    expandEditorForFile();
-    if (Number(activeFileId) === Number(targetFile.id)) {
-      toast('该文档已打开', 'info');
-      return;
-    }
-    selectFile(targetFile);
-    const href = `/files?fileId=${encodeURIComponent(targetFile.id)}`;
-    if (router.asPath !== href) router.push(href).catch(() => {});
-  }, [activeFileId, allFiles, expandEditorForFile, refreshFiles, router, selectFile, toast]);
-
-  useEffect(() => {
-    if (!router.isReady) return;
-    const requestedFileId = Number(getQueryValue(router.query.fileId));
-    if (!Number.isFinite(requestedFileId)) return;
-    if (activeFileId === requestedFileId) return;
-    const targetFile = allFiles.find((file) => file.id === requestedFileId);
-    if (!targetFile) return;
-    expandEditorForFile();
-    selectFile(targetFile);
-  }, [activeFileId, allFiles, expandEditorForFile, router.isReady, router.query.fileId, selectFile]);
+    requestOpenFileRef.current?.(targetFile);
+  }, [allFiles, refreshFiles, toast]);
 
   useEffect(() => {
     if (!activeFileId) {
@@ -365,6 +365,10 @@ export default function FilesPage() {
       return undefined;
     }
 
+    // 外部删除文件时，先由未保存确认流程决定是否关闭，避免覆盖内存中的编辑内容。
+    if (!activeFile) return undefined;
+
+    if (loadedFileIdRef.current === activeFileId && (contentRef.current !== persistedContentRef.current || documentTitleRef.current !== persistedTitleRef.current || savePromiseRef.current)) return undefined;
     let cancelled = false;
     setLoading(true);
     setError(null);
@@ -373,14 +377,15 @@ export default function FilesPage() {
     loadFile(activeFileId)
       .then((file) => {
         if (cancelled) return;
+        loadedFileIdRef.current = activeFileId;
         const { visibleContent, hiddenFrontmatter, hiddenFrontmatterData } = splitEditorVisibleMarkdown(file.content || '');
         const editorDocument = splitEditorTitleAndBody(
           visibleContent || '',
           hiddenFrontmatterData?.title || file.title || file.name?.replace(/\.md$/i, '')
         );
-        setContent(editorDocument.body);
-        contentRef.current = editorDocument.body;
-        persistedContentRef.current = editorDocument.body;
+        setContent(visibleContent || '');
+        contentRef.current = visibleContent || '';
+        persistedContentRef.current = visibleContent || '';
         setDocumentTitle(editorDocument.title);
         documentTitleRef.current = editorDocument.title;
         persistedTitleRef.current = editorDocument.title;
@@ -397,7 +402,7 @@ export default function FilesPage() {
     return () => {
       cancelled = true;
     };
-  }, [activeFileId, agentFileChangeVersion, loadFile]);
+  }, [activeFile, activeFileId, agentFileChangeVersion, loadFile]);
 
   // Parse #L24-L28 hash on mount and store as pending navigation
   useEffect(() => {
@@ -560,48 +565,62 @@ export default function FilesPage() {
 
   const handleSave = useCallback(async (nextContent = contentRef.current) => {
     if (!activeFileId) return false;
-    const nextTitle = documentTitleRef.current;
+    while (savePromiseRef.current) await savePromiseRef.current;
+    if (activeFileIdRef.current !== activeFileId) return false;
+    const nextTitle = splitEditorTitleAndBody(nextContent, documentTitleRef.current).title;
+    documentTitleRef.current = nextTitle;
     if (nextContent === persistedContentRef.current && nextTitle === persistedTitleRef.current) {
       setSaveState('saved');
       return true;
     }
     setSaveState('saving');
-    try {
-      const visibleContentToSave = mergeEditorTitleAndBody(nextTitle, nextContent);
-      const contentToSave = mergeEditorVisibleMarkdown(visibleContentToSave, hiddenFrontmatterRef.current);
-      const response = await fetch(`/api/files/${activeFileId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: contentToSave, title: nextTitle }),
-      });
-      const payload = await response.json();
+    const task = (async () => {
+      try {
+        const contentToSave = mergeEditorVisibleMarkdown(nextContent, hiddenFrontmatterRef.current);
+        const response = await fetch(`/api/files/${activeFileId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: contentToSave, title: nextTitle }),
+        });
+        const payload = await response.json();
 
-      if (!response.ok) {
-        throw new Error(payload.error || '保存失败');
-      }
+        if (!response.ok) {
+          throw new Error(payload.error || '保存失败');
+        }
 
-      const { visibleContent, hiddenFrontmatter, hiddenFrontmatterData } = splitEditorVisibleMarkdown(payload.content || contentToSave);
-      const savedDocument = splitEditorTitleAndBody(visibleContent || '', hiddenFrontmatterData?.title || nextTitle);
-      persistedContentRef.current = savedDocument.body;
-      contentRef.current = savedDocument.body;
-      persistedTitleRef.current = savedDocument.title;
-      documentTitleRef.current = savedDocument.title;
-      hiddenFrontmatterRef.current = hiddenFrontmatter || hiddenFrontmatterRef.current || '';
-      setContent(savedDocument.body);
-      setDocumentTitle(savedDocument.title);
-      setCachedContent(activeFileId, payload.content || contentToSave);
-      await refreshFiles({ background: true });
-      if (payload.title_binding_warning) {
-        toast(payload.title_binding_warning, 'warning');
+        const { visibleContent, hiddenFrontmatter, hiddenFrontmatterData } = splitEditorVisibleMarkdown(payload.content || contentToSave);
+        const savedDocument = splitEditorTitleAndBody(visibleContent || '', hiddenFrontmatterData?.title || nextTitle);
+        setCachedContent(activeFileId, payload.content || contentToSave);
+        if (activeFileIdRef.current !== activeFileId) return true;
+        const unchanged = contentRef.current === nextContent && documentTitleRef.current === nextTitle;
+        persistedContentRef.current = visibleContent || '';
+        if (unchanged) contentRef.current = visibleContent || '';
+        persistedTitleRef.current = savedDocument.title;
+        if (unchanged) documentTitleRef.current = savedDocument.title;
+        hiddenFrontmatterRef.current = hiddenFrontmatter || hiddenFrontmatterRef.current || '';
+        if (unchanged) {
+          setContent(visibleContent || '');
+          setDocumentTitle(savedDocument.title);
+        }
+        setSaveState(unchanged ? 'saved' : 'dirty');
+        await refreshFiles({ background: true });
+        if (payload.title_binding_warning) {
+          toast(payload.title_binding_warning, 'warning');
+        }
+        if (activeFileIdRef.current !== activeFileId) return true;
+        setShowIndexToast(Boolean(payload.indexed));
+        if (!payload.indexed) toast('正文已保存，但知识库索引未完成。可在索引状态中查看并重试。', 'warning');
+        setTimeout(() => setShowIndexToast(false), 4000);
+        return contentRef.current === persistedContentRef.current && documentTitleRef.current === persistedTitleRef.current;
+      } catch (saveError) {
+        if (activeFileIdRef.current === activeFileId) setSaveState('dirty');
+        toast(saveError.message || '保存失败', 'error');
+        return false;
       }
-      setSaveState('saved');
-      setShowIndexToast(true);
-      setTimeout(() => setShowIndexToast(false), 4000);
-      return true;
-    } catch (saveError) {
-      setSaveState('dirty');
-      toast(saveError.message || '保存失败', 'error');
-      return false;
+    })();
+    savePromiseRef.current = task;
+    try { return await task; } finally {
+      if (savePromiseRef.current === task) savePromiseRef.current = null;
     }
   }, [activeFileId, refreshFiles, setCachedContent, toast]);
 
@@ -611,6 +630,10 @@ export default function FilesPage() {
     contentRef.current = newContent;
     setContent(newContent);
 
+    const nextTitle = splitEditorTitleAndBody(newContent, documentTitleRef.current).title;
+    documentTitleRef.current = nextTitle;
+    setDocumentTitle(nextTitle);
+
     if (newContent === persistedContentRef.current && documentTitleRef.current === persistedTitleRef.current) {
       setSaveState('saved');
       return;
@@ -619,24 +642,164 @@ export default function FilesPage() {
     setSaveState('dirty');
   }, []);
 
-  const handleTitleChange = useCallback((nextTitle) => {
-    const normalizedTitle = String(nextTitle || '').replace(/^#+\s*/, '');
-    documentTitleRef.current = normalizedTitle;
-    setDocumentTitle(normalizedTitle);
-    setSaveState(
-      normalizedTitle === persistedTitleRef.current && contentRef.current === persistedContentRef.current
-        ? 'saved'
-        : 'dirty'
-    );
-  }, []);
-
   const unsavedGuard = useUnsavedChangesGuard({
-    isDirty: saveState === 'dirty',
+    isDirty: saveState !== 'saved',
     onSave: handleSave,
     title: '离开前保存当前文档？',
     message: '当前文档还有未保存修改。你可以先保存再切换页面或文件，也可以直接离开并丢弃这次编辑。',
   });
-  const navigationGuard = activeFile && saveState === 'dirty' ? unsavedGuard.request : undefined;
+  const navigationGuard = activeFile && saveState !== 'saved' ? unsavedGuard.request : undefined;
+
+  const openWorkspaceFile = useCallback((targetFile) => {
+    if (!targetFile?.id) return;
+    expandEditorForFile();
+    if (Number(activeFileId) !== Number(targetFile.id)) selectFile(targetFile);
+    const href = `/files?fileId=${encodeURIComponent(targetFile.id)}`;
+    if (router.asPath !== href) {
+      routeSyncFileIdRef.current = Number(targetFile.id);
+      router.push(href).catch(() => {
+        routeSyncFileIdRef.current = null;
+      });
+    }
+  }, [activeFileId, expandEditorForFile, router, selectFile]);
+
+  const requestOpenWorkspaceFile = useCallback((targetFile) => {
+    if (!targetFile?.id) return false;
+    const action = () => openWorkspaceFile(targetFile);
+    if (Number(activeFileId) === Number(targetFile.id)) {
+      action();
+      return true;
+    }
+    if (navigationGuard) {
+      return navigationGuard(action);
+    }
+    action();
+    return true;
+  }, [activeFileId, navigationGuard, openWorkspaceFile]);
+  requestOpenFileRef.current = requestOpenWorkspaceFile;
+
+  useEffect(() => {
+    if (!router.isReady) return;
+    const requestedFileId = Number(getQueryValue(router.query.fileId));
+    if (!Number.isFinite(requestedFileId) || requestedFileId <= 0) return;
+    if (Number(activeFileId) === requestedFileId) {
+      routeSyncFileIdRef.current = null;
+      return;
+    }
+    if (routeSyncFileIdRef.current) return;
+    const targetFile = allFiles.find((file) => Number(file.id) === requestedFileId);
+    if (!targetFile) return;
+    const opened = requestOpenWorkspaceFile(targetFile);
+    if (opened) return;
+    const currentHref = activeFileId ? `/files?fileId=${encodeURIComponent(activeFileId)}` : '/files';
+    if (router.asPath !== currentHref) {
+      router.replace(currentHref, undefined, { shallow: true }).catch(() => {});
+    }
+  }, [activeFileId, allFiles, requestOpenWorkspaceFile, router, router.isReady, router.query.fileId]);
+
+  useEffect(() => {
+    router.beforePopState(({ as }) => {
+      const requestedFileId = Number(getQueryValue(new URL(as, window.location.origin).searchParams.get('fileId')));
+      if (!Number.isFinite(requestedFileId) || requestedFileId <= 0 || Number(activeFileIdRef.current) === requestedFileId) return true;
+      const targetFile = allFiles.find((file) => Number(file.id) === requestedFileId);
+      if (!targetFile || !navigationGuard) return true;
+      navigationGuard(() => openWorkspaceFile(targetFile));
+      return false;
+    });
+    return () => router.beforePopState(() => true);
+  }, [allFiles, navigationGuard, openWorkspaceFile, router]);
+
+  useEffect(() => {
+    if (!workspaceHydrated || !hasLoadedFilesOnce || !activeFileId || activeFile) {
+      missingFileGuardRef.current = null;
+      return;
+    }
+    if (missingFileGuardRef.current === Number(activeFileId)) return;
+    missingFileGuardRef.current = Number(activeFileId);
+    const closeMissingFile = () => {
+      const nextActiveFile = closeFileTab(activeFileId);
+      const href = nextActiveFile ? `/files?fileId=${encodeURIComponent(nextActiveFile.id)}` : '/files';
+      if (router.asPath !== href) router.replace(href, undefined, { shallow: true }).catch(() => {});
+    };
+    if (navigationGuard) {
+      navigationGuard(closeMissingFile);
+      return;
+    }
+    closeMissingFile();
+  }, [activeFile, activeFileId, closeFileTab, hasLoadedFilesOnce, navigationGuard, router, workspaceHydrated]);
+
+  const handleOpenEditorLink = useCallback(async (fileId) => {
+    const targetFileId = Number(fileId);
+    let targetFile = allFiles.find((file) => Number(file?.id) === targetFileId);
+    if (!targetFile) {
+      try {
+        targetFile = findFileByIdInTree(await refreshFiles({ background: true }), targetFileId);
+      } catch {}
+    }
+    if (!targetFile || Number(targetFile.id) !== targetFileId) {
+      toast('该文件已删除或不存在', 'info');
+      return;
+    }
+    requestOpenWorkspaceFile(targetFile);
+  }, [allFiles, refreshFiles, requestOpenWorkspaceFile, toast]);
+
+  const openFiles = useMemo(() => {
+    const filesById = new Map(allFiles.map((file) => [Number(file.id), file]));
+    return openFileIds.map((fileId) => filesById.get(Number(fileId))).filter(Boolean);
+  }, [allFiles, openFileIds]);
+
+  const handleCloseTab = useCallback((file) => {
+    if (!file?.id) return;
+    const close = () => {
+      const nextActiveFile = closeFileTab(file.id);
+      const href = nextActiveFile ? `/files?fileId=${encodeURIComponent(nextActiveFile.id)}` : '/files';
+      if (router.asPath !== href) router.push(href).catch(() => {});
+    };
+    if (Number(file.id) === Number(activeFileId) && navigationGuard) {
+      navigationGuard(close);
+      return;
+    }
+    close();
+  }, [activeFileId, closeFileTab, navigationGuard, router]);
+
+  const handleRenameTab = useCallback(async (file, name) => {
+    if (!file?.id || !String(name || '').trim()) return false;
+    if (Number(file.id) === Number(activeFileId) && saveState !== 'saved') {
+      const saved = await handleSave();
+      if (!saved) return false;
+    }
+    try {
+      const response = await fetch('/api/files/rename', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: file.id, name: String(name).trim() }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || '重命名失败');
+      if (Number(file.id) === Number(activeFileId) && payload.content !== undefined) {
+        const { visibleContent, hiddenFrontmatter, hiddenFrontmatterData } = splitEditorVisibleMarkdown(payload.content || '');
+        const editorDocument = splitEditorTitleAndBody(
+          visibleContent || '',
+          hiddenFrontmatterData?.title || payload.title || payload.name?.replace(/\.md$/i, '')
+        );
+        setContent(visibleContent || '');
+        contentRef.current = visibleContent || '';
+        persistedContentRef.current = visibleContent || '';
+        setDocumentTitle(editorDocument.title);
+        documentTitleRef.current = editorDocument.title;
+        persistedTitleRef.current = editorDocument.title;
+        hiddenFrontmatterRef.current = hiddenFrontmatter || hiddenFrontmatterRef.current || '';
+        setSaveState('saved');
+      }
+      setCachedContent(file.id, payload.content || getCachedContent(file.id) || '');
+      await refreshFiles({ background: true });
+      toast('文件已重命名', 'success');
+      return true;
+    } catch (renameError) {
+      toast(renameError.message || '重命名失败', 'error');
+      return false;
+    }
+  }, [activeFileId, getCachedContent, handleSave, refreshFiles, saveState, setCachedContent, toast]);
 
   const getDocumentFindRoot = useCallback(() => getEditorRoot(editor), [editor]);
 
@@ -648,7 +811,14 @@ export default function FilesPage() {
   });
 
   const editorPanel = (
-    <div className="notus-editor-panel" style={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative', background: 'var(--bg-primary)' }}>
+    <div id="notus-editor-tabpanel" className="notus-editor-panel" role="tabpanel" style={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative', background: 'var(--bg-primary)' }}>
+      <DocumentTabs
+        files={openFiles}
+        activeFileId={activeFileId}
+        onActivate={requestOpenWorkspaceFile}
+        onClose={handleCloseTab}
+        onRename={handleRenameTab}
+      />
       {activeFile ? <EditorToolbar editor={editor} fileId={activeFile.id} isDirty={saveState === 'dirty'} /> : null}
       {!activeFile ? (
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -672,9 +842,9 @@ export default function FilesPage() {
                     visibleContent || '',
                     hiddenFrontmatterData?.title || file.title || file.name?.replace(/\.md$/i, '')
                   );
-                  setContent(editorDocument.body);
-                  contentRef.current = editorDocument.body;
-                  persistedContentRef.current = editorDocument.body;
+                  setContent(visibleContent || '');
+                  contentRef.current = visibleContent || '';
+                  persistedContentRef.current = visibleContent || '';
                   setDocumentTitle(editorDocument.title);
                   documentTitleRef.current = editorDocument.title;
                   persistedTitleRef.current = editorDocument.title;
@@ -702,22 +872,13 @@ export default function FilesPage() {
             onClose={documentFind.close}
           />
           <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-            <div className="notus-editor-panel__title" style={{ padding: '22px 60px 10px', borderBottom: '1px solid var(--border-subtle)' }}>
-              <input
-                aria-label="文章标题"
-                value={documentTitle}
-                onChange={(event) => handleTitleChange(event.target.value)}
-                placeholder="输入文章标题"
-                className="notus-editor-panel__title-input"
-                style={{ width: '100%', border: 0, outline: 'none', background: 'transparent', color: 'var(--text-primary)', fontSize: 28, lineHeight: 1.35, fontWeight: 700, letterSpacing: '-0.02em', fontFamily: 'inherit', padding: 0 }}
-              />
-            </div>
             <WysiwygEditor
               key={activeFile.id}
               value={content}
               onChange={handleChange}
               onSave={handleSave}
               onEditorReady={setEditor}
+              onOpenFileLink={handleOpenEditorLink}
               fileId={activeFile.id}
             />
           </div>
@@ -746,7 +907,7 @@ export default function FilesPage() {
       refreshFiles={refreshFiles}
       onFilesChanged={handleAgentFilesChanged}
       onAgentPanelLockChange={setAgentPanelLock}
-      beforeAgentRun={() => (activeFile && saveState === 'dirty' ? handleSave() : true)}
+      beforeAgentRun={() => (activeFile && saveState !== 'saved' ? handleSave() : true)}
       fullWidth={!renderedWorkspacePanels.editorOpen}
       onOpenDiffFile={handleOpenDiffFile}
     />

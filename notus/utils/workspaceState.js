@@ -6,6 +6,17 @@ function normalizePositiveInt(value) {
   return Number.isFinite(next) && next >= 0 ? Math.floor(next) : 0;
 }
 
+function normalizeFileIds(value = []) {
+  const seen = new Set();
+  return (Array.isArray(value) ? value : []).reduce((ids, item) => {
+    const fileId = Number(item);
+    if (!Number.isFinite(fileId) || fileId <= 0 || seen.has(fileId)) return ids;
+    seen.add(fileId);
+    ids.push(Math.floor(fileId));
+    return ids;
+  }, []);
+}
+
 function normalizeSidebarScrollByTab(value = {}) {
   const tree = normalizePositiveInt(value.tree);
   const toc = normalizePositiveInt(value.toc);
@@ -14,8 +25,12 @@ function normalizeSidebarScrollByTab(value = {}) {
 
 function normalizeWorkspaceState(value = {}) {
   const activeFileId = Number(value.activeFileId);
+  const normalizedActiveFileId = Number.isFinite(activeFileId) && activeFileId > 0 ? activeFileId : null;
+  const openFileIds = normalizeFileIds(value.openFileIds);
+  if (normalizedActiveFileId && !openFileIds.includes(normalizedActiveFileId)) openFileIds.push(normalizedActiveFileId);
   return {
-    activeFileId: Number.isFinite(activeFileId) && activeFileId > 0 ? activeFileId : null,
+    activeFileId: normalizedActiveFileId,
+    openFileIds,
     activePage: VALID_ACTIVE_PAGES.includes(value.activePage) ? value.activePage : 'files',
     openFolders: Array.isArray(value.openFolders)
       ? [...new Set(value.openFolders.map((item) => String(item || '')).filter(Boolean))]
@@ -39,6 +54,7 @@ module.exports = {
   VALID_ACTIVE_PAGES,
   VALID_SIDEBAR_TABS,
   normalizeSidebarScrollByTab,
+  normalizeFileIds,
   normalizeWorkspaceState,
 };
 

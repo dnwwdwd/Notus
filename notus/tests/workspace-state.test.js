@@ -18,6 +18,7 @@ function runTests() {
 
   const normalized = normalizeWorkspaceState({
     activeFileId: '12',
+    openFileIds: ['4', 12, '4', 0, 'bad'],
     activePage: 'knowledge',
     openFolders: ['a', 'a', '', null, 'b/c'],
     sidebarCollapsed: 1,
@@ -33,6 +34,7 @@ function runTests() {
   });
 
   assert.strictEqual(normalized.activeFileId, 12);
+  assert.deepStrictEqual(normalized.openFileIds, [4, 12]);
   assert.strictEqual(normalized.activePage, 'files');
   assert.deepStrictEqual(normalized.openFolders, ['a', 'b/c']);
   assert.strictEqual(normalized.sidebarCollapsed, true);
@@ -54,6 +56,7 @@ function runTests() {
   });
 
   assert.strictEqual(fallback.activeFileId, null);
+  assert.deepStrictEqual(fallback.openFileIds, []);
   assert.strictEqual(fallback.activePage, 'files');
   assert.strictEqual(fallback.sidebarActiveTab, 'tree');
   assert.deepStrictEqual(fallback.sidebarScrollByTab, { tree: 0, toc: 0 });

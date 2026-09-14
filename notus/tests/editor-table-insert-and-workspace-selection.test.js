@@ -14,10 +14,10 @@ assert.ok(toolbar.includes('const TableDialog ='), 'toolbar should provide a tab
 assert.ok(toolbar.includes('insertTable({ rows, cols: columns, withHeaderRow: true })'), 'toolbar should insert a real Tiptap table');
 assert.ok(toolbar.includes('title="插入表格"'), 'toolbar should expose the table insertion action');
 
-assert.ok(appContext.includes('const clearFileSelection = useCallback'), 'workspace context should expose file deselection');
-assert.ok(appContext.includes('activeFileId: null, pendingCitation: null'), 'file deselection should clear persisted selection');
-assert.ok(sidebar.includes('clearFileSelection();'), 'sidebar should clear the selected file when clicked again');
-assert.ok(sidebar.includes("navigateWithFallback(router, `/${currentPage}`, { mode: 'router' })"), 'sidebar should remove the fileId route state after deselection');
+assert.ok(appContext.includes('const clearFileSelection = useCallback'), 'workspace context should retain explicit file deselection support');
+assert.ok(appContext.includes('activeFileId: null, pendingCitation: null'), 'explicit file deselection should clear persisted selection');
+assert.ok(!sidebar.includes('clearFileSelection();'), '再次点击当前文件不应关闭或取消当前标签');
+assert.ok(sidebar.includes('if (Number(file?.id) === Number(activeFileId))'), '当前文件点击应被识别为不创建重复标签的操作');
 
 assert.ok(settings.includes('<SegmentedTabs value={selectedProvider}'), 'image storage should use the shared segmented control');
 assert.ok(settings.includes('ariaLabel="图床服务商"'), 'image storage provider selector should keep an accessible label');

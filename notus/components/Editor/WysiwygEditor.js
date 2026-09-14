@@ -27,12 +27,47 @@ import { TextArea } from '../ui/Input';
 import { useToast } from '../ui/Toast';
 import { useShortcuts } from '../../contexts/ShortcutsContext';
 import { CitationHighlight } from './CitationHighlightExtension';
-import { TextAlignCenter, CenterParagraph, CenterHeading } from './TextAlignCenterExtension';
+import { TextAlignCenter, CenterParagraph, CenterHeading, MarkdownHardBreak } from './TextAlignCenterExtension';
 import { findMarkdownTableBlock } from '../../lib/editorMarkdownTable';
 import { extractMarkdownTaskList } from '../../lib/editorMarkdownTaskList';
 
 const lowlight = createLowlight(all);
 const MATH_MARKDOWN_PASTE_PATTERN = /(?:\$\$[\s\S]+?\$\$|\$(?!\s)(?:\\.|[^$\n\\])+\$)/;
+const INTERNAL_FILE_LINK_PREFIX = 'notus://file/';
+
+function internalFileLinkHref(fileId) {
+  return `${INTERNAL_FILE_LINK_PREFIX}${Number(fileId)}`;
+}
+
+function parseInternalFileLink(href = '') {
+  const value = String(href || '').trim();
+  const matched = value.match(/^notus:\/\/file\/([1-9]\d*)(?:[?#].*)?$/i);
+  if (!matched) return null;
+  const fileId = Number(matched[1]);
+  return Number.isFinite(fileId) && fileId > 0 ? fileId : null;
+}
+
+function isAllowedEditorLink(url, { defaultValidate }) {
+  const value = String(url || '').trim();
+  if (/^notus:/i.test(value)) return Boolean(parseInternalFileLink(value));
+  return defaultValidate(value);
+}
+
+function insertFileLinkFromMention(view, mention, point = {}) {
+  const targetFileId = Number(mention?.id);
+  if (mention?.type !== 'file' || !Number.isFinite(targetFileId) || targetFileId <= 0) return false;
+  const clientX = Number(point.clientX);
+  const clientY = Number(point.clientY);
+  const coordinates = Number.isFinite(clientX) && Number.isFinite(clientY)
+    ? view.posAtCoords({ left: clientX, top: clientY })
+    : null;
+  const position = coordinates?.pos ?? view.state.selection.from;
+  const label = String(mention.name || mention.path || '未命名文件');
+  const link = view.state.schema.marks.link?.create({ href: internalFileLinkHref(targetFileId) });
+  if (!link) return false;
+  view.dispatch(view.state.tr.insert(position, view.state.schema.text(label, [link])).scrollIntoView());
+  return true;
+}
 
 function shouldPreferMarkdownMathPaste(event) {
   if (!event?.clipboardData || event.shiftKey) return false;
@@ -188,7 +223,7 @@ function MathDialog({ value = '', mode = 'inline', onChange, onClose, onConfirm 
   );
 }
 
-export const WysiwygEditor = ({ value, onChange, onSave, onEditorReady, fileId = null }) => {
+export const WysiwygEditor = ({ value, onChange, onSave, onEditorReady, onOpenFileLink, fileId = null }) => {
   const { shortcuts, matchShortcut } = useShortcuts();
   const toast = useToast();
   const editorRef = useRef(null);
@@ -222,18 +257,22 @@ export const WysiwygEditor = ({ value, onChange, onSave, onEditorReady, fileId =
         codeBlock: false,
         paragraph: false,
         heading: false,
+        hardBreak: false,
         link: false,
         underline: false,
       }),
       TextAlignCenter,
       CenterParagraph,
       CenterHeading,
+      MarkdownHardBreak,
       CodeBlockLowlight.configure({
         lowlight,
         defaultLanguage: 'plaintext',
       }),
       Link.configure({
         openOnClick: false,
+        protocols: ['notus'],
+        isAllowedUri: isAllowedEditorLink,
         HTMLAttributes: { rel: 'noopener noreferrer' },
       }),
       LocalImage.configure({
@@ -271,6 +310,26 @@ export const WysiwygEditor = ({ value, onChange, onSave, onEditorReady, fileId =
       }),
     ],
     editorProps: {
+      handleDOMEvents: {
+        dragover: (_view, event) => {
+          if (!Array.from(event.dataTransfer?.types || []).includes('application/x-notus-mention')) return false;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = 'copy';
+          return true;
+        },
+      },
+      handleDrop: (view, event) => {
+        const raw = event.dataTransfer?.getData('application/x-notus-mention') || '';
+        if (!raw) return false;
+        try {
+          const mention = JSON.parse(raw);
+          if (!insertFileLinkFromMention(view, mention, event)) return false;
+          event.preventDefault();
+          return true;
+        } catch {
+          return false;
+        }
+      },
       handlePaste: (view, event) => {
         const currentEditor = editorRef.current;
         if (!currentEditor) return false;
@@ -382,6 +441,21 @@ export const WysiwygEditor = ({ value, onChange, onSave, onEditorReady, fileId =
   useEffect(() => () => {
     if (syncFrameRef.current) window.cancelAnimationFrame(syncFrameRef.current);
   }, []);
+
+  useEffect(() => {
+    const root = editorRootRef.current;
+    if (!root || !editor) return undefined;
+
+    const handleSidebarFileDrop = (event) => {
+      const applied = insertFileLinkFromMention(editor.view, event.detail?.mention, event.detail || {});
+      if (!applied) return;
+      event.preventDefault();
+      editor.commands.focus();
+    };
+
+    root.addEventListener('notus:sidebar-editor-file-drop', handleSidebarFileDrop);
+    return () => root.removeEventListener('notus:sidebar-editor-file-drop', handleSidebarFileDrop);
+  }, [editor]);
 
   const handleConfirmMath = useCallback(() => {
     if (!editor || !mathDialog) return;
@@ -501,6 +575,7 @@ export const WysiwygEditor = ({ value, onChange, onSave, onEditorReady, fileId =
       <div
         ref={editorRootRef}
         className="wysiwyg-root"
+        data-notus-editor-drop
         onKeyDownCapture={(event) => {
           if (matchShortcut(event, shortcuts.docSave.combo)) {
             event.preventDefault();
@@ -509,6 +584,14 @@ export const WysiwygEditor = ({ value, onChange, onSave, onEditorReady, fileId =
         }}
         onClickCapture={(event) => {
           if (!(event.target instanceof Element)) return;
+
+          const clickedLink = event.target.closest('.ProseMirror a[href]');
+          const targetFileId = clickedLink ? parseInternalFileLink(clickedLink.getAttribute('href')) : null;
+          if (targetFileId) {
+            event.preventDefault();
+            onOpenFileLink?.(targetFileId);
+            return;
+          }
 
           const clickedImage = event.target.closest('.ProseMirror img');
           if (!clickedImage) return;

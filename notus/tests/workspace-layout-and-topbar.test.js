@@ -59,7 +59,11 @@ assert.ok(sidebar.includes("type: isFolder ? 'folder' : 'file'"), '文件行必�
 assert.ok(sidebar.includes('if (destination === null || !canMoveTreeItem(source, destination)) return;'), '文件或无效落点不能提交移动请求');
 assert.ok(sidebar.includes('aria-label="移动到根目录"'), '根目录应使用独立的空白落点，不能覆盖文件行');
 assert.ok(sidebar.includes('draggable={Boolean(mention.path)}'), '文件行正文应继续作为 Mention 原生拖拽源');
-assert.ok(sidebar.includes('<FileMoveHandle item={item}'), '文件移动必须由独立拖动柄发起，避免与 Mention 拖拽冲突');
+assert.ok(sidebar.includes('ref={setRowNodeRef}'), '文件移动必须由整行发起，不应要求独立拖动柄');
+assert.ok(!sidebar.includes('const FileMoveHandle'), '文件树不应保留独立拖动柄');
+assert.ok(sidebar.includes("new CustomEvent('notus:sidebar-mention-drop'"), '整行拖到 Agent 输入框时必须转交 Mention 插入事件');
+assert.ok(agentWorkspace.includes("root.addEventListener('notus:sidebar-mention-drop'"), '命中的 Agent 输入框必须接收文件树整行拖拽产生的 Mention 事件');
+assert.ok(agentWorkspace.includes('data-notus-agent-composer'), 'Agent 输入框必须标记为文件树 Mention 的拖放目标');
 
 assert.ok(agentWorkspace.includes('AGENT_INPUT_TEXTAREA_DEFAULT_ROWS = 3'), 'agent input should default to three rows');
 assert.ok(agentWorkspace.includes("const AGENT_CHAT_CONTENT_WIDTH = 'min(860px, calc(100% - 32px))'"), 'agent input and messages should share the agreed responsive content width');

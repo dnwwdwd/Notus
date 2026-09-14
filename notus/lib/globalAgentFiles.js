@@ -389,6 +389,13 @@ async function startGlobalAgentFileWatcher() {
   return watcher;
 }
 
+async function stopGlobalAgentFileWatcher() {
+  if (!watcher) return;
+  const current = watcher;
+  watcher = null;
+  await current.close().catch(() => {});
+}
+
 module.exports = {
   FILE_TYPES,
   FILE_LIMITS,
@@ -405,4 +412,5 @@ module.exports = {
   isWritingTask,
   agentUpdateAllowed,
   startGlobalAgentFileWatcher,
+  stopGlobalAgentFileWatcher,
 };

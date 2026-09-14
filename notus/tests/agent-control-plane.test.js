@@ -8,6 +8,13 @@ function reset(modulePath) {
 }
 
 async function run() {
+  const controlPlaneSource = fs.readFileSync(path.join(__dirname, '../lib/agentControlPlane.js'), 'utf8');
+  assert.match(
+    controlPlaneSource,
+    /const ACTIVE_RUNS_GLOBAL_KEY = '__notus_agent_active_runs__';[\s\S]*globalThis\[ACTIVE_RUNS_GLOBAL_KEY\]/,
+    '取消接口和 Worker 必须使用同一个进程级 active run 注册表，才能把 AbortSignal 传递到重试等待'
+  );
+
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'notus-agent-control-'));
   process.env.NOTUS_RUNTIME_TARGET = 'web';
   process.env.NOTUS_DATA_ROOT = root;

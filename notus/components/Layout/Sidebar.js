@@ -22,7 +22,7 @@ import { Tooltip } from '../ui/Tooltip';
 import { useToast } from '../ui/Toast';
 import { useApp } from '../../contexts/AppContext';
 import { useShortcuts } from '../../contexts/ShortcutsContext';
-import { getVisibleDocumentLabel } from '../../lib/documentLabels';
+import { getFileNameLabel, getVisibleDocumentLabel } from '../../lib/documentLabels';
 import { shouldSelectCreatedFileInContext } from '../../lib/sidebarRouting';
 import { sortFilesForDisplay, sortTreeForDisplay } from '../../lib/sidebarSort';
 import { navigateWithFallback } from '../../utils/navigation';
@@ -270,7 +270,7 @@ const FileMoveHandle = ({ item, visible, disabled }) => {
 const FileRow = ({ item, isActive, onSelect, onToggle, onContextMenu, dragEnabled, activeDragItem }) => {
   const pad = 8 + item.depth * 16;
   const isFolder = item.type === 'folder';
-  const label = isFolder ? item.name : getVisibleDocumentLabel(item, '未命名文档');
+  const label = isFolder ? item.name : getFileNameLabel(item, '未命名文档');
   const labelRef = useRef(null);
   const labelTruncated = useTextOverflow(labelRef, label);
   const [hovered, setHovered] = useState(false);

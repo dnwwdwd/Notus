@@ -7,7 +7,16 @@ const { normalizeUsage, sumUsageRecords } = require('./llmBudget');
 
 const DEFAULT_CAPABILITY_TTL_MS = 15 * 60 * 1000;
 const DEFAULT_LEASE_MS = 90 * 1000;
-const activeRuns = new Map();
+// Next.js 会分别打包 API Route 和 Worker；模块级变量在两份 bundle 中并不
+// 共享。把运行中的 controller 固定在 Node 进程全局对象上，取消接口才能中止
+// 正在 Worker 内等待 LLM 重试的请求。
+const ACTIVE_RUNS_GLOBAL_KEY = '__notus_agent_active_runs__';
+const activeRuns = globalThis[ACTIVE_RUNS_GLOBAL_KEY] instanceof Map
+  ? globalThis[ACTIVE_RUNS_GLOBAL_KEY]
+  : new Map();
+if (globalThis[ACTIVE_RUNS_GLOBAL_KEY] !== activeRuns) {
+  globalThis[ACTIVE_RUNS_GLOBAL_KEY] = activeRuns;
+}
 
 function toPositiveInt(value) {
   const next = Number(value);

@@ -5,6 +5,7 @@ import { useRouter } from 'next/router';
 import { Shell } from '../../components/Layout/Shell';
 import { EditorToolbar } from '../../components/Editor/EditorToolbar';
 import { FileAgentWorkspace } from '../../components/AgentWorkspace/FileAgentWorkspace';
+import { UnindexedFilesDialog } from '../../components/Indexing/UnindexedFilesDialog';
 import { EmptyState } from '../../components/ui/EmptyState';
 import { SkeletonText } from '../../components/ui/Skeleton';
 import { InlineError } from '../../components/ui/InlineError';
@@ -29,7 +30,7 @@ import {
   restoreEditorViewPosition,
   writeEditorViewPosition,
 } from '../../utils/viewPosition';
-import { getVisibleDocumentLabel } from '../../lib/documentLabels';
+import { getFileNameLabel } from '../../lib/documentLabels';
 import { mergeEditorVisibleMarkdown, splitEditorVisibleMarkdown } from '../../lib/markdownMeta';
 
 // WysiwygEditor: SSR-incompatible (Tiptap uses DOM APIs)
@@ -782,7 +783,7 @@ export default function FilesPage() {
   return (
     <Shell
       active="files"
-      fileName={getVisibleDocumentLabel(activeFile, '未命名文档')}
+      fileName={getFileNameLabel(activeFile, '未命名文档')}
       saveState={activeFile ? saveState : undefined}
       onSave={activeFile ? handleSave : undefined}
       saveDisabled={!activeFile || saveState !== 'dirty'}
@@ -802,6 +803,7 @@ export default function FilesPage() {
       onToggleAgent={handleToggleAgentPanel}
     >
       {workspaceContent}
+      <UnindexedFilesDialog />
       {unsavedGuard.dialog}
     </Shell>
   );

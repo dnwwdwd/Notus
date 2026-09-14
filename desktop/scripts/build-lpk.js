@@ -63,6 +63,8 @@ async function main() {
     console.log(`已删除旧包：${removed.map((file) => path.basename(file)).join(', ')}`);
   }
 
+  // lzc-cli 会按 lzc-build.yml 的 buildscript 调用 build-package.sh。
+  // 在这里预先执行会让一次 dist:lpk 重复进行完整的 Linux Web 构建。
   await run('lzc-cli', ['project', 'build'], { cwd: repoRoot });
 
   const outputName = `${packageName}-v${version}.lpk`;

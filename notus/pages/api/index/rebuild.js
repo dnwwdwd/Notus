@@ -37,8 +37,12 @@ export default async function handler(req, res) {
     logger.info('index.rebuild.completed', { total: files.length, ...result });
     send(res, { type: 'done', total: files.length, ...result, request_id: context.request_id });
   } catch (error) {
-    logger.error('index.rebuild.failed', { error });
-    send(res, { type: 'error', error: error.message, request_id: context.request_id });
+    if (error.code === 'INDEX_BATCH_IN_PROGRESS') {
+      send(res, { type: 'error', error: error.message, code: error.code, request_id: context.request_id });
+    } else {
+      logger.error('index.rebuild.failed', { error });
+      send(res, { type: 'error', error: error.message, request_id: context.request_id });
+    }
   }
 
   res.end();

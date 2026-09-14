@@ -389,18 +389,29 @@ function syncFilesFromDisk() {
     }
 
     const updatedAt = getFileUpdatedAt(relativePath);
+    const shouldInvalidateIndex = Boolean(
+      existing && String(existing.hash || '') !== String(payload.hash || '')
+    );
+    if (shouldInvalidateIndex) {
+      db.transaction(() => {
+        deleteFileVectors(db, existing.id);
+        db.prepare('DELETE FROM chunks WHERE file_id = ?').run(existing.id);
+      })();
+    }
+
     db.prepare(`
       INSERT INTO files (
         path, stable_id, title, hash, size, mtime, char_count, token_count,
         frontmatter, tags, heading_outline, indexed, updated_at
       )
-      VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, 0, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
       ON CONFLICT(path) DO UPDATE SET
         stable_id = CASE
           WHEN files.stable_id IS NULL OR files.stable_id = '' THEN excluded.stable_id
           ELSE files.stable_id
         END,
         title = excluded.title,
+        hash = excluded.hash,
         size = excluded.size,
         mtime = excluded.mtime,
         char_count = excluded.char_count,
@@ -408,11 +419,16 @@ function syncFilesFromDisk() {
         frontmatter = excluded.frontmatter,
         tags = excluded.tags,
         heading_outline = excluded.heading_outline,
+        indexed = CASE WHEN COALESCE(files.hash, '') != excluded.hash THEN 0 ELSE files.indexed END,
+        indexed_at = CASE WHEN COALESCE(files.hash, '') != excluded.hash THEN NULL ELSE files.indexed_at END,
+        index_error = CASE WHEN COALESCE(files.hash, '') != excluded.hash THEN NULL ELSE files.index_error END,
+        retry_count = CASE WHEN COALESCE(files.hash, '') != excluded.hash THEN 0 ELSE files.retry_count END,
         updated_at = excluded.updated_at
     `).run(
       relativePath,
       payload.stableId,
       payload.title,
+      payload.hash,
       payload.size,
       payload.mtime,
       payload.charCount,

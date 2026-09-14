@@ -21,7 +21,7 @@ function runTests() {
   assert.ok(!home.includes("status.needsIndexing ? '/indexing'"), '启动页不得自动跳转到索引重建页');
   assert.ok(!statusGate.includes("status.needsIndexing ? '/indexing'"), '初始化守卫不得把完成初始化的用户自动送入索引重建页');
   assert.ok(!indexing.includes('if (shouldStart) startRebuild();'), '索引页不得在加载后自动请求全量重建');
-  assert.ok(indexing.includes('发现待索引文件，请手动开始构建'), '索引页必须说明待索引文件需要用户主动开始构建');
+  assert.ok(indexing.includes("router.replace('/files')"), '旧索引入口必须回到文件工作区');
 
   [
     'clean_runtime_state()',
@@ -44,6 +44,11 @@ function runTests() {
   assert.ok(lpkBuildConfig.includes('buildscript: sh lzc/build-package.sh'), 'LPK 配置必须声明唯一的内容构建脚本');
   assert.ok(lpkBuildScript.includes("await run('lzc-cli', ['project', 'build']"), 'LPK 入口必须由 lzc-cli project build 负责生成包');
   assert.ok(!lpkBuildScript.includes("await run('sh', ['lzc/build-package.sh']"), 'LPK 入口不得在 lzc-cli project build 前重复执行内容构建脚本');
+  assert.strictEqual(
+    (lpkBuildScript.match(/await run\('lzc-cli', \['project', 'build'\]/g) || []).length,
+    1,
+    'dist:lpk 必须只调用一次 lzc-cli project build'
+  );
 
   console.log('lazycat startup and package tests passed');
 }

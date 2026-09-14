@@ -11,7 +11,7 @@ process.env.DB_PATH = path.join(tempRoot, 'notus.db');
 process.env.LOG_DIR = path.join(tempRoot, 'logs');
 process.env.SESSION_DIR = path.join(tempRoot, 'session');
 
-const { getDb, initDb } = require('../lib/db');
+const { getDb, initDb, setSetting } = require('../lib/db');
 const { createSession, updateSessionStatus } = require('../lib/agentSession');
 const { createOperationSet, getOperationSetById } = require('../lib/canvasOperationSets');
 const { getFileByPath, readMarkdownFile, writeMarkdownFile } = require('../lib/files');
@@ -73,6 +73,28 @@ async function runTests() {
   assert.strictEqual(rollback.success, true);
   assert.strictEqual(rollback.status, 'rolled_back');
   assert.strictEqual(readMarkdownFile('case.md'), baseContent);
+
+  setSetting('editor_title_filename_binding_enabled', 'true');
+  writeMarkdownFile('legacy-revision.md', '# 旧修订标题\n\n正文\n');
+  const boundRevisionFile = getFileByPath('legacy-revision.md');
+  const boundConversationId = createConversation(boundRevisionFile.id);
+  const boundSession = createRunningSession(boundConversationId, ['legacy-revision.md', '新修订标题.md']);
+  const boundPreview = await previewFileRevision({
+    file_path: 'legacy-revision.md',
+    draft_content: '# 新修订标题\n\n正文已更新\n',
+  }, boundSession.sessionId);
+  const boundApply = await applyFileRevision(boundPreview.operation_set_id, boundSession.sessionId);
+  assert.strictEqual(boundApply.success, true);
+  assert.deepStrictEqual(boundApply.changed_files, ['新修订标题.md']);
+  assert.strictEqual(getFileByPath('legacy-revision.md'), null);
+  assert.ok(getFileByPath('新修订标题.md'));
+  assert.strictEqual(getOperationSetById(boundPreview.operation_set_id).revision_file_path, '新修订标题.md');
+  const boundRollback = await rollbackFileRevision(boundPreview.operation_set_id, boundSession.sessionId);
+  assert.strictEqual(boundRollback.success, true);
+  assert.deepStrictEqual(boundRollback.changed_files, ['旧修订标题.md']);
+  assert.ok(getFileByPath('旧修订标题.md'));
+  assert.strictEqual(getFileByPath('新修订标题.md'), null);
+  setSetting('editor_title_filename_binding_enabled', 'false');
 
   const stalePreview = await previewFileRevision({
     file_path: 'case.md',

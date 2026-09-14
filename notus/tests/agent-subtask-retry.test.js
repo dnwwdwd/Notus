@@ -74,7 +74,7 @@ async function runTests() {
     const result = await runAgentLoop({
       sessionId: session.sessionId,
       llmConfig: { llmContextWindowTokens: 60000 },
-      llmRetryDelayMs: () => 0,
+      llmRetryWait: async () => {},
       onStream: (event) => events.push(event),
     });
     assert.strictEqual(result.status, 'completed');
@@ -82,6 +82,7 @@ async function runTests() {
     assert.strictEqual(retries.length, 2);
     assert.notStrictEqual(retries[0].execution_segment_id, retries[1].execution_segment_id);
     assert.deepStrictEqual(retries.map((event) => event.retry_attempt), [1, 1]);
+    assert.deepStrictEqual(retries.map((event) => event.retry_after_ms), [30_000, 30_000]);
     const segments = listExecutionSegments(session.sessionId);
     assert.strictEqual(segments.length, 2);
     assert.deepStrictEqual(segments.map((segment) => segment.request_windows[0].retry_attempts), [1, 1]);

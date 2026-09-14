@@ -13,6 +13,7 @@ async function runTests() {
   process.env.LOG_DIR = path.join(tempRoot, 'logs');
   process.env.SESSION_DIR = path.join(tempRoot, 'session');
 
+  const { setSetting } = require('../lib/db');
   const { createFile, getFileByPath } = require('../lib/files');
   const { ensureConversation } = require('../lib/conversations');
   const { createSession } = require('../lib/agentSession');
@@ -87,6 +88,33 @@ async function runTests() {
   assert.strictEqual(moveItem.applied_path, 'new.md');
   assert.ok(moveItem.applied_content.includes('content'));
   assert.ok(detail.operation_set_view, '累计详情必须返回可直接渲染的 Diff 视图');
+
+  setSetting('editor_title_filename_binding_enabled', 'true');
+  const boundFile = createFile('legacy-name.md', '# 旧标题\n\n正文\n', { titleFilenameBindingEnabled: false });
+  const boundSet = createOperationSet({
+    conversationId: conversation.id,
+    agentSessionId: session.sessionId,
+    mode: 'single_file',
+    patches: [{ file_path: boundFile.path, old: '# 旧标题', new: '# 新标题', change_type: 'modify' }],
+  });
+  registerOperationSet({ operationSetId: boundSet.id, sessionId: session.sessionId, conversationId: conversation.id, approvalMode: 'manual_confirm' });
+  const boundApply = await applyPreviewPatchFile(boundSet.id, session.sessionId, { patchIndex: 0 });
+  assert.strictEqual(boundApply.success, true);
+  assert.deepStrictEqual(boundApply.changed_files, ['新标题.md']);
+  assert.strictEqual(getFileByPath('legacy-name.md'), null, 'Agent 修改既有文件时也必须执行标题—文件名绑定');
+  assert.ok(getFileByPath('新标题.md'));
+  assert.strictEqual(getOperationSetById(boundSet.id).patches[0].file_path, '新标题.md', 'Diff 必须保留重命名后的真实路径');
+  resolveOperationSet({ operationSetId: boundSet.id, sessionId: session.sessionId, resolution: 'applied' });
+  detail = getTaskChangeSetDetail(session.sessionId);
+  const boundItem = detail.items.find((item) => item.resource_key === 'legacy-name.md');
+  assert.ok(boundItem);
+  assert.strictEqual(boundItem.applied_path, '新标题.md', '累计 Diff 必须使用 Agent 应用后的真实文件路径');
+
+  const boundRollback = await require('../lib/agentTools').rollbackPreviewPatchFile(boundSet.id, session.sessionId, { patchIndex: 0 });
+  assert.strictEqual(boundRollback.success, true);
+  assert.deepStrictEqual(boundRollback.changed_files, ['旧标题.md']);
+  assert.ok(getFileByPath('旧标题.md'));
+  assert.strictEqual(getFileByPath('新标题.md'), null);
 
   console.log('agent task change composition tests passed');
 }

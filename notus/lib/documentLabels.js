@@ -29,6 +29,26 @@ function getPathBaseNameWithoutExtension(filePath = '') {
   return path.posix.basename(normalizedPath).replace(/\.md$/i, '').trim();
 }
 
+function getFileNameLabel(input, fallback = '未命名文档') {
+  const normalizedFallback = normalizeCandidate(fallback, { stripExtension: false }) || '未命名文档';
+  const candidates = typeof input === 'string'
+    ? [input]
+    : [
+      input?.name,
+      input?.path ? getPathBaseNameWithoutExtension(input.path) : '',
+      input?.fileName,
+      input?.file_path ? getPathBaseNameWithoutExtension(input.file_path) : '',
+      input?.title,
+    ];
+
+  for (const candidate of candidates) {
+    const normalized = normalizeCandidate(candidate);
+    if (normalized) return normalized;
+  }
+
+  return normalizedFallback;
+}
+
 function isTechnicalDocumentLabel(value = '') {
   const normalized = normalizeCandidate(value);
   if (!normalized) return true;
@@ -62,6 +82,7 @@ function getVisibleDocumentLabel(input, fallback = '未命名文档') {
 
 module.exports = {
   getPathBaseNameWithoutExtension,
+  getFileNameLabel,
   getVisibleDocumentLabel,
   isTechnicalDocumentLabel,
   normalizeCandidate,

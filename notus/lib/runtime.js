@@ -7,6 +7,7 @@ const { startWatcher } = require('./watcher');
 let runtimeStarted = false;
 let retryTimer = null;
 let runtimeError = null;
+let maintenanceMode = null;
 const logger = createLogger({ subsystem: 'runtime' });
 
 function ensureDirs(config) {
@@ -30,7 +31,12 @@ function scheduleRetries() {
   if (retryTimer.unref) retryTimer.unref();
 }
 
-function ensureRuntime({ startBackground = true } = {}) {
+function ensureRuntime({ startBackground = true, allowMaintenance = false } = {}) {
+  if (maintenanceMode && !allowMaintenance) {
+    const error = new Error('Notus 正在进行数据维护，请稍候重试');
+    error.code = 'DATA_MAINTENANCE';
+    return { ok: false, error, vecAvailable: false };
+  }
   if (runtimeStarted) return { ok: true, vecAvailable: isVecAvailable() };
 
   try {
@@ -90,6 +96,52 @@ function ensureRuntime({ startBackground = true } = {}) {
   }
 }
 
+function beginDataMaintenance(mode = 'data') {
+  if (maintenanceMode) {
+    const error = new Error('已有数据维护操作正在进行');
+    error.code = 'DATA_MAINTENANCE_BUSY';
+    error.status = 409;
+    throw error;
+  }
+  maintenanceMode = String(mode || 'data');
+  return maintenanceMode;
+}
+
+function endDataMaintenance() {
+  maintenanceMode = null;
+}
+
+function getDataMaintenanceMode() {
+  return maintenanceMode;
+}
+
+async function stopRuntime() {
+  const { stopWatcher } = require('./watcher');
+  const { stopSkillWatchers } = require('./skills');
+  const { stopGlobalAgentFileWatcher } = require('./globalAgentFiles');
+  const { closeAllConnections } = require('./mcp');
+  const { stopSessionCleaner } = require('./agentSessionCleaner');
+  const { stopStyleBackgroundWorkers } = require('./style');
+  const { stopAgentTaskWorker } = require('./agentTaskWorker');
+  // 先停止新的队列领取和后台定时任务，再等待 watcher/MCP 关闭，避免维护锁
+  // 建立后又有新写入进入数据库。
+  stopAgentTaskWorker();
+  stopStyleBackgroundWorkers();
+  stopSessionCleaner();
+  if (retryTimer) clearInterval(retryTimer);
+  retryTimer = null;
+  await Promise.allSettled([
+    stopWatcher(),
+    Promise.resolve(stopSkillWatchers()),
+    stopGlobalAgentFileWatcher(),
+    closeAllConnections(),
+  ]);
+  const { closeDb } = require('./db');
+  closeDb();
+  runtimeStarted = false;
+  runtimeError = null;
+}
+
 function getRuntimeStatus() {
   const result = ensureRuntime();
   return {
@@ -101,5 +153,9 @@ function getRuntimeStatus() {
 
 module.exports = {
   ensureRuntime,
+  beginDataMaintenance,
+  endDataMaintenance,
+  getDataMaintenanceMode,
+  stopRuntime,
   getRuntimeStatus,
 };

@@ -35,6 +35,8 @@ const BLOCK_NODE_TYPES = new Set([
 ]);
 const logger = createLogger({ subsystem: 'indexer' });
 const INDEX_VERSION = 1;
+const inFlightIndexByPath = new Map();
+let activeIndexBatch = null;
 
 function normalizeContent(content = '') {
   return String(content).replace(/\r\n/g, '\n').replace(/^\n+|\n+$/g, '');
@@ -187,7 +189,7 @@ function resolveIndexPath(inputPath) {
   return ensureMarkdownPath(inputPath);
 }
 
-async function indexFile(inputPath) {
+async function indexFileNow(inputPath) {
   const db = getDb();
   const relativePath = resolveIndexPath(inputPath);
   const content = readMarkdownFile(relativePath);
@@ -401,6 +403,22 @@ async function indexFile(inputPath) {
   };
 }
 
+async function indexFile(inputPath) {
+  const relativePath = resolveIndexPath(inputPath);
+  const inFlight = inFlightIndexByPath.get(relativePath);
+  if (inFlight) return inFlight;
+
+  const task = indexFileNow(relativePath);
+  inFlightIndexByPath.set(relativePath, task);
+  try {
+    return await task;
+  } finally {
+    if (inFlightIndexByPath.get(relativePath) === task) {
+      inFlightIndexByPath.delete(relativePath);
+    }
+  }
+}
+
 function markFileIndexFailed(inputPath, error) {
   const db = getDb();
   const relativePath = resolveIndexPath(inputPath);
@@ -504,18 +522,41 @@ async function retryFailedIndexing(limit = 10) {
   return indexBatch(rows.map((row) => row.path));
 }
 
-async function rebuildIndex(onProgress, options = {}) {
-  const { listMarkdownFiles } = require('./files');
-  const config = getEffectiveConfig();
-  fs.mkdirSync(config.notesDir, { recursive: true });
-  setStyleBackfillPaused(true);
-  if (options.clear !== false) clearIndex();
-  const paths = listMarkdownFiles();
+function createIndexBatchBusyError() {
+  const error = new Error('已有索引任务正在执行，请完成后再试');
+  error.code = 'INDEX_BATCH_IN_PROGRESS';
+  return error;
+}
+
+async function runIndexBatch(kind, task) {
+  if (activeIndexBatch) throw createIndexBatchBusyError();
+  const current = { kind };
+  activeIndexBatch = current;
   try {
-    return await indexBatch(paths, onProgress);
+    return await task();
   } finally {
-    setStyleBackfillPaused(false);
+    if (activeIndexBatch === current) activeIndexBatch = null;
   }
+}
+
+async function indexSelectedPaths(paths = [], onProgress) {
+  return runIndexBatch('selected', () => indexBatch(paths, onProgress));
+}
+
+async function rebuildIndex(onProgress, options = {}) {
+  return runIndexBatch('rebuild', async () => {
+    const { listMarkdownFiles } = require('./files');
+    const config = getEffectiveConfig();
+    fs.mkdirSync(config.notesDir, { recursive: true });
+    setStyleBackfillPaused(true);
+    if (options.clear !== false) clearIndex();
+    const paths = listMarkdownFiles();
+    try {
+      return await indexBatch(paths, onProgress);
+    } finally {
+      setStyleBackfillPaused(false);
+    }
+  });
 }
 
 async function triggerIncrementalIndex(relPath) {
@@ -530,6 +571,7 @@ module.exports = {
   clearIndex,
   removeFile,
   retryFailedIndexing,
+  indexSelectedPaths,
   rebuildIndex,
   markFileIndexFailed,
 };

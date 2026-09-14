@@ -76,13 +76,18 @@ async function runTests() {
     const firstResult = await runAgentLoop({
       sessionId: session.sessionId,
       llmConfig: { llmContextWindowTokens: 60000 },
-      llmRetryDelayMs: () => 0,
+      llmRetryWait: async () => {},
       onStream: (event) => firstEvents.push(event),
     });
 
     assert.strictEqual(firstResult.status, 'waiting_retry');
     assert.strictEqual(getSession(session.sessionId).status, 'waiting_retry');
     assert.strictEqual(firstEvents.filter((event) => event.type === 'progress' && event.stage === 'tool_start').length, 1, '失败前读取工具必须只执行一次');
+    assert.deepStrictEqual(
+      firstEvents.filter((event) => event.type === 'progress' && event.stage === 'llm_retry').map((event) => event.retry_after_ms),
+      [30_000, 30_000, 30_000, 30_000, 30_000],
+      '同一请求窗口的 5 次重试事件必须固定等待 30 秒'
+    );
     const checkpoint = loadMessagesCheckpoint(session.sessionId);
     assert.ok(checkpoint, '重试耗尽后必须保留可恢复 checkpoint');
     const beforeResume = listExecutionSegments(session.sessionId);
@@ -95,7 +100,7 @@ async function runTests() {
     const resumedResult = await runAgentLoop({
       sessionId: session.sessionId,
       llmConfig: { llmContextWindowTokens: 60000 },
-      llmRetryDelayMs: () => 0,
+      llmRetryWait: async () => {},
       onStream: (event) => resumedEvents.push(event),
     });
 

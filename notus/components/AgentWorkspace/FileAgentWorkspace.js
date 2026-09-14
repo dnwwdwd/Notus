@@ -25,6 +25,7 @@ import { segmentsToAgentInput } from '../../utils/messageMentions';
 import { normalizeConversationId, readActiveConversationId, saveActiveConversationId } from '../../utils/activeConversationPersistence';
 import { dispatchAgentResourceChange } from '../../utils/agentResourceEvents';
 import { shouldClearAgentPresentation } from '../../utils/agentSessionRestore';
+import { getFileNameLabel } from '../../lib/documentLabels';
 
 const CONFIRM_MODE_STORAGE_KEY = 'notus-files-agent-confirm-mode';
 const AUTO_CONFIRM = 'auto_confirm';
@@ -82,6 +83,10 @@ function collectConversationOperationSets(payload = {}) {
     .reduce((items, operationSet) => upsertById(items, operationSet), []);
 }
 
+function hasTaskChangeSetChanges(changeSet = null) {
+  return Number(changeSet?.file_count || 0) + Number(changeSet?.directory_count || 0) > 0;
+}
+
 function timelineFromSession(session = {}) {
   const restored = buildRestoredAgentTimeline(session);
   const activeSteps = Array.isArray(restored.steps) ? restored.steps : [];
@@ -107,7 +112,8 @@ function mapFileMention(file) {
   const path = String(file?.path || '').trim();
   const title = String(file?.title || '').trim();
   const fileName = String(file?.name || path.split('/').pop() || '').trim();
-  const name = fileName || title || '未命名文件';
+  // Mention、文件树和全局搜索均以真实路径的文件名为主显示，标题仅参与检索。
+  const name = getFileNameLabel({ title, name: fileName, path }, '未命名文件');
   return {
     value: String(file?.id || path),
     id: String(file?.id || path),
@@ -439,7 +445,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], activeFileId 
       setConversationListLoading(true);
       fetchConversationList(historySearchQuery)
         .then((rows) => setConversationList(rows))
-        .catch(() => setConversationList([]))
+        .catch(() => {})
         .finally(() => setConversationListLoading(false));
     }, 180);
     return () => window.clearTimeout(timer);
@@ -951,11 +957,13 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], activeFileId 
     return visibleMessages.map((message, index) => {
       const operationSetId = String(message?.meta?.operation_set_id || message?.operationSet?.id || '');
       const sessionId = String(message?.meta?.session_id || '');
-      const operationSet = taskChangeSetsBySession[sessionId]
+      const taskChangeSetCandidate = taskChangeSetsBySession[sessionId] || message?.taskChangeSet || null;
+      const hasTaskChangeSet = hasTaskChangeSetChanges(taskChangeSetCandidate);
+      const operationSet = hasTaskChangeSet
         ? null
         : operationSetById[operationSetId] || operationSetBySessionId[sessionId] || message?.operationSet || null;
       const taskChangeSet = latestAssistantIndexBySession.get(sessionId) === index
-        ? (taskChangeSetsBySession[sessionId] || message?.taskChangeSet || null)
+        ? (hasTaskChangeSet ? taskChangeSetCandidate : null)
         : null;
       if (!operationSet && !taskChangeSet) return message;
       return { ...message, operationSet, taskChangeSet };

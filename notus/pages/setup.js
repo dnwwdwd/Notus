@@ -527,8 +527,8 @@ export default function SetupPage() {
   useEffect(() => {
     if (!router.isReady || statusLoading) return;
     if (!appStatus?.setup?.completed) return;
-    router.replace(appStatus.needsIndexing ? '/indexing' : '/files');
-  }, [appStatus?.setup?.completed, appStatus.needsIndexing, router, statusLoading]);
+    router.replace('/files');
+  }, [appStatus?.setup?.completed, router, statusLoading]);
 
   useEffect(() => {
     if (statusLoading || stepReady) return;
@@ -780,7 +780,7 @@ export default function SetupPage() {
       if (typeof window !== 'undefined') {
         window.sessionStorage.removeItem(SETUP_STEP_STORAGE_KEY);
       }
-      router.replace(latest.index.total > 0 && latest.index.pending > 0 ? '/indexing' : '/files');
+      router.replace('/files');
     } catch (error) {
       toast(error.message || '初始化完成失败', 'warning');
     } finally {
@@ -850,35 +850,6 @@ export default function SetupPage() {
     };
   };
 
-  const rebuildIndex = async () => {
-    let summary = null;
-    const response = await fetch('/api/index/rebuild', { method: 'POST' });
-
-    await consumeSseResponse(response, (event) => {
-      if (event.type === 'progress') {
-        setStep3Progress({
-          stage: 'indexing',
-          current: event.current || 0,
-          total: event.total || 0,
-          currentFile: event.currentFile || '',
-        });
-        if (event.status === 'failed' && event.error) {
-          setStep3Errors((prev) => [...prev, { path: event.currentFile, error: event.error }]);
-        }
-      }
-      if (event.type === 'done') {
-        summary = event;
-        setStep3Summary(event);
-        if (event.errors?.length) setStep3Errors((prev) => [...prev, ...event.errors]);
-      }
-      if (event.type === 'error') {
-        throw new Error(event.error || '索引重建失败');
-      }
-    });
-
-    return summary;
-  };
-
   const runInitialSetupPipeline = async () => {
     setStep3Running(true);
     setStep3Summary(null);
@@ -895,14 +866,7 @@ export default function SetupPage() {
           selectPath: !importedFromDirectory && importedPaths.length === 1 ? importedPaths[0] : '',
         });
       }
-      let latest = await refreshStatus({ quiet: true });
-      const shouldRebuild = latest.index.total > 0 &&
-        (latest.index.pending > 0 || latest.index.failed > 0 || latest.index.indexed < latest.index.total);
-
-      if (shouldRebuild) {
-        await rebuildIndex();
-        latest = await refreshStatus({ quiet: true });
-      }
+      const latest = await refreshStatus({ quiet: true });
 
       if (latest.index.total === 0) {
         setStep3Progress({ stage: 'done', current: 0, total: 0, currentFile: '' });

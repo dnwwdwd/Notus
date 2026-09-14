@@ -202,7 +202,9 @@ function ftsSearch(db, query, topK, fileIds = []) {
       SELECT c.id AS chunk_id, bm25(chunks_fts) AS rank
       FROM chunks_fts
       JOIN chunks c ON c.id = chunks_fts.rowid
+      JOIN files f ON f.id = c.file_id
       WHERE chunks_fts MATCH ?
+      AND f.indexed = 1
       ${hasFileFilter ? `AND c.file_id IN (${normalizedFileIds.map(() => '?').join(',')})` : ''}
       ORDER BY rank
       LIMIT ?
@@ -349,7 +351,9 @@ async function hybridSearch(query, opts = {}) {
         c.file_id
       FROM images i
       JOIN chunks c ON c.id = i.chunk_id
+      JOIN files f ON f.id = c.file_id
       WHERE i.id IN (${rawImageRows.map(() => '?').join(',')})
+      AND f.indexed = 1
       ${hasFileFilter ? `AND c.file_id IN (${fileIds.map(() => '?').join(',')})` : ''}
     `).all(...rawImageRows.map((row) => row.image_id), ...(hasFileFilter ? fileIds : []))
     : [];
@@ -379,6 +383,7 @@ async function hybridSearch(query, opts = {}) {
     FROM chunks c
     JOIN files f ON f.id = c.file_id
     WHERE c.id IN (${candidates.map(() => '?').join(',')})
+    AND f.indexed = 1
     ${hasFileFilter ? `AND f.id IN (${fileIds.map(() => '?').join(',')})` : ''}
   `).all(...candidates.map((candidate) => candidate.chunk_id), ...(hasFileFilter ? fileIds : []));
 
@@ -446,6 +451,7 @@ function searchFileMatches(db, queries = [], options = {}) {
       FROM files_fts
       JOIN files f ON f.id = files_fts.rowid
       WHERE files_fts MATCH ?
+      AND f.indexed = 1
       ${hasFileFilter ? `AND f.id IN (${fileIds.map(() => '?').join(',')})` : ''}
       ORDER BY rank
       LIMIT ?

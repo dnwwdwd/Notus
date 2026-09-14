@@ -374,5 +374,10 @@ function startAgentTaskWorker() {
   if (workerState.timer.unref) workerState.timer.unref();
 }
 
+function stopAgentTaskWorker() {
+  if (workerState.timer) clearInterval(workerState.timer);
+  workerState.timer = null;
+}
+
 function wakeAgentTaskWorker() { schedule(); }
-module.exports = { startAgentTaskWorker, wakeAgentTaskWorker };
+module.exports = { startAgentTaskWorker, stopAgentTaskWorker, wakeAgentTaskWorker };

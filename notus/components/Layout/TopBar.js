@@ -11,7 +11,7 @@ import { Spinner } from '../ui/Spinner';
 import { Tooltip } from '../ui/Tooltip';
 import { navigateWithFallback } from '../../utils/navigation';
 import { desktop as desktopClient } from '../../utils/platformClient';
-import { getVisibleDocumentLabel } from '../../lib/documentLabels';
+import { getFileNameLabel } from '../../lib/documentLabels';
 import { useSettingsDialog } from '../../contexts/SettingsDialogContext';
 
 const HEADER_BREAKPOINTS = {
@@ -284,7 +284,7 @@ export const TopBar = ({
                     gap: 4,
                   }}
                 >
-                  <span style={{ fontSize: 'var(--text-sm)', fontWeight: 500, color: 'var(--text-primary)' }}>{getVisibleDocumentLabel(file, '未命名文档')}</span>
+                  <span style={{ fontSize: 'var(--text-sm)', fontWeight: 500, color: 'var(--text-primary)' }}>{getFileNameLabel(file, '未命名文档')}</span>
                   <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>{file.path}</span>
                 </button>
               ))

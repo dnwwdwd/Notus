@@ -48,7 +48,7 @@ function normalizeIndexStatus(index = {}, setup = {}) {
 function deriveStatus(setup = defaultSetup(), index = defaultIndex()) {
   const nextIndex = normalizeIndexStatus(index, setup);
   const needsSetup = !setup.completed;
-  const needsIndexing = !needsSetup && nextIndex.total > 0 && nextIndex.pending > 0;
+  const needsIndexing = !needsSetup && nextIndex.total > 0 && (nextIndex.pending > 0 || nextIndex.failed > 0);
   return {
     setup,
     index: nextIndex,

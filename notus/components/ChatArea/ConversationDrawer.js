@@ -131,12 +131,8 @@ export function ConversationDrawer({
           </label>
         </div>
 
-        <div style={{ flex: 1, overflow: 'auto', padding: 10, display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'stretch', minHeight: 0 }}>
-          {loading ? (
-            <div style={{ minHeight: 120, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)' }}>
-              <Spinner size={18} />
-            </div>
-          ) : conversations.length === 0 ? (
+        <div aria-busy={loading || undefined} style={{ flex: 1, overflow: 'auto', padding: 10, display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'stretch', minHeight: 0 }}>
+          {conversations.length === 0 ? (
             <div
               style={{
                 minHeight: 120,

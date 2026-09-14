@@ -109,6 +109,10 @@ const {
     !controllerSource.includes('if (!event.resumable) setLoading(false);'),
     '可恢复错误不能继续把 loading 永久保持为 true'
   );
+  assert.ok(
+    controllerSource.includes("window.notusDesktop?.notifyAgent?.({ title: 'Notus Agent 已暂停', body: event.message || '请检查模型配置后继续任务。' }).catch?.(() => {});\n            controller.abort();"),
+    '可恢复 run_error 到达后必须断开仍在保活的 SSE，避免后续继续操作被前一次请求占用'
+  );
   assert.ok(workspaceSource.includes('resumeAgentTaskInFlightRef.current'), '继续任务必须同步拦截重复点击');
   assert.ok(!loopSource.includes("type: 'final', text: '\u6a21\u578b\u670d\u52a1\u6682\u65f6\u4e0d\u53ef\u7528"), '可恢复 LLM 错误不应写成最终助手消息');
   assert.ok(routeSource.includes('getLatestRunEventId'), '继续任务必须记录恢复前的事件游标，不能从头回放历史终态');

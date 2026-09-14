@@ -936,6 +936,17 @@ function getDb() {
   return initDb();
 }
 
+function closeDb() {
+  if (!db) return;
+  try {
+    db.close();
+  } finally {
+    db = null;
+    vecAvailable = false;
+    schemaReady = false;
+  }
+}
+
 function isVecAvailable() {
   if (!db) {
     try {
@@ -1009,6 +1020,7 @@ function removeSettings(keys = []) {
 module.exports = {
   getDb,
   initDb,
+  closeDb,
   resetVec,
   isVecAvailable,
   getInitError,

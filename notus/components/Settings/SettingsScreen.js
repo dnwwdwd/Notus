@@ -1156,12 +1156,17 @@ function getRuntimeLabel(runtimeTarget) {
 const Storage = () => {
   const toast = useToast();
   const { profile, capabilities } = usePlatform();
+  const backupInputRef = useRef(null);
   const [confirmClear, setConfirmClear] = useState(false);
   const [confirmRebuild, setConfirmRebuild] = useState(false);
   const [confirmWipe, setConfirmWipe] = useState(false);
+  const [confirmRestore, setConfirmRestore] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [rebuilding, setRebuilding] = useState(false);
   const [wiping, setWiping] = useState(false);
+  const [exportingBackup, setExportingBackup] = useState(false);
+  const [restoringBackup, setRestoringBackup] = useState(false);
+  const [restoreFile, setRestoreFile] = useState(null);
   const [rebuildProgress, setRebuildProgress] = useState(0);
   const [indexStatus, setIndexStatus] = useState({ total: 0, indexed: 0, pending: 0, failed: 0 });
 
@@ -1235,6 +1240,65 @@ const Storage = () => {
     }
   };
 
+  const handleExportBackup = async () => {
+    setExportingBackup(true);
+    try {
+      const response = await fetch('/api/backup/export', { cache: 'no-store' });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || '备份导出失败');
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `notus-backup-${new Date().toISOString().replace(/[:.]/g, '-')}.zip`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      toast('应用数据备份已下载', 'success');
+    } catch (error) {
+      toast(error.message || '备份导出失败', 'error');
+    } finally {
+      setExportingBackup(false);
+    }
+  };
+
+  const handleRestoreBackup = async () => {
+    if (!restoreFile) return;
+    setConfirmRestore(false);
+    setRestoringBackup(true);
+    try {
+      const form = new FormData();
+      form.append('backup', restoreFile, restoreFile.name);
+      const response = await fetch('/api/backup/restore', { method: 'POST', body: form });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || '备份还原失败');
+      try {
+        ['notus-files-active-conversation', 'notus-file-tree-cache', 'notus-app-status-cache'].forEach((key) => window.localStorage.removeItem(key));
+        ['notus-active-conversation', 'notus-file-tree-cache', 'notus-app-status-cache'].forEach((key) => window.sessionStorage.removeItem(key));
+      } catch {}
+      toast('应用数据已还原，正在刷新页面', 'success');
+      window.setTimeout(() => window.location.reload(), 250);
+    } catch (error) {
+      toast(error.message || '备份还原失败', 'error');
+      setRestoringBackup(false);
+    }
+  };
+
+  const handleBackupFileChange = (event) => {
+    const file = event.target.files?.[0] || null;
+    if (!file) return;
+    if (!/\.zip$/i.test(file.name) && !['application/zip', 'application/x-zip-compressed'].includes(file.type)) {
+      toast('请选择 ZIP 备份文件', 'warning');
+      event.target.value = '';
+      setRestoreFile(null);
+      return;
+    }
+    setRestoreFile(file);
+  };
+
   const handleWipe = async () => {
     setConfirmWipe(false);
     setWiping(true);
@@ -1279,6 +1343,24 @@ const Storage = () => {
             ? '桌面端会把导入的 Markdown、附件、数据库和日志统一存放到应用工作区中，避免散落到其他目录。'
             : '当前环境会直接使用现有目录中的文件，索引和运行时数据仍由 Notus 在本地维护。'}
         </NoteBox>
+      </Section>
+      <Section title="应用数据备份">
+        <div style={{ display: 'grid', gap: 12 }}>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            <Button variant="secondary" loading={exportingBackup} onClick={handleExportBackup}>下载应用数据备份</Button>
+            <Button variant="secondary" loading={restoringBackup} disabled={!restoreFile} onClick={() => setConfirmRestore(true)}>上传备份并还原</Button>
+            <input ref={backupInputRef} type="file" accept=".zip,application/zip,application/x-zip-compressed" onChange={handleBackupFileChange} style={{ display: 'none' }} />
+            <Button variant="ghost" disabled={restoringBackup} onClick={() => backupInputRef.current?.click()}>选择备份 ZIP</Button>
+          </div>
+          {restoreFile ? (
+            <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>
+              已选择：{restoreFile.name}（{(restoreFile.size / 1024 / 1024).toFixed(2)} MiB）
+            </div>
+          ) : null}
+          <NoteBox tone="warning">
+            普通 ZIP 备份可能包含 API Key、MCP 凭据、对话和其他敏感业务数据，请妥善保存。还原会覆盖当前应用数据；存在未结束的 Agent 任务时，服务端会拒绝还原。
+          </NoteBox>
+        </div>
       </Section>
       <Section title="索引状态">
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12, fontSize: 'var(--text-sm)' }}>
@@ -1338,6 +1420,15 @@ const Storage = () => {
         title="清除本机数据并退出"
         message="此操作会删除 Notus 当前工作区中的笔记副本、附件、数据库、日志和本地会话，然后退出应用。"
         confirmLabel="确认清理"
+        danger
+      />
+      <ConfirmDialog
+        open={confirmRestore}
+        onClose={() => setConfirmRestore(false)}
+        onConfirm={handleRestoreBackup}
+        title="覆盖还原应用数据"
+        message={`将用“${restoreFile?.name || '所选备份'}”完全覆盖当前笔记、资源、数据库、对话、Skill、MCP 和 Agent 数据。普通 ZIP 可能包含敏感凭据；还原期间不能存在未结束的 Agent 任务。确认继续吗？`}
+        confirmLabel="确认覆盖还原"
         danger
       />
     </div>

@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { getDb } = require('./db');
 const { getEffectiveConfig } = require('./config');
-const { getFileByPath } = require('./files');
+const { getFileByPath, updateFile } = require('./files');
 const { triggerIncrementalIndex } = require('./indexer');
 const {
   createDiffHunks,
@@ -454,23 +454,30 @@ async function applyFileRevision(operationSetId, sessionId, { auto = false } = {
       fileId: file.id,
       mediaChanges: existingMediaChanges,
     });
-    atomicWriteRevisionFile(filePath, materialized.content, set.id);
-    const nextFile = getFileByPath(filePath);
+    const savedFile = updateFile(file.id, normalizeRevisionContent(materialized.content));
+    const finalPath = savedFile.path;
+    const nextFile = getFileByPath(finalPath);
     const appliedHash = hashRevisionContent(nextFile?.content || '');
+    const mediaChanges = materialized.media_changes.map((change) => (
+      String(change?.file_path || '') === String(filePath)
+        ? { ...change, file_path: finalPath }
+        : change
+    ));
     const operationSet = updateOperationSet(set.id, {
       status: 'applied',
+      revisionFilePath: finalPath,
       revisionDraftContent: materialized.content,
       revisionDraftHash: hashRevisionContent(materialized.content),
       revisionAppliedHash: appliedHash,
       revisionAppliedAt: nowSql(),
       revisionError: '',
-      mediaChanges: materialized.media_changes,
+      mediaChanges,
     });
-    scheduleIncrementalIndex(filePath);
+    scheduleIncrementalIndex(finalPath);
     return {
       success: true,
       applied: true,
-      changed_files: [filePath],
+      changed_files: [finalPath],
       operation_set: operationSet,
       status: 'applied',
       applied_hash: appliedHash,
@@ -524,17 +531,25 @@ async function rollbackFileRevision(operationSetId, sessionId) {
   }
 
   try {
-    atomicWriteRevisionFile(filePath, set.revision_base_content || '', set.id);
+    const savedFile = updateFile(file.id, normalizeRevisionContent(set.revision_base_content || ''));
+    const restoredPath = savedFile.path;
+    const mediaChanges = (Array.isArray(set.media_changes) ? set.media_changes : []).map((change) => (
+      String(change?.file_path || '') === String(filePath)
+        ? { ...change, file_path: restoredPath }
+        : change
+    ));
     const operationSet = updateOperationSet(set.id, {
       status: 'rolled_back',
+      revisionFilePath: restoredPath,
       revisionRolledBackAt: nowSql(),
       revisionError: '',
+      mediaChanges,
     });
-    scheduleIncrementalIndex(filePath);
+    scheduleIncrementalIndex(restoredPath);
     return {
       success: true,
       rolled_back: true,
-      changed_files: [filePath],
+      changed_files: [restoredPath],
       operation_set: operationSet,
       status: 'rolled_back',
     };

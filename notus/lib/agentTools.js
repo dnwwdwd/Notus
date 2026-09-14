@@ -6,7 +6,7 @@ const { Agent, fetch: undiciFetch } = require('undici');
 const { getDb } = require('./db');
 const { getEffectiveConfig } = require('./config');
 const { hybridSearch } = require('./retrieval');
-const { createFile, getFileByPath, writeMarkdownFile, sha256, extractTitle } = require('./files');
+const { createFile, getFileByPath, updateFile, sha256, extractTitle } = require('./files');
 const { getConversation } = require('./conversations');
 const { splitEditorVisibleMarkdown } = require('./markdownMeta');
 const { articleFromMarkdown } = require('../utils/markdownBlocks');
@@ -999,20 +999,31 @@ async function applyPreviewPatchFile(operationSetId, sessionId, {
   patch = materialized.patch;
   const finalReplacement = replaceUnique(file.content || '', patch.old, patch.new, 'OLD_REQUIRED');
   if (!finalReplacement.ok) return patchConflict(finalReplacement.reason === 'TEXT_NOT_FOUND' ? 'OLD_NOT_FOUND' : finalReplacement.reason, patch);
-  writeMarkdownFile(patch.file_path, finalReplacement.next);
+  const originalPath = patch.file_path;
+  const savedFile = updateFile(file.id, finalReplacement.next);
+  const finalPath = savedFile.path;
   patches[index] = {
     ...patch,
+    file_path: finalPath,
+    old_path: patch.old_path || originalPath,
+    new_path: finalPath,
     status: auto ? 'auto_applied' : 'applied',
     handled_at: nowIso(),
     error: '',
+    title_binding_warning: savedFile.title_binding_warning || '',
   };
+  const mediaChanges = materialized.mediaChanges.map((change) => (
+    String(change?.file_path || '') === String(originalPath)
+      ? { ...change, file_path: finalPath }
+      : change
+  ));
   const operationSet = updateOperationSet(set.id, {
     patches,
     status: deriveOperationSetStatus(patches),
-    mediaChanges: materialized.mediaChanges,
+    mediaChanges,
   });
-  scheduleIncrementalIndex(patch.file_path);
-  return { success: true, applied: true, changed_files: [patch.file_path], operation_set: operationSet, patch_index: index };
+  scheduleIncrementalIndex(finalPath);
+  return { success: true, applied: true, changed_files: [finalPath], operation_set: operationSet, patch_index: index };
 }
 
 async function rollbackPreviewPatchFile(operationSetId, sessionId, {
@@ -1072,11 +1083,30 @@ async function rollbackPreviewPatchFile(operationSetId, sessionId, {
   if (!replacement.ok && !force) return patchConflict(replacement.reason === 'TEXT_NOT_FOUND' ? 'NEW_NOT_FOUND' : replacement.reason, patch);
   if (!replacement.ok) return patchConflict(replacement.reason, patch);
 
-  writeMarkdownFile(patch.file_path, replacement.next);
-  patches[index] = { ...patch, status: 'rolled_back', handled_at: nowIso(), error: '' };
-  const operationSet = savePatchStates(set, patches);
-  scheduleIncrementalIndex(patch.file_path);
-  return { success: true, rolled_back: true, changed_files: [patch.file_path], operation_set: operationSet, patch_index: index };
+  const originalPath = patch.file_path;
+  const savedFile = updateFile(file.id, replacement.next);
+  const restoredPath = savedFile.path;
+  patches[index] = {
+    ...patch,
+    file_path: restoredPath,
+    new_path: restoredPath,
+    status: 'rolled_back',
+    handled_at: nowIso(),
+    error: '',
+    title_binding_warning: savedFile.title_binding_warning || '',
+  };
+  const mediaChanges = (Array.isArray(set.media_changes) ? set.media_changes : []).map((change) => (
+    String(change?.file_path || '') === String(originalPath)
+      ? { ...change, file_path: restoredPath }
+      : change
+  ));
+  const operationSet = updateOperationSet(set.id, {
+    patches,
+    status: deriveOperationSetStatus(patches),
+    mediaChanges,
+  });
+  scheduleIncrementalIndex(restoredPath);
+  return { success: true, rolled_back: true, changed_files: [restoredPath], operation_set: operationSet, patch_index: index };
 }
 
 async function discardPreviewPatchFile(operationSetId, sessionId, {

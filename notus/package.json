@@ -1,6 +1,6 @@
 {
   "name": "notus",
-  "version": "0.1.14",
+  "version": "0.1.7",
   "private": true,
   "engines": {
     "node": "20.19.x"

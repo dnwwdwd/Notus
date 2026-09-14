@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Dialog } from '../ui/Dialog';
 import { Icons } from '../ui/Icons';
+import { getFileNameLabel } from '../../lib/documentLabels';
 import { MarkdownPreview } from '../Editor/MarkdownPreview';
 
 const mentionContentCache = new Map();
@@ -140,7 +141,7 @@ export function MentionPreviewDialog({ mention, onClose, onOpenDocument }) {
   }, [isFolder, isSkill, loadContent, mention]);
 
   const title = useMemo(() => {
-    const label = selectedFile?.title || selectedFile?.name || mention?.name || (isFolder ? '目录预览' : '笔记预览');
+    const label = getFileNameLabel(selectedFile || mention, isFolder ? '目录预览' : '笔记预览');
     const openDocument = () => {
       if (isFolder || !selectedFile?.path) return;
       onClose?.();
@@ -156,7 +157,7 @@ export function MentionPreviewDialog({ mention, onClose, onOpenDocument }) {
         )}
       </span>
     );
-  }, [isFolder, mention?.name, onClose, onOpenDocument, selectedFile?.name, selectedFile?.path, selectedFile?.title]);
+  }, [isFolder, mention, onClose, onOpenDocument, selectedFile]);
 
   return (
     <Dialog
@@ -186,7 +187,7 @@ export function MentionPreviewDialog({ mention, onClose, onOpenDocument }) {
                     title={file.path}
                   >
                     <Icons.file size={14} />
-                    <span>{file.title || file.name || file.path}</span>
+                    <span>{getFileNameLabel(file, file.path)}</span>
                   </button>
                 ))}
               </aside>

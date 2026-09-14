@@ -1217,9 +1217,12 @@ export function useAgentLoopController({
             });
             setStreamText(assistantTextRef.current);
             // SSE Route 会在等待态继续保持心跳，不会自然结束；服务端在发出
-            // run_error 前已经释放 run lease，因此这里必须立即解除 loading。
+            // run_error 前已经释放 run lease，因此这里必须立即解除 loading 并断开
+            // 本次订阅。否则 startAgentLoop 的 Promise 一直未结束，文件工作区的
+            // 防重复点击锁会把后续“继续”误判为同一次请求。
             setLoading(false);
             window.notusDesktop?.notifyAgent?.({ title: 'Notus Agent 已暂停', body: event.message || '请检查模型配置后继续任务。' }).catch?.(() => {});
+            controller.abort();
           } else if (event.artifact_type === 'resume_job' && event.resume_job?.status === 'completed') {
             setActiveAgentSession({ status: 'completed', reason: 'idempotent_replay' });
           }
@@ -1228,7 +1231,7 @@ export function useAgentLoopController({
           const finalText = String(event.text || event.final_text || '').trim() || reasonLabel(event.reason);
           assistantTextRef.current = finalText;
           let operationSet = null;
-          if (event.operation_set_id) {
+          if (event.operation_set_id || event.task_change_set_id) {
             try {
               const detail = await fetchSessionDetails(event.session_id || current.id, {
                 token: current.token || resumeToken,

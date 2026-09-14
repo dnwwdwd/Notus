@@ -145,6 +145,11 @@ assert.ok(fileWorkspace.includes("step?.id !== 'resume-interrupted-task'"), '终
 assert.ok(fileWorkspace.includes('merged[sessionId] = mergeSessionTimeline(merged[sessionId], timeline);'), '会话时间线必须按 session 合并恢复记录与实时增量');
 assert.ok(fileWorkspace.includes('const operationSetBySessionId = useMemo'), '完成态 Diff 卡必须可按 Agent session 回退关联，兼容早期缺失 operation_set_id 的最终消息');
 assert.ok(fileWorkspace.includes('operationSetById[operationSetId] || operationSetBySessionId[sessionId]'), '消息级 Diff 恢复必须优先按操作集 ID，再按 session 关联');
+assert.ok(fileWorkspace.includes('function hasTaskChangeSetChanges(changeSet = null)'), '任务变更集摘要必须先确认包含文件或目录修改。');
+assert.ok(fileWorkspace.includes('const hasTaskChangeSet = hasTaskChangeSetChanges(taskChangeSetCandidate);'), '任务摘要尚未写入计数时不得提前遮蔽单批 Diff 回退卡。');
+assert.ok(fileWorkspace.includes('const operationSet = hasTaskChangeSet'), '存在有效任务级摘要时才替换旧的 operation set 卡。');
+assert.ok(workspace.includes('function hasTaskChangeSetChanges(changeSet)'), '累计 Diff 卡与消息回退卡必须共用同一份可见性判断。');
+assert.ok(workspace.includes('!hasTaskChangeSetChanges(taskChangeSet || message.taskChangeSet) && message.operationSet'), '空摘要不能隐藏既有单批 Diff 详情入口。');
 assert.ok(fileWorkspace.includes('onSessionTimeline: handleSessionTimeline'), '每个订阅会话的实时事件都必须写入独立时间线');
 assert.ok(fileWorkspace.includes('Object.entries(liveSessionTimelines).forEach'), '已恢复和实时 session 的时间线必须合并展示');
 assert.ok(fileWorkspace.includes('userMessageId: Number(session?.task?.user_message_id'), '历史等待任务必须绑定到其原始用户消息');

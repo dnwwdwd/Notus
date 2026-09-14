@@ -172,9 +172,25 @@ assert.ok(settings.includes("{ id: 'global-agent', label: 'Agent 个性', icon: 
   assert.ok(conversationDrawer.includes('ConfirmDialog'));
   assert.ok(conversationDrawer.includes('Icons.trash'));
   assert.ok(conversationDrawer.includes('onDelete?.(pendingDelete.id, pendingDelete)'));
+  assert.ok(conversationDrawer.includes('aria-busy={loading || undefined}'));
+  assert.ok(!conversationDrawer.includes('{loading ? ('));
+  assert.ok(conversationDrawer.includes('{conversations.length === 0 ? ('));
 
   const agentWorkspace = read('components/AgentWorkspace/AgentWorkspace.js');
+  const fileAgentWorkspace = read('components/AgentWorkspace/FileAgentWorkspace.js');
+  assert.ok(agentWorkspace.includes('正在恢复上次对话…'), '当前对话恢复提示必须保留');
+  assert.ok(settings.includes('下载应用数据备份'));
+  assert.ok(settings.includes('上传备份并还原'));
+  assert.ok(settings.includes('覆盖还原应用数据'));
+  assert.ok(settings.includes('敏感凭据'));
+  assert.ok(settings.includes("fetch('/api/backup/export'"));
+  assert.ok(settings.includes("fetch('/api/backup/restore'"));
+  assert.ok(settings.includes('notus-file-tree-cache'));
+  assert.ok(settings.includes('window.location.reload()'));
+  const icons = read('components/ui/Icons.js');
   assert.ok(agentWorkspace.includes('<SegmentedTabs'));
+  assert.ok(fileAgentWorkspace.includes("import { getFileNameLabel } from '../../lib/documentLabels';"), '文件 Mention 必须与文件树、全局搜索共用真实文件名显示规则');
+  assert.ok(fileAgentWorkspace.includes("getFileNameLabel({ title, name: fileName, path }, '未命名文件')"), '文件 Mention 不得优先显示与实际路径脱节的标题');
   assert.ok(agentWorkspace.includes('function OperationSetCard'));
   assert.ok(agentWorkspace.includes('function DiffDialog'));
   assert.ok(agentWorkspace.includes('createPortal(dialog, document.body)'), 'Diff 弹窗必须脱离工作区堆叠上下文');
@@ -202,6 +218,9 @@ assert.ok(settings.includes("{ id: 'global-agent', label: 'Agent 个性', icon: 
   assert.ok(agentWorkspace.includes('const removeChip = (event) =>'));
   assert.ok(agentWorkspace.includes('removeButton.setAttribute(\'aria-label\', `移除 mention：${mention.name}`)'));
   assert.ok(agentWorkspace.includes('restoreComposerCaret(trailingText, 0);'));
+  assert.ok(agentWorkspace.includes("'m12 2.5 8 4.5v10L12 21.5 4 17V7z', 'm4 7 8 4.5L20 7M12 11.5v10', 'm4 12 8 4.5 8-4.5'"), '输入框动态 Skill Mention 必须复用统一的等距立方体图标路径');
+  assert.ok(!agentWorkspace.includes('M4 5.5A2.5 2.5 0 0 1 6.5 3H11v16H6.5'), '输入框动态 Skill Mention 不得继续使用旧书本图标');
+  assert.ok(icons.includes('skill: (p) => <Icon {...p}><path d="m12 2.5 8 4.5v10L12 21.5 4 17V7z"/>'), 'Skill Mention 的统一目标图标必须来自 Icons.skill');
   assert.ok(globalStyles.includes('.notus-agent-composer .notus-mention-item--inline .notus-mention-item__remove'));
   assert.ok(agentWorkspace.includes('function AgentWorkspace({'));
   assert.ok(agentWorkspace.includes('mentionOptions={mentionOptions}'));
@@ -218,7 +237,7 @@ assert.ok(settings.includes("{ id: 'global-agent', label: 'Agent 个性', icon: 
   assert.ok(agentWorkspace.includes('className="notus-agent-confirm-mode"'));
   assert.ok(agentWorkspace.includes('className="notus-agent-control-label"'));
   assert.ok(agentWorkspace.includes('aria-label="联网搜索"'));
-  assert.ok(agentWorkspace.includes('Tooltip content={modelLabel(selectedConfig)}'));
+  assert.ok(agentWorkspace.includes('Tooltip content={selectedModelLabel} disabled={!selectedConfig || !modelLabelTruncated}'));
   assert.ok(agentWorkspace.includes('onOpenFile={onOpenDiffFile}'));
   assert.ok(agentWorkspace.includes("removed.push(`原路径：${operation.old_path || operation.old || ''}`);"));
   assert.ok(!agentWorkspace.includes('function AgentDiffCard'));
@@ -234,12 +253,11 @@ assert.ok(settings.includes("{ id: 'global-agent', label: 'Agent 个性', icon: 
   assert.ok(mentionPreview.includes('setContent(payload.content);'));
   assert.ok(mentionPreview.includes('notus-mention-preview__title-link'));
 
-  const fileAgentWorkspace = read('components/AgentWorkspace/FileAgentWorkspace.js');
   assert.ok(fileAgentWorkspace.includes("window.addEventListener('notus-skills-changed', refreshSkills);"));
   assert.ok(fileAgentWorkspace.includes("window.removeEventListener('notus-skills-changed', refreshSkills);"));
   assert.ok(fileAgentWorkspace.includes("const title = String(file?.title || '').trim();"));
   assert.ok(fileAgentWorkspace.includes("const fileName = String(file?.name || path.split('/').pop() || '').trim();"));
-  assert.ok(fileAgentWorkspace.includes("const name = fileName || title || '未命名文件';"));
+  assert.ok(fileAgentWorkspace.includes("getFileNameLabel({ title, name: fileName, path }, '未命名文件')"));
   assert.ok(fileAgentWorkspace.includes("searchText: [fileName, title, path].filter(Boolean).join(' '),"));
 
   const filesPage = read('pages/files/index.js');

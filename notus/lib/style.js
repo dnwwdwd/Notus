@@ -519,12 +519,21 @@ function fillBacklog(limit = STYLE_BACKFILL_BATCH_SIZE) {
 }
 
 function startStyleBackgroundWorkers() {
+  paused = false;
   if (schedulerTimer) return;
   schedulerTimer = setInterval(() => {
     fillBacklog();
   }, STYLE_BACKFILL_INTERVAL_MS);
   if (schedulerTimer.unref) schedulerTimer.unref();
   fillBacklog();
+}
+
+function stopStyleBackgroundWorkers() {
+  if (schedulerTimer) clearInterval(schedulerTimer);
+  schedulerTimer = null;
+  paused = true;
+  queue = [];
+  queuedIds.clear();
 }
 
 function setStyleBackfillPaused(nextPaused) {
@@ -609,4 +618,5 @@ module.exports = {
   listBackfillCandidates,
   setStyleBackfillPaused,
   startStyleBackgroundWorkers,
+  stopStyleBackgroundWorkers,
 };

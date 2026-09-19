@@ -156,12 +156,15 @@ npm run dist:desktop:mac:x64
 npm run dist:desktop:mac:arm64
 npm run dist:desktop:win:x64
 
+# Package the Lazy Cat installer
+npm run dist:lpk
 ```
 
 | Output | Path |
 | --- | --- |
 | Web standalone | `web-dist/` |
 | Electron installer | `desktop/dist/` |
+| Lazy Cat package | Repository root |
 
 ---
 
@@ -170,6 +173,7 @@ npm run dist:desktop:win:x64
 ```text
 notus/     Next.js pages, components, API Routes, and core business libraries
 desktop/   Electron main process, preload bridge, and packaging scripts
+docs/      Product, technical, and workflow documentation
 ```
 
 ---

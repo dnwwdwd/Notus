@@ -1,0 +1,73 @@
+const assert = require('assert');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'notus-conversation-context-'));
+Object.assign(process.env, { NOTUS_RUNTIME_TARGET: 'web', NOTUS_DATA_ROOT: root, DB_PATH: path.join(root, 'test.db'), NOTES_DIR: path.join(root, 'notes'), ASSETS_DIR: path.join(root, 'assets') });
+async function main() {
+  const { getDb } = require('../lib/db');
+  const { ensureConversation, appendConversationMessage } = require('../lib/conversations');
+  const { createSession, getSession } = require('../lib/agentSession');
+  const { createTask } = require('../lib/agentTaskQueue');
+  const { buildConversationContext, readConversationHistory } = require('../lib/agentConversationContext');
+  const cid = ensureConversation({ kind: 'canvas', title: '上下文' }).id;
+  const add = (role, content) => appendConversationMessage({ conversationId: cid, role, content });
+  const first = add('user', '活动暗号苔藓593，预算4700元。');
+  for (let i = 0; i < 12; i++) { add('assistant', `已知短任务${i}`); add('user', `解释第${i}个知识点。`); }
+  const correction = add('user', '预算改成5200元。');
+  const current = add('user', '最开始的暗号和最新预算是多少？');
+  const { sessionId } = createSession({ goal: '最开始的暗号和最新预算是多少？', conversationId: cid });
+  createTask({ sessionId, conversationId: cid, userMessageId: current });
+  const session = getSession(sessionId);
+  const full = await buildConversationContext({ session });
+  assert.ok(full.text.includes('苔藓593') && full.text.includes('5200'));
+  assert.ok(!full.text.includes('最开始的暗号和最新预算是多少？'), '不重复当前用户消息');
+  let calls = 0;
+  const summarize = async ({ previous, text }) => { calls++; return { text: `${previous}\n${text}` }; };
+  const budgets = { recent: 60, summary: 3000, batch: 300 };
+  const compact = await buildConversationContext({ session, budgets, summarize, maxSummaryCalls: 20, remainingTokens: 1000000 });
+  assert.ok(compact.text.includes('苔藓593') && compact.text.includes('5200'));
+  const cachedCalls = calls;
+  await buildConversationContext({ session, budgets, summarize, maxSummaryCalls: 20, remainingTokens: 1000000 });
+  assert.strictEqual(calls, cachedCalls, '刷新复用匹配来源的摘要');
+  getDb().prepare('UPDATE messages SET content=? WHERE id=?').run('暗号改为松果842', first);
+  const changed = await buildConversationContext({ session, budgets, summarize, maxSummaryCalls: 20, remainingTokens: 1000000 });
+  assert.ok(!changed.text.includes('苔藓593') && changed.text.includes('松果842'));
+  getDb().prepare('DELETE FROM agent_conversation_context WHERE conversation_id=?').run(cid);
+  let limitedCalls = 0;
+  const limited = await buildConversationContext({ session, budgets, maxSummaryCalls: 1, remainingTokens: 1000000, summarize: async () => { limitedCalls++; return { text: '有限摘要' }; } });
+  assert.strictEqual(limitedCalls, 1);
+  assert.strictEqual(limited.degraded, true);
+  getDb().prepare('DELETE FROM agent_conversation_context WHERE conversation_id=?').run(cid);
+  const noBudget = await buildConversationContext({ session, budgets, remainingTokens: 0, summarize: async () => { throw Error('不应调用'); } });
+  assert.strictEqual(noBudget.degraded, true);
+
+  const failed = await buildConversationContext({ session, budgets, summarize: async () => { throw Error('model unavailable'); } });
+  assert.strictEqual(failed.degraded, true);
+  assert.ok(failed.text.includes('read_conversation_history'));
+  assert.ok(readConversationHistory({ session, query: '松果842' }).items[0].content.includes('松果842'));
+  assert.strictEqual(readConversationHistory({ session, message_id: current }).items.length, 0);
+  const other = ensureConversation({ kind: 'canvas', title: '隔离' }).id;
+  assert.strictEqual(readConversationHistory({ session: { ...session, conversation_id: other }, message_id: correction }).items.length, 0);
+  const large = '前缀'.repeat(6000) + '唯一匹配点' + '结尾'.repeat(6000);
+  getDb().prepare('UPDATE messages SET content=? WHERE id=?').run(large, first);
+  const hit = readConversationHistory({ session, query: '唯一匹配点', max_chars: 1000 });
+  assert.ok(hit.items[0].content.includes('唯一匹配点'));
+  assert.ok(hit.items[0].content.length <= 1000);
+  const page = readConversationHistory({ session, message_id: first, offset: 800, max_chars: 1000 });
+  assert.strictEqual(page.items[0].next_offset, 1800);
+  // 摘要中途原消息被改写，不能重新持久化旧分支。
+  const race = await buildConversationContext({ session, budgets, summarize: async () => {
+    getDb().prepare('UPDATE messages SET content=? WHERE id=?').run('重写后的事实', first);
+    return { text: '旧分支的摘要' };
+  } });
+  assert.strictEqual(race.degraded, true);
+  assert.ok(!race.text.includes('旧分支的摘要'));
+  assert.strictEqual(getDb().prepare('SELECT * FROM agent_conversation_context WHERE conversation_id=?').get(cid), undefined);
+  const { deleteConversation } = require('../lib/conversations');
+  getDb().prepare('INSERT INTO agent_conversation_context(conversation_id,covered_message_id,source_hash,summary) VALUES (?,?,?,?)').run(cid, first, 'fixture', '临时摘要');
+  deleteConversation(cid);
+  assert.strictEqual(getDb().prepare('SELECT * FROM agent_conversation_context WHERE conversation_id=?').get(cid), undefined);
+  console.log('agent conversation context tests passed');
+}
+main().catch((e) => { console.error(e); process.exitCode = 1; });

@@ -2,7 +2,7 @@ const READ_TOOLS = new Set([
   'search_knowledge', 'web_search', 'fetch_web_url', 'read_file', 'read_global_agent_file',
   'analyze_folder', 'check_links', 'get_task_activity', 'load_skill', 'read_skill_file',
   'list_skills', 'get_skill_details', 'list_mcp_servers', 'get_mcp_server_details',
-  'test_mcp_server', 'read_tool_result',
+  'test_mcp_server', 'read_tool_result', 'read_conversation_history', 'list_tool_results',
 ]);
 const OPERATION_SET_TOOLS = new Set([
   'create_note', 'preview_patch_files', 'preview_file_revision', 'preview_file_operations',
@@ -13,7 +13,7 @@ const MANAGEMENT_TOOLS = new Set([
   'add_mcp_server', 'update_mcp_server', 'set_mcp_server_enabled', 'remove_mcp_server',
   'update_global_agent_file',
 ]);
-const CONTROL_TOOLS = new Set(['ask_question_card', 'get_task_activity', 'read_tool_result']);
+const CONTROL_TOOLS = new Set(['ask_question_card', 'get_task_activity', 'read_tool_result', 'read_conversation_history', 'list_tool_results']);
 
 function isExternalMcpTool(definition = {}) {
   return Boolean(definition?.mcp);
@@ -86,7 +86,7 @@ function allowedToolNames(intent = {}) {
 
 function requiredToolNames(intent = {}) {
   const taskKind = String(intent.task_kind || 'general');
-  const required = new Set(['ask_question_card', 'read_tool_result']);
+  const required = new Set(['ask_question_card', 'read_tool_result', 'read_conversation_history', 'list_tool_results']);
   const add = (...names) => names.forEach((name) => required.add(name));
   if (taskKind === 'skill_discovery' || taskKind === 'web_research' || intent.source_policy?.web === 'required') add('web_search', 'fetch_web_url');
   if (taskKind === 'skill_install') add('list_skills', 'get_skill_details', 'install_skill_from_git', 'install_skill_draft', 'validate_skill_draft');

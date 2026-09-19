@@ -60,6 +60,14 @@ function redactSecrets(value, seen = new WeakSet()) {
   )));
 }
 
+// Do not release a partial credential before its boundary is known. Applying
+// the normal full-text redactor to individual chunks can leak a split secret.
+function redactStreamingText(value, { complete = false } = {}) {
+  const text = String(value || '');
+  const stable = complete ? text : text.replace(/[A-Za-z0-9+/=_-]+$/, '');
+  return redactSecrets(stable);
+}
+
 function resultLimit(toolName, isMcp = false) {
   if (isMcp) return RESULT_LIMITS.mcp;
   return RESULT_LIMITS[toolName] || 256 * 1024;
@@ -104,6 +112,7 @@ module.exports = {
   RESULT_LIMITS,
   limitToolResult,
   redactSecrets,
+  redactStreamingText,
   runWithSignal,
   validateToolInput,
 };

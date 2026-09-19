@@ -31,3 +31,9 @@ notus.db-wal
 notus/.session/
 notus/agent/
 notus/secrets/
+
+# 同仓库 LPK 打包互斥锁（临时文件）。
+/.lpk-build.lock
+
+# Agent 工具结果运行数据（正文及回执文件不纳入版本库）。
+agent-tool-results/

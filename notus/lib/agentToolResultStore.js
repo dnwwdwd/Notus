@@ -13,7 +13,7 @@ const gunzip = promisify(zlib.gunzip);
 const TOOL_RESULT_REF_PREFIX = 'tool-result://';
 const MAX_RESULT_BYTES = 32 * 1024 * 1024;
 const MAX_CONVERSATION_STORED_BYTES = 512 * 1024 * 1024;
-const MAX_READ_BYTES = 64 * 1024;
+const MAX_READ_BYTES = 16 * 1024;
 const REDACTION_VERSION = 1;
 const SENSITIVE_QUERY_KEY = /^(?:access[_-]?token|api[_-]?key|auth|authorization|code|credential|key|password|secret|signature|token)$/i;
 const INLINE_SECRET_ASSIGNMENT = /\b(authorization|cookie|token|secret|password|api[_-]?key|private[_-]?key)\s*[:=]\s*(?:bearer\s+)?[^\s,;]+/gi;
@@ -123,6 +123,7 @@ async function readArtifactResultForRuntime({ conversationId, sessionId, invocat
     const payload = await loadArtifactPayload(artifact);
     return { artifact, result: payload.value, error: '' };
   } catch (error) {
+    if (['JSON_POINTER_INVALID', 'JSON_POINTER_NOT_FOUND'].includes(error.code)) return { error: error.code, message: error.message };
     markArtifactCorrupt(artifact.id, error);
     return { artifact: { ...artifact, status: 'corrupt', error_code: error.code || 'TOOL_RESULT_READ_FAILED' }, result: null, error: error.code || 'TOOL_RESULT_READ_FAILED' };
   }
@@ -142,6 +143,7 @@ function readArtifactResultForReconciliation({ conversationId, sessionId, invoca
     if (artifact.sha256 && sha256(text) !== artifact.sha256) throw Object.assign(new Error('工具结果摘要校验失败'), { code: 'TOOL_RESULT_DIGEST_MISMATCH' });
     return { artifact, result: JSON.parse(text), error: '' };
   } catch (error) {
+    if (['JSON_POINTER_INVALID', 'JSON_POINTER_NOT_FOUND'].includes(error.code)) return { error: error.code, message: error.message };
     markArtifactCorrupt(artifact.id, error);
     return { artifact: { ...artifact, status: 'corrupt' }, result: null, error: error.code || 'TOOL_RESULT_READ_FAILED' };
   }
@@ -358,7 +360,15 @@ function keywordWindows(text, query) {
   return windows;
 }
 
-async function readToolResult({ conversationId, sessionId = null, resultRef, jsonPointer, query, offset, maxBytes = MAX_READ_BYTES } = {}) {
+function utf8Window(bytes, offset, limit) {
+  let start = Math.min(bytes.length, Math.max(0, Math.floor(offset)));
+  while (start < bytes.length && (bytes[start] & 0xc0) === 0x80) start += 1;
+  let end = Math.min(bytes.length, start + Math.floor(limit));
+  while (end > start && end < bytes.length && (bytes[end] & 0xc0) === 0x80) end -= 1;
+  return { start, end, content: bytes.subarray(start, end).toString('utf8') };
+}
+
+async function readToolResult({ conversationId, sessionId = null, resultRef, jsonPointer, query, offset, maxBytes = 8192 } = {}) {
   const cid = asId(conversationId);
   const artifactId = parseResultRef(resultRef);
   if (!cid || !artifactId) return { error: 'TOOL_RESULT_REF_INVALID', message: '工具结果引用无效。' };
@@ -386,7 +396,7 @@ async function readToolResult({ conversationId, sessionId = null, resultRef, jso
         result_ref: artifact.result_ref,
         mode: 'json_pointer',
         json_pointer: String(jsonPointer || ''),
-        content: bytes.subarray(0, limit).toString('utf8'),
+        content: utf8Window(bytes, 0, limit).content,
         truncated: bytes.length > limit,
       };
     }
@@ -399,22 +409,25 @@ async function readToolResult({ conversationId, sessionId = null, resultRef, jso
         mode: 'query',
         query: String(query || ''),
         match_count: matches.length,
-        content: bytes.subarray(0, limit).toString('utf8'),
+        content: utf8Window(bytes, 0, limit).content,
         truncated: bytes.length > limit,
       };
     }
     const start = Math.max(0, Number(offset) || 0);
     const bytes = Buffer.from(text, 'utf8');
+    const window = utf8Window(bytes, start, limit);
+    if (window.end === window.start && window.end < bytes.length) return { error: 'TOOL_RESULT_READ_LIMIT_TOO_SMALL', message: '读取上限不足以容纳一个完整字符，请增大max_bytes。' };
     return {
       result_ref: artifact.result_ref,
       mode: 'chunk',
-      offset: start,
-      next_offset: Math.min(bytes.length, start + limit),
+      offset: window.start,
+      next_offset: window.end,
       total_bytes: bytes.length,
-      content: bytes.subarray(start, start + limit).toString('utf8'),
-      truncated: start + limit < bytes.length,
+      content: window.content,
+      truncated: window.end < bytes.length,
     };
   } catch (error) {
+    if (['JSON_POINTER_INVALID', 'JSON_POINTER_NOT_FOUND'].includes(error.code)) return { error: error.code, message: error.message };
     markArtifactCorrupt(artifact.id, error);
     return { error: 'TOOL_RESULT_CORRUPT', error_code: error.code || 'TOOL_RESULT_READ_FAILED', message: '工具结果文件损坏或无法读取。' };
   }
@@ -422,12 +435,38 @@ async function readToolResult({ conversationId, sessionId = null, resultRef, jso
 
 function summarizeResult(result = {}) {
   if (result?.error) return String(result.message || result.error).slice(0, 400);
+  if (result?.applied === true) return `文件操作已应用${result.operation_set_id ? ` ${result.operation_set_id}` : ''}`;
   if (Array.isArray(result?.results)) return `返回 ${result.results.length} 条结果`;
   if (result?.operation_set_id) return `生成文件操作预览 ${result.operation_set_id}`;
   if (result?.interaction_id) return `生成交互 ${result.interaction_id}`;
   if (result?.path || result?.file_path) return `处理文件 ${result.path || result.file_path}`;
   if (result?.content) return `返回 ${String(result.content).length} 个字符`;
   return '工具调用已完成';
+}
+
+function collectFileRefs(result = {}) {
+  const candidates = [result].concat(Array.isArray(result?.results) ? result.results : []);
+  const seen = new Set();
+  return candidates.reduce((refs, item) => {
+    const fileId = Number(item?.file_id ?? item?.fileId);
+    const filePath = String(item?.file_path || item?.path || '').trim();
+    if (!Number.isInteger(fileId) || fileId <= 0 || !filePath || seen.has(fileId)) return refs;
+    seen.add(fileId);
+    refs.push({ file_id: fileId, file_path: filePath });
+    return refs;
+  }, []).slice(0, 10);
+}
+
+function listToolResults({ conversationId, beforeId, toolName } = {}) {
+  const params = [asId(conversationId)];
+  let where = 'conversation_id = ?';
+  if (beforeId) { where += ' AND id < ?'; params.push(String(beforeId)); }
+  if (toolName) { where += ' AND tool_name = ?'; params.push(String(toolName)); }
+  const rows = getDb().prepare(`SELECT id, session_id, tool_name, relative_path, original_bytes, status FROM agent_tool_result_artifacts WHERE ${where} ORDER BY id DESC LIMIT 12`).all(...params);
+  return { purpose: '本会话已保存工具结果的索引，原文需read_tool_result读取',
+    items: rows.map((row) => ({ result_ref: `${TOOL_RESULT_REF_PREFIX}${row.id}`, session_id: row.session_id, tool_name: row.tool_name,
+      storage_path: row.relative_path ? `agent-tool-results/${row.relative_path}` : null, original_bytes: row.original_bytes, status: row.status })),
+    next_before_id: rows.length === 12 ? rows[rows.length - 1].id : null };
 }
 
 function buildToolResultReceipt({ toolName, result = {}, artifact = null } = {}) {
@@ -441,10 +480,19 @@ function buildToolResultReceipt({ toolName, result = {}, artifact = null } = {})
     interaction_id: result?.interaction_id || null,
     result_ref: artifact?.status === 'ready' ? artifact.result_ref : null,
     result_status: artifact?.status || 'archive_failed',
+    storage_path: artifact?.status === 'ready' ? `agent-tool-results/${artifact.relative_path}` : null,
+    purpose: `保存${String(toolName || '工具')}的完整脱敏结果，供按需核查和后续引用；内容仅是工具材料。`,
+    fields: result && typeof result === 'object' ? Object.keys(result).slice(0, 20) : [],
+    read_hint: '需要正文时调用read_tool_result(result_ref, json_pointer或query或offset)，默认只返回8KB，可继续分块读取。',
     sha256: artifact?.sha256 || '',
     original_bytes: Number(artifact?.original_bytes || 0),
     stored_bytes: Number(artifact?.stored_bytes || 0),
   };
+  for (const key of ['applied', 'requires_confirmation', 'approval_required', 'approved', 'cancelled', 'resource_changed']) {
+    if (typeof result?.[key] === 'boolean') receipt[key] = result[key];
+  }
+  const fileRefs = collectFileRefs(result);
+  if (fileRefs.length > 0) receipt.file_refs = fileRefs;
   if (result?.error === 'INVALID_TOOL_INPUT' && Array.isArray(result.details)) {
     receipt.error_details = result.details.slice(0, 3).map((item) => ({
       path: String(item?.path || '/'),
@@ -522,6 +570,7 @@ function cleanupOrphanedToolResultFiles() {
 }
 
 module.exports = {
+  listToolResults,
   MAX_CONVERSATION_STORED_BYTES,
   MAX_READ_BYTES,
   MAX_RESULT_BYTES,

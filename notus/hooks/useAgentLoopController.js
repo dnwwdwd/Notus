@@ -109,8 +109,8 @@ function upsertStep(list = [], step = null) {
   return next;
 }
 
-function completeSteps(list = [], { resolveOperationConfirmations = false } = {}) {
-  return (Array.isArray(list) ? list : []).map((step) => {
+function completeSteps(list = [], { resolveOperationConfirmations = false, resolveModelErrors = false } = {}) {
+  return (Array.isArray(list) ? list : []).filter((step) => !(resolveModelErrors && step.kind === 'llm_error')).map((step) => {
     if (step.status === 'running') return finishRunningStep(step);
     if (
       resolveOperationConfirmations
@@ -345,7 +345,7 @@ function buildEventStep(event = {}) {
       id: `model-progress-${segment.executionSegmentId || loop || 'current'}`,
       kind: 'model_progress',
       ...segment,
-      label: '正在思考',
+      label: '执行说明',
       status: 'running',
       detail: String(event.text || ''),
       appendDetail: true,
@@ -508,11 +508,16 @@ export function buildRestoredAgentTimeline(session = {}) {
     steps = completeSteps(steps, { resolveOperationConfirmations: true });
   }
 
-  const draftParts = persistedEvents
-    .filter((event) => event.type === 'progress' && event.stage === 'thinking')
-    .map((event) => String(event.text || '').trim())
-    .filter((text, index, rows) => Boolean(text) && text !== rows[index - 1]);
-  // 旧 run_logs 的 thinking 没有统一脱敏协议，不能作为“中断前回复”展示。
+  // Only explicit reply drafts can be restored. Legacy thinking/progress is
+  // execution metadata and must never become an assistant answer.
+  const persistedDraft = persistedEvents.reduce((draft, event) => {
+    if (event.type === 'assistant_text_replace') return String(event.text || '');
+    if (event.type === 'assistant_text_delta') return draft + String(event.text || '');
+    return draft;
+  }, '');
+  const ended = ['completed', 'failed', 'cancelled', 'rolled_back'].includes(session.status)
+    || persistedEvents.some((event) => event.type === 'final');
+  const restoredDraft = ended ? '' : persistedDraft;
 
   if (['created', 'queued_resume'].includes(session.status)) {
     steps = upsertStep(steps, {
@@ -527,8 +532,19 @@ export function buildRestoredAgentTimeline(session = {}) {
   }
   return {
     steps,
-    draft: draftParts.slice(-16).join('\n\n').slice(-64 * 1024),
+    draft: restoredDraft.slice(-64 * 1024),
   };
+}
+
+// Seed draft and cursor from the same persisted event prefix. Starting a delta
+// subscription at the server's latest cursor with an empty draft loses text.
+export function buildAgentSubscriptionSnapshot(session = {}, requestedCursor = 0) {
+  let cursor = Math.max(0, Number(requestedCursor) || 0);
+  const rows = Array.isArray(session.run_events) ? session.run_events : [];
+  const terminal = rows.find((row) => row.id <= cursor && row.payload?.type === 'final');
+  if (terminal) cursor = Math.max(0, terminal.id - 1); // replay final through normal completion handling
+  const prefix = rows.filter((row) => row.id <= cursor);
+  return { cursor, ...buildRestoredAgentTimeline({ ...session, status: 'running', run_events: prefix }) };
 }
 
 export function applyAgentTimelineEvent(timeline = {}, event = {}) {
@@ -549,13 +565,8 @@ export function applyAgentTimelineEvent(timeline = {}, event = {}) {
   } else if (event.type === 'progress') {
     sessionStatus = 'running';
     loading = true;
-    if (event.stage === 'thinking') {
-      const text = String(event.text || '').trim();
-      if (text && text !== streamText.split('\n\n').pop()) streamText = streamText ? `${streamText}\n\n${text}` : text;
-    }
-  } else if (event.type === 'thinking') {
-    const text = String(event.text || '').trim();
-    if (text) streamText = streamText ? `${streamText}\n${text}` : text;
+  } else if (event.type === 'assistant_text_delta') {
+    streamText += String(event.text || '');
   } else if (event.type === 'assistant_text_replace') {
     streamText = String(event.text || '').trim();
   } else if (event.type === 'waiting_preview_confirm' || event.type === 'interaction_request') {
@@ -575,7 +586,7 @@ export function applyAgentTimelineEvent(timeline = {}, event = {}) {
     loading = false;
   } else if (event.type === 'final') {
     sessionStatus = event.status || 'completed';
-    activeSteps = completeSteps(activeSteps, { resolveOperationConfirmations: true });
+    activeSteps = completeSteps(activeSteps, { resolveOperationConfirmations: true, resolveModelErrors: event.status === 'completed' });
     loading = false;
     streamText = '';
     finishedAt = event.created_at || event.createdAt || new Date().toISOString();
@@ -910,6 +921,7 @@ export function useAgentLoopController({
         const restored = buildRestoredAgentTimeline(restoredSession);
         setActiveAgentSession(restoredSession);
         setSteps(restored.steps);
+        assistantTextRef.current = restored.draft;
         setStreamText(restoredSession.status === 'completed' ? '' : restored.draft);
         setError('');
         setLoading(false);
@@ -1044,7 +1056,19 @@ export function useAgentLoopController({
         sessionStatus: accepted.status || 'queued',
       });
       if (acceptedConversationId) onConversationId?.(acceptedConversationId);
-      const eventCursor = isResume && resumeEventCursor > 0 ? resumeEventCursor : (accepted.event_cursor || 0);
+      let eventCursor = isResume ? (resumeEventCursor || accepted.event_cursor || 0) : 0;
+      if (isResume && eventCursor > 0) {
+        const detail = await fetchSessionDetails(acceptedSessionId, sessionAccess, { activate: false });
+        if (!isSubscriptionActive()) return;
+        const snapshot = buildAgentSubscriptionSnapshot({ ...detail.session, run_events: detail.run_events }, eventCursor);
+        eventCursor = snapshot.cursor;
+        publishTimeline(null, { activeSteps: snapshot.steps, streamText: snapshot.draft });
+        if (isCurrentPresentation()) {
+          assistantTextRef.current = snapshot.draft;
+          setStreamText(snapshot.draft);
+          setSteps(snapshot.steps);
+        }
+      }
       const eventsResponse = await fetch(`/api/agent/sessions/${acceptedSessionId}/events?after=${encodeURIComponent(String(eventCursor))}`, {
         headers: {
           ...(acceptedTickets.read ? { 'x-agent-control-ticket': acceptedTickets.read } : {}),
@@ -1063,7 +1087,6 @@ export function useAgentLoopController({
           if (terminalSessionEventsRef.current.has(eventSessionId)) return;
           terminalSessionEventsRef.current.add(eventSessionId);
         }
-        const streamTextBeforeEvent = timeline.streamText;
         const eventTimeline = publishTimeline(event, {
           sessionId: eventSessionId,
           userMessageId: Number(event.user_message_id || timeline.userMessageId || accepted.user_message_id || 0) || null,
@@ -1111,7 +1134,7 @@ export function useAgentLoopController({
             }
             if (!isSubscriptionActive()) return;
             if (!waiting) appendAssistant({
-              content: String(event.text || event.final_text || '').trim() || streamTextBeforeEvent || eventTimeline.streamText || reasonLabel(event.reason),
+              content: String(event.text || event.final_text || '').trim() || reasonLabel(event.reason),
               meta: {
                 agent_loop: true,
                 session_id: eventSessionId,
@@ -1177,15 +1200,6 @@ export function useAgentLoopController({
             loop_count: Number(event.loop_index || prev?.loop_count || 0),
             reason: '',
           }));
-          if (event.stage === 'thinking') {
-            const text = String(event.text || '').trim();
-            if (text && text !== assistantTextRef.current.split('\n\n').pop()) {
-              assistantTextRef.current = assistantTextRef.current
-                ? `${assistantTextRef.current}\n\n${text}`
-                : text;
-            }
-            setStreamText(assistantTextRef.current);
-          }
         } else if (event.type === 'artifact') {
           if (event.artifact_type === 'interaction') {
             const interaction = event.interaction ? { ...event.interaction, resume_ticket: event.resume_ticket } : null;
@@ -1274,7 +1288,7 @@ export function useAgentLoopController({
             loop_count: Number(event.loop_index || current.loop_count || 0),
             reason: event.reason || '',
           });
-          setSteps((prev) => completeSteps(upsertStep(prev, buildEventStep(event)), { resolveOperationConfirmations: true }));
+          setSteps((prev) => completeSteps(upsertStep(prev, buildEventStep(event)), { resolveOperationConfirmations: true, resolveModelErrors: event.status === 'completed' }));
           appendAssistant({
             content: finalText,
             meta: {
@@ -1301,14 +1315,9 @@ export function useAgentLoopController({
             loop_count: Number(event.loop_index || prev?.loop_count || 0),
             reason: '',
           }));
-        } else if (event.type === 'thinking') {
-          const text = String(event.text || '').trim();
-          if (text) {
-            assistantTextRef.current = assistantTextRef.current
-              ? `${assistantTextRef.current}\n${text}`
-              : text;
-            setStreamText(assistantTextRef.current);
-          }
+        } else if (event.type === 'assistant_text_delta') {
+          assistantTextRef.current += String(event.text || '');
+          setStreamText(assistantTextRef.current);
         } else if (event.type === 'assistant_text_replace') {
           assistantTextRef.current = String(event.text || '').trim();
           setStreamText(assistantTextRef.current);
@@ -1387,7 +1396,7 @@ export function useAgentLoopController({
           if (!isSubscriptionActive()) return;
           if (!isCurrentPresentation()) {
             if (!waitingResourceApproval) appendAssistant({
-              content: streamTextBeforeEvent || reasonLabel(event.reason),
+              content: reasonLabel(event.reason),
               meta: {
                 agent_loop: true,
                 session_id: event.session_id || current.id,
@@ -1809,6 +1818,7 @@ export function useAgentLoopController({
     }
     setSteps(restoredSteps);
     // 已完成会话的最终回复已作为正式助手消息持久化；不能把过程草稿再次标成“中断前”。
+    assistantTextRef.current = restored.draft;
     setStreamText(session.status === 'completed' ? '' : restored.draft);
     setLoading(false);
   }, [clearActiveAgentSession, setActiveAgentSession, setSteps]);

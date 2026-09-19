@@ -38,6 +38,7 @@ const ALLOWED_ROOTS = [
   'assets/',
   'agent/',
   'session/',
+  'agent-tool-results/',
   'skills/managed/',
   'secrets/portable.json',
 ];
@@ -120,6 +121,7 @@ function getBackupTargets(config = getEffectiveConfig()) {
     assets: path.resolve(config.assetsDir),
     agent: path.resolve(config.agentDir),
     session: path.resolve(config.sessionDir),
+    toolResults: path.resolve(config.dataRoot, 'agent-tool-results'),
     database: path.resolve(config.dbPath),
     secrets: path.resolve(config.dataRoot, 'secrets'),
     managedSkills: getManagedSkillRoot(config),
@@ -169,6 +171,7 @@ async function buildStage() {
       copyTree(targets.assets, path.join(stage, 'assets')),
       copyTree(targets.agent, path.join(stage, 'agent')),
       copyTree(targets.session, path.join(stage, 'session')),
+      copyTree(targets.toolResults, path.join(stage, 'agent-tool-results')),
       copyTree(targets.managedSkills, path.join(stage, 'skills/managed')),
     ]);
     await ensureDirectory(path.join(stage, 'database'));
@@ -184,7 +187,7 @@ async function buildStage() {
 
 async function buildManifest(stage) {
   const components = [];
-  for (const component of REQUIRED_COMPONENTS) {
+  for (const component of [...REQUIRED_COMPONENTS, 'agent-tool-results']) {
     const root = component.endsWith('/') ? component.slice(0, -1) : component;
     const absolute = path.join(stage, root);
     if (component === 'secrets/portable.json' || component === 'database/index.db') {
@@ -230,11 +233,12 @@ async function streamExport(res) {
     archive.pipe(res);
     archive.file(path.join(stage, 'manifest.json'), { name: 'manifest.json' });
     archive.file(path.join(stage, 'database/index.db'), { name: 'database/index.db' });
-    ['notes', 'assets', 'agent', 'session', 'skills/managed'].forEach((root) => appendComponentDirectory(archive, root));
+    ['notes', 'assets', 'agent', 'session', 'skills/managed', 'agent-tool-results'].forEach((root) => appendComponentDirectory(archive, root));
     appendDirectory(archive, path.join(stage, 'notes'), 'notes');
     appendDirectory(archive, path.join(stage, 'assets'), 'assets');
     appendDirectory(archive, path.join(stage, 'agent'), 'agent');
     appendDirectory(archive, path.join(stage, 'session'), 'session');
+    appendDirectory(archive, path.join(stage, 'agent-tool-results'), 'agent-tool-results');
     appendDirectory(archive, path.join(stage, 'skills/managed'), 'skills/managed');
     archive.file(path.join(stage, 'secrets/portable.json'), { name: 'secrets/portable.json' });
     await new Promise((resolve, reject) => {
@@ -557,6 +561,7 @@ async function restoreFromZip(zipPath) {
     await swapPath(path.join(stage, 'assets'), targets.assets, rollbackRoot, journal);
     await swapPath(path.join(stage, 'agent'), targets.agent, rollbackRoot, journal);
     await swapPath(path.join(stage, 'session'), targets.session, rollbackRoot, journal);
+    await swapPath(path.join(stage, 'agent-tool-results'), targets.toolResults, rollbackRoot, journal);
     await swapDatabase(path.join(stage, 'database/index.db'), targets.database, rollbackRoot, journal);
     await swapPath(path.join(stage, 'skills/managed'), targets.managedSkills, rollbackRoot, journal);
     await swapPath(path.join(stage, 'secrets'), targets.secrets, rollbackRoot, journal);

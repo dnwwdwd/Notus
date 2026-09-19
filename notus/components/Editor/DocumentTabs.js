@@ -4,7 +4,6 @@ import { Button } from '../ui/Button';
 import { Dialog } from '../ui/Dialog';
 import { Icons } from '../ui/Icons';
 import { TextInput } from '../ui/Input';
-import { Tooltip } from '../ui/Tooltip';
 
 function tabName(file) {
   return getFileNameLabel(file, '未命名文档');
@@ -82,7 +81,6 @@ export function DocumentTabs({ files = [], activeFileId = null, onActivate, onCl
           return (
             <div
               key={file.id}
-              title={`${label}\n双击或右键重命名`}
               style={{
                 height: '100%',
                 minWidth: 0,
@@ -110,6 +108,7 @@ export function DocumentTabs({ files = [], activeFileId = null, onActivate, onCl
                 }}
                 type="button"
                 role="tab"
+                title={`${label}\n双击或右键重命名`}
                 aria-selected={active}
                 aria-controls="notus-editor-tabpanel"
                 tabIndex={active ? 0 : -1}
@@ -150,28 +149,26 @@ export function DocumentTabs({ files = [], activeFileId = null, onActivate, onCl
                   {label}
                 </span>
               </button>
-              <Tooltip content={`关闭 ${label}`}>
-                <button
-                  type="button"
-                  aria-label={`关闭 ${label}`}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onClose?.(file);
-                  }}
-                  style={{
-                    width: 22,
-                    height: 22,
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    color: 'var(--text-tertiary)',
-                    borderRadius: 'var(--radius-sm)',
-                    flexShrink: 0,
-                  }}
-                >
-                  <Icons.x size={13} />
-                </button>
-              </Tooltip>
+              <button
+                type="button"
+                aria-label={`关闭 ${label}`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onClose?.(file);
+                }}
+                style={{
+                  width: 22,
+                  height: 22,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: 'var(--text-tertiary)',
+                  borderRadius: 'var(--radius-sm)',
+                  flexShrink: 0,
+                }}
+              >
+                <Icons.x size={13} />
+              </button>
             </div>
           );
         })}

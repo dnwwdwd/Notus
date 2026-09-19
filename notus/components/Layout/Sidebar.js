@@ -121,6 +121,14 @@ function getExternalDropPoint(event, selector) {
   }, null);
 }
 
+function getExternalDropTarget(event) {
+  const composerDropPoint = getExternalDropPoint(event, '[data-notus-agent-composer]');
+  if (composerDropPoint) return { kind: 'mention', ...composerDropPoint };
+  const editorDropPoint = getExternalDropPoint(event, '[data-notus-editor-drop]');
+  if (editorDropPoint) return { kind: 'editor-file', ...editorDropPoint };
+  return null;
+}
+
 async function parseErrorResponse(response, fallbackMessage) {
   try {
     const payload = await response.json();
@@ -276,7 +284,6 @@ const FileRow = ({ item, isActive, onSelect, onToggle, onContextMenu, dragEnable
     setDropNodeRef(node);
   }, [setDragNodeRef, setDropNodeRef]);
   const isDropTarget = isFolder && isOver && canMoveTreeItem(activeDragItem, item.path);
-  const mention = treeItemToMention(item);
 
   return (
     <div
@@ -302,6 +309,7 @@ const FileRow = ({ item, isActive, onSelect, onToggle, onContextMenu, dragEnable
         fontWeight: isActive ? 500 : 400,
         cursor: dragEnabled ? (isDragging ? 'grabbing' : 'grab') : 'pointer',
         opacity: isDragging ? 0.58 : 1,
+        pointerEvents: isDragging ? 'none' : 'auto',
         transition: 'background var(--transition-fast), opacity var(--transition-fast)',
         userSelect: 'none',
         touchAction: 'pan-y',
@@ -314,12 +322,6 @@ const FileRow = ({ item, isActive, onSelect, onToggle, onContextMenu, dragEnable
       }}
     >
       <div
-        draggable={Boolean(mention.path)}
-        onDragStart={(event) => {
-          event.dataTransfer.effectAllowed = 'copy';
-          event.dataTransfer.setData('application/x-notus-mention', JSON.stringify(mention));
-          event.dataTransfer.setData('text/plain', `@${mention.name}`);
-        }}
         style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0 }}
       >
         {isFolder ? (
@@ -450,6 +452,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
   const [moveDest, setMoveDest] = useState('');
   const [moveSubmitting, setMoveSubmitting] = useState(false);
   const [activeMoveDrag, setActiveMoveDrag] = useState(null);
+  const externalDropTargetRef = useRef(null);
   const contextMenuRef = useRef(null);
   const [hydrated, setHydrated] = useState(false);
   const sidebarScrollByTabRef = useRef(sidebarScrollByTab);
@@ -633,6 +636,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
 
   const resetTreeDrag = useCallback(() => {
     clearDragExpandTimer();
+    externalDropTargetRef.current = null;
     setActiveMoveDrag(null);
   }, [clearDragExpandTimer]);
 
@@ -661,7 +665,12 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
   const handleTreeDragStart = useCallback((event) => {
     const node = event.active?.data?.current?.node;
     if (!node || !['file', 'folder'].includes(node.type)) return;
+    externalDropTargetRef.current = null;
     setActiveMoveDrag(node);
+  }, []);
+
+  const handleTreeDragMove = useCallback((event) => {
+    externalDropTargetRef.current = getExternalDropTarget(event);
   }, []);
 
   const handleTreeDragOver = useCallback((event) => {
@@ -677,23 +686,22 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
 
   const handleTreeDragEnd = useCallback(async (event) => {
     const source = event.active?.data?.current?.node;
-    const composerDropPoint = getExternalDropPoint(event, '[data-notus-agent-composer]');
-    const editorDropPoint = getExternalDropPoint(event, '[data-notus-editor-drop]');
+    const externalDropTarget = getExternalDropTarget(event) || externalDropTargetRef.current;
     const destination = dragDestinationFromOver(event.over);
     resetTreeDrag();
-    if (composerDropPoint && source) {
-      const { target, ...dropPoint } = composerDropPoint;
+    if (externalDropTarget?.kind === 'mention' && source) {
+      const { target, clientX, clientY } = externalDropTarget;
       target.dispatchEvent(new CustomEvent('notus:sidebar-mention-drop', {
         bubbles: true,
-        detail: { mention: treeItemToMention(source), ...dropPoint },
+        detail: { mention: treeItemToMention(source), clientX, clientY },
       }));
       return;
     }
-    if (editorDropPoint && source?.type === 'file') {
-      const { target, ...dropPoint } = editorDropPoint;
+    if (externalDropTarget?.kind === 'editor-file' && source?.type === 'file') {
+      const { target, clientX, clientY } = externalDropTarget;
       target.dispatchEvent(new CustomEvent('notus:sidebar-editor-file-drop', {
         bubbles: true,
-        detail: { mention: treeItemToMention(source), ...dropPoint },
+        detail: { mention: treeItemToMention(source), clientX, clientY },
       }));
       return;
     }
@@ -1899,6 +1907,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
           threshold: { x: 0.1, y: 0.2 },
         }}
         onDragStart={handleTreeDragStart}
+        onDragMove={handleTreeDragMove}
         onDragOver={handleTreeDragOver}
         onDragCancel={resetTreeDrag}
         onDragEnd={handleTreeDragEnd}

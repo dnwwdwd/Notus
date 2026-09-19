@@ -650,18 +650,25 @@ export default function FilesPage() {
   });
   const navigationGuard = activeFile && saveState !== 'saved' ? unsavedGuard.request : undefined;
 
+  const syncWorkspaceRoute = useCallback((file, replace = false) => {
+    const href = file ? `/files?fileId=${encodeURIComponent(file.id)}` : '/files';
+    if (router.asPath === href && !routeSyncFileIdRef.current) return;
+    // 状态先更新、地址后提交；期间不能按旧地址重新打开刚关闭的标签。
+    const navigation = {};
+    routeSyncFileIdRef.current = navigation;
+    const release = () => {
+      if (routeSyncFileIdRef.current === navigation) routeSyncFileIdRef.current = null;
+    };
+    (replace ? router.replace(href, undefined, { shallow: true }) : router.push(href))
+      .then(release, release);
+  }, [router]);
+
   const openWorkspaceFile = useCallback((targetFile) => {
     if (!targetFile?.id) return;
     expandEditorForFile();
     if (Number(activeFileId) !== Number(targetFile.id)) selectFile(targetFile);
-    const href = `/files?fileId=${encodeURIComponent(targetFile.id)}`;
-    if (router.asPath !== href) {
-      routeSyncFileIdRef.current = Number(targetFile.id);
-      router.push(href).catch(() => {
-        routeSyncFileIdRef.current = null;
-      });
-    }
-  }, [activeFileId, expandEditorForFile, router, selectFile]);
+    syncWorkspaceRoute(targetFile);
+  }, [activeFileId, expandEditorForFile, selectFile, syncWorkspaceRoute]);
 
   const requestOpenWorkspaceFile = useCallback((targetFile) => {
     if (!targetFile?.id) return false;
@@ -679,14 +686,12 @@ export default function FilesPage() {
   requestOpenFileRef.current = requestOpenWorkspaceFile;
 
   useEffect(() => {
-    if (!router.isReady) return;
+    if (!router.isReady || routeSyncFileIdRef.current) return;
     const requestedFileId = Number(getQueryValue(router.query.fileId));
     if (!Number.isFinite(requestedFileId) || requestedFileId <= 0) return;
     if (Number(activeFileId) === requestedFileId) {
-      routeSyncFileIdRef.current = null;
       return;
     }
-    if (routeSyncFileIdRef.current) return;
     const targetFile = allFiles.find((file) => Number(file.id) === requestedFileId);
     if (!targetFile) return;
     const opened = requestOpenWorkspaceFile(targetFile);
@@ -718,15 +723,14 @@ export default function FilesPage() {
     missingFileGuardRef.current = Number(activeFileId);
     const closeMissingFile = () => {
       const nextActiveFile = closeFileTab(activeFileId);
-      const href = nextActiveFile ? `/files?fileId=${encodeURIComponent(nextActiveFile.id)}` : '/files';
-      if (router.asPath !== href) router.replace(href, undefined, { shallow: true }).catch(() => {});
+      syncWorkspaceRoute(nextActiveFile, true);
     };
     if (navigationGuard) {
       navigationGuard(closeMissingFile);
       return;
     }
     closeMissingFile();
-  }, [activeFile, activeFileId, closeFileTab, hasLoadedFilesOnce, navigationGuard, router, workspaceHydrated]);
+  }, [activeFile, activeFileId, closeFileTab, hasLoadedFilesOnce, navigationGuard, syncWorkspaceRoute, workspaceHydrated]);
 
   const handleOpenEditorLink = useCallback(async (fileId) => {
     const targetFileId = Number(fileId);
@@ -752,15 +756,14 @@ export default function FilesPage() {
     if (!file?.id) return;
     const close = () => {
       const nextActiveFile = closeFileTab(file.id);
-      const href = nextActiveFile ? `/files?fileId=${encodeURIComponent(nextActiveFile.id)}` : '/files';
-      if (router.asPath !== href) router.push(href).catch(() => {});
+      syncWorkspaceRoute(nextActiveFile);
     };
     if (Number(file.id) === Number(activeFileId) && navigationGuard) {
       navigationGuard(close);
       return;
     }
     close();
-  }, [activeFileId, closeFileTab, navigationGuard, router]);
+  }, [activeFileId, closeFileTab, navigationGuard, syncWorkspaceRoute]);
 
   const handleRenameTab = useCallback(async (file, name) => {
     if (!file?.id || !String(name || '').trim()) return false;
@@ -910,6 +913,7 @@ export default function FilesPage() {
       beforeAgentRun={() => (activeFile && saveState !== 'saved' ? handleSave() : true)}
       fullWidth={!renderedWorkspacePanels.editorOpen}
       onOpenDiffFile={handleOpenDiffFile}
+      onOpenFileLink={handleOpenEditorLink}
     />
   );
 

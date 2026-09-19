@@ -21,7 +21,14 @@ async function runTests() {
     filename: llmPath,
     loaded: true,
     exports: {
-      completeToolChat: async () => {
+      completeToolChat: async ({ messages }) => {
+        const results = messages.flatMap((message) => Array.isArray(message.content) ? message.content.filter((block) => block.type === 'tool_result') : []);
+        assert.strictEqual(results.length, 2);
+        for (const block of results) {
+          const receipt = JSON.parse(block.content);
+          assert.ok(receipt.result_ref && receipt.storage_path && receipt.purpose, '恢复请求只发送可读文件回执');
+          assert.ok(!receipt.content, '不重新带入工具正文');
+        }
         llmCallCount += 1;
         return {
           content: [{ type: 'text', text: '已从中断位置继续并完成。' }],

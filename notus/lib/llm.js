@@ -165,40 +165,7 @@ function mergeStreamUsage(previous = null, next = null, protocol = 'openai') {
   });
 }
 
-function createVisibleTextStream() {
-  let raw = '';
-  let visible = '';
-  const reveal = () => {
-    let source = raw;
-    const lower = source.toLowerCase();
-    const lastTagStart = source.lastIndexOf('<');
-    if (lastTagStart >= 0) {
-      const tail = lower.slice(lastTagStart);
-      if (['<thinking>', '</thinking>'].some((tag) => tag.startsWith(tail))) {
-        source = source.slice(0, lastTagStart);
-      }
-    }
-    const visibleLower = source.toLowerCase();
-    const lastOpen = visibleLower.lastIndexOf('<thinking>');
-    const lastClose = visibleLower.lastIndexOf('</thinking>');
-    if (lastOpen > lastClose) source = source.slice(0, lastOpen);
-    return source
-      .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
-      .replace(/<\/thinking>/gi, '');
-  };
-  return {
-    push(chunk = '') {
-      raw += String(chunk || '');
-      const next = reveal();
-      const delta = next.startsWith(visible) ? next.slice(visible.length) : next;
-      visible = next;
-      return delta;
-    },
-    text() {
-      return visible;
-    },
-  };
-}
+const { createVisibleTextStream } = require('./assistantVisibleText');
 
 function toolStreamEntry(store, index = 0) {
   const key = Number.isFinite(Number(index)) ? Number(index) : 0;

@@ -117,6 +117,14 @@ function isQuestionResolved(question, current = {}) {
   return Boolean(current?.skipped) || isQuestionAnswered(question, current);
 }
 
+function hasExplicitResourceChoices(questions, answers) {
+  return questions.length > 0 && questions.every((question) => {
+    const answer = answers[question.id];
+    return Boolean(answer && !answer.skipped && !String(answer.customText || '').trim()
+      && question.options?.some((option) => option.id === answer.optionId));
+  });
+}
+
 function findFirstUnansweredIndex(questions = [], answers = {}) {
   const index = questions.findIndex((question) => !isQuestionResolved(question, answers[question.id] || {}));
   return index >= 0 ? index : 0;
@@ -284,6 +292,8 @@ export function ClarifyDrawer({
   const currentQuestion = questions[activeIndex] || null;
   const currentQuestionOptions = currentQuestion ? getQuestionOptions(currentQuestion) : [];
   const allResolved = questions.length > 0 && resolvedCount === questions.length;
+  const isResourceApproval = interaction?.kind === 'resource_approval';
+  const canSubmitAnswers = !isResourceApproval || hasExplicitResourceChoices(questions, answers);
   const currentAnswer = currentQuestion ? (answers[currentQuestion.id] || {}) : {};
   const dots = getQuestionStates(questions, activeIndex, answers);
   const footerHint = interaction?.payload?.footer_hint
@@ -359,7 +369,7 @@ export function ClarifyDrawer({
         setActiveIndex((prev) => Math.min(prev + 1, questions.length - 1));
         return;
       }
-      if (!isPending || submitting) return;
+      if (!isPending || submitting || !canSubmitAnswers) return;
       onSubmit?.(interaction, buildSubmitPayload());
       return;
     }
@@ -373,7 +383,7 @@ export function ClarifyDrawer({
           onRetry?.(interaction);
         }
       } else if (phase === 'expanded-question' && currentQuestion && activeIndex === questions.length - 1) {
-        onSubmit?.(interaction, buildSubmitPayload());
+        handlePrimaryAction();
       }
       return;
     }
@@ -457,7 +467,7 @@ export function ClarifyDrawer({
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {[
               ...currentQuestionOptions,
-              ...(currentQuestionOptions.some((option) => option.id === NONE_OF_THE_ABOVE_OPTION_ID)
+              ...(isResourceApproval || currentQuestionOptions.some((option) => option.id === NONE_OF_THE_ABOVE_OPTION_ID)
                 ? []
                 : [{ id: NONE_OF_THE_ABOVE_OPTION_ID, label: '以上选项都不是' }]),
             ].map((option, index) => {
@@ -485,7 +495,7 @@ export function ClarifyDrawer({
               );
             })}
 
-            {
+            {!isResourceApproval && (
               <div
                 style={{
                   background: 'var(--bg-elevated)',
@@ -537,7 +547,7 @@ export function ClarifyDrawer({
                   }}
                 />
               </div>
-            }
+            )}
           </div>
         </div>
       ) : (
@@ -580,7 +590,7 @@ export function ClarifyDrawer({
             放弃
           </Button>
         ) : null}
-        {isPending && phase === 'expanded-question' ? (
+        {isPending && phase === 'expanded-question' && !isResourceApproval ? (
           <Button
             type="button"
             variant="ghost"
@@ -616,7 +626,7 @@ export function ClarifyDrawer({
             variant="primary"
             size="sm"
             loading={submitting}
-            disabled={submitting}
+            disabled={submitting || !canSubmitAnswers}
             onClick={handlePrimaryAction}
           >
             {submitLabel}

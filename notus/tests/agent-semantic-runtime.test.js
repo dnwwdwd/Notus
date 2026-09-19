@@ -157,7 +157,10 @@ async function runTests() {
   assert.ok(calls.length > firstCount, '新问题不能复用旧 Search Mission。');
   assert.ok(calls.slice(firstCount).includes('second new question'));
 
-  console.log('agent semantic runtime tests passed');
+  assert.strictEqual(deterministicIntent('新建《恢复按钮回归0919》，写下摄影活动的口令和最新预算').task_kind, 'file_write');
+assert.strictEqual(deterministicIntent('创建《活动安排》').completion_criteria.requires_write, true);
+assert.strictEqual(deterministicIntent('不要新建《活动安排》，解释快门速度').completion_criteria.requires_write, false);
+console.log('agent semantic runtime tests passed');
 }
 
 runTests().catch((error) => {

@@ -247,7 +247,7 @@ function ResourceApprovalDrawer({ interaction, submitting, onDecision, onPhaseCh
   return <ClarifyDrawer interaction={cardInteraction} collapsible={false} submitting={submitting} submitLabel="确认执行" onPhaseChange={onPhaseChange} onSubmit={(_, answers) => onDecision?.(answers?.resource_decision?.option_id === 'confirm' ? 'confirm' : 'cancel')} onRetry={() => {}} onCancel={() => onDecision?.('cancel')} />;
 }
 
-export function FileAgentWorkspace({ allFiles = [], fileTree = [], activeFileId = null, refreshFiles, onFilesChanged, onAgentPanelLockChange, beforeAgentRun, fullWidth = false, onOpenDiffFile }) {
+export function FileAgentWorkspace({ allFiles = [], fileTree = [], activeFileId = null, refreshFiles, onFilesChanged, onAgentPanelLockChange, beforeAgentRun, fullWidth = false, onOpenDiffFile, onOpenFileLink }) {
   const { openSettings } = useSettingsDialog();
   const toast = useToast();
   const { status: appStatus, loading: appStatusLoading } = useAppStatus();
@@ -1017,6 +1017,12 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], activeFileId 
           mentionOptions={mentionOptions}
           fullWidth={fullWidth}
           onOpenDiffFile={onOpenDiffFile}
+          files={allFiles}
+          onOpenFileLink={onOpenFileLink}
+          onCitationClick={(citation) => {
+            const fileId = Number(citation?.file_id);
+            if (Number.isInteger(fileId) && fileId > 0) onOpenFileLink?.(fileId);
+          }}
           restoringConversation={restoringConversation}
         />
         {aiUiState.showLockedState ? <AiLockedState compact variant="panel" onAction={() => openSettings('model')} /> : null}

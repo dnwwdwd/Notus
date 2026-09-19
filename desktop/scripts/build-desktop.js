@@ -187,9 +187,12 @@ async function ensureSqliteVecPackage(resourcesRoot, targetPlatform, targetArch)
   }
 
   const packageName = `sqlite-vec-${packagePlatform}-${targetArch}@0.1.9`;
+  const liteparseVersion = require(path.join(resourcesRoot, 'node_modules', '@llamaindex', 'liteparse', 'package.json')).version;
+  const suffix = targetPlatform === 'win32' ? '-msvc' : targetPlatform === 'linux' ? '-gnu' : '';
+  const liteparsePackage = `@llamaindex/liteparse-${targetPlatform}-${targetArch}${suffix}`;
   await run(
     'npm',
-    ['install', '--no-save', '--force', packageName],
+    ['install', '--no-save', '--package-lock=false', '--omit=dev', '--legacy-peer-deps', '--force', packageName, `${liteparsePackage}@${liteparseVersion}`],
     {
       cwd: resourcesRoot,
       env: buildInstallEnv(targetPlatform, targetArch),
@@ -208,7 +211,11 @@ async function main() {
   await ensureSqliteVecPackage(resourcesRoot, targetPlatform, targetArch);
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+module.exports = { prepareDesktopResources, installProductionDependencies, ensureBetterSqliteBinary, ensureSqliteVecPackage };
+
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}

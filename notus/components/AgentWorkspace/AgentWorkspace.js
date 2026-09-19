@@ -1,4 +1,5 @@
 import { refreshAgentSessionAccess } from '../../utils/agentSessionAccess';
+import { pastedTextFileName, normalizePastedAttachmentName, readLocalAttachment } from '../../utils/attachmentPreview';
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Button } from '../ui/Button';
@@ -60,13 +61,11 @@ const AGENT_CONFIRM_MODE_OPTIONS = [
   {
     value: 'auto_confirm',
     label: '自动',
-    description: '自动应用修改',
     icon: 'zap',
   },
   {
     value: 'manual_confirm',
     label: '手动',
-    description: '手动应用修改',
     icon: 'hand',
   },
 ];
@@ -142,8 +141,8 @@ const PARSED_ATTACHMENT_EXTENSIONS = new Set(['.pdf', '.docx', '.md', '.markdown
 const IMAGE_ACCEPT = 'image/png,image/jpeg,image/webp,image/gif';
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
 const IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif']);
-const LONG_PASTE_ATTACHMENT_THRESHOLD = 100;
 const MAX_PARSED_ATTACHMENTS = 10;
+const LONG_PASTE_ATTACHMENT_THRESHOLD = 600;
 const MAX_IMAGES_PER_MESSAGE = 30;
 
 const C = {
@@ -268,7 +267,7 @@ function FileChip({ file, onRemove, readOnly, onOpen, onPreview, imageOnly = fal
   const type = fileType(file);
   const previewUrl = image ? imagePreviewUrl(file) : '';
   const canPreview = image && Boolean(previewUrl) && typeof onPreview === 'function';
-  const canOpen = readOnly && !image && typeof onOpen === 'function';
+  const canOpen = !image && typeof onOpen === 'function';
   const interactive = canPreview || canOpen;
   const removeButton = !readOnly ? (
     <button
@@ -425,6 +424,16 @@ function AttachmentContentDialog({ open, attachment, message, onClose }) {
     setPayload(null);
     setError('');
     setCopied(false);
+    if (attachment.fileObject) {
+      readLocalAttachment(attachment).then((result) => {
+        if (!cancelled) setPayload(result);
+      }).catch((readError) => {
+        if (!cancelled) setError(readError.message || '附件内容读取失败');
+      }).finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+      return () => { cancelled = true; };
+    }
     fetch('/api/agent/attachments/content', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -846,6 +855,7 @@ function ToolChain({ steps, loading, sessionStatus = '', sessionId = '', started
     }
     : null;
   const displayedErrorStep = agentErrorStep || fallbackErrorStep;
+  const hasTraceContent = renderedSteps.length > 0 || Boolean(displayedErrorStep);
   const [expanded, setExpanded] = useState({});
   const liveSession = Boolean(loading) || ['created', 'queued', 'running'].includes(sessionStatus);
   const tailStatus = renderedSteps[renderedSteps.length - 1]?.status || 'done';
@@ -906,12 +916,14 @@ function ToolChain({ steps, loading, sessionStatus = '', sessionId = '', started
   return (
     <section className="notus-agent-toolchain" aria-label="Agent 执行记录">
       <div className="notus-agent-toolchain__header">
-        <button type="button" className="notus-agent-toolchain__summary-toggle notus-agent-pressable" aria-expanded={traceExpanded} onClick={() => setTraceExpanded((value) => !value)}>
-          <span role="status" aria-live="polite">{statusLabel}</span>
-          <Icons.chevronRight size={15} aria-hidden="true" />
-        </button>
+        {hasTraceContent ? (
+          <button type="button" className="notus-agent-toolchain__summary-toggle notus-agent-pressable" aria-expanded={traceExpanded} onClick={() => setTraceExpanded((value) => !value)}>
+            <span role="status" aria-live="polite">{statusLabel}</span>
+            {traceExpanded ? <Icons.chevronDown size={15} aria-hidden="true" /> : <Icons.chevronRight size={15} aria-hidden="true" />}
+          </button>
+        ) : <span role="status" aria-live="polite">{statusLabel}</span>}
       </div>
-      {traceExpanded ? <>
+      {hasTraceContent && traceExpanded ? <>
         {renderedSteps.length > 0 ? <div className="notus-agent-toolchain__steps">
           {renderedSteps.map((step, index) => {
             const stepId = timelineStepId(step, index);
@@ -1573,7 +1585,7 @@ function TaskReceiptCards({ researchSummary, writeSummary }) {
   );
 }
 
-function AssistantMessageRow({ message, taskChangeSet = null, disabled, removing = false, onRetryMessage, previousUserMessage, onOpenOperationSet, onOpenTaskChangeSet, onCitationClick, citationSelection, executionTrace = null }) {
+function AssistantMessageRow({ message, taskChangeSet = null, disabled, removing = false, onRetryMessage, previousUserMessage, onOpenOperationSet, onOpenTaskChangeSet, onCitationClick, citationSelection, executionTrace = null, files = [], onOpenFileLink }) {
   const [retrying, setRetrying] = useState(false);
   const canRetry = Boolean(previousUserMessage?.content) && typeof onRetryMessage === 'function';
   const timestamp = formatMessageTimestamp(message.createdAt);
@@ -1594,14 +1606,16 @@ function AssistantMessageRow({ message, taskChangeSet = null, disabled, removing
   return (
     <div className="notus-agent-assistant-message" style={{ minWidth: 0, maxWidth: '100%', overflow: 'hidden', opacity: removing ? 0 : 1, transform: removing ? 'translateY(-6px)' : 'translateY(0)', transition: 'opacity 220ms ease, transform 220ms ease' }}>
       {executionTrace}
-      {message.content ? <StreamingText className="notus-agent-markdown" text={message.content} streaming={false} style={{ fontSize: 15, lineHeight: 1.85, color: C.text }} /> : null}
+      {message.content ? <StreamingText className="notus-agent-markdown" text={message.content} streaming={false} files={files} onOpenFileLink={onOpenFileLink} style={{ fontSize: 15, lineHeight: 1.85, color: C.text }} /> : null}
       {Array.isArray(message.citations) && message.citations.length > 0 ? (
         <div style={{ display: 'grid', gap: 8, marginTop: 12, minWidth: 0, maxWidth: '100%', overflow: 'hidden' }}>
           <div style={{ fontSize: 12, color: C.tertiary }}>
             {(Number(message.sourceCount) > 0 ? Number(message.sourceCount) : message.citations.length)} 个来源
           </div>
-          {message.citations.map((citation, index) => (
-            <SourceCard
+          {message.citations.map((citation, index) => {
+            const citationFileId = Number(citation?.file_id);
+            const canOpenCitation = Number.isInteger(citationFileId) && citationFileId > 0 && typeof onCitationClick === 'function';
+            return <SourceCard
               key={citation.file_id || citation.file || index}
               file={citation.file}
               path={citation.path}
@@ -1611,9 +1625,9 @@ function AssistantMessageRow({ message, taskChangeSet = null, disabled, removing
               imageAltText={citation.image_alt_text}
               imageCaption={citation.image_caption}
               selected={citationSelection?.messageId === message.id && citationSelection?.citationIndex === index}
-              onClick={() => onCitationClick?.(citation, { messageId: message.id, citationIndex: index })}
-            />
-          ))}
+              onClick={canOpenCitation ? () => onCitationClick(citation, { messageId: message.id, citationIndex: index }) : undefined}
+            />;
+          })}
         </div>
       ) : null}
       <TaskReceiptCards researchSummary={message.meta?.research_summary} writeSummary={message.meta?.write_summary} />
@@ -1632,7 +1646,7 @@ function AssistantMessageRow({ message, taskChangeSet = null, disabled, removing
   );
 }
 
-function AgentTaskTimeline({ activeSteps, loading, streamText, sessionStatus = '', sessionId = '', startedAt = '', finishedAt = '', errorMessage = '', onAction, onPreviewImages }) {
+function AgentTaskTimeline({ activeSteps, loading, streamText, sessionStatus = '', sessionId = '', startedAt = '', finishedAt = '', errorMessage = '', onAction, onPreviewImages, files = [], onOpenFileLink }) {
   const hasSteps = Array.isArray(activeSteps) && activeSteps.length > 0;
   const isStarting = !hasSteps && !streamText && (loading || ['created', 'queued'].includes(sessionStatus));
   const hasTrace = hasSteps || Boolean(startedAt);
@@ -1645,7 +1659,7 @@ function AgentTaskTimeline({ activeSteps, loading, streamText, sessionStatus = '
       {streamText ? (
         <div className="notus-agent-task-timeline__draft">
           {!loading ? <div className="notus-agent-task-timeline__draft-label">中断前已生成的回复</div> : null}
-          <StreamingText className="notus-agent-markdown" text={streamText} streaming={loading} style={{ fontSize: 15, lineHeight: 1.85, color: C.text }} />
+          <StreamingText className="notus-agent-markdown" text={streamText} streaming={loading} files={files} onOpenFileLink={onOpenFileLink} style={{ fontSize: 15, lineHeight: 1.85, color: C.text }} />
         </div>
       ) : null}
     </div>
@@ -1663,7 +1677,7 @@ function mergeAgentTimelineSteps(restoredSteps = [], activeSteps = []) {
   }, [...(Array.isArray(restoredSteps) ? restoredSteps : [])]);
 }
 
-function MessageList({ messages, interactions = [], streamText, error = '', loading, activeSteps, activeSessionId = null, activeSessionStatus = '', sessionTimelines = {}, taskChangeSetsBySession = {}, removingMessageIds, onOpenOperationSet, onOpenTaskChangeSet, onCitationClick, citationSelection, actionDisabled = false, onResendMessage, onRetryMessage, onOpenAttachment, onPreviewMention, onPreviewImages, onPreviewToolchainImages, onAgentStepAction }) {
+function MessageList({ messages, interactions = [], streamText, error = '', loading, activeSteps, activeSessionId = null, activeSessionStatus = '', sessionTimelines = {}, taskChangeSetsBySession = {}, removingMessageIds, onOpenOperationSet, onOpenTaskChangeSet, onCitationClick, citationSelection, actionDisabled = false, onResendMessage, onRetryMessage, onOpenAttachment, onPreviewMention, onPreviewImages, onPreviewToolchainImages, onAgentStepAction, files = [], onOpenFileLink }) {
   const hasPersistedTimeline = Array.isArray(activeSteps) && activeSteps.length > 0;
   const hasAgentActivity = hasPersistedTimeline || Boolean(streamText) || Boolean(error) || Boolean(loading)
     || ['created', 'queued', 'running'].includes(activeSessionStatus);
@@ -1687,7 +1701,7 @@ function MessageList({ messages, interactions = [], streamText, error = '', load
     const draft = String(timeline.streamText || '');
     const timelineError = String(timeline.errorMessage || '').trim();
     if (steps.length === 0 && !draft && !timeline.loading && !timelineError && !timeline.startedAt) return null;
-    return <AgentTaskTimeline key={key} activeSteps={steps} loading={Boolean(timeline.loading)} streamText={draft} errorMessage={timelineError} sessionStatus={timeline.sessionStatus || ''} sessionId={timeline.sessionId || ''} startedAt={timeline.startedAt || ''} finishedAt={timeline.finishedAt || ''} onAction={onAgentStepAction} onPreviewImages={onPreviewToolchainImages} />;
+    return <AgentTaskTimeline key={key} activeSteps={steps} loading={Boolean(timeline.loading)} streamText={draft} errorMessage={timelineError} sessionStatus={timeline.sessionStatus || ''} sessionId={timeline.sessionId || ''} startedAt={timeline.startedAt || ''} finishedAt={timeline.finishedAt || ''} onAction={onAgentStepAction} onPreviewImages={onPreviewToolchainImages} files={files} onOpenFileLink={onOpenFileLink} />;
   };
   const currentTimelineSource = sessionTimelines?.[currentSessionKey] || null;
   const currentTimeline = currentTimelineSource || hasAgentActivity ? {
@@ -1760,6 +1774,8 @@ function MessageList({ messages, interactions = [], streamText, error = '', load
             onOpenTaskChangeSet={onOpenTaskChangeSet}
             onCitationClick={onCitationClick}
             citationSelection={citationSelection}
+            files={files}
+            onOpenFileLink={onOpenFileLink}
             executionTrace={messageTimeline
               ? traceFor(messageSessionKey === currentSessionKey ? currentTimeline : messageTimeline, `assistant-${messageSessionKey}`)
               : (index === lastMessageIndex && hasAgentActivity ? executionTrace : null)}
@@ -1790,6 +1806,8 @@ function AgentConfirmModeSelect({ value, onChange, disabled }) {
 function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigChange, onSend, onInterrupt, interruptibleSessionId = null, searchConfig, searchPreference, onSearchPreferenceChange, onRequireSearchConfig, onRequireMcpConfig, mcpSelection = { mode: 'off' }, onMcpSelectionChange, mcpAvailable = false, mcpAvailabilityChecked = false, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [], onPreviewMention, showJumpToBottom = false, onJumpToBottom }) {
   const [composerState, setComposerState] = useState({ content: '', mentions: [], segments: [] });
   const [files, setFiles] = useState([]);
+  const [previewAttachmentId, setPreviewAttachmentId] = useState(null);
+  const previewAttachment = files.find((file) => file.id === previewAttachmentId) || null;
   const [imagePreview, setImagePreview] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [focused, setFocused] = useState(false);
@@ -2076,6 +2094,16 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
         return counts;
       }, { image: 0, attachment: 0 });
       composerDraftHydratedRef.current = true;
+      // 先完成草稿恢复并开启保存，再异步更新旧粘贴附件的名称。
+      const pastedFiles = restoredFiles.filter((file) => file.source_kind === 'pasted_text');
+      if (pastedFiles.length > 0) {
+        Promise.all(pastedFiles.map(normalizePastedAttachmentName)).then((renamed) => {
+          if (cancelled) return;
+          const names = new Map(renamed.map((file) => [file.fileObject, file.name]));
+          setFiles((current) => current.map((file) => names.has(file.fileObject)
+            ? { ...file, name: names.get(file.fileObject) } : file));
+        });
+      }
     }).catch(() => {
       composerDraftHydratedRef.current = true;
     });
@@ -2701,17 +2729,20 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
       return;
     }
     const text = clipboard?.getData('text/plain') || '';
-    if (text.length > LONG_PASTE_ATTACHMENT_THRESHOLD) {
-      event.preventDefault();
-      const suffix = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
-      const file = new File([text], `pasted-text-${suffix}.txt`, { type: 'text/plain' });
-      addFiles([file], { sourceKind: 'pasted_text', mediaKind: 'attachment' });
-      toast('粘贴文本较长，已转为 TXT 附件。', 'info');
+    if (Array.from(text).length <= LONG_PASTE_ATTACHMENT_THRESHOLD) return;
+    if (selectedMediaCountRef.current.attachment >= MAX_PARSED_ATTACHMENTS) {
+      toast('附件数量已达上限，粘贴内容保留在输入框中。', 'info');
+      return;
     }
+    const file = new File([text], pastedTextFileName(text), { type: 'text/plain' });
+    addFiles([file], { sourceKind: 'pasted_text', mediaKind: 'attachment' });
+    event.preventDefault();
+    toast('粘贴内容超过 600 字符，已转为 TXT 附件，点击附件可预览。', 'info');
   };
 
   return (
     <div className="notus-agent-composer-dock" style={{ position: 'absolute', left: 0, right: 0, bottom: 0, background: 'linear-gradient(0deg, ' + C.page + ' 0%, ' + C.page + ' 68%, rgba(253,252,251,0) 100%)', zIndex: 6 }}>
+      {previewAttachment ? <AttachmentContentDialog open attachment={previewAttachment} onClose={() => setPreviewAttachmentId(null)} /> : null}
       {imagePreview ? <ImagePreviewOverlay preview={imagePreview} onClose={() => setImagePreview(null)} onMove={moveImagePreview} /> : null}
       {showJumpToBottom ? (
         <button
@@ -2739,7 +2770,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
       <div className="notus-agent-composer-shell" aria-busy={loading || undefined} style={{ width: AGENT_CHAT_CONTENT_WIDTH, maxWidth: 'none', margin: '0 auto', background: '#fff', boxShadow: focused ? '0 4px 24px rgba(217,119,87,0.08), inset 0 0 0 1px rgba(217,119,87,0.30)' : '0 2px 12px rgba(0,0,0,0.03), inset 0 0 0 1px rgba(229,227,216,0.95)', transitionProperty: 'box-shadow', transitionDuration: '180ms', transitionTimingFunction: 'cubic-bezier(0.16,1,0.3,1)', overflow: 'visible' }}>
         <input ref={fileInputRef} type="file" multiple accept={parsedAttachmentMode ? `${PARSED_ATTACHMENT_ACCEPT},${IMAGE_ACCEPT}` : undefined} style={{ display: 'none' }} onChange={(event) => { addFiles(event.target.files, { mediaKind: 'attachment' }); event.target.value = ''; }} />
         <input ref={imageInputRef} type="file" multiple accept={IMAGE_ACCEPT} style={{ display: 'none' }} onChange={(event) => { addFiles(event.target.files, { mediaKind: 'image' }); event.target.value = ''; }} />
-        {files.length > 0 ? <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', padding: '14px 16px 4px', maxHeight: 150, overflowY: 'auto' }}>{files.map((file) => <FileChip key={file.id} file={file} imageOnly={isImageMedia(file)} onPreview={openImagePreview} onRemove={(id) => {
+        {files.length > 0 ? <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', padding: '14px 16px 4px', maxHeight: 150, overflowY: 'auto' }}>{files.map((file) => <FileChip key={file.id} file={file} imageOnly={isImageMedia(file)} onOpen={(attachment) => setPreviewAttachmentId(attachment.id)} onPreview={openImagePreview} onRemove={(id) => {
           composerInteractionRef.current = true;
           setImagePreview((previous) => previous?.images?.some((image) => image.id === id) ? null : previous);
           setFiles((prev) => {
@@ -2849,11 +2880,9 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
             {showAgentConfirmMode ? <AgentConfirmModeSelect value={agentConfirmMode} onChange={onAgentConfirmModeChange} disabled={busy || disabled} /> : null}
             <div className="notus-agent-composer__network-tools">
               <div style={{ position: 'relative' }}>
-                <Tooltip content="联网搜索">
-                  <span style={{ display: 'inline-flex' }}>
-                    <button type="button" aria-label="联网搜索" onClick={toggleWebSearch} disabled={busy || disabled} style={transitionButton({ height: 28, padding: '0 10px', borderRadius: 8, background: webSearchSelected ? 'rgba(251,228,210,0.40)' : 'transparent', color: webSearchSelected ? C.accent : C.tertiary, display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: webSearchSelected ? 800 : 600, opacity: busy || disabled ? 0.5 : 1 })}><Icons.globe size={15} /><span className="notus-agent-control-label">联网</span></button>
-                  </span>
-                </Tooltip>
+                <span style={{ display: 'inline-flex' }}>
+                  <button type="button" aria-label="联网搜索" onClick={toggleWebSearch} disabled={busy || disabled} style={transitionButton({ height: 28, padding: '0 10px', borderRadius: 8, background: webSearchSelected ? 'rgba(251,228,210,0.40)' : 'transparent', color: webSearchSelected ? C.accent : C.tertiary, display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: webSearchSelected ? 800 : 600, opacity: busy || disabled ? 0.5 : 1 })}><Icons.globe size={15} /><span className="notus-agent-control-label">联网</span></button>
+                </span>
               {searchOpen ? (
                 <>
                   <button type="button" aria-label="关闭搜索商下拉" onClick={() => setSearchOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 19, border: 0, background: 'transparent', padding: 0 }} />
@@ -2870,11 +2899,9 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
               ) : null}
               </div>
               <div style={{ position: 'relative' }}>
-                <Tooltip content={mcpAvailable ? 'MCP 工具' : '暂无 MCP 服务'}>
-                  <span style={{ display: 'inline-flex' }}>
-                    <button type="button" aria-label={mcpAvailable ? '切换 MCP 自动工具' : '暂无 MCP 服务'} aria-disabled={busy || disabled || !mcpAvailable} onClick={toggleMcp} disabled={busy || disabled || !mcpAvailable} style={transitionButton({ height: 28, padding: '0 10px', borderRadius: 8, background: mcpEnabled ? 'rgba(251,228,210,0.40)' : 'transparent', color: mcpEnabled ? C.accent : C.tertiary, display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: mcpEnabled ? 800 : 600, opacity: busy || disabled || !mcpAvailable ? 0.5 : 1, cursor: busy || disabled || !mcpAvailable ? 'not-allowed' : undefined })}><Icons.mcp size={15} /><span className="notus-agent-control-label">{mcpLabel}</span></button>
-                  </span>
-                </Tooltip>
+                <span style={{ display: 'inline-flex' }}>
+                  <button type="button" aria-label={mcpAvailable ? '切换 MCP 自动工具' : '暂无 MCP 服务'} aria-disabled={busy || disabled || !mcpAvailable} onClick={toggleMcp} disabled={busy || disabled || !mcpAvailable} style={transitionButton({ height: 28, padding: '0 10px', borderRadius: 8, background: mcpEnabled ? 'rgba(251,228,210,0.40)' : 'transparent', color: mcpEnabled ? C.accent : C.tertiary, display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: mcpEnabled ? 800 : 600, opacity: busy || disabled || !mcpAvailable ? 0.5 : 1, cursor: busy || disabled || !mcpAvailable ? 'not-allowed' : undefined })}><Icons.mcp size={15} /><span className="notus-agent-control-label">{mcpLabel}</span></button>
+                </span>
                 {mcpOpen && mcpAvailable ? (
                   <>
                     <button type="button" aria-label="关闭 MCP 自动下拉" onClick={() => setMcpOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 19, border: 0, background: 'transparent', padding: 0 }} />
@@ -3118,7 +3145,7 @@ function SearchConfigView({ config, onSaved, onBack, selectProvider }) {
   );
 }
 
-export function AgentWorkspace({ messages, conversationId = null, interactions = [], streamText, loading, error, activeSteps, activeSessionId = null, activeSessionStatus = '', sessionTimelines = {}, taskChangeSetsBySession = {}, interruptibleSessionId = null, llmConfigs, selectedConfigId, onConfigChange, onSend, onStop, onResumeAgentTask, onConversationRewritten, onApplyOperationSet, onApplyOperationFile, onRollbackOperationFile, onDiscardOperationFile, onCitationClick, citationSelection, disabled, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [], fullWidth = false, onOpenDiffFile, restoringConversation = false }) {
+export function AgentWorkspace({ messages, conversationId = null, interactions = [], streamText, loading, error, activeSteps, activeSessionId = null, activeSessionStatus = '', sessionTimelines = {}, taskChangeSetsBySession = {}, interruptibleSessionId = null, llmConfigs, selectedConfigId, onConfigChange, onSend, onStop, onResumeAgentTask, onConversationRewritten, onApplyOperationSet, onApplyOperationFile, onRollbackOperationFile, onDiscardOperationFile, onCitationClick, citationSelection, disabled, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [], fullWidth = false, onOpenDiffFile, restoringConversation = false, files = [], onOpenFileLink }) {
   const { openSettings } = useSettingsDialog();
   const toast = useToast();
   const [searchConfig, setSearchConfig] = useState({ enabled: false, selected_provider: 'firecrawl', modes: {}, counts: {}, api_key_set: {}, providers: SEARCH_PROVIDER_FALLBACKS });
@@ -3540,6 +3567,8 @@ export function AgentWorkspace({ messages, conversationId = null, interactions =
             onPreviewMention={handleOpenMention}
             onPreviewImages={openMessageImagePreview}
             onPreviewToolchainImages={openToolchainImagePreview}
+            files={files}
+            onOpenFileLink={onOpenFileLink}
             onAgentStepAction={(action, _step, sessionId) => {
               if (action === 'resume_agent') void onResumeAgentTask?.(sessionId);
             }}

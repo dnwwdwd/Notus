@@ -24,7 +24,7 @@ assert.ok(workspace.includes("window.addEventListener('notus-mcp-servers-changed
 assert.ok(workspace.includes("if (!mcpAvailabilityChecked || mcpAvailable || mcpMode !== 'auto') return;"));
 assert.ok(workspace.includes('disabled={busy || disabled || !mcpAvailable}'), '没有可用 MCP Server 时按钮必须使用原生 disabled');
 assert.ok(workspace.includes('aria-disabled={busy || disabled || !mcpAvailable}'));
-assert.ok(workspace.includes("content={mcpAvailable ? 'MCP 工具' : '暂无 MCP 服务'}"));
+assert.ok(!workspace.includes("content={mcpAvailable ? 'MCP 工具' : '暂无 MCP 服务'}"));
 assert.ok(workspace.includes('const toggleMcp = () => {'));
 assert.ok(workspace.includes('onRequireMcpConfig?.();'));
 assert.ok(workspace.includes("if (!mcpAvailabilityChecked || mcpAvailable || mcpMode !== 'auto') return;"));
@@ -243,7 +243,7 @@ assert.ok(workspace.includes('answer.text || answer.custom_text || answer.label 
 assert.ok(toolChainSource.includes("const isCancelled = sessionStatus === 'cancelled' || tailStatus === 'cancelled';"), '已取消任务必须与需要处理状态分开');
 assert.ok(toolChainSource.includes("isCancelled\n    ? '已取消'"), '已取消任务的执行记录标题必须显示已取消');
 assert.ok(controller.includes("step.id?.startsWith('operation-confirmation-')"), '任务完成后必须结束已处理的文件确认步骤，避免继续显示需要处理');
-assert.ok(controller.includes('completeSteps(activeSteps, { resolveOperationConfirmations: true })'), '实时 final 事件必须结束已处理的文件确认步骤');
+assert.ok(controller.includes("completeSteps(activeSteps, { resolveOperationConfirmations: true, resolveModelErrors: event.status === 'completed' })"), '实时 final 事件必须结束已处理的文件确认步骤');
 assert.ok(controller.includes('completeSteps(steps, { resolveOperationConfirmations: true })'), '历史 completed 会话必须结束已处理的文件确认步骤');
 assert.ok(controller.includes('export function applyAgentTimelineEvent'), '并发 session 必须按事件独立更新自己的时间线');
 assert.ok(controller.includes('controllersRef.current.add(controller);'), '新任务入队不得中断旧任务的 SSE 订阅');
@@ -330,9 +330,9 @@ assert.ok(workspace.includes('className="notus-agent-composer__jump-to-bottom no
 assert.ok(!workspace.includes('CHAT_JUMP_BUTTON_OFFSET'), '回底控制不得继续使用固定绝对偏移覆盖工具链内容');
 assert.ok(globalStyles.includes('.notus-agent-composer__jump-to-bottom {\n  display: flex !important;\n  margin: 0 12px 8px auto !important;'), '回底按钮必须停靠在输入区右侧，避免压住工具链中部文字');
 assert.ok(narrowComposerStyles.includes('padding-bottom: 278px;'), '最窄面板的消息区必须为扩展后的输入停靠区预留安全空间');
-assert.ok(controller.includes("label: '正在思考'"), '模型可见执行说明在工具链中必须显示为“正在思考”。');
+assert.ok(controller.includes("label: '执行说明'"), '模型可见执行说明在工具链中必须显示为“执行说明”。');
 assert.ok(controller.includes("if (event.type === 'model_progress')"), '模型可见执行说明必须由同一 session timeline 恢复。');
-assert.ok(controller.includes("event.stage === 'thinking'"), '旧 thinking 草稿只能用于兼容中断回复，不能与模型执行说明重复渲染。');
+assert.ok(!controller.includes("event.stage === 'thinking'"), '旧 thinking 事件不能被提升为回复草稿。');
 assert.ok(controller.includes('setStreamText(assistantTextRef.current);'), '异常收尾不得清空已生成回复草稿');
 assert.ok(agentLoop.includes('let latestOperationSetId = null;'), '自动应用文件修订后必须保留最新变更集 ID');
 assert.ok(agentLoop.includes('operation_set_id: latestOperationSetId'), '模型继续生成最终总结时也必须把变更集关联到最终消息');

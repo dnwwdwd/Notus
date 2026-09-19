@@ -21,12 +21,12 @@ function hasSuccessfulResearch(sessionId, sourceType) {
   `).get(Number(sessionId), String(sourceType)));
 }
 
-function hasOperationSet(sessionId) {
+function hasOperationSet(sessionId, appliedOnly = false) {
   return Boolean(getDb().prepare(`
     SELECT 1 FROM canvas_operation_sets
-    WHERE agent_session_id = ?
+    WHERE agent_session_id = ? AND (? = 0 OR status = 'applied')
     LIMIT 1
-  `).get(Number(sessionId)));
+  `).get(Number(sessionId), appliedOnly ? 1 : 0));
 }
 
 function hasResourceChangeEvidence(sessionId) {
@@ -59,7 +59,9 @@ function evaluateCompletion({ sessionId, frame, finalText = '', correctionCount 
   const reasons = [];
   if (hasUnknownToolOutcome(sessionId)) reasons.push('存在无法确认外部结果的工具调用');
   if (criteria.requires_web && !hasSuccessfulResearch(sessionId, 'web')) reasons.push('用户要求联网，但没有成功的联网来源事实');
-  if (criteria.requires_write && !hasOperationSet(sessionId)) reasons.push('用户要求修改或创建文件，但没有文件预览或变更记录');
+  if (criteria.requires_write && !hasOperationSet(sessionId, criteria.requires_applied_write)) reasons.push(criteria.requires_applied_write
+    ? '用户要求继续保存文件，但本轮没有已应用的文件变更'
+    : '用户要求修改或创建文件，但没有文件预览或变更记录');
   if (criteria.requires_skill_draft && !hasSkillDraftEvidence(sessionId)) reasons.push('用户要求创建 Skill，但没有生成并校验 Skill 草稿');
   if (criteria.requires_resource_change && !hasResourceChangeEvidence(sessionId)) reasons.push('用户要求资源变更，但没有已执行的资源变更事实');
   if (criteria.requires_answer && !String(finalText || '').trim()) reasons.push('没有可交付的回答');

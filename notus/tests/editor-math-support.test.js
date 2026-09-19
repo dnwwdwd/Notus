@@ -55,9 +55,9 @@ function runTests() {
   });
 
   [
+    'remarkGfm',
     'remarkMath',
     'rehypeKatex',
-    'remarkPlugins={[remarkGfm, remarkMath]}',
   ].forEach((snippet) => {
     assert.ok(
       previewSource.includes(snippet),

@@ -39,8 +39,9 @@ async function runTests() {
         llmCallCount += 1;
         if (llmCallCount <= 2) {
           const second = llmCallCount === 2;
+          request.onVisibleText?.('先创建文件。');
           return {
-            content: [{
+            content: [{ type: 'text', text: '先创建文件。' }, {
               type: 'tool_use',
               id: `toolu_create_${llmCallCount}`,
               name: 'create_note',
@@ -53,6 +54,8 @@ async function runTests() {
             usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
           };
         }
+        request.onVisibleText?.('两份文件');
+        request.onVisibleText?.('已创建。');
         return {
           content: [{ type: 'text', text: '两份文件已创建。' }],
           stopReason: 'end_turn',
@@ -102,6 +105,8 @@ async function runTests() {
     assert.strictEqual(checkpoint.nextToolIndex, 1);
     const persistedReceipt = JSON.parse(checkpoint.toolResults[0].content);
     assert.strictEqual(persistedReceipt.status, 'success');
+    assert.strictEqual(persistedReceipt.applied, true);
+    assert.ok(persistedReceipt.summary.includes('已应用'));
     assert.match(persistedReceipt.result_ref, /^tool-result:\/\//);
     const persistedResult = await require('../lib/agentToolResultStore').readToolResult({
       conversationId: conversation.id,
@@ -134,6 +139,10 @@ async function runTests() {
     assert.deepStrictEqual(toolStarts.map((event) => event.execution_segment_id), executionStarts.slice(0, 2).map((event) => event.execution_segment_id));
     assert.deepStrictEqual(toolStarts.map((event) => event.tool_index), [0, 0]);
     assert.ok(events.some((event) => String(event.text || '').includes('两份文件已创建')));
+    assert.ok(events.some((event) => event.type === 'assistant_text_delta' && event.text === '两份文件'));
+    assert.ok(!events.some((event) => event.stage === 'model_progress' && event.text.includes('两份文件')));
+    assert.strictEqual(events.filter((event) => event.stage === 'model_progress').length, 2);
+    assert.strictEqual(events.find((event) => event.type === 'final').text, '两份文件已创建。');
     const changeSet = getTaskChangeSetDetail(session.sessionId);
     assert.strictEqual(changeSet.file_count, 2);
     assert.strictEqual(changeSet.pending_count, 0);

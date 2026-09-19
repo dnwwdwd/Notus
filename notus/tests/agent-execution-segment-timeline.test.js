@@ -18,8 +18,8 @@ assert.ok(controller.includes("kind: 'operation_batch'"), '文件变更批次必
 assert.ok(!workspace.includes('groupTimelineStepsBySegment'), '工具链不得向用户显示内部执行段分组。');
 assert.ok(workspace.includes("step?.kind !== 'segment'"), '工具链必须隐藏内部执行段步骤，只保留真实工具与可见状态。');
 assert.ok(controller.includes("if (event.type === 'model_progress')"), '模型可见执行说明必须作为独立的持久化时间线步骤。');
-assert.ok(controller.includes("label: '正在思考'"), '模型可见执行说明在工具链中必须显示为“正在思考”。');
-assert.ok(workspace.includes('正在思考'), '工具链必须提供可展开的“正在思考”步骤。');
+assert.ok(controller.includes("label: '执行说明'"), '模型可见执行说明在工具链中必须显示为“执行说明”。');
+assert.ok(workspace.includes('正在思考'), '工具链必须提供可展开的“执行说明”步骤。');
 assert.ok(controller.includes('本执行段已完成。'), '任务结束后，最后一个执行段不能继续显示等待模型响应。');
 assert.ok(controller.includes('recoverPersistedSession'), '订阅中断后必须以持久化任务状态恢复界面，不能直接标记任务失败。');
 assert.ok(loop.includes("reason: 'manual_preview_generated'"), '手动模式生成 Diff 后必须以完成事件收口任务。');

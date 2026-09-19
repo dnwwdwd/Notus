@@ -3,7 +3,8 @@ const { getEffectiveConfig } = require('./config');
 const { getStyleContext } = require('./style');
 const { buildInitialUserMessage, buildLoopSystemPrompt } = require('./agentLoopPrompt');
 const { renderAgentLoopPrompt } = require('./prompt/agent-loop/render');
-const { getConversationHistory } = require('./conversations');
+const { buildConversationContext } = require('./agentConversationContext');
+const { compactMessages, migrateCheckpointResults, INLINE_READ_TOOLS } = require('./agentMessageProjection');
 const { loadAttachments, formatAttachmentsForPrompt } = require('./parsedAttachmentStore');
 const { formatWebSearchContextsForPrompt } = require('./webSearchContextStore');
 const {
@@ -104,23 +105,6 @@ function safeJsonParse(value, fallback = null) {
   try { return JSON.parse(value); } catch { return fallback; }
 }
 
-function checkpointContainsToolResults(checkpoint = {}) {
-  if ((Array.isArray(checkpoint.toolResults) ? checkpoint.toolResults : []).some((item) => item?.type === 'tool_result')) return true;
-  return (Array.isArray(checkpoint.messages) ? checkpoint.messages : []).some((message) => (
-    Array.isArray(message?.content) && message.content.some((item) => item?.type === 'tool_result')
-  ));
-}
-
-function buildCompactSummary(parsed) {
-  if (parsed?.error) return `失败：${parsed.error}`;
-  if (Array.isArray(parsed?.results)) return `检索到 ${parsed.results.length} 条结果`;
-  if (parsed?.content) return `读取 ${String(parsed.content).length} 字`;
-  if (parsed?.operation_set_id) return `生成预览 ${parsed.operation_set_id}`;
-  if (parsed?.interaction_id) return `生成提问卡片 ${parsed.interaction_id}`;
-  if (parsed?.path) return `文件 ${parsed.path}`;
-  return '工具调用已完成';
-}
-
 function trimForContext(text = '', max = 1400) {
   const normalized = String(text || '').replace(/\s+/g, ' ').trim();
   if (normalized.length <= max) return normalized;
@@ -128,72 +112,7 @@ function trimForContext(text = '', max = 1400) {
 }
 
 function sanitizeAssistantVisibleText(text = '') {
-  const raw = String(text || '');
-  const withoutThinkingBlocks = raw
-    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
-    .replace(/<thinking>[\s\S]*$/gi, '')
-    .replace(/<\/thinking>/gi, '');
-  return withoutThinkingBlocks.trim();
-}
-
-function buildRecentConversationContext(session) {
-  if (!session?.conversation_id) return '';
-  const history = getConversationHistory(session.conversation_id, { limit: 10 });
-  const currentGoal = String(session.goal || '').trim();
-  const rows = history.filter((message) => {
-    if (!message?.content) return false;
-    if (message.role === 'user' && String(message.meta?.agent_goal || '').trim() === currentGoal) return false;
-    return message.role === 'user' || message.role === 'assistant';
-  }).slice(-8);
-  if (rows.length === 0) return '';
-  return rows.map((message) => {
-    const label = message.role === 'assistant' ? 'AI' : '用户';
-    return `${label}：${trimForContext(sanitizeAssistantVisibleText(message.content))}`;
-  }).join('\n');
-}
-
-function compactMessages(messages = [], tokenBudget = 60000) {
-  const estimated = estimateChatRequestTokens({ messages });
-  const target = Math.max(1024, Number(tokenBudget) || 60000);
-  if (estimated <= target) return messages;
-  const list = Array.isArray(messages) ? messages : [];
-  const recentStart = Math.max(1, list.length - 4);
-  const compactBlock = (block) => {
-    if (block?.type === 'tool_result') {
-      const parsed = safeJsonParse(block.content, null);
-      if (block.is_error || parsed?.error) {
-        return { ...block, content: trimForContext(block.content, 2400) };
-      }
-      return { ...block, content: JSON.stringify({ _compacted: true, summary: buildCompactSummary(parsed) }) };
-    }
-    if (block?.type === 'text') return { ...block, text: trimForContext(block.text, 1800) };
-    return block;
-  };
-  let compacted = list.map((message, index) => {
-    if (index === 0 || index >= recentStart) return message;
-    if (Array.isArray(message.content)) return { ...message, content: message.content.map(compactBlock) };
-    if (typeof message.content === 'string') {
-      return { ...message, content: trimTextToTokenBudget(message.content, 600) };
-    }
-    return message;
-  });
-  if (estimateChatRequestTokens({ messages: compacted }) <= target) return compacted;
-
-  compacted = compacted.filter((message, index) => index === 0 || index >= recentStart);
-  compacted = compacted.map((message, index) => {
-    const perMessageBudget = index === 0 ? Math.max(512, Math.floor(target * 0.3)) : Math.max(512, Math.floor(target * 0.16));
-    if (typeof message.content === 'string') return { ...message, content: trimTextToTokenBudget(message.content, perMessageBudget) };
-    if (!Array.isArray(message.content)) return message;
-    return {
-      ...message,
-      content: message.content.map((block) => (
-        block?.type === 'text'
-          ? { ...block, text: trimTextToTokenBudget(block.text || '', perMessageBudget) }
-          : compactBlock(block)
-      )),
-    };
-  });
-  return compacted;
+  return require('./assistantVisibleText').visibleText(text).trim();
 }
 
 function classifyLLMError(error = {}) {
@@ -374,6 +293,11 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
   const config = getEffectiveConfig();
   const runtimeMode = getAgentRuntimeMode();
   let effectiveFrame = turnFrame || (agentRuntimeAtLeast('shadow', runtimeMode) ? getSessionTurnFrame(sessionId) : null);
+  const { resolveFailedFileContinuation, formatFailedFileContinuation } = require('./agentTaskContinuation');
+  const fileContinuation = effectiveFrame?.facts?.failed_file_continuation || resolveFailedFileContinuation(session);
+  const completionFrame = fileContinuation
+    ? { intent: { completion_criteria: { ...effectiveFrame?.intent?.completion_criteria, requires_write: true, requires_applied_write: normalizeApprovalMode(approvalMode) === 'auto_confirm', requires_answer: true } } }
+    : null;
   const rawEmit = typeof onStream === 'function' ? onStream : () => {};
   const emit = (event) => {
     // 时间线写入失败不能掩盖主任务结果；正常路径下每个用户可见的 v2 事件
@@ -475,17 +399,12 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
     toolResult: { ok: true },
     status: 'metadata',
   });
-  const checkpoint = loadMessagesCheckpoint(session.id);
-  if (
-    checkpoint
-    && agentRuntimeAtLeast('context', runtimeMode)
-    && Number(checkpoint.toolResultProjectionVersion || 0) < 1
-    && checkpointContainsToolResults(checkpoint)
-  ) {
+  let checkpoint;
+  try { checkpoint = await migrateCheckpointResults(loadMessagesCheckpoint(session.id), session); }
+  catch (error) {
     updateSessionStatus(session.id, 'failed');
-    const finalText = '旧任务检查点包含未外置的工具结果，无法在当前安全上下文模式下继续。请从原用户消息重新发起任务。';
-    emit({ type: 'final', text: finalText, status: 'failed', reason: 'checkpoint_projection_incompatible', usage: getSessionUsage(session.id) });
-    return { status: 'failed', reason: 'checkpoint_projection_incompatible', final_text: finalText };
+    emit({ type: 'final', text: error.message, status: 'failed', reason: 'checkpoint_result_archive_failed' });
+    return { status: 'failed', reason: 'checkpoint_result_archive_failed' };
   }
   let checkpointToCommit = checkpoint?.id || null;
   let messages;
@@ -513,6 +432,15 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
           content: questionCardResult?.content || resumeToolResult?.content || JSON.stringify({ applied: true, message: '修改已写入文件' }),
           is_error: Boolean(questionCardResult?.isError || resumeToolResult?.is_error),
         }];
+      // 审批/确认结果可能刚由恢复入口写入，必须再次经过同一归档契约。
+      try {
+        const projected = await migrateCheckpointResults({ ...checkpoint, toolResults: restoredResults }, session);
+        restoredResults.splice(0, restoredResults.length, ...projected.toolResults);
+      } catch (error) {
+        updateSessionStatus(session.id, 'failed');
+        emit({ type: 'final', text: error.message, status: 'failed', reason: 'checkpoint_result_archive_failed' });
+        return { status: 'failed', reason: 'checkpoint_result_archive_failed' };
+      }
       const restoredToolCount = parseResponse({ content: checkpoint.lastResponseContent || [] }).toolUseBlocks.length;
       if (Math.max(0, Number(checkpoint.nextToolIndex || 0)) < restoredToolCount) {
         checkpoint.phase = 'dispatching_tools';
@@ -536,10 +464,12 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
       }
     }
   } else {
+    const conversationContext = await buildConversationContext({ session, llmConfig, signal, remainingTokens: Math.max(0, Number(session.token_budget_total || llmConfig?.llmContextWindowTokens || config.llmContextWindowTokens || 60000) - getSessionUsage(session.id).total_tokens), onUsage: (usage) => recordRunUsage({ sessionId: session.id, runId, sourceType: 'conversation_summary', usage, usageSource: 'provider' }) });
+    if (conversationContext.degraded) emit({ type: 'progress', stage: 'context_degraded', text: '较早对话摘要暂不可用，原始记录仍可按需查询。' });
     messages = [{
       role: 'user',
       content: buildInitialUserContent(session, {
-        recentConversationContext: buildRecentConversationContext(session),
+        recentConversationContext: [conversationContext.text, formatFailedFileContinuation(fileContinuation)].filter(Boolean).join('\n\n'),
         images: initialImages,
         currentImageRecognition,
       }),
@@ -609,7 +539,22 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
     session = getSession(session.id);
     const isResumingDispatch = Boolean(pendingDispatch);
     let response;
-    let receivedVisibleModelText = false;
+    let responseDraft = '';
+    let lastDraftEmittedAt = 0;
+    let emittedDraft = '';
+    const emitResponseDraft = (rawText, complete = false) => {
+      const text = require('./agentToolPolicy').redactStreamingText(rawText, { complete });
+      if (text === emittedDraft && text) return;
+      const append = Boolean(text) && text.startsWith(emittedDraft);
+      emit({
+        type: append ? 'assistant_text_delta' : 'assistant_text_replace',
+        text: append ? text.slice(emittedDraft.length) : text,
+        loop_index: loopIndex,
+        execution_segment_id: activeExecutionSegment?.id,
+        segment_sequence_no: activeExecutionSegment?.sequence_no,
+      });
+      emittedDraft = text;
+    };
     if (isResumingDispatch) {
       activeExecutionSegment = getExecutionSegment(pendingDispatch.executionSegmentId)
         || beginExecutionSegment(session.id, loopIndex, { reuseOpen: true });
@@ -670,9 +615,7 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
       emit({ type: 'progress', stage: 'budget_restricted', text: '本次请求上下文接近模型上限，已停止加载可选材料和可选工具。', loop_index: loopIndex });
     }
     budgetRestricted = nextBudgetRestricted;
-    const compactedMessages = requestPressure >= 0.72
-      ? compactMessages(messages, Math.floor(contextWindow * 0.6))
-      : messages;
+    const compactedMessages = compactMessages(messages, requestPressure >= 0.72 ? Math.floor(contextWindow * 0.6) : contextWindow);
     const requiredNames = requiredToolNames(effectiveFrame?.intent || {});
     if (String(mcpSelection.mode || 'off') === 'server') {
       Object.keys(mcpContext.map || {}).forEach((name) => requiredNames.add(name));
@@ -703,6 +646,7 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
       executionSegmentId: activeExecutionSegment.id,
       llmRequestWindowId: activeRequestWindow.id,
     });
+    emitResponseDraft('');
     try {
       response = await callLLMWithRetry({
         system: requestPrompt.text,
@@ -718,23 +662,18 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
         }),
         maxRetries: 1,
         onVisibleText: (text) => {
-          const visibleText = sanitizeAssistantVisibleText(text);
-          if (!visibleText) return;
-          receivedVisibleModelText = true;
-          emit({
-            type: 'progress',
-            stage: 'model_progress',
-            text: visibleText,
-            loop_index: loopIndex,
-            execution_segment_id: activeExecutionSegment.id,
-            segment_sequence_no: activeExecutionSegment.sequence_no,
-            request_window_no: activeRequestWindow.window_no,
-          });
+          responseDraft += String(text || '');
+          if (Date.now() - lastDraftEmittedAt < 100) return;
+          emitResponseDraft(sanitizeAssistantVisibleText(responseDraft));
+          lastDraftEmittedAt = Date.now();
         },
       }, DEFAULT_LLM_RETRY_LIMIT, {
         ...(typeof llmRetryDelayMs === 'function' ? { retryDelayMs: llmRetryDelayMs } : {}),
         ...(typeof llmRetryWait === 'function' ? { waitForRetry: llmRetryWait } : {}),
         onRetry: ({ attempt, maxRetries, delayMs, classification }) => {
+          responseDraft = '';
+          lastDraftEmittedAt = 0;
+          emitResponseDraft('');
           recordRequestRetry(activeRequestWindow.id, attempt, classification);
           emit({
             type: 'progress',
@@ -847,28 +786,25 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
       completed: toolUseBlocks.length === 0,
     });
 
-    if (!isResumingDispatch && !receivedVisibleModelText && toolUseBlocks.length > 0) {
-      textBlocks.forEach((block) => {
-        const visibleText = sanitizeAssistantVisibleText(block.text);
-        if (!visibleText) return;
-        emit({
-          type: 'progress',
-          stage: 'model_progress',
-          text: visibleText,
-          loop_index: loopIndex,
-          execution_segment_id: activeExecutionSegment.id,
-          segment_sequence_no: activeExecutionSegment.sequence_no,
-          request_window_no: activeRequestWindow?.window_no || 0,
-        });
+    if (!isResumingDispatch) {
+      // A tool prelude belongs to the execution timeline; a final answer stays
+      // in its own streamed draft. Never accumulate previous tool preludes.
+      emitResponseDraft(toolUseBlocks.length ? '' : thinking, true);
+      if (toolUseBlocks.length && thinking) emit({
+        type: 'progress', stage: 'model_progress', text: thinking,
+        loop_index: loopIndex,
+        execution_segment_id: activeExecutionSegment.id,
+        segment_sequence_no: activeExecutionSegment.sequence_no,
+        request_window_no: activeRequestWindow?.window_no || 0,
       });
     }
 
     if (isGoalAchieved(stopReason, toolUseBlocks)) {
       logToolCall({ sessionId: session.id, loopIndex, toolName: null, toolInput: null, toolResult: null, thinking, status: 'success', durationMs: 0 });
-      if (agentRuntimeAtLeast('enforced', runtimeMode)) {
+      if (agentRuntimeAtLeast('enforced', runtimeMode) || fileContinuation) {
         const completion = evaluateCompletion({
           sessionId: session.id,
-          frame: effectiveFrame,
+          frame: completionFrame || effectiveFrame,
           finalText: thinking,
           correctionCount: completionCorrectionCount,
         });
@@ -1032,7 +968,7 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
       if (rawResult === null) rawResult = existingOperationSet ? { ...result, operation_set: existingOperationSet } : result;
       let resultArtifact = recoveredInvocation?.artifact || null;
       let modelVisibleResult = result;
-      if (agentRuntimeAtLeast('shadow', runtimeMode) && toolUse.name !== 'read_tool_result' && !recoveredInvocation) {
+      if (!INLINE_READ_TOOLS.has(toolUse.name) && !recoveredInvocation) {
         resultArtifact = await archiveToolResult({
           conversationId: session.conversation_id,
           sessionId: session.id,
@@ -1045,9 +981,9 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
           result: rawResult,
         });
       }
-      if (toolUse.name !== 'read_tool_result') {
+      if (!INLINE_READ_TOOLS.has(toolUse.name)) {
         modelVisibleResult = projectToolResultForModel({
-          useReceipt: agentRuntimeAtLeast('context', runtimeMode),
+          useReceipt: true,
           toolName: toolUse.name,
           result,
           artifact: resultArtifact,
@@ -1082,7 +1018,7 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
           payload: {
             tool_name: toolUse.name,
             result_ref: resultArtifact?.status === 'ready' ? resultArtifact.result_ref : null,
-            artifact_status: resultArtifact?.status || (toolUse.name === 'read_tool_result' ? 'inline' : 'archive_failed'),
+            artifact_status: resultArtifact?.status || (INLINE_READ_TOOLS.has(toolUse.name) ? 'inline' : 'archive_failed'),
             error_code: result?.error || '',
             resource_changed: !failed && !result?.approval_required && resourceChangeTools.has(toolUse.name),
             operation_set_id: result?.operation_set_id || null,
@@ -1151,7 +1087,7 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
         return { status: 'waiting_interaction', reason: 'tool_outcome_unknown', interaction, interaction_id: interaction?.id || null };
       }
 
-      if (agentRuntimeAtLeast('context', runtimeMode) && toolUse.name !== 'read_tool_result' && resultArtifact?.status !== 'ready') {
+      if (!INLINE_READ_TOOLS.has(toolUse.name) && resultArtifact?.status !== 'ready') {
         updateExecutionSegment(activeExecutionSegment.id, { status: 'failed', completed: true });
         updateSessionStatus(session.id, 'failed');
         emit({ type: 'final', text: '工具已经执行，但完整结果无法安全保存，后续步骤已停止。外部操作状态以执行记录为准。', status: 'failed', reason: 'tool_result_payload_unavailable', tool_name: toolUse.name, loop_index: loopIndex, usage: getSessionUsage(session.id) });
@@ -1267,7 +1203,7 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
           status: actualApplied ? 'applied' : 'pending',
         }, actualApplied ? 'applied' : 'pending');
 
-        if (agentRuntimeAtLeast('shadow', runtimeMode)) {
+        {
           resultArtifact = await archiveToolResult({
             conversationId: session.conversation_id,
             sessionId: session.id,
@@ -1281,15 +1217,13 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
             replace: true,
           });
         }
-        if (agentRuntimeAtLeast('context', runtimeMode) && resultArtifact?.status !== 'ready') {
+        if (resultArtifact?.status !== 'ready') {
           updateExecutionSegment(activeExecutionSegment.id, { status: 'failed', completed: true });
           updateSessionStatus(session.id, 'failed');
           emit({ type: 'final', text: '文件操作已经执行，但完整结果无法安全保存，后续步骤已停止。请根据文件预览和执行记录核实结果。', status: 'failed', reason: 'tool_result_payload_unavailable', tool_name: toolUse.name, loop_index: loopIndex, operation_set_id: result.operation_set_id });
           return { status: 'failed', reason: 'tool_result_payload_unavailable', operation_set_id: result.operation_set_id };
         }
-        const mergedModelVisibleResult = agentRuntimeAtLeast('context', runtimeMode)
-          ? projectToolResultForModel({ useReceipt: true, toolName: toolUse.name, result: mergedPreviewResult, artifact: resultArtifact })
-          : mergedPreviewResult;
+        const mergedModelVisibleResult = projectToolResultForModel({ useReceipt: true, toolName: toolUse.name, result: mergedPreviewResult, artifact: resultArtifact });
         toolResults[toolResults.length - 1] = {
           type: 'tool_result',
           tool_use_id: toolUse.id,

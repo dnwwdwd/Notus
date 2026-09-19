@@ -52,13 +52,14 @@ assert.ok(sidebar.includes("from '@dnd-kit/core'"), '侧边栏应使用项目既
 assert.ok(sidebar.includes('autoScroll={{'), '侧边栏拖拽应开启滚动容器自动滚动');
 assert.ok(sidebar.includes('onDragEnd={handleTreeDragEnd}'), '侧边栏拖拽结束应执行移动处理');
 assert.ok(sidebar.includes("change_type: source.type === 'folder' ? 'move_folder' : 'move_file'"), '拖拽应复用文件系统 patch 移动文件或目录');
-assert.ok(sidebar.includes("event.dataTransfer.setData('application/x-notus-mention'"), '新增移动拖拽不能移除既有文件 Mention 拖放');
+assert.ok(!sidebar.includes('draggable={Boolean(mention.path)}'), '文件树不能把原生拖拽与 Pointer Sensor 叠加');
+assert.ok(sidebar.includes("new CustomEvent('notus:sidebar-mention-drop'"), '文件树拖到 Agent 输入框必须通过本地事件插入 Mention');
 assert.ok(sidebar.includes('queueDragFolderExpand(destination)'), '拖拽悬停目录应自动展开目标目录');
 assert.ok(sidebar.includes('setSidebarScroll(activeTab, scrollTop)'), '自动滚动仍应通过既有滚动事件保存侧边栏位置');
 assert.ok(sidebar.includes("type: isFolder ? 'folder' : 'file'"), '文件行必须作为无效落点拦截，不能误落到根目录');
 assert.ok(sidebar.includes('if (destination === null || !canMoveTreeItem(source, destination)) return;'), '文件或无效落点不能提交移动请求');
 assert.ok(sidebar.includes('aria-label="移动到根目录"'), '根目录应使用独立的空白落点，不能覆盖文件行');
-assert.ok(sidebar.includes('draggable={Boolean(mention.path)}'), '文件行正文应继续作为 Mention 原生拖拽源');
+assert.ok(sidebar.includes('onDragMove={handleTreeDragMove}'), '文件树拖动时应持续识别外部引用落点');
 assert.ok(sidebar.includes('ref={setRowNodeRef}'), '文件移动必须由整行发起，不应要求独立拖动柄');
 assert.ok(!sidebar.includes('const FileMoveHandle'), '文件树不应保留独立拖动柄');
 assert.ok(sidebar.includes("new CustomEvent('notus:sidebar-mention-drop'"), '整行拖到 Agent 输入框时必须转交 Mention 插入事件');

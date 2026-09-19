@@ -124,6 +124,7 @@ async function execute(task) {
     const renewed = renewRunLease(sessionId, runId);
     if (!renewed.renewed && !controller.signal.aborted) controller.abort('lease_lost');
   }, 20_000);
+  const historyDiscarded = () => Boolean(getTaskBySession(sessionId)?.input?.history_discarded);
   let assistantText = '';
   let finalEvent = null;
   if (resumeJob) {
@@ -182,6 +183,7 @@ async function execute(task) {
         resumeInteraction,
         allowSemanticPlanner: agentRuntimeAtLeast('search', runtimeMode),
       });
+      if (historyDiscarded()) return;
       turnFrame = composed.frame;
       recordRuntimeFact({
         eventKey: `turn-frame:${turnFrame.id}:active`,
@@ -243,6 +245,7 @@ async function execute(task) {
         conversation_id: conversationId,
       }),
     });
+    if (historyDiscarded()) return;
     if (turnFrame && parsedAttachments.length) {
       turnFrame = updateTurnFrame(turnFrame.id, {
         facts: {
@@ -260,6 +263,7 @@ async function execute(task) {
     registerParsedInputSources({ sessionId, conversationId, parsedAttachments, attachments: loadAttachments(conversationId) });
     if (agentRuntimeAtLeast('search', runtimeMode) && turnFrame) {
       const mission = await executeRuntimeSearchMission({ session, task, frame: turnFrame, userQuery, llmConfig, runId });
+      if (historyDiscarded()) return;
       turnFrame = mission.frame || turnFrame;
       if (mission.executed && mission.receipt?.payload_unavailable) {
         throw Object.assign(new Error('联网研究已经执行，但完整结果无法安全保存，后续步骤已停止。'), {
@@ -294,6 +298,7 @@ async function execute(task) {
         emit(sessionId, runId, { type: 'progress', stage: 'image_recognition_done', text: '图片查看未完成，任务将继续使用其他材料。', status: 'error', error: error.code || 'IMAGE_RECOGNITION_FAILED', conversation_id: conversationId, message_id: task.user_message_id, image_count: images.length, images: viewedImages });
       }
     }
+    if (historyDiscarded()) return;
     const loopResult = await runAgentLoop({
       sessionId, runId, llmConfig, signal: controller.signal, approvalMode: task.approval_mode,
       taskId: task.id, turnFrame,
@@ -307,6 +312,7 @@ async function execute(task) {
         }
       },
     });
+    if (historyDiscarded()) return;
     const finalSession = getSession(sessionId);
     const status = finalSession.status || loopResult?.status || 'failed';
     if (['completed', 'failed', 'cancelled'].includes(status)) markTaskChangeSetFinished(sessionId, status);
@@ -331,6 +337,7 @@ async function execute(task) {
       if (settledResumeJob?.status !== 'queued') updateTask(sessionId, { resumeJobId: null });
     }
   } catch (error) {
+    if (historyDiscarded()) return;
     const cancelled = controller.signal.aborted && controller.signal.reason === 'cancel';
     const interrupted = controller.signal.aborted && !cancelled;
     const status = cancelled ? 'cancelled' : interrupted ? 'queued' : 'failed';

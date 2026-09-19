@@ -44,4 +44,8 @@ assert.throws(() => renderAgentLoopPrompt(session, {
   taskMaterials: [{ sourceType: 'web', sourceId: 'oversized', content: '材料'.repeat(20_000) }],
 }), (error) => ['PROMPT_DYNAMIC_MATERIAL_EXCEEDED', 'PROMPT_MODULE_BUDGET_EXCEEDED'].includes(error.code));
 
+const { buildInitialUserMessage, buildLoopSystemPrompt } = require('../lib/agentLoopPrompt');
+const initial = buildInitialUserMessage('翻译一句话', session);
+assert.ok(!initial.includes('请先说明执行计划'));
+assert.ok(!buildLoopSystemPrompt(session).includes('每轮开始时用一两句话'));
 console.log('agent prompt registry tests passed');

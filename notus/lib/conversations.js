@@ -233,6 +233,12 @@ function appendConversationMessage({ conversationId, role, type = 'text', conten
     throw new Error('conversation_id is required');
   }
   const normalizedRole = ['user', 'assistant', 'tool', 'system'].includes(role) ? role : 'user';
+  if (normalizedRole === 'assistant' && Number(meta?.session_id) > 0) {
+    const discarded = db.prepare(`SELECT 1 FROM agent_task_queue
+      WHERE session_id = ? AND conversation_id = ?
+        AND json_extract(input_json, '$.history_discarded') = 1`).get(Number(meta.session_id), normalizedConversationId);
+    if (discarded) return null;
+  }
   const normalizedType = String(type || 'text').trim() || 'text';
   const messageContent = String(content || '');
   const serializedCitations = citations === null || citations === undefined
@@ -449,6 +455,11 @@ function rewriteConversationFromMessage({ conversationId, messageId, content } =
 
     if (cancelledSessionIds.length > 0) {
       const placeholders = cancelledSessionIds.map(() => '?').join(', ');
+      // The user intentionally replaced this branch. A missing final_message_id
+      // after DELETE must not be mistaken for a crashed final-message commit.
+      db.prepare(`UPDATE agent_task_queue
+        SET input_json = json_set(input_json, '$.history_discarded', 1)
+        WHERE session_id IN (${placeholders})`).run(...cancelledSessionIds);
       db.prepare(`
         UPDATE agent_task_queue
         SET status = 'cancelled',

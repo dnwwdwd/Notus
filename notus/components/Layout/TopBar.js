@@ -39,6 +39,7 @@ function useHeaderWidthMode() {
 const HeaderIconButton = ({
   label,
   tooltip,
+  showTooltip = true,
   active,
   selectedIcon = false,
   disabled,
@@ -53,13 +54,12 @@ const HeaderIconButton = ({
   const baseBackground = selectedIcon ? 'transparent' : (style?.background || (active ? 'var(--accent-subtle)' : 'transparent'));
   const interactiveHoverBackground = selectedIcon ? 'transparent' : (hoverBackground || (active ? 'var(--accent-subtle)' : 'var(--bg-hover)'));
 
-  return (
-    <Tooltip content={tooltip || label} placement="bottom" gap={6}>
+  const button = (
       <button
         type="button"
         className="notus-topbar-icon-button"
         aria-label={label}
-        title={label}
+        title={showTooltip ? label : undefined}
         disabled={disabled || loading}
         onClick={onClick}
         onFocus={onFocus}
@@ -105,8 +105,8 @@ const HeaderIconButton = ({
       >
         {loading ? <Spinner size={13} /> : children}
       </button>
-    </Tooltip>
   );
+  return showTooltip ? <Tooltip content={tooltip || label} placement="bottom" gap={6}>{button}</Tooltip> : button;
 };
 
 export const TopBar = ({
@@ -376,6 +376,7 @@ export const TopBar = ({
         {showCmdK && (
           <HeaderIconButton
             label="搜索文件"
+            showTooltip={false}
             tooltip="搜索文件"
             onClick={openSearch}
           >
@@ -386,6 +387,7 @@ export const TopBar = ({
         {typeof onToggleEditor === 'function' && (
           <HeaderIconButton
             label={editorOpen ? '收起富文本编辑器' : '展开富文本编辑器'}
+            showTooltip={false}
             tooltip={editorOpen ? '收起富文本编辑器' : '展开富文本编辑器'}
             active={Boolean(editorOpen)}
             selectedIcon
@@ -398,6 +400,7 @@ export const TopBar = ({
         {typeof onToggleAgent === 'function' && (
           <HeaderIconButton
             label={agentOpen ? '收起 AI 聊天面板' : '展开 AI 聊天面板'}
+            showTooltip={false}
             tooltip={agentOpen ? '收起 AI 聊天面板' : '展开 AI 聊天面板'}
             active={Boolean(agentOpen)}
             selectedIcon
@@ -411,6 +414,7 @@ export const TopBar = ({
         {showSettingsButton ? (
           <HeaderIconButton
             label="设置"
+            showTooltip={false}
             tooltip="设置"
             onClick={() => runAction(() => openSettings('model'))}
           >

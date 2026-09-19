@@ -202,7 +202,7 @@ function persistTaskFinalMessage(sessionId, { content, status, meta = {} } = {})
   const db = getDb();
   return db.transaction(() => {
     const task = getTaskBySession(sessionId);
-    if (!task) return null;
+    if (!task || task.input?.history_discarded) return null;
     if (task.final_message_id) return task.final_message_id;
     const existing = db.prepare(`SELECT id FROM messages WHERE conversation_id=? AND role='assistant'
       AND json_extract(meta, '$.session_id')=? AND json_extract(meta, '$.status') IN ('completed','failed','cancelled')
@@ -220,7 +220,8 @@ function recoverOrphanedTasks() {
   const db = getDb();
   return db.transaction(() => {
     const ended = db.prepare(`SELECT q.session_id, s.status FROM agent_task_queue q JOIN agent_sessions s ON s.id=q.session_id
-      WHERE q.final_message_id IS NULL AND s.status IN ('completed','failed','cancelled')`).all();
+      WHERE q.final_message_id IS NULL AND COALESCE(json_extract(q.input_json, '$.history_discarded'), 0) = 0
+        AND s.status IN ('completed','failed','cancelled')`).all();
     ended.forEach((row) => {
       const event = db.prepare("SELECT payload_json FROM agent_run_events WHERE session_id=? AND event_type='final' ORDER BY id DESC LIMIT 1").get(row.session_id);
       const payload = parse(event?.payload_json, {});

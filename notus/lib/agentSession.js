@@ -439,37 +439,15 @@ async function rollbackSession(sessionId, notesDir = getEffectiveConfig().notesD
   return { restored_count: restoredCount, restoredCount, errors, conflicts };
 }
 
-function buildCompactSummary(result) {
-  if (result?.error) return `失败：${result.error}`;
-  if (Array.isArray(result?.results)) return `检索到 ${result.results.length} 条结果`;
-  if (result?.content) return `读取 ${String(result.content).length} 字`;
-  if (result?.path || result?.created_path) return `文件：${result.path || result.created_path}`;
-  if (result?.operation_set_id) return `预览 ${result.operation_set_id}`;
-  return '工具调用已完成';
-}
-
 function compactMessagesForStorage(messages = []) {
-  const list = Array.isArray(messages) ? messages : [];
-  const keep = list.slice(-6);
-  const compact = list.slice(0, -6).map((message) => {
-    if (message.role !== 'user' || !Array.isArray(message.content)) return message;
-    return {
-      ...message,
-      content: message.content.map((block) => {
-        if (block?.type !== 'tool_result') return block;
-        const parsed = safeJsonParse(block.content, null);
-        if (parsed?.error || block.is_error) return block;
-        return { ...block, content: JSON.stringify({ _compacted: true, summary: buildCompactSummary(parsed) }) };
-      }),
-    };
-  });
-  return compact.concat(keep);
+  // 回执是恢复入口，不能用无引用的占位摘要替换。
+  return require('./agentMessageProjection').evictOldReadWindows(Array.isArray(messages) ? messages : []);
 }
 
 function saveMessagesCheckpoint(sessionId, messages, lastResponseContent, appliedToolUseId, runId = '', options = {}) {
   const { agentRuntimeAtLeast, getAgentRuntimeMode } = require('./agentRuntimeMode');
   const runtimeMode = getAgentRuntimeMode();
-  const toolResultProjectionVersion = agentRuntimeAtLeast('context', runtimeMode) ? 1 : 0;
+  const toolResultProjectionVersion = 2;
   const checkpoint = {
     messages: compactMessagesForStorage(messages),
     last_response_content: lastResponseContent,
@@ -938,7 +916,7 @@ function sanitizeInteractionForRunEvent(interaction = {}) {
 
 function sanitizeRunEvent(event = {}) {
   const type = String(event.type || '').trim();
-  if (!['progress', 'artifact', 'final'].includes(type)) return null;
+  if (!['progress', 'artifact', 'final', 'assistant_text_replace', 'assistant_text_delta'].includes(type)) return null;
   const stage = String(event.stage || '').trim();
   const isImageViewEvent = type === 'progress' && IMAGE_VIEW_STAGES.has(stage);
   const isAttachmentParseEvent = type === 'progress' && ATTACHMENT_PARSE_STAGES.has(stage);
@@ -951,7 +929,7 @@ function sanitizeRunEvent(event = {}) {
   const payload = {
     type,
     stage,
-    text: truncateTimelineText(event.text || event.final_text || '', type === 'final' ? 64 * 1024 : 16 * 1024),
+    text: truncateTimelineText(event.text || event.final_text || '', ['final', 'assistant_text_replace'].includes(type) ? 64 * 1024 : 16 * 1024),
     loop_index: Math.max(0, Number(event.loop_index || 0)),
     tool_name: String(event.tool_name || '').trim(),
     tool_display_name: truncateTimelineText(event.tool_display_name || '', 256),

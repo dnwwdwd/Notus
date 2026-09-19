@@ -156,12 +156,15 @@ npm run dist:desktop:mac:x64
 npm run dist:desktop:mac:arm64
 npm run dist:desktop:win:x64
 
+# 打包懒猫安装包
+npm run dist:lpk
 ```
 
 | 产物 | 输出路径 |
 | --- | --- |
 | Web standalone | `web-dist/` |
 | Electron 安装包 | `desktop/dist/` |
+| 懒猫安装包 | 仓库根目录 |
 
 ---
 
@@ -170,6 +173,7 @@ npm run dist:desktop:win:x64
 ```text
 notus/     Next.js 页面、组件、API Routes 与核心业务库
 desktop/   Electron 主进程、预加载桥接与打包脚本
+docs/      产品、技术与业务流程文档
 ```
 
 ---

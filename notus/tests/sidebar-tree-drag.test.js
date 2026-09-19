@@ -23,9 +23,13 @@ assert.ok(sidebar.includes('const setRowNodeRef = useCallback'), '拖拽源和�
 assert.ok(sidebar.includes('ref={setRowNodeRef}'), '文件树行必须整体承接拖拽');
 assert.ok(!sidebar.includes('const FileMoveHandle'), '不再渲染独立拖动柄');
 assert.ok(!sidebar.includes('<Icons.drag size={14} />'), '不再显示拖动图标');
+assert.ok(!sidebar.includes('draggable={Boolean(mention.path)}'), '整行移动不能同时启用会被 Pointer Sensor 取消的原生拖拽源');
 assert.ok(sidebar.includes("new CustomEvent('notus:sidebar-mention-drop'"), '整行拖到 Agent 输入框时必须转交 Mention 插入事件');
 assert.ok(sidebar.includes("new CustomEvent('notus:sidebar-editor-file-drop'"), '整行拖到富文本编辑器时必须转交文件链接插入事件');
-assert.ok(sidebar.includes("getExternalDropPoint(event, '[data-notus-editor-drop]')"), '编辑器落点必须按实际指针位置判断');
+assert.ok(sidebar.includes('const handleTreeDragMove = useCallback'), '拖动过程中必须记录外部落点，不能只在结束时命中');
+assert.ok(sidebar.includes('onDragMove={handleTreeDragMove}'), '拖动过程必须通知外部落点记录器');
+assert.ok(sidebar.includes("pointerEvents: isDragging ? 'none' : 'auto'"), '拖动中的文件行不能遮挡外部引用落点');
+assert.ok(sidebar.includes("kind: 'editor-file'"), '富文本编辑器只接收文件链接落点');
 assert.ok(sidebar.includes("touchAction: 'pan-y'"), '文件树行必须保留触屏纵向滚动');
 assert.ok(!sidebar.includes("touchAction: 'none'"), '文件树整行不能禁用触屏滚动');
 

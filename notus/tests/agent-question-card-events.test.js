@@ -79,7 +79,7 @@ assert.ok(workspaceSource.includes('event_cursor: resume.event_cursor'), '重新
 assert.ok(workspaceSource.includes('subscribe_only: true'), '刷新后回答卡片只能补建 SSE，不能再次唤醒任务');
 assert.ok(controllerSource.includes('hasActiveSessionSubscription'), 'Agent Loop 必须能识别当前 session 是否仍有订阅');
 assert.ok(controllerSource.includes('controller.eventsConnected = true'), '订阅状态必须在 SSE 真正连接后才视为活跃');
-assert.ok(controllerSource.includes('const eventCursor = isResume && resumeEventCursor > 0'), '恢复订阅必须优先使用回答前的事件游标');
+assert.ok(controllerSource.includes('let eventCursor = isResume ? (resumeEventCursor || accepted.event_cursor || 0) : 0'), '恢复订阅必须优先使用回答前的事件游标');
 assert.ok(interactionRouteSource.includes('const eventCursor = getLatestRunEventId(agentSessionId);'), '回答接口必须在唤醒 Worker 前记录事件游标');
 assert.ok(interactionRouteSource.includes('claimInteractionProcessing'), '回答接口必须原子占用 pending interaction');
 assert.ok(workspaceSource.includes('onRetry={resumeInteraction}'), '卡片重试入口仍需显式建立续跑订阅');

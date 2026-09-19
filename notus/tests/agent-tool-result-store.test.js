@@ -62,6 +62,13 @@ async function runTests() {
   assert.strictEqual(recoveredProjection.status, 'success');
   assert.strictEqual(Object.prototype.hasOwnProperty.call(recoveredProjection, 'nested'), false);
   assert.strictEqual(Object.prototype.hasOwnProperty.call(recoveredProjection, 'text'), false);
+  const fileProjection = projectToolResultForModel({
+    useReceipt: true,
+    toolName: 'read_file',
+    result: { file_id: 42, file_path: '项目/计划.md', content: '不应透传完整正文' },
+    artifact: runtimeRead.artifact,
+  });
+  assert.deepStrictEqual(fileProjection.file_refs, [{ file_id: 42, file_path: '项目/计划.md' }]);
   assert.strictEqual(projectToolResultForModel({ useReceipt: false, toolName: 'external_mcp', result: runtimeRead.result, artifact: runtimeRead.artifact }), runtimeRead.result);
   const resultRoot = path.join(tempRoot, 'agent-tool-results');
   const unrelatedFile = path.join(resultRoot, 'keep.txt');

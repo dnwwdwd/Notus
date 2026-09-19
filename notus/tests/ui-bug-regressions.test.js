@@ -204,8 +204,8 @@ assert.ok(settings.includes("{ id: 'global-agent', label: 'Agent 个性', icon: 
   assert.ok(globalStyles.includes('.notus-diff-dialog__sidebar.is-mobile-open'), '窄屏文件列表必须使用悬浮抽屉状态');
   assert.ok(agentWorkspace.includes("step?.errorType !== 'agent' && step?.kind !== 'segment'"), 'Agent 错误和内部执行段都不能进入普通工具步骤列表');
   assert.ok(agentWorkspace.includes("attachmentMode === 'parsed'"));
-  assert.ok(agentWorkspace.includes('pasted-text-'));
-  assert.ok(agentWorkspace.includes('const LONG_PASTE_ATTACHMENT_THRESHOLD = 100;'));
+  assert.ok(!agentWorkspace.includes('pasted-text-'), '粘贴附件名称不使用自动生成的英文前缀');
+  assert.ok(agentWorkspace.includes('const LONG_PASTE_ATTACHMENT_THRESHOLD = 600;'), '单次粘贴超过 600 字符才转附件');
   assert.ok(agentWorkspace.includes('const MAX_PARSED_ATTACHMENTS = 10;'));
   assert.ok(agentWorkspace.includes("const PARSED_ATTACHMENT_EXTENSIONS = new Set(['.pdf', '.docx', '.md', '.markdown', '.txt', '.csv']);"));
   assert.ok(agentWorkspace.includes('text/csv'));
@@ -329,8 +329,8 @@ assert.ok(settings.includes("{ id: 'global-agent', label: 'Agent 个性', icon: 
   assert.ok(agentWorkspace.includes('Icons.messageQuestion'));
   assert.ok(agentWorkspace.includes('Icons.circleX'));
   assert.ok(!agentWorkspace.includes('function InteractionHistoryNode'));
-  assert.ok(agentWorkspace.includes('<Tooltip content="联网搜索">'));
-  assert.ok(agentWorkspace.includes("<Tooltip content={mcpAvailable ? 'MCP 工具' : '暂无 MCP 服务'}>"));
+  assert.ok(!agentWorkspace.includes('<Tooltip content="联网搜索">'));
+  assert.ok(!agentWorkspace.includes("<Tooltip content={mcpAvailable ? 'MCP 工具' : '暂无 MCP 服务'}>"));
   assert.ok(agentWorkspace.includes("if (!mcpAvailable) {\n      onRequireMcpConfig?.();"));
   assert.ok(agentWorkspace.includes('title="需要配置 MCP 服务"'));
   assert.ok(agentWorkspace.includes("openSettings('mcp')"));

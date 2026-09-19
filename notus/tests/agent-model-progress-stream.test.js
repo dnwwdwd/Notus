@@ -18,6 +18,27 @@ function responseFromChunks(chunks) {
   assert.strictEqual(visible.push('公开说明<thi'), '公开说明', '不完整隐藏推理标签不能提前显示');
   assert.strictEqual(visible.push('nking>内部推理</thinking>继续'), '继续', '隐藏推理内容不能进入用户可见流');
 
+  const shortTag = createVisibleTextStream();
+  assert.strictEqual(shortTag.push('<thi'), '');
+  assert.strictEqual(shortTag.push('nk>PRIVATE_REASONING'), '');
+  assert.strictEqual(shortTag.push('</thi'), '');
+  assert.strictEqual(shortTag.push('nk>Visible answer'), 'Visible answer');
+
+  for (const protocol of ['openai', 'anthropic']) {
+    const chunks = protocol === 'openai' ? [
+      'data: {"choices":[{"delta":{"reasoning_content":"PRIVATE_NATIVE"}}]}\n\n',
+      'data: {"choices":[{"delta":{"content":"<think>PRIVATE_TAG</think>Public"}}]}\n\n',
+    ] : [
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"PRIVATE_NATIVE"}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"PRIVATE_DELTA"}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"<thinking>PRIVATE_TAG</thinking>Public"}}\n\n',
+    ];
+    let shown = '';
+    const reply = await consumeToolStream(responseFromChunks(chunks), { apiProtocol: protocol, onVisibleText: (text) => { shown += text; } });
+    assert.strictEqual(shown, 'Public');
+    assert.ok(!JSON.stringify(reply.content).includes('PRIVATE'));
+  }
+
   const received = [];
   const response = await consumeToolStream(responseFromChunks([
     'data: {"choices":[{"delta":{"content":"先读取"}}]}\n\n',

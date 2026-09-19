@@ -18,6 +18,7 @@ const SKILL_WORD = /\bskill(?:s)?\b|技能/i;
 const SKILL_DISCOVERY = /搜索|查找|寻找|找找|找|有没有|有无|推荐|哪些|哪里有|发现/i;
 const SKILL_INSTALL = /安装|导入|添加到|装上/i;
 const SKILL_CREATE = /创建|新建|编写|写一个|做一个|制作一个|设计一个/i;
+const NAMED_DOCUMENT_CREATE = /(?:新建|创建)\s*《[^》\n]{1,160}》/i;
 const WRITE_ACTION = /修改|改写|重写|润色|补充|合并|写入|插入|追加|新建(?:文档|文件|笔记|文章)|创建(?:文档|文件|笔记|文章)|移动|重命名/i;
 const INLINE_TEXT_OUTPUT = /(?:只|仅)(?:需|要)?(?:输出|返回|回复|给出)(?:[^，。！？；]{0,16})(?:结果|文本|内容|表达|一句话)?|直接(?:输出|返回|回复|给出)|不要(?:修改|写入|保存)(?:文档|文件|笔记|文章)/i;
 const EXPLICIT_FILE_WRITE_TARGET = /(?:当前|这篇|这份|这个|指定|上述)?(?:文档|文件|笔记|文章|正文)|写入|保存(?:到|至|为)|新建(?:文档|文件|笔记|文章)|创建(?:文档|文件|笔记|文章)|\.md\b/i;
@@ -120,6 +121,7 @@ function deterministicIntent(userQuery, context = {}) {
   const localOnly = LOCAL_ONLY.test(text);
   const inlineTextOnly = INLINE_TEXT_OUTPUT.test(text)
     && !EXPLICIT_FILE_WRITE_TARGET.test(text)
+    && !hasPositiveAction(text, NAMED_DOCUMENT_CREATE)
     && !(Array.isArray(context.mentions) && context.mentions.some((item) => ['file', 'folder'].includes(String(item?.type || ''))));
   const intentSignals = [];
   let taskKind = 'general';
@@ -136,7 +138,7 @@ function deterministicIntent(userQuery, context = {}) {
   } else if (MCP_ACTION.test(text) && /新增|添加|配置|修改|测试|启用|停用|删除|移除|查看|列出/.test(text)) {
     taskKind = 'mcp_manage';
     intentSignals.push('mcp_manage');
-  } else if (WRITE_ACTION.test(text) && !inlineTextOnly) {
+  } else if ((WRITE_ACTION.test(text) || hasPositiveAction(text, NAMED_DOCUMENT_CREATE)) && !inlineTextOnly) {
     taskKind = 'file_write';
     intentSignals.push('file_write');
   } else if (explicitWeb) {
@@ -475,20 +477,24 @@ function clarificationIntent(interaction, fallback) {
 async function composeTurnFrame({ task, session, userQuery, mentions = [], attachments = [], activeFileId = null, webSearchEnabled = false, llmConfig, runId = null, resumeInteraction = null, allowSemanticPlanner = true } = {}) {
   const existing = getTaskTurnFrame(task?.id);
   if (existing && !resumeInteraction) return { frame: existing, clarification: null, reused: true };
-  const activeFile = activeFileId ? getFileById(activeFileId) : null;
+  const continuation = require('./agentTaskContinuation').resolveFailedFileContinuation(session);
+  const effectiveQuery = continuation?.goal || userQuery;
+  const effectiveFileId = continuation ? continuation.active_file?.id : activeFileId;
+  const activeFile = effectiveFileId ? getFileById(effectiveFileId) : null;
   const normalizedMentions = (Array.isArray(mentions) ? mentions : []).map(normalizeMention);
   const attachmentFacts = (Array.isArray(attachments) ? attachments : []).map((item) => ({
     name: String(item?.name || item?.file_name || item?.filename || '').slice(0, 240),
     stored_name_digest: item?.stored_name || item?.storedName ? sha256(String(item.stored_name || item.storedName)) : '',
   }));
   const context = { activeFile, mentions: normalizedMentions, attachments: attachmentFacts, webSearchEnabled };
-  const deterministic = deterministicIntent(userQuery, context);
+  const deterministic = deterministicIntent(effectiveQuery, context);
   const planner = deterministic.needs_planner && allowSemanticPlanner
-    ? await semanticPlan({ userQuery, fallbackIntent: deterministic, llmConfig, sessionId: session?.id, runId })
+    ? await semanticPlan({ userQuery: effectiveQuery, fallbackIntent: deterministic, llmConfig, sessionId: session?.id, runId })
     : { intent: deterministic, used: false, failed: false };
   const intent = clarificationIntent(resumeInteraction, planner.intent);
   const facts = {
     input_hash: sha256(normalizeText(userQuery)),
+    ...(continuation ? { failed_file_continuation: continuation } : {}),
     source_message_id: task?.user_message_id || null,
     mentions: normalizedMentions,
     attachments: attachmentFacts,

@@ -131,6 +131,9 @@ async function run() {
     db.prepare('INSERT INTO messages (conversation_id,role,content) VALUES (?,?,?)').run(conversation.lastInsertRowid, 'user', '保留这条消息');
     const historicalSession = createSession({ goal: '已完成的历史 Agent', conversationId: Number(conversation.lastInsertRowid) });
     db.prepare("UPDATE agent_sessions SET status = 'completed' WHERE id = ?").run(historicalSession.sessionId);
+    const { archiveToolResult, readToolResult, resolveArtifactPath } = require('../lib/agentToolResultStore');
+    const artifact = await archiveToolResult({ conversationId: Number(conversation.lastInsertRowid), sessionId: historicalSession.sessionId, toolCallId: 'backup-tool', invocationKey: 'backup-tool', toolName: 'read_file', result: { content: '需要恢复的工具正文' } });
+    db.prepare('INSERT INTO agent_conversation_context(conversation_id,covered_message_id,source_hash,summary) VALUES (?,?,?,?)').run(Number(conversation.lastInsertRowid), 1, 'test-hash', '会话摘要');
     const secretServer = await saveServer({
       name: '备份 MCP',
       transport: 'streamable_http',
@@ -151,6 +154,7 @@ async function run() {
     assert.ok(paths.includes('notes/keep.md'));
     assert.ok(paths.includes('assets/images/cover.png'));
     assert.ok(paths.includes('session/media/voice.txt'));
+    assert.ok(paths.includes(`agent-tool-results/${artifact.relative_path}`));
     assert.ok(paths.some((entry) => entry.startsWith('skills/managed/backup-skill/')));
     assert.ok(!paths.some((entry) => entry.startsWith('logs/')));
     assert.ok(!paths.some((entry) => entry.startsWith('cache/')));
@@ -165,6 +169,7 @@ async function run() {
     fs.writeFileSync(path.join(config.notesDir, 'keep.md'), '# 被覆盖\n');
     fs.writeFileSync(path.join(config.notesDir, 'only-current.md'), '不会残留');
     db.prepare('INSERT INTO conversations (kind,title) VALUES (?,?)').run('knowledge', '当前新增');
+    fs.unlinkSync(resolveArtifactPath(artifact.relative_path));
     await backup.restoreFromZip(archivePath);
     assert.equal(fs.readFileSync(path.join(config.notesDir, 'keep.md'), 'utf8'), '# 原始笔记\n');
     assert.equal(fs.existsSync(path.join(config.notesDir, 'only-current.md')), false);
@@ -172,6 +177,9 @@ async function run() {
     assert.equal(getDb().prepare('SELECT COUNT(*) AS count FROM messages WHERE content = ?').get('保留这条消息').count, 1);
     assert.equal(getDb().prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE name IN ('chunks_vec', 'chunks_fts')").get().count, 2);
     assert.equal(getDb().prepare('SELECT COUNT(*) AS count FROM agent_sessions WHERE status = ?').get('completed').count, 1);
+    const restoredResult = await readToolResult({ conversationId: Number(conversation.lastInsertRowid), resultRef: artifact.result_ref, jsonPointer: '/content' });
+    assert.strictEqual(restoredResult.content, JSON.stringify('需要恢复的工具正文'));
+    assert.strictEqual(getDb().prepare('SELECT summary FROM agent_conversation_context WHERE conversation_id=?').get(Number(conversation.lastInsertRowid)).summary, '会话摘要');
     assert.equal(listSkills().some((skill) => skill.name === 'backup-skill'), true);
     assert.equal(getDb().prepare('SELECT COUNT(*) AS count FROM mcp_servers WHERE name = ?').get('备份 MCP').count, 1);
     assert.equal(getDb().prepare('SELECT COUNT(*) AS count FROM external_mcp_tokens WHERE name = ?').get('备份 Token').count, 1);

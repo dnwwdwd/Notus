@@ -352,16 +352,16 @@ export function AppProvider({ children }) {
     persistWorkspaceState({ activeFileId: null, pendingCitation: null });
   }, [persistWorkspaceState]);
 
-  const closeFileTab = useCallback((fileId) => {
-    const targetFileId = Number(fileId);
-    if (!Number.isFinite(targetFileId) || targetFileId <= 0) return null;
+  const closeFileTabs = useCallback((fileIds) => {
+    const closingIds = new Set(fileIds.map(Number));
+    const targetFileId = Number(activeFileIdRef.current);
     const currentTabs = openFileIdsRef.current;
     const closingIndex = currentTabs.indexOf(targetFileId);
-    if (closingIndex < 0) return null;
-    const nextOpenFileIds = currentTabs.filter((item) => item !== targetFileId);
-    const closingActiveFile = Number(activeFileIdRef.current) === targetFileId;
+    const nextOpenFileIds = currentTabs.filter((item) => !closingIds.has(item));
+    const closingActiveFile = closingIds.has(targetFileId);
     const nextActiveFileId = closingActiveFile
-      ? (nextOpenFileIds[closingIndex] || nextOpenFileIds[closingIndex - 1] || null)
+      ? (currentTabs.slice(closingIndex + 1).find(id => !closingIds.has(id))
+        || currentTabs.slice(0, closingIndex).reverse().find(id => !closingIds.has(id)) || null)
       : activeFileIdRef.current;
     openFileIdsRef.current = nextOpenFileIds;
     activeFileIdRef.current = nextActiveFileId;
@@ -381,6 +381,8 @@ export function AppProvider({ children }) {
     });
     return nextActiveFile;
   }, [persistWorkspaceState]);
+
+  const closeFileTab = useCallback((fileId) => closeFileTabs([fileId]), [closeFileTabs]);
 
   const setActiveWorkspacePage = useCallback((page) => {
     const nextPage = 'files';
@@ -564,6 +566,7 @@ export function AppProvider({ children }) {
         refreshFiles,
         selectFile,
         closeFileTab,
+        closeFileTabs,
         clearFileSelection,
         clearPendingCitation,
         setActiveWorkspacePage,

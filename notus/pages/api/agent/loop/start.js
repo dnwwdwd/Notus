@@ -109,6 +109,7 @@ export default async function handler(req, res) {
       }
 
       const task = wakeTask(resumeSessionId, {
+        toolPreferences: { web_search_enabled: body.web_search_enabled, search_provider: body.search_provider, mcp_selection: body.mcp_selection },
         llmConfigId: body.llm_config_id || null,
         ...(resumeJob ? { resumeJobId: resumeJob.id } : {}),
       });

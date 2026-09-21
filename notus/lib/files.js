@@ -369,7 +369,12 @@ function syncFilesFromDisk() {
   paths.forEach((relativePath) => {
     const content = readMarkdownFile(relativePath);
     let existing = db.prepare('SELECT * FROM files WHERE path = ?').get(relativePath);
-    let payload = buildFileRecordPayload(db, relativePath, content, existing);
+    const stat = getFileStat(relativePath);
+    // 每次仍读取真实内容并校验 hash，避免同大小/同时间戳的外部修改漏检。
+    // 未变化的记录无需重复解析 Markdown、更新 SQLite 或触碰索引状态。
+    if (existing?.stable_id && existing.hash === sha256(content)
+      && Number(existing.mtime) === Math.floor(stat.mtimeMs) && Number(existing.size) === stat.size) return;
+    let payload = buildFileRecordPayload(db, relativePath, content, existing, stat);
 
     if (!existing && payload.frontmatterId) {
       const renamed = db.prepare(`

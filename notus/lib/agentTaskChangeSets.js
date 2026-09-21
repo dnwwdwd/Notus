@@ -75,39 +75,60 @@ function getCounts(changeSetId, db = getDb()) {
     rolled_back: new Set(),
     discarded: new Set(),
   };
+  const resourceKeys = new Map();
+  const canonicalKeys = new Map();
+  db.prepare('SELECT * FROM agent_task_change_items WHERE change_set_id = ? ORDER BY id ASC').all(changeSetId).forEach((item) => {
+    [item.resource_key, item.base_path, item.applied_path, item.pending_path].filter(Boolean).forEach((filePath) => {
+      const alias = `${item.resource_kind}:${filePath}`;
+      if (!resourceKeys.has(alias)) resourceKeys.set(alias, `item:${item.id}`);
+    });
+  });
   let mediaChangeCount = 0;
   operationSetIds.forEach((row) => {
-    const operationSet = getOperationSetById(row.id);
+    const operationSet = getOperationSetById(row.id, { includeDiff: false });
     if (!operationSet) return;
     mediaChangeCount += Array.isArray(operationSet.media_changes) ? operationSet.media_changes.length : 0;
     const entries = operationSet.revision_type === 'file_revision'
       ? [{
         status: operationSet.status,
+        old_path: operationSet.revision_base_path,
+        file_id: operationSet.file_id,
         file_path: operationSet.revision?.file_path || operationSet.revision_file_path,
       }]
       : (Array.isArray(operationSet.patches) ? operationSet.patches : []);
     entries.forEach((entry, index) => {
+      if (entry?.already_applied) return;
       const status = String(entry?.status || '').trim();
-      const pathKey = String(entry?.file_path || entry?.new_path || entry?.old_path || `${row.id}:${index}`);
+      const kind = /folder/.test(String(entry?.change_type || '')) ? 'directory' : 'file';
+      const aliases = [entry?.old_path, entry?.file_path, entry?.new_path, entry?.folder_path].filter(Boolean).map(filePath => `${kind}:${filePath}`);
+      const fileId = kind === 'file' ? normalizePositiveInt(entry?.file_id) : null;
+      const pathKey = fileId ? `file-id:${fileId}` : aliases.map(alias => resourceKeys.get(alias)).find(Boolean) || aliases[0] || `${row.id}:${index}`;
+      // 按批次传递中间路径，改名后的全文修订与局部修改仍归属同一资源。
+      aliases.forEach(alias => {
+        const previous = resourceKeys.get(alias);
+        if (fileId && previous && previous !== pathKey && !previous.startsWith('file-id:')) canonicalKeys.set(previous, pathKey);
+        resourceKeys.set(alias, pathKey);
+      });
       if (['applied', 'auto_applied'].includes(status)) statusPaths.applied.add(pathKey);
       if (status === 'rolled_back') statusPaths.rolled_back.add(pathKey);
       if (status === 'discarded') statusPaths.discarded.add(pathKey);
     });
   });
+  const countResources = keys => new Set([...keys].map(key => canonicalKeys.get(key) || key)).size;
   return {
     ...itemCounts,
-    applied_count: Math.max(Number(itemCounts.applied_count || 0), statusPaths.applied.size),
-    rolled_back_count: statusPaths.rolled_back.size,
-    discarded_count: statusPaths.discarded.size,
+    applied_count: Math.max(Number(itemCounts.applied_count || 0), countResources(statusPaths.applied)),
+    rolled_back_count: countResources(statusPaths.rolled_back),
+    discarded_count: countResources(statusPaths.discarded),
     media_change_count: mediaChangeCount,
   };
 }
 
 
-function rebuildTaskChangeItems(db, changeSet) {
+function rebuildTaskChangeItems(db, changeSet, itemId = null) {
   const sets = db.prepare('SELECT * FROM canvas_operation_sets WHERE task_change_set_id = ? ORDER BY batch_sequence_no, id').all(changeSet.id)
-    .map((raw) => ({ raw, patches: getOperationSetById(raw.id)?.patches || [] }));
-  const rows = db.prepare('SELECT * FROM agent_task_change_items WHERE change_set_id = ?').all(changeSet.id);
+    .map((raw) => ({ raw, patches: getOperationSetById(raw.id, { includeDiff: false })?.patches || [] }));
+  const rows = db.prepare(`SELECT * FROM agent_task_change_items WHERE change_set_id = ? ${itemId ? 'AND id = ?' : ''}`).all(...(itemId ? [changeSet.id, itemId] : [changeSet.id]));
   let changed = false;
   db.transaction(() => {
     rows.forEach((item) => {
@@ -404,12 +425,14 @@ function buildExpectedSnapshot(item, patches, rawSet) {
   let currentPath = String(item.applied_path || item.base_path || item.pending_path || '');
   let content = String(item.applied_content || '');
   const aliases = new Set([item.resource_key, item.base_path, item.applied_path, item.pending_path].map((value) => String(value || '')).filter(Boolean));
-  if (String(rawSet?.revision_type || '') === 'file_revision' && aliases.has(String(rawSet.revision_file_path || '')) && ['applied', 'partial'].includes(String(rawSet.status || ''))) {
+  if (String(rawSet?.revision_type || '') === 'file_revision' && [rawSet.revision_base_path, rawSet.revision_file_path].some(value => value && aliases.has(String(value))) && ['applied', 'partial'].includes(String(rawSet.status || ''))) {
     exists = true;
     currentPath = String(rawSet.revision_file_path || currentPath);
     content = String(rawSet.revision_draft_content || '');
+    aliases.add(currentPath);
   }
   (Array.isArray(patches) ? patches : []).forEach((patch) => {
+    if (patch.already_applied) return;
     const folderMove = ['move_folder', 'rename_folder'].includes(patch?.change_type) && currentPath.startsWith(`${patch.old_path}/`);
     if (!folderMove && !patchTouchesAliases(patch, aliases)) return;
     const status = String(patch?.status || 'pending');
@@ -435,6 +458,13 @@ function buildExpectedSnapshot(item, patches, rawSet) {
       exists = true;
       currentPath = String(patch.file_path || currentPath);
       content = String(patch.new || '');
+      // 旧创建回执没有保存注入 frontmatter ID 后的正文，只在实际 ID + Hash
+      // 均吻合时补读已应用内容；外部修改不能被吸收为本任务产物。
+      if (patch.file_id && patch.file_hash && sha256(content) !== patch.file_hash) {
+        const identity = getDb().prepare('SELECT id FROM files WHERE path = ?').get(currentPath);
+        const disk = readDiskSnapshot('file', currentPath);
+        if (Number(identity?.id) === Number(patch.file_id) && disk.hash === patch.file_hash) content = disk.content;
+      }
     } else if (item.resource_kind === 'file') {
       currentPath = String(patch.file_path || currentPath);
       content = replaceOnce(content, patch.old, patch.new);
@@ -491,7 +521,7 @@ function resumeNonManualOperationConfirmation({ operationSetId, sessionId, resol
       ORDER BY id DESC LIMIT 1
     `).get(sid, setId);
     const session = db.prepare('SELECT status FROM agent_sessions WHERE id = ?').get(sid);
-    if (!checkpoint || !['waiting_operation_confirmation', 'queued_resume'].includes(String(session?.status || ''))) {
+    if (!checkpoint || String(session?.status || '') !== 'waiting_operation_confirmation') {
       return { resumed: false, changeSet: getTaskChangeSetBySession(sid) };
     }
     const changeSet = resolveOperationSetInDb(db, { operationSetId: setId, sessionId: sid, resolution, toolResult });
@@ -542,14 +572,20 @@ function markTaskChangeSetFinished(sessionId, sessionStatus) {
   return getTaskChangeSetBySession(sid);
 }
 
-function getTaskChangeSetDetail(sessionId) {
-  const summary = getTaskChangeSetBySession(sessionId);
-  if (!summary) return null;
+function getTaskChangeSetDetail(sessionId, { manifest = false, itemId = null } = {}) {
   const db = getDb();
+  // 切换文件只核对该资源；完整清单打开时仍重新投影全部资源。
+  const summary = itemId ? (() => {
+    const row = db.prepare('SELECT * FROM agent_task_change_sets WHERE session_id = ?').get(sessionId);
+    if (!row) return null;
+    rebuildTaskChangeItems(db, row, itemId);
+    return formatSummary(row);
+  })() : getTaskChangeSetBySession(sessionId);
+  if (!summary) return null;
   const items = db.prepare(`
-    SELECT * FROM agent_task_change_items
-    WHERE change_set_id = ? AND NOT (base_exists = applied_exists AND base_path = applied_path AND base_hash = applied_hash AND pending_exists = applied_exists AND pending_path = applied_path AND pending_hash = applied_hash) ORDER BY first_batch_no ASC, id ASC
-  `).all(summary.id).map((row) => ({
+    SELECT ${manifest ? 'id, resource_key, resource_kind, base_exists, base_path, applied_exists, applied_path, pending_exists, pending_path, status, first_batch_no, last_batch_no' : '*'} FROM agent_task_change_items
+    WHERE change_set_id = ? ${itemId ? 'AND id = ?' : ''} AND NOT (base_exists = applied_exists AND base_path = applied_path AND base_hash = applied_hash AND pending_exists = applied_exists AND pending_path = applied_path AND pending_hash = applied_hash) ORDER BY first_batch_no ASC, id ASC
+  `).all(...(itemId ? [summary.id, itemId] : [summary.id])).map((row) => ({
     id: Number(row.id),
     resource_key: row.resource_key,
     resource_kind: row.resource_kind,
@@ -573,7 +609,7 @@ function getTaskChangeSetDetail(sessionId) {
     SELECT id, status, batch_sequence_no, execution_segment_id, tool_use_id, created_at, updated_at
     FROM canvas_operation_sets WHERE task_change_set_id = ? ORDER BY batch_sequence_no ASC
   `).all(summary.id).map((row) => ({
-    ...getOperationSetById(row.id),
+    ...(manifest ? {} : getOperationSetById(row.id, { includeDiff: !itemId })),
     id: Number(row.id),
     status: row.status,
     batch_sequence_no: Number(row.batch_sequence_no),
@@ -583,10 +619,11 @@ function getTaskChangeSetDetail(sessionId) {
     updated_at: row.updated_at,
   }));
   const operationSetSources = operationSets.map((summary) => {
-    const operationSet = getOperationSetById(summary.id);
+    const operationSet = summary;
     return {
       ...summary,
       revision_file_path: operationSet?.revision?.file_path || operationSet?.revision_file_path || '',
+      revision_base_path: operationSet?.revision_base_path || '',
       patches: Array.isArray(operationSet?.patches) ? operationSet.patches : [],
       media_changes: Array.isArray(operationSet?.media_changes) ? operationSet.media_changes : [],
     };
@@ -594,37 +631,48 @@ function getTaskChangeSetDetail(sessionId) {
   const segmentSequences = new Map(db.prepare(
     'SELECT id, sequence_no FROM agent_execution_segments WHERE session_id = ?'
   ).all(summary.session_id).map((row) => [Number(row.id), Number(row.sequence_no || 0)]));
-  const patches = items.map((item) => ({
-    patch_id: `task-change-${item.id}`,
-    file_path: item.pending_path || item.applied_path || item.base_path,
-    old_path: item.base_path,
-    new_path: item.pending_path || item.applied_path,
-    old: item.resource_kind === 'file' ? item.base_content : item.base_path,
-    new: item.resource_kind === 'file' ? (['pending', 'conflict'].includes(item.status) ? item.pending_content : item.applied_content) : (item.pending_path || item.applied_path),
-    change_type: item.resource_kind === 'directory'
-      ? (!item.base_exists ? 'create_folder' : 'move_folder')
-      : (!item.base_exists ? 'create' : (!item.pending_exists && !item.applied_exists ? 'delete' : 'modify')),
-    status: item.status,
-    source_batches: operationSetSources.filter((batch) => {
-      const aliases = new Set([
-        item.resource_key,
-        item.base_path,
-        item.applied_path,
-        item.pending_path,
-      ].map((value) => String(value || '')).filter(Boolean));
-      if (String(batch.revision_file_path || '') && aliases.has(String(batch.revision_file_path))) return true;
-      return batch.patches.some((patch) => patchTouchesAliases(patch, aliases));
-    }).map((batch) => ({
-      batch_sequence_no: batch.batch_sequence_no,
-      execution_segment_id: batch.execution_segment_id,
-      execution_segment_sequence_no: segmentSequences.get(Number(batch.execution_segment_id)) || 0,
-      status: batch.status,
-    })),
-  }));
+  const patches = items.map((item) => {
+    const aliases = new Set([item.resource_key, item.base_path, item.applied_path, item.pending_path].filter(Boolean).map(String));
+    return {
+      patch_id: `task-change-${item.id}`,
+      item_id: item.id,
+      content_loaded: !manifest,
+      applied_exists: item.applied_exists,
+      applied_path: item.applied_path,
+      file_path: item.pending_path || item.applied_path || item.base_path,
+      old_path: item.base_path,
+      new_path: item.pending_path || item.applied_path,
+      old: manifest ? undefined : item.resource_kind === 'file' ? item.base_content : item.base_path,
+      new: manifest ? undefined : item.resource_kind === 'file' ? (['pending', 'conflict'].includes(item.status) ? item.pending_content : item.applied_content) : (item.pending_path || item.applied_path),
+      change_type: item.resource_kind === 'directory'
+        ? (!item.base_exists ? 'create_folder' : 'move_folder')
+        : (!item.base_exists ? 'create' : (!item.pending_exists && !item.applied_exists ? 'delete' : 'modify')),
+      status: item.status,
+      source_batches: manifest ? [] : operationSetSources.filter((batch) => {
+        let matches = false;
+        const revisionPaths = [batch.revision_base_path, batch.revision_file_path].filter(Boolean).map(String);
+        if (revisionPaths.some(filePath => aliases.has(filePath))) {
+          revisionPaths.forEach(filePath => aliases.add(filePath));
+          matches = true;
+        }
+        batch.patches.forEach((patch) => {
+          if (!patchTouchesAliases(patch, aliases)) return;
+          [patch.file_path, patch.old_path, patch.new_path, patch.folder_path].filter(Boolean).forEach(filePath => aliases.add(String(filePath)));
+          matches = true;
+        });
+        return matches;
+      }).map((batch) => ({
+        batch_sequence_no: batch.batch_sequence_no,
+        execution_segment_id: batch.execution_segment_id,
+        execution_segment_sequence_no: segmentSequences.get(Number(batch.execution_segment_id)) || 0,
+        status: batch.status,
+      })),
+    };
+  });
   return {
     ...summary,
-    items,
-    operation_sets: operationSets,
+    items: manifest || itemId ? undefined : items,
+    operation_sets: manifest || itemId ? operationSets.map(({ id, status, batch_sequence_no, execution_segment_id }) => ({ id, status, batch_sequence_no, execution_segment_id, agent_session_id: summary.session_id })) : operationSets,
     operation_set_view: {
       id: summary.current_operation_set_id || summary.id,
       task_change_set_id: summary.id,

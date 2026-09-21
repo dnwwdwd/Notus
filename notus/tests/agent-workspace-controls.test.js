@@ -5,6 +5,7 @@ const path = require('path');
 const root = path.resolve(__dirname, '..');
 const read = (relativePath) => fs.readFileSync(path.join(root, relativePath), 'utf8').replace(/\r\n/g, '\n');
 
+const traceStatus = fs.readFileSync(path.join(root, 'components/AgentWorkspace/TraceStatus.js'), 'utf8');
 const workspace = read('components/AgentWorkspace/AgentWorkspace.js');
 const globalStyles = read('styles/globals.css');
 const resourceEvents = read('utils/agentResourceEvents.js');
@@ -148,6 +149,15 @@ assert.ok(fileWorkspace.includes('operationSetById[operationSetId] || operationS
 assert.ok(fileWorkspace.includes('function hasTaskChangeSetChanges(changeSet = null)'), '任务变更集摘要必须先确认包含文件或目录修改。');
 assert.ok(fileWorkspace.includes('const hasTaskChangeSet = hasTaskChangeSetChanges(taskChangeSetCandidate);'), '任务摘要尚未写入计数时不得提前遮蔽单批 Diff 回退卡。');
 assert.ok(fileWorkspace.includes('const operationSet = hasTaskChangeSet'), '存在有效任务级摘要时才替换旧的 operation set 卡。');
+for (const source of [workspace, fileWorkspace]) {
+  const definition = source.match(/function hasTaskChangeSetChanges\([^)]*\) \{[\s\S]*?\n\}/)?.[0];
+  assert.ok(definition);
+  const visible = require('vm').runInNewContext(`(${definition})`);
+  assert.strictEqual(visible({ file_count: 0, directory_count: 0, rolled_back_count: 2 }), true, '全部回滚仍须保留任务级统计，不能退回单批卡');
+  assert.strictEqual(visible({ file_count: 0, discarded_count: 2 }), true, '全部废弃仍须保留历史批次入口');
+  assert.strictEqual(visible({}), false, '尚未生成修改的空摘要继续允许单批回退');
+  assert.strictEqual(visible(null), false);
+}
 assert.ok(workspace.includes('function hasTaskChangeSetChanges(changeSet)'), '累计 Diff 卡与消息回退卡必须共用同一份可见性判断。');
 assert.ok(workspace.includes('!hasTaskChangeSetChanges(taskChangeSet || message.taskChangeSet) && message.operationSet'), '空摘要不能隐藏既有单批 Diff 详情入口。');
 assert.ok(fileWorkspace.includes('onSessionTimeline: handleSessionTimeline'), '每个订阅会话的实时事件都必须写入独立时间线');
@@ -188,8 +198,8 @@ assert.ok(workspace.includes('const modelLabelRef = useRef(null);'), '模型选�
 assert.ok(workspace.includes('new ResizeObserver(updateModelLabelTruncation)'), '模型选择器必须随面板宽度变化重新判断是否截断');
 assert.ok(workspace.includes('disabled={!selectedConfig || !modelLabelTruncated}'), '完整显示模型名时不得显示多余 Tooltip');
 assert.ok(!globalStyles.includes('max-width: 150px;') && !globalStyles.includes('max-width: 96px;') && !globalStyles.includes('max-width: 64px;'), '模型名称不得再使用固定宽度档位提前截断');
-assert.ok(workspace.includes("sessionStatus === 'queued'"), '任务受理后必须在工具链头部显示排队/运行状态');
-assert.ok(workspace.includes('已等待 ${elapsed}'), '任务受理后必须立即开始展示已等待时长');
+assert.ok(workspace.includes('const statusLabel = traceState.label;'), '任务受理后必须在工具链头部显示排队/运行状态');
+assert.ok(traceStatus.includes('已等待 ${elapsed}'), '任务受理后必须立即开始展示已等待时长');
 assert.ok(workspace.includes('startedAt={timeline.startedAt || \'\'}'), '实时任务的起始时间必须传入工具链以驱动计时');
 assert.ok(workspace.includes('finishedAt={timeline.finishedAt || \'\'}'), '已结束任务的结束时间必须传入工具链以计算完整耗时');
 assert.ok(workspace.includes('const taskStartedAt = traceTimestamp(startedAt);'), '工具链必须优先使用任务开始时间，而非第一个可见工具步骤');
@@ -216,7 +226,7 @@ assert.ok(workspace.includes("if (source.includes('生成提问卡片')) return 
 assert.ok(workspace.includes("if (source.includes('等待回答提问卡片')) return <Icons.messageQuestion size={size} />;"), '等待回答步骤必须使用问号气泡图标');
 assert.ok(workspace.includes("if (['stopped', 'cancelled'].includes(status)) return <Icons.circleX size={size} />;"), '取消步骤必须使用圆形取消图标');
 assert.ok(workspace.includes('executionTrace={messageTimeline'), '助手回复需要优先使用与自身 session 关联的执行记录');
-assert.ok(workspace.includes('>{revisionCount} 个文件修订</div>'), '累计 Diff 卡主描述必须只显示文件修订数量');
+assert.ok(workspace.includes("directoryCount ? `${directoryCount} 个目录`"), '累计 Diff 必须区分文件和目录数量');
 assert.ok(workspace.includes("`已应用 ${appliedCount} 个`"), '累计 Diff 卡次描述必须显示已应用数量');
 assert.ok(workspace.includes("`已回滚 ${rolledBackCount} 个`"), '累计 Diff 卡次描述必须显示已回滚数量');
 assert.ok(workspace.includes("`已废弃 ${discardedCount} 个`"), '累计 Diff 卡次描述必须显示已废弃数量');
@@ -230,7 +240,7 @@ assert.ok(toolChainSource.includes('<Icons.chevronRight size={15} aria-hidden="t
 assert.ok(toolChainSource.includes('<ToolPayload label="调用参数" value={step.input} />'), '工具详情必须为参数提供独立阅读区域');
 assert.ok(toolChainSource.includes('<ToolPayload label="调用结果" value={step.result} />'), '工具详情必须为结果提供独立阅读区域');
 assert.ok(workspace.includes('function formatToolPayload(value)'), '工具 JSON 必须在前端格式化后显示');
-assert.ok(workspace.includes('正在恢复上次对话…'), '恢复期间不得显示空白消息区');
+assert.ok(workspace.includes('notus-agent-message-skeleton'), '恢复期间不得显示空白消息区');
 assert.ok(!toolChainSource.includes('<Icons.chevronDown size={15} className={traceExpanded'), '处理时长概览不得把向下箭头旋转成向左箭头');
 assert.ok(!workspace.includes("{ id: 'prepare', label: '准备上下文'"));
 assert.ok(!controller.includes('任务已加入后台执行'));
@@ -240,8 +250,8 @@ assert.ok(controller.includes("label: '等待回答提问卡片',\n      status:
 assert.ok(toolChainSource.includes('const hasActionRequired'), '工具链头部必须将等待用户操作显示为需要处理');
 assert.ok(toolChainSource.includes('questionAnswer.items'), '工具链提问步骤必须支持展示每个问题及答案');
 assert.ok(workspace.includes('answer.text || answer.custom_text || answer.label || answer.value ||'), '工具链应优先展示自定义回答的实际文本');
-assert.ok(toolChainSource.includes("const isCancelled = sessionStatus === 'cancelled' || tailStatus === 'cancelled';"), '已取消任务必须与需要处理状态分开');
-assert.ok(toolChainSource.includes("isCancelled\n    ? '已取消'"), '已取消任务的执行记录标题必须显示已取消');
+assert.ok(toolChainSource.includes('agentTraceState({ sessionStatus, loading, tailStatus'), '已取消任务必须与需要处理状态分开');
+assert.ok(toolChainSource.includes('const statusLabel = traceState.label;'), '已取消任务的执行记录标题必须显示已取消');
 assert.ok(controller.includes("step.id?.startsWith('operation-confirmation-')"), '任务完成后必须结束已处理的文件确认步骤，避免继续显示需要处理');
 assert.ok(controller.includes("completeSteps(activeSteps, { resolveOperationConfirmations: true, resolveModelErrors: event.status === 'completed' })"), '实时 final 事件必须结束已处理的文件确认步骤');
 assert.ok(controller.includes('completeSteps(steps, { resolveOperationConfirmations: true })'), '历史 completed 会话必须结束已处理的文件确认步骤');
@@ -254,8 +264,8 @@ assert.ok(toolChainSource.includes("onAction(step.action, step, sessionId)"), '�
 assert.ok(globalStyles.includes('.notus-agent-toolchain__label {\n  min-width: 0;\n  flex: 0 1 auto;') && globalStyles.includes('overflow-wrap: anywhere;'), '工具名称必须优先完整展示，不能被长结果摘要挤压成单字，超长名称应换行显示');
 assert.ok(!toolChainSource.includes('<span className="notus-agent-toolchain__summary"'), '折叠工具行不能显示工具结果摘要');
 assert.ok(globalStyles.includes('.notus-agent-toolchain__icon {\n  flex: 0 0 18px;') && globalStyles.includes('color: var(--accent);'), '所有工具图标必须使用 Notus 主色');
-assert.ok(workspace.includes('onResumeAgentTask?.(sessionId)'), '继续任务必须将目标 session 传回文件工作区');
-assert.ok(fileWorkspace.includes('resumeFailedAgentTask = useCallback(async (targetSessionId = null)'), '文件工作区必须按点击的 session 恢复任务');
+assert.ok(workspace.includes('onResumeAgentTask?.(sessionId, { web_search_enabled: activeWebSearchEnabled'), '继续任务必须将目标 session 传回文件工作区');
+assert.ok(fileWorkspace.includes('resumeFailedAgentTask = useCallback(async (targetSessionId = null, toolPreferences = {})'), '文件工作区必须按点击的 session 恢复任务');
 assert.ok(!toolChainSource.includes('stop_agent'), '工具链不应再提供停止操作入口');
 assert.ok(!toolChainSource.includes('notus-agent-toolchain__stop'), '工具链不应再渲染停止按钮');
 assert.ok(!globalStyles.includes('.notus-agent-toolchain__stop'), '工具链停止按钮的专用样式必须移除');
@@ -368,8 +378,8 @@ assert.ok(resourceEvents.includes("'add_mcp_server'"));
 assert.ok(resourceEvents.includes("'mcp_remove'"));
 assert.ok(controller.includes("dispatchAgentResourceChange(event.tool_name)"));
 assert.ok(fileWorkspace.includes("dispatchAgentResourceChange(interaction?.payload?.action)"));
-assert.ok(workspace.includes("if (!Number.isFinite(duration) || duration < 1000) return '1 秒';"), '短任务的工具链时长应显示为 1 秒');
-assert.ok(workspace.includes("? `正在处理${elapsed ? ` ${elapsed}` : ''}`"), '运行中的工具链应显示“正在处理 x 秒”');
+assert.ok(traceStatus.includes("if (running && seconds === 0) return '';"), '运行首秒只呈现状态，避免预填秒数');
+assert.ok(workspace.includes("<TraceStatus phase={statusLabel}"), '运行中的工具链应显示“正在处理 x 秒”');
 assert.ok(!workspace.includes('Math.max(0, Math.round(Number(milliseconds || 0) / 1000))'), '工具链时长不能继续用会把短任务四舍五入为 0 的计算方式');
 
 console.log('agent workspace controls tests passed');

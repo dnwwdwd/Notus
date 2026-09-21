@@ -1,3 +1,5 @@
+import { MarkdownLinkBoundary } from './MarkdownLinkBoundary';
+import { isWebsiteLink } from '../../utils/websiteLinks';
 // WysiwygEditor — Tiptap-based WYSIWYG markdown editor (Typora-like)
 // Loaded with ssr:false from files/index.js
 // Accepts `onEditorReady(editor)` to lift the editor instance to the parent
@@ -303,6 +305,7 @@ export const WysiwygEditor = ({ value, onChange, onSave, onEditorReady, onOpenFi
       }),
       Underline,
       CitationHighlight,
+      MarkdownLinkBoundary,
       Markdown.configure({
         html: false,
         transformPastedText: true,
@@ -590,6 +593,12 @@ export const WysiwygEditor = ({ value, onChange, onSave, onEditorReady, onOpenFi
           if (targetFileId) {
             event.preventDefault();
             onOpenFileLink?.(targetFileId);
+            return;
+          }
+
+          if (clickedLink && isWebsiteLink(clickedLink.getAttribute('href'))) {
+            event.preventDefault();
+            window.open(clickedLink.href, '_blank', 'noopener,noreferrer');
             return;
           }
 

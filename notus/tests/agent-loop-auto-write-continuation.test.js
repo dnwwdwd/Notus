@@ -139,7 +139,7 @@ async function runTests() {
     assert.deepStrictEqual(toolStarts.map((event) => event.execution_segment_id), executionStarts.slice(0, 2).map((event) => event.execution_segment_id));
     assert.deepStrictEqual(toolStarts.map((event) => event.tool_index), [0, 0]);
     assert.ok(events.some((event) => String(event.text || '').includes('两份文件已创建')));
-    assert.ok(events.some((event) => event.type === 'assistant_text_delta' && event.text === '两份文件'));
+    assert.ok(!events.some((event) => event.type === 'assistant_text_delta'), '分类与完成检查前不发布正文，避免文字跨通道换位');
     assert.ok(!events.some((event) => event.stage === 'model_progress' && event.text.includes('两份文件')));
     assert.strictEqual(events.filter((event) => event.stage === 'model_progress').length, 2);
     assert.strictEqual(events.find((event) => event.type === 'final').text, '两份文件已创建。');

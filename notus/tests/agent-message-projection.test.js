@@ -55,10 +55,22 @@ async function main() {
   }
   assert.strictEqual(pending.size, 0);
   const reads = [{ role: 'user', content: '读取' }, { role: 'assistant', content: [use('r', 'read_tool_result', { result_ref: receipt.result_ref, offset: 0 })] }, { role: 'user', content: [result('r', { result_ref: receipt.result_ref, content: '读窗口正文' })] }, ...projected.messages.slice(1)];
-  const evicted = JSON.parse(evictOldReadWindows(reads)[2].content[0].content);
+  assert.strictEqual(evictOldReadWindows(reads), reads, '预算充足不能因轮次移除读取内容');
+  assert.ok(JSON.stringify(compactMessages(reads,60000)).includes('读窗口正文'));
+  const largeReads = structuredClone(reads);
+  largeReads[2].content[0].content = JSON.stringify({result_ref:receipt.result_ref,content:'大段正文'.repeat(5000),next_offset:20000});
+  const originalJson = JSON.stringify(largeReads);
+  const projectedLarge = evictOldReadWindows(largeReads, 10000);
+  const evicted = JSON.parse(projectedLarge[2].content[0].content);
   assert.strictEqual(evicted.status, 'read_window_evicted');
   assert.strictEqual(evicted.read_arguments.result_ref, receipt.result_ref);
-  assert.ok(!JSON.stringify(evicted).includes('读窗口正文'));
+  assert.equal(evicted.next_offset,20000);
+  assert.equal(JSON.stringify(largeReads),originalJson,'不能修改checkpoint原始消息');
+  assert.ok(!JSON.stringify(evicted).includes('大段正文'));
+  const smallUnderPressure = structuredClone(largeReads);
+  smallUnderPressure.splice(1,0,{role:'assistant',content:[use('directory','list_file_images',{path:'article.md'})]},
+    {role:'user',content:[result('directory',{items:[{ref:'note-image://1/reference/0'}]})]});
+  assert.ok(JSON.stringify(evictOldReadWindows(smallUnderPressure,10000)[2]).includes('note-image://'),'压力下先回收大窗口，保留小目录');
   console.log('agent message projection tests passed');
 }
 main().catch((e) => { console.error(e); process.exitCode = 1; });

@@ -1,3 +1,6 @@
+import { memo, useMemo } from 'react';
+import { ProgressiveReveal } from './ProgressiveReveal';
+import { websiteLinkProps } from '../../utils/websiteLinks';
 // StreamingText — renders markdown with blinking cursor while streaming
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -19,33 +22,24 @@ const StreamingMarkdownLink = ({ href, children, onOpenFileLink, ...props }) => 
   const visibleText = childList.length === 1 && typeof childList[0] === 'string' ? childList[0] : '';
   const split = splitBareUrlLabel(visibleText);
   if (split) {
-    return <><a href={split.url} {...props}>{split.url}</a>{split.suffix}</>;
+    return <><a href={split.url} {...props} {...websiteLinkProps(split.url)}>{split.url}</a>{split.suffix}</>;
   }
-  return <a href={href} {...props}>{children}</a>;
+  return <a href={href} {...props} {...websiteLinkProps(href)}>{children}</a>;
 };
 
-export const StreamingText = ({ text, streaming, className = '', style = {}, files = [], onOpenFileLink }) => (
-  <div className={className} style={{ fontSize: 'var(--text-sm)', lineHeight: 1.7, color: 'var(--text-primary)', maxWidth: '100%', minWidth: 0, overflow: 'hidden', ...style }}>
-    <ReactMarkdown
-      components={{ a: (props) => <StreamingMarkdownLink {...props} onOpenFileLink={onOpenFileLink} /> }}
-      remarkPlugins={[remarkGfm, remarkMath, [remarkLinkifyAgentFileReferences, { files }]]}
-      rehypePlugins={[rehypeHighlight, rehypeKatex]}
-      urlTransform={(url) => parseInternalFileLink(url) ? url : defaultUrlTransform(url)}
-    >
-      {text || ''}
-    </ReactMarkdown>
-    {streaming && (
-      <span style={{
-        display: 'inline-block',
-        width: 2,
-        height: '1em',
-        verticalAlign: '-2px',
-        marginLeft: 3,
-        background: 'var(--accent)',
-        borderRadius: 999,
-        boxShadow: '0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent)',
-        animation: 'blink 0.95s step-end infinite',
-      }} />
-    )}
-  </div>
-);
+const EMPTY_FILES = [];
+const MarkdownBody = memo(function MarkdownBody({text, files, onOpenFileLink}) {
+  const components = useMemo(() => ({a: props => <StreamingMarkdownLink {...props} onOpenFileLink={onOpenFileLink} />}), [onOpenFileLink]);
+  const remarkPlugins = useMemo(() => [remarkGfm, remarkMath, [remarkLinkifyAgentFileReferences, {files}]], [files]);
+  return <ReactMarkdown components={components} remarkPlugins={remarkPlugins} rehypePlugins={[rehypeHighlight, rehypeKatex]}
+    urlTransform={(url) => parseInternalFileLink(url) ? url : defaultUrlTransform(url)}>{text || ''}</ReactMarkdown>;
+});
+
+export const StreamingText = memo(function StreamingText({ text, streaming, animate = false, className = '', style = {}, files = EMPTY_FILES, onOpenFileLink }) {
+  return <div className={className} style={{fontSize:'var(--text-sm)',lineHeight:1.7,color:'var(--text-primary)',maxWidth:'100%',minWidth:0,overflow:'hidden',...style}}>
+    <ProgressiveReveal animate={animate}>
+      <MarkdownBody text={text} files={files} onOpenFileLink={onOpenFileLink} />
+    </ProgressiveReveal>
+    {streaming ? <span aria-hidden="true" className="notus-streaming-cursor" /> : null}
+  </div>;
+});

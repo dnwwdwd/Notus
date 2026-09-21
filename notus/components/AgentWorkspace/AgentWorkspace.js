@@ -1,6 +1,10 @@
+import { agentTraceState } from '../../utils/agentTraceState';
+import { TraceStatus } from './TraceStatus';
+import { ProgressiveReveal } from '../ui/ProgressiveReveal';
+import { Skeleton, SkeletonText } from '../ui/Skeleton';
 import { refreshAgentSessionAccess } from '../../utils/agentSessionAccess';
 import { pastedTextFileName, normalizePastedAttachmentName, readLocalAttachment } from '../../utils/attachmentPreview';
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Button } from '../ui/Button';
 import { TextInput } from '../ui/Input';
@@ -623,15 +627,6 @@ function traceTimestamp(value) {
   return parseMessageTimestamp(value)?.getTime() || 0;
 }
 
-function formatTraceElapsed(milliseconds) {
-  const duration = Number(milliseconds);
-  if (!Number.isFinite(duration) || duration < 1000) return '1 秒';
-  const seconds = Math.max(1, Math.round(duration / 1000));
-  if (seconds < 60) return `${seconds} 秒`;
-  const minutes = Math.floor(seconds / 60);
-  const remainder = seconds % 60;
-  return remainder ? `${minutes} 分 ${remainder} 秒` : `${minutes} 分`;
-}
 
 function InlineActionSpinner({ size = 14, color = C.accent }) {
   return (
@@ -704,13 +699,12 @@ function AgentErrorCard({ title = '任务没有完成', message, errorCode = '',
   return (
     <section className="notus-agent-error-card" role="alert" aria-label="Agent 错误信息">
       <div className="notus-agent-error-card__main">
-        <div className="notus-agent-error-card__icon" aria-hidden="true"><Icons.warn size={18} /></div>
+        <div className="notus-agent-error-card__icon" aria-hidden="true"><Icons.warn size={20} /></div>
         <div className="notus-agent-error-card__content">
           <div className="notus-agent-error-card__title">{title}</div>
           <p className="notus-agent-error-card__message">{details.message}</p>
-          {details.code || details.requestId ? (
+          {details.requestId ? (
             <div className="notus-agent-error-card__meta">
-              {details.code ? <span>{details.code}</span> : null}
               {details.requestId ? <span>请求编号：{details.requestId}</span> : null}
             </div>
           ) : null}
@@ -773,7 +767,7 @@ function timelineStepId(step = {}, index = 0) {
   return String(step.id || step.label || index);
 }
 
-function ToolChainStep({ step, index, open, onToggle, onAction, onPreviewImages, sessionId }) {
+const ToolChainStep = memo(function ToolChainStep({ step, index, open, onToggle, onAction, onPreviewImages, sessionId }) {
   const stepId = timelineStepId(step, index);
   const hasDetails = Boolean(step.detail || step.tool || step.input || step.result || step.action || step.images?.length || step.questionAnswer);
   return (
@@ -805,7 +799,7 @@ function ToolChainStep({ step, index, open, onToggle, onAction, onPreviewImages,
             ))}
             {step.questionAnswer.answeredAt ? <div className="notus-agent-toolchain__question-time">{step.questionAnswer.answeredAt}</div> : null}
           </div> : null}
-          {step.detail ? <div className="notus-agent-toolchain__description">{step.detail}</div> : null}
+          {step.detail ? <div className="notus-agent-toolchain__description"><ProgressiveReveal animate={Boolean(step.presentationAnimate && step.status === 'running')}>{step.detail}</ProgressiveReveal></div> : null}
           {step.tool && !step.questionAnswer && step.errorType !== 'agent' ? <div className="notus-agent-toolchain__code">
             <div className="notus-agent-toolchain__code-title"><Icons.code size={12} /> {step.displayTool || step.tool}</div>
             {step.input ? <ToolPayload label="调用参数" value={step.input} /> : null}
@@ -838,7 +832,7 @@ function ToolChainStep({ step, index, open, onToggle, onAction, onPreviewImages,
       ) : null}
     </div>
   );
-}
+});
 
 function ToolChain({ steps, loading, sessionStatus = '', sessionId = '', startedAt = '', finishedAt = '', errorMessage = '', onAction, onPreviewImages }) {
   // 只展示服务端已经确认的真实动作，内部循环、排队和推测性 loading 不进入执行记录。
@@ -857,15 +851,14 @@ function ToolChain({ steps, loading, sessionStatus = '', sessionId = '', started
   const displayedErrorStep = agentErrorStep || fallbackErrorStep;
   const hasTraceContent = renderedSteps.length > 0 || Boolean(displayedErrorStep);
   const [expanded, setExpanded] = useState({});
+  const toggleStep = useCallback((id) => setExpanded(previous => ({...previous, [id]: !previous[id]})), []);
   const liveSession = Boolean(loading) || ['created', 'queued', 'running'].includes(sessionStatus);
   const tailStatus = renderedSteps[renderedSteps.length - 1]?.status || 'done';
-  const hasActionRequired = Boolean(displayedErrorStep)
-    || ['waiting', 'action_required'].includes(tailStatus)
-    || ['waiting_confirm', 'waiting_interaction', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery'].includes(sessionStatus);
+  const traceState = agentTraceState({ sessionStatus, loading, tailStatus, hasError: Boolean(displayedErrorStep) });
+  const hasActionRequired = traceState.needsAction;
   const hasViewedImages = visibleSteps.some((step) => Array.isArray(step.images) && step.images.length > 0);
   // 已完成的历史记录通常保持收起；但图片查看属于需要可见确认的结果，不能被自动折叠隐藏。
   const [traceExpanded, setTraceExpanded] = useState(() => liveSession || hasActionRequired || hasViewedImages);
-  const [now, setNow] = useState(() => Date.now());
   const stepKey = visibleSteps.map((step, index) => step.id || step.label || index).join('|');
 
   useEffect(() => {
@@ -880,32 +873,16 @@ function ToolChain({ steps, loading, sessionStatus = '', sessionId = '', started
     });
   }, [stepKey, visibleSteps]);
 
-  const hasRunning = liveSession || tailStatus === 'running';
-  const isCancelled = sessionStatus === 'cancelled' || tailStatus === 'cancelled';
-  const hasFailed = ['failed', 'error', 'stopped'].includes(tailStatus);
+  const hasRunning = traceState.running;
   const taskStartedAt = traceTimestamp(startedAt);
   const taskFinishedAt = traceTimestamp(finishedAt);
   const firstTimestamp = taskStartedAt
     || visibleSteps.map((step) => traceTimestamp(step.createdAt)).filter(Boolean)[0]
     || 0;
   const lastStepTimestamp = visibleSteps.map((step) => traceTimestamp(step.updatedAt || step.createdAt)).filter(Boolean).at(-1);
-  const lastTimestamp = hasRunning ? now : taskFinishedAt || lastStepTimestamp || firstTimestamp;
-  const elapsed = firstTimestamp ? formatTraceElapsed((hasRunning ? now : lastTimestamp) - firstTimestamp) : '';
-  const statusLabel = isCancelled
-    ? '已取消'
-    : hasFailed || hasActionRequired
-      ? '需要处理'
-    : sessionStatus === 'queued'
-      ? `任务已提交${elapsed ? ` · 已等待 ${elapsed}` : ''}`
-      : hasRunning
-        ? `正在处理${elapsed ? ` ${elapsed}` : ''}`
-        : `已处理${elapsed ? ` ${elapsed}` : ''}`;
-
-  useEffect(() => {
-    if (!hasRunning) return undefined;
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [hasRunning]);
+  const lastTimestamp = taskFinishedAt || lastStepTimestamp || firstTimestamp;
+  const statusLabel = traceState.label;
+  const status = <TraceStatus phase={statusLabel} startedAt={firstTimestamp} finishedAt={lastTimestamp} running={hasRunning} />;
 
   useEffect(() => {
     if (!liveSession && !hasActionRequired && !hasViewedImages) setTraceExpanded(false);
@@ -918,10 +895,10 @@ function ToolChain({ steps, loading, sessionStatus = '', sessionId = '', started
       <div className="notus-agent-toolchain__header">
         {hasTraceContent ? (
           <button type="button" className="notus-agent-toolchain__summary-toggle notus-agent-pressable" aria-expanded={traceExpanded} onClick={() => setTraceExpanded((value) => !value)}>
-            <span role="status" aria-live="polite">{statusLabel}</span>
+            {status}
             {traceExpanded ? <Icons.chevronDown size={15} aria-hidden="true" /> : <Icons.chevronRight size={15} aria-hidden="true" />}
           </button>
-        ) : <span role="status" aria-live="polite">{statusLabel}</span>}
+        ) : status}
       </div>
       {hasTraceContent && traceExpanded ? <>
         {renderedSteps.length > 0 ? <div className="notus-agent-toolchain__steps">
@@ -932,7 +909,7 @@ function ToolChain({ steps, loading, sessionStatus = '', sessionId = '', started
               step={step}
               index={index}
               open={Boolean(expanded[stepId])}
-              onToggle={(id) => setExpanded((previous) => ({ ...previous, [id]: !previous[id] }))}
+              onToggle={toggleStep}
               onAction={onAction}
               onPreviewImages={onPreviewImages}
               sessionId={sessionId}
@@ -1010,6 +987,10 @@ function operationItems(operationSet) {
       status: patch.status || 'pending',
       handled_at: patch.handled_at || null,
       error: patch.error || '',
+      item_id: patch.item_id,
+      content_loaded: patch.content_loaded,
+      applied_exists: patch.applied_exists,
+      applied_path: patch.applied_path,
       source_batches: Array.isArray(patch.source_batches) ? patch.source_batches : [],
       media_changes: (Array.isArray(operationSet.media_changes) ? operationSet.media_changes : [])
         .filter((change) => String(change?.file_path || '') === String(patch.file_path || '')),
@@ -1034,7 +1015,7 @@ function patchStatusMeta(status) {
 
 function isPatchPending(item) {
   const status = String(item?.status || 'pending');
-  return status === 'pending' || status === 'failed';
+  return status === 'pending' || status === 'failed' || status === 'apply_failed';
 }
 
 function isFileSystemOperation(operation = {}) {
@@ -1153,7 +1134,8 @@ function OperationSetCard({ operationSet, onOpenDetail }) {
 }
 
 function hasTaskChangeSetChanges(changeSet) {
-  return Number(changeSet?.file_count || 0) + Number(changeSet?.directory_count || 0) > 0;
+  return ['file_count', 'directory_count', 'applied_count', 'rolled_back_count', 'discarded_count']
+    .some(key => Number(changeSet?.[key] || 0) > 0);
 }
 
 function TaskChangeSetCard({ changeSet, onOpenDetail }) {
@@ -1165,7 +1147,7 @@ function TaskChangeSetCard({ changeSet, onOpenDetail }) {
   const rolledBackCount = Number(changeSet.rolled_back_count || 0);
   const discardedCount = Number(changeSet.discarded_count || 0);
   const mediaChangeCount = Number(changeSet.media_change_count || 0);
-  const statusText = [`已应用 ${appliedCount} 个`, `已回滚 ${rolledBackCount} 个`, `已废弃 ${discardedCount} 个`]
+  const statusText = [ ...(Number(changeSet.pending_count || 0) ? [`待确认 ${changeSet.pending_count} 个`] : []), `已应用 ${appliedCount} 个`, `已回滚 ${rolledBackCount} 个`, `已废弃 ${discardedCount} 个`]
     .concat(mediaChangeCount > 0 ? [`包含 ${mediaChangeCount} 项图片变更`] : [])
     .join('，');
   return (
@@ -1173,7 +1155,7 @@ function TaskChangeSetCard({ changeSet, onOpenDetail }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
         <span aria-hidden="true" style={{ width: 32, height: 32, borderRadius: '50%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: C.accent, background: '#fff', boxShadow: 'inset 0 0 0 1px rgba(229,227,216,0.95)' }}><Icons.edit size={15} /></span>
         <div style={{ display: 'grid', gap: 3, minWidth: 0 }}>
-          <div style={{ fontSize: 13, fontWeight: 800, color: C.text }}>{revisionCount} 个文件修订</div>
+          <div style={{ fontSize: 13, fontWeight: 800, color: C.text }}>{revisionCount > 0 ? [fileCount ? `${fileCount} 个文件` : '', directoryCount ? `${directoryCount} 个目录` : ''].filter(Boolean).join('、') : '当前无文件差异'}</div>
           <div style={{ fontSize: 11, color: C.tertiary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{statusText}</div>
         </div>
       </div>
@@ -1216,20 +1198,47 @@ function diffSidebarFileName(path) {
   return normalized.split('/').filter(Boolean).pop() || '全文';
 }
 
-function DiffDialog({ onOpenBatch, onOperationUpdated, operationSet, open, onClose, onApplyAll, onApplyFile, onRollbackFile, onDiscardFile, onOpenFile }) {
+function DiffDialog({ approvalMode, onLoadItem, onRetry, onOpenBatch, onOperationUpdated, operationSet, open, onClose, onApplyAll, onApplyFile, onRollbackFile, onDiscardFile, onOpenFile }) {
   const toast = useToast();
-  const operations = operationItems(operationSet);
+  const operations = useMemo(() => operationItems(operationSet), [operationSet]);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [busyKey, setBusyKey] = useState('');
   const [fileDrawerOpen, setFileDrawerOpen] = useState(false);
+  const [visibleLineCount, setVisibleLineCount] = useState(500);
+  const [visibleFileCount, setVisibleFileCount] = useState(100);
+  useEffect(() => { setVisibleFileCount(100); }, [operationSet?.id]);
+  useEffect(() => { setVisibleLineCount(500); }, [operationSet?.id, selectedIndex]);
   useEffect(() => {
     setSelectedIndex((prev) => Math.min(prev, Math.max(operations.length - 1, 0)));
     setFileDrawerOpen(false);
   }, [operationSet?.id, operations.length]);
+  const selectedOperation = operations[Math.min(selectedIndex, Math.max(operations.length - 1, 0))];
+  const [loadedItems, setLoadedItems] = useState({});
+  const [itemError, setItemError] = useState('');
+  const [retryItem, setRetryItem] = useState(0);
+  useEffect(() => { setLoadedItems(current => Object.keys(current).length ? {} : current); }, [operationSet]);
+  useEffect(() => {
+    setItemError('');
+    if (!open || !selectedOperation?.item_id || selectedOperation.content_loaded !== false || loadedItems[selectedOperation.item_id]) return undefined;
+    const controller = new AbortController();
+    onLoadItem?.(operationSet, selectedOperation.item_id, controller.signal).then(patch => {
+      if (!controller.signal.aborted) setLoadedItems(current => ({ ...current, [selectedOperation.item_id]: patch }));
+    }).catch(error => { if (!controller.signal.aborted) setItemError(error.message || '读取文件差异失败'); });
+    return () => controller.abort();
+  }, [open, selectedOperation, operationSet, loadedItems, onLoadItem, retryItem]);
+  const activeOperation = useMemo(() => loadedItems[selectedOperation?.item_id] || selectedOperation || {}, [loadedItems, selectedOperation]);
+  const contentLoading = selectedOperation?.content_loaded === false && !loadedItems[selectedOperation.item_id];
+  const diffLines = useMemo(() => buildDiffLines(activeOperation), [activeOperation]);
   if (!open) return null;
-  const activeOperation = operations[Math.min(selectedIndex, Math.max(operations.length - 1, 0))] || {};
-  const activePath = activeOperation.new_path || activeOperation.file_path || activeOperation.old_path || activeOperation.path || '全文';
-  const diffLines = buildDiffLines(activeOperation);
+  if (operationSet?.loading || operationSet?.loadError) return typeof document === 'undefined' ? null : createPortal(
+    <div className="notus-diff-dialog__backdrop" style={{ background: 'rgba(45,45,45,0.28)' }}>
+      <div className="notus-diff-dialog" role="dialog" aria-modal="true" aria-label="修改详情" aria-busy={Boolean(operationSet.loading)}>
+        <div className="notus-diff-dialog__header"><strong>修改详情</strong><button type="button" aria-label="关闭" onClick={onClose}>关闭</button></div>
+        <div role={operationSet.loadError ? 'alert' : 'status'} style={{ padding: 24 }}>{operationSet.loadError || <div className="notus-diff-loading-skeleton" aria-label="正在加载修改详情"><div><Skeleton width="70%" height={20} /><SkeletonText lines={6} /></div><div><Skeleton width="45%" height={24} /><SkeletonText lines={7} /><SkeletonText lines={7} /></div></div>}{operationSet.loadError ? <button type="button" onClick={onRetry}>重试</button> : null}</div>
+      </div>
+    </div>, document.body);
+
+  const activePath = activeOperation.new_path || activeOperation.file_path || activeOperation.old_path || activeOperation.path || (operations.length === 0 ? '当前无文件差异' : '全文');
   const mediaChanges = Array.isArray(activeOperation.media_changes) ? activeOperation.media_changes : [];
   const sourceBatches = Array.isArray(activeOperation.source_batches) ? activeOperation.source_batches : [];
   const sourceBatchLabel = sourceBatches.length > 0
@@ -1244,8 +1253,8 @@ function DiffDialog({ onOpenBatch, onOperationUpdated, operationSet, open, onClo
   const isRevision = activeOperation.change_type === 'file_revision';
   const activeNormalizedStatus = String(activeOperation.status || 'pending');
   const taskCumulative = operationSet?.type === 'task_cumulative' || operationSet?.mode === 'task_cumulative';
-  const canApply = !taskCumulative && (isRevision ? activeNormalizedStatus === 'pending' : isPatchPending(activeOperation)) && typeof onApplyFile === 'function';
-  const canApplyAll = pendingCount > 0 && typeof onApplyAll === 'function';
+  const canApply = !taskCumulative && (isRevision ? ['pending', 'apply_failed'].includes(activeNormalizedStatus) : isPatchPending(activeOperation)) && typeof onApplyFile === 'function';
+  const canApplyAll = !contentLoading && !itemError && pendingCount > 0 && typeof onApplyAll === 'function';
   const canRollback = !taskCumulative && (isRevision ? ['applied', 'rollback_conflict'].includes(activeNormalizedStatus) : !['rolled_back', 'discarded'].includes(activeNormalizedStatus)) && typeof onRollbackFile === 'function';
   const canDiscard = !taskCumulative && isRevision && ['pending', 'stale', 'apply_failed', 'rollback_conflict'].includes(activeNormalizedStatus) && typeof onDiscardFile === 'function';
   const canDiscardAll = taskCumulative && pendingCount > 0 && typeof onDiscardFile === 'function';
@@ -1282,9 +1291,19 @@ function DiffDialog({ onOpenBatch, onOperationUpdated, operationSet, open, onClo
     }
   };
   const openDiffFile = (path) => {
+    const targetIndex = operations.findIndex(item => (item.new_path || item.file_path || item.old_path || item.path) === path);
+    const operation = operations[targetIndex] || {};
+    const pending = !['applied', 'auto_applied'].includes(operation.status);
+    if (operation.applied_exists === false || (operation.applied_exists === undefined && operation.change_type === 'create' && pending)) {
+      if (targetIndex >= 0) setSelectedIndex(targetIndex);
+      setFileDrawerOpen(false);
+      toast(operation.status === 'conflict' ? '文件状态与预览不一致，请先检查冲突。' : '这篇文章尚未创建，请先应用新建预览。', 'info');
+      return;
+    }
+    const existingPath = operation.applied_path || (pending && operation.change_type === 'move_file' ? operation.old_path : path);
     setFileDrawerOpen(false);
     onClose?.();
-    onOpenFile?.(path);
+    onOpenFile?.(existingPath);
   };
 
   const dialog = (
@@ -1303,7 +1322,7 @@ function DiffDialog({ onOpenBatch, onOperationUpdated, operationSet, open, onClo
         <div className="notus-diff-dialog__body">
           {fileDrawerOpen ? <button type="button" className="notus-diff-dialog__file-backdrop" aria-label="关闭文件列表" onClick={() => setFileDrawerOpen(false)} /> : null}
           <nav className={['notus-diff-dialog__sidebar', fileDrawerOpen ? 'is-mobile-open' : ''].filter(Boolean).join(' ')} aria-label="文件列表" style={{ borderRight: '1px solid ' + C.border, background: C.page }}>
-            {operations.map((operation, index) => {
+            {operations.slice(0, visibleFileCount).map((operation, index) => {
               const pathText = operation.new_path || operation.file_path || operation.old_path || operation.path || '全文';
               const active = index === selectedIndex;
               const statusMeta = patchStatusMeta(operation.status);
@@ -1319,6 +1338,7 @@ function DiffDialog({ onOpenBatch, onOperationUpdated, operationSet, open, onClo
                 </div>
               );
             })}
+            {operations.length > visibleFileCount ? <button type="button" onClick={() => setVisibleFileCount(count => count + 100)} style={{ padding: 12 }}>继续显示文件（{visibleFileCount} / {operations.length}）</button> : null}
           </nav>
           <div className="notus-diff-dialog__content" style={{ background: '#FAFAFA' }}>
             <div className="notus-diff-dialog__content-header" style={{ borderBottom: '1px solid ' + C.border, background: '#fff' }}>
@@ -1326,9 +1346,10 @@ function DiffDialog({ onOpenBatch, onOperationUpdated, operationSet, open, onClo
                 <DiffFileLink path={activePath} onOpenFile={openDiffFile} style={{ minWidth: 0, fontSize: 12, color: isDocumentPath(activePath) ? C.accent : C.secondary, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} />
                 {taskCumulative && sourceBatchLabel ? <span title={sourceBatchLabel} style={{ minWidth: 0, color: C.tertiary, fontSize: 10.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>来源：{sourceBatchLabel}</span> : null}
               </div>
-              <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 800, color: activeStatus.color, background: activeStatus.bg, borderRadius: 999, padding: '4px 8px' }}>{activeStatus.label}</span>
+              {operations.length > 0 ? <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 800, color: activeStatus.color, background: activeStatus.bg, borderRadius: 999, padding: '4px 8px' }}>{activeStatus.label}</span> : null}
             </div>
             <div className="notus-diff-dialog__scroll" style={{ overscrollBehavior: 'contain' }}>
+              {contentLoading ? <div role={itemError ? 'alert' : 'status'} style={{ padding: 16 }}>{itemError || <div aria-label="正在加载文件差异"><SkeletonText lines={7} /><SkeletonText lines={7} /></div>}{itemError ? <button type="button" onClick={() => setRetryItem(value => value + 1)}>重试</button> : null}</div> : null}
               {activeOperation.error ? (
                 <div style={{ margin: '0 12px 12px', padding: '10px 12px', borderRadius: 10, background: 'rgba(217,119,87,0.10)', color: C.accentDark, fontSize: 12, lineHeight: 1.65, boxShadow: 'inset 0 0 0 1px rgba(217,119,87,0.18)' }}>
                   {activeOperation.error}
@@ -1369,7 +1390,7 @@ function DiffDialog({ onOpenBatch, onOperationUpdated, operationSet, open, onClo
                 </div>
               ) : null}
               <div className="notus-diff-dialog__lines" style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>
-                {diffLines.length === 0 ? <div style={{ padding: '0 14px', color: C.tertiary }}>没有可展示的 diff 内容。</div> : diffLines.map((line, index) => {
+                {!contentLoading && diffLines.length === 0 ? <div style={{ padding: '0 14px', color: C.tertiary }}>没有可展示的 diff 内容。</div> : diffLines.slice(0, visibleLineCount).map((line, index) => {
                   const hunk = line.type === 'hunk';
                   const remove = line.type === 'remove';
                   const add = line.type === 'add';
@@ -1380,11 +1401,11 @@ function DiffDialog({ onOpenBatch, onOperationUpdated, operationSet, open, onClo
                     </div>
                   );
                 })}
+                {diffLines.length > visibleLineCount ? <button type="button" onClick={() => setVisibleLineCount(count => count + 500)} style={{ padding: '10px 14px', cursor: 'pointer' }}>继续显示 500 行（已显示 {visibleLineCount} / {diffLines.length} 行）</button> : null}
               </div>
             </div>
-            <div className="notus-diff-dialog__footer" style={{ borderTop: '1px solid ' + C.border, background: '#fff' }}>
-              <span style={{ flex: 1, minWidth: 0, fontSize: 12, lineHeight: 1.6, color: C.tertiary }}>仅当前对话可应用或回滚修改；新建/切换对话、预览已处理、会话权限过期或文件内容变化后，应用与回滚会失效。</span>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+            <div className="notus-diff-dialog__footer" style={{ borderTop: '1px solid ' + C.border, background: 'var(--bg-primary)', justifyContent: 'flex-end' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'wrap', gap: 8, minWidth: 0 }}>
                 {canDiscardAll ? (
                   <button type="button" disabled={Boolean(busyKey)} onClick={() => runFileAction('discard')} style={transitionButton({ height: 32, padding: '0 11px', borderRadius: 9, background: C.muted, color: C.secondary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: busyKey ? 'not-allowed' : 'pointer' })}>废弃本批修改</button>
                 ) : null}
@@ -1394,7 +1415,7 @@ function DiffDialog({ onOpenBatch, onOperationUpdated, operationSet, open, onClo
                 {taskCumulative && operationSet?.batches?.length ? operationSet.batches.slice().reverse().map((batch) => <button key={batch.id} type="button" disabled={Boolean(busyKey)} onClick={() => onOpenBatch?.(batch)} style={transitionButton({ padding: '6px 10px', borderRadius: 6, background: C.muted, color: C.secondary, cursor: 'pointer' })}>批次 {batch.batch_sequence_no} 详情</button>) : null}
                 {!taskCumulative ? <button type="button" disabled={!canRollback || Boolean(busyKey)} onClick={() => runFileAction('rollback')} style={transitionButton({ height: 32, padding: '0 11px', borderRadius: 9, background: canRollback ? 'rgba(254,202,202,0.65)' : C.muted, color: canRollback ? '#991B1B' : C.tertiary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: (!canRollback || busyKey) ? 'not-allowed' : 'pointer' })}>回滚修改</button> : null}
                 {!taskCumulative ? <button type="button" disabled={!canApply || Boolean(busyKey)} onClick={() => runFileAction('apply')} style={transitionButton({ height: 32, padding: '0 12px', borderRadius: 9, background: canApply ? '#16A34A' : C.muted, color: canApply ? '#fff' : C.tertiary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: (!canApply || busyKey) ? 'not-allowed' : 'pointer' })}>应用修改</button> : null}
-                <button type="button" disabled={!canApplyAll || Boolean(busyKey)} onClick={runApplyAll} style={transitionButton({ height: 32, padding: '0 13px', borderRadius: 9, background: canApplyAll ? C.accent : C.muted, color: canApplyAll ? '#fff' : C.tertiary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: (!canApplyAll || busyKey) ? 'not-allowed' : 'pointer' })}>全部应用</button>
+                {pendingCount > 0 && approvalMode !== 'auto_confirm' ? <button type="button" disabled={!canApplyAll || Boolean(busyKey)} onClick={runApplyAll} style={transitionButton({ height: 32, padding: '0 13px', borderRadius: 9, background: canApplyAll ? C.accent : C.muted, color: canApplyAll ? '#fff' : C.tertiary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: (!canApplyAll || busyKey) ? 'not-allowed' : 'pointer' })}>全部应用</button> : null}
               </div>
             </div>
           </div>
@@ -1606,7 +1627,7 @@ function AssistantMessageRow({ message, taskChangeSet = null, disabled, removing
   return (
     <div className="notus-agent-assistant-message" style={{ minWidth: 0, maxWidth: '100%', overflow: 'hidden', opacity: removing ? 0 : 1, transform: removing ? 'translateY(-6px)' : 'translateY(0)', transition: 'opacity 220ms ease, transform 220ms ease' }}>
       {executionTrace}
-      {message.content ? <StreamingText className="notus-agent-markdown" text={message.content} streaming={false} files={files} onOpenFileLink={onOpenFileLink} style={{ fontSize: 15, lineHeight: 1.85, color: C.text }} /> : null}
+      {message.content ? <StreamingText className="notus-agent-markdown" text={message.content} streaming={false} animate={Boolean(message.presentationAnimate)} files={files} onOpenFileLink={onOpenFileLink} style={{ fontSize: 15, lineHeight: 1.85, color: C.text }} /> : null}
       {Array.isArray(message.citations) && message.citations.length > 0 ? (
         <div style={{ display: 'grid', gap: 8, marginTop: 12, minWidth: 0, maxWidth: '100%', overflow: 'hidden' }}>
           <div style={{ fontSize: 12, color: C.tertiary }}>
@@ -1814,7 +1835,6 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
   const [selectedSearchProvider, setSelectedSearchProvider] = useState(String(searchPreference?.searchProvider || '').trim());
   const [webSearchPreferenceEnabled, setWebSearchPreferenceEnabled] = useState(Boolean(searchPreference?.webSearchEnabled));
   const [searchOpen, setSearchOpen] = useState(false);
-  const [mcpOpen, setMcpOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
   const [modelQuery, setModelQuery] = useState('');
   const [mentionQuery, setMentionQuery] = useState(null);
@@ -1850,6 +1870,8 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
   const mcpEnabled = Boolean(mcpAvailable && mcpMode === 'auto');
   const mcpLabel = 'MCP';
   const searchProviderList = webSearchSelected ? [selectedSearchProvider] : [];
+
+
   const isSearchProviderReady = (providerId) => {
     const provider = providers.find((item) => item.id === providerId);
     if (!provider) return false;
@@ -1911,7 +1933,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
   useEffect(() => {
     if (!mcpAvailabilityChecked || mcpAvailable || mcpMode !== 'auto') return;
     onMcpSelectionChange?.({ mode: 'off' });
-    setMcpOpen(false);
+
   }, [mcpAvailabilityChecked, mcpAvailable, mcpMode, onMcpSelectionChange]);
   const value = composerState.content;
   const mentions = composerState.mentions;
@@ -2367,6 +2389,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
     event.preventDefault();
     mentionDropCounterRef.current = 0;
     setMentionDropActive(false);
+    if (busy || disabled) return;
     let mention;
     try { mention = JSON.parse(raw); } catch { return; }
     const root = composerRef.current;
@@ -2381,7 +2404,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
       range = document.caretRangeFromPoint?.(event.clientX, event.clientY) || null;
     }
     insertMention(mention, range);
-  }, [insertMention]);
+  }, [busy, disabled, insertMention]);
 
   useEffect(() => {
     const root = composerRef.current;
@@ -2549,7 +2572,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
     setMentionQuery(null);
     setDismissedMentionKey('');
     setSearchOpen(false);
-    setMcpOpen(false);
+
     setModelOpen(false);
     setUploading(files.some((item) => item.fileObject));
     let taskAccepted = false;
@@ -2695,11 +2718,10 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
     setModelOpen(false);
     if (mcpMode === 'auto') {
       onMcpSelectionChange?.({ mode: 'off' });
-      setMcpOpen(false);
+
       return;
     }
     onMcpSelectionChange?.({ mode: 'auto' });
-    setMcpOpen(true);
   };
   const selectSearchProvider = (providerId) => {
     if (!isSearchProviderReady(providerId)) {
@@ -2900,22 +2922,15 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
               </div>
               <div style={{ position: 'relative' }}>
                 <span style={{ display: 'inline-flex' }}>
-                  <button type="button" aria-label={mcpAvailable ? '切换 MCP 自动工具' : '暂无 MCP 服务'} aria-disabled={busy || disabled || !mcpAvailable} onClick={toggleMcp} disabled={busy || disabled || !mcpAvailable} style={transitionButton({ height: 28, padding: '0 10px', borderRadius: 8, background: mcpEnabled ? 'rgba(251,228,210,0.40)' : 'transparent', color: mcpEnabled ? C.accent : C.tertiary, display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: mcpEnabled ? 800 : 600, opacity: busy || disabled || !mcpAvailable ? 0.5 : 1, cursor: busy || disabled || !mcpAvailable ? 'not-allowed' : undefined })}><Icons.mcp size={15} /><span className="notus-agent-control-label">{mcpLabel}</span></button>
+                  <button type="button" aria-label={mcpAvailable ? '切换 MCP 自动工具' : '暂无 MCP 服务'} aria-pressed={mcpEnabled} aria-disabled={busy || disabled || !mcpAvailable} onClick={toggleMcp} disabled={busy || disabled || !mcpAvailable} style={transitionButton({ height: 28, padding: '0 10px', borderRadius: 8, background: mcpEnabled ? 'rgba(251,228,210,0.40)' : 'transparent', color: mcpEnabled ? C.accent : C.tertiary, display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: mcpEnabled ? 800 : 600, opacity: busy || disabled || !mcpAvailable ? 0.5 : 1, cursor: busy || disabled || !mcpAvailable ? 'not-allowed' : undefined })}><Icons.mcp size={15} /><span className="notus-agent-control-label">{mcpLabel}</span></button>
                 </span>
-                {mcpOpen && mcpAvailable ? (
-                  <>
-                    <button type="button" aria-label="关闭 MCP 自动下拉" onClick={() => setMcpOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 19, border: 0, background: 'transparent', padding: 0 }} />
-                    <div role="radiogroup" aria-label="MCP 工具" style={{ position: 'absolute', bottom: 'calc(100% + 4px)', left: 0, width: 132, padding: '8px 0', borderRadius: 14, background: '#fff', boxShadow: '0 -10px 40px -10px rgba(0,0,0,0.10), inset 0 0 0 1px rgba(229,227,216,0.95)', zIndex: 20 }}>
-                      <button type="button" role="radio" aria-checked={mcpMode === 'auto'} onClick={() => { onMcpSelectionChange?.({ mode: 'auto' }); setMcpOpen(false); }} style={transitionButton({ width: '100%', minHeight: 34, padding: '0 16px', background: mcpMode === 'auto' ? 'rgba(251,228,210,0.30)' : 'transparent', color: mcpMode === 'auto' ? C.accent : C.secondary, display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 13, fontWeight: mcpMode === 'auto' ? 800 : 600, textAlign: 'left' })}>自动{mcpMode === 'auto' ? <Icons.check size={14} style={{ color: C.accent }} /> : null}</button>
-                    </div>
-                  </>
-                ) : null}
+
               </div>
             </div>
           </div>
           <div className="notus-agent-composer__actions">
             <div className="notus-agent-composer__model-wrap">
-              <Tooltip content={selectedModelLabel} disabled={!selectedConfig || !modelLabelTruncated} triggerStyle={{ minWidth: 0, maxWidth: '100%' }}><button type="button" className="notus-agent-composer__model" onClick={() => { setSearchOpen(false); setMcpOpen(false); setModelOpen((prev) => !prev); }} disabled={busy || disabled || llmConfigs.length === 0} style={transitionButton({ height: 28, padding: '0 8px', borderRadius: 8, background: 'transparent', color: C.secondary, display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 13, fontWeight: 700, opacity: llmConfigs.length === 0 || disabled ? 0.55 : 1 })}><span ref={modelLabelRef} className="notus-agent-composer__model-label">{selectedModelLabel}</span><Icons.chevronDown size={13} style={{ flex: '0 0 auto' }} /></button></Tooltip>
+              <Tooltip content={selectedModelLabel} disabled={!selectedConfig || !modelLabelTruncated} triggerStyle={{ minWidth: 0, maxWidth: '100%' }}><button type="button" className="notus-agent-composer__model" onClick={() => { setSearchOpen(false); setModelOpen((prev) => !prev); }} disabled={busy || disabled || llmConfigs.length === 0} style={transitionButton({ height: 28, padding: '0 8px', borderRadius: 8, background: 'transparent', color: C.secondary, display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 13, fontWeight: 700, opacity: llmConfigs.length === 0 || disabled ? 0.55 : 1 })}><span ref={modelLabelRef} className="notus-agent-composer__model-label">{selectedModelLabel}</span><Icons.chevronDown size={13} style={{ flex: '0 0 auto' }} /></button></Tooltip>
               {modelOpen ? (
                 <>
                   <button type="button" aria-label="关闭模型下拉" onClick={() => setModelOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 19, border: 0, background: 'transparent', padding: 0 }} />
@@ -3156,8 +3171,12 @@ export function AgentWorkspace({ messages, conversationId = null, interactions =
   const [searchPromptReason, setSearchPromptReason] = useState('disabled');
   const [detailOperationSet, setDetailOperationSet] = useState(null);
   const detailRequestRef = useRef(0);
+  const detailAbortRef = useRef(null);
+  const detailSourceRef = useRef(null);
+  useEffect(() => () => { detailRequestRef.current += 1; detailAbortRef.current?.abort(); }, []);
   useEffect(() => {
     detailRequestRef.current += 1;
+    detailAbortRef.current?.abort();
     setDetailOperationSet(null);
     setLoadingTaskChangeSetId(null);
   }, [conversationId]);
@@ -3166,12 +3185,20 @@ export function AgentWorkspace({ messages, conversationId = null, interactions =
 
   const openTaskChangeSet = useCallback(async (changeSet) => {
     const sessionId = Number(changeSet?.session_id || 0);
-    if (!sessionId || loadingTaskChangeSetId) return;
+    if (!sessionId) return;
     const requestId = ++detailRequestRef.current;
+    detailAbortRef.current?.abort();
+    const controller = new AbortController();
+    detailAbortRef.current = controller;
+    detailSourceRef.current = changeSet;
+    setDetailOperationSet({ loading: true });
     setLoadingTaskChangeSetId(changeSet.id || sessionId);
     try {
       const fresh = await refreshAgentSessionAccess(changeSet.conversation_id || conversationId, sessionId);
-      const response = await fetch(`/api/agent/sessions/${sessionId}/changes`, {
+      if (requestId !== detailRequestRef.current) return;
+      const readHeaders = { 'x-agent-control-ticket': fresh.control_tickets.read };
+      const response = await fetch(`/api/agent/sessions/${sessionId}/changes?view=manifest`, {
+        signal: controller.signal,
         cache: 'no-store',
         headers: {
           'x-agent-control-ticket': fresh.control_tickets.read,
@@ -3183,17 +3210,41 @@ export function AgentWorkspace({ messages, conversationId = null, interactions =
         throw new Error(payload.error || '读取累计修改失败');
       }
       if (requestId !== detailRequestRef.current) return;
-      setDetailOperationSet({ ...payload.task_change_set.operation_set_view, batches: payload.task_change_set.operation_sets });
+      setDetailOperationSet({ ...payload.task_change_set.operation_set_view, approval_mode: payload.task_change_set.approval_mode, batches: payload.task_change_set.operation_sets, readHeaders });
     } catch (error) {
-      toast(error.message || '读取累计修改失败', 'error');
+      if (requestId === detailRequestRef.current && !controller.signal.aborted) setDetailOperationSet({ loadError: error.message || '读取累计修改失败' });
     } finally {
       if (requestId === detailRequestRef.current) setLoadingTaskChangeSetId(null);
     }
-  }, [conversationId, loadingTaskChangeSetId, toast]);
+  }, [conversationId]);
+
+  const loadDiffItem = useCallback(async (set, itemId, signal) => {
+    const response = await fetch(`/api/agent/sessions/${set.agent_session_id}/changes?item_id=${itemId}`, { headers: set.readHeaders, signal, cache: 'no-store' });
+    const payload = await response.json();
+    const patch = payload.task_change_set?.operation_set_view?.patches?.[0];
+    if (!response.ok || !patch) throw new Error(payload.error || '文件差异已变化，请关闭后重新打开');
+    return { ...patch, patchIndex: 0, media_changes: (payload.task_change_set.operation_set_view.media_changes || []).filter(change => String(change.file_path || '') === String(patch.file_path || '')) };
+  }, []);
+  const openDiffBatch = useCallback(async (batch) => {
+    const previous = detailOperationSet;
+    const requestId = ++detailRequestRef.current;
+    detailAbortRef.current?.abort();
+    const controller = new AbortController();
+    detailAbortRef.current = controller;
+    setDetailOperationSet({ loading: true });
+    try {
+      const response = await fetch(`/api/agent/sessions/${batch.agent_session_id}/changes?batch_id=${batch.id}`, { headers: previous.readHeaders, signal: controller.signal, cache: 'no-store' });
+      const payload = await response.json();
+      if (!response.ok || !payload.operation_set) throw new Error(payload.error || '读取批次失败');
+      if (requestId === detailRequestRef.current) setDetailOperationSet({...payload.operation_set, approval_mode: previous.approval_mode});
+    } catch (error) {
+      if (requestId === detailRequestRef.current && !controller.signal.aborted) setDetailOperationSet({ loadError: error.message || '读取批次失败' });
+    }
+  }, [detailOperationSet]);
 
   useEffect(() => {
     setDetailOperationSet((current) => {
-      if (!current?.id) return current;
+      if (!current?.id || current.type === 'task_cumulative') return current;
       const latest = (Array.isArray(messages) ? messages : [])
         .map((message) => message?.operationSet)
         .find((operationSet) => Number(operationSet?.id) === Number(current.id));
@@ -3347,6 +3398,21 @@ export function AgentWorkspace({ messages, conversationId = null, interactions =
     });
   }, []);
 
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    const content = container?.querySelector('.notus-agent-workspace__content');
+    if (!content || typeof ResizeObserver === 'undefined') return undefined;
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        if (shouldStickToBottomRef.current) scrollContainerToBottom(container);
+      });
+    });
+    observer.observe(content);
+    return () => { observer.disconnect(); cancelAnimationFrame(frame); };
+  }, []);
+
   useIsomorphicLayoutEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
@@ -3360,7 +3426,7 @@ export function AgentWorkspace({ messages, conversationId = null, interactions =
   }, [messageScrollKey, String(streamText || '').length, Boolean(loading), activeStepsScrollKey, error]);
 
   useEffect(() => {
-    if (!detailOperationSet?.id) return;
+    if (!detailOperationSet?.id || detailOperationSet.type === 'task_cumulative') return;
     const next = (Array.isArray(messages) ? messages : [])
       .map((message) => message.operationSet)
       .find((operationSet) => Number(operationSet?.id || 0) === Number(detailOperationSet.id));
@@ -3386,6 +3452,10 @@ export function AgentWorkspace({ messages, conversationId = null, interactions =
   const activeSearchProvider = String(searchPreference?.searchProvider || '').trim();
   const activeWebSearchEnabled = Boolean(searchConfig.enabled && searchPreference?.webSearchEnabled && activeSearchProvider);
 
+  const handleAgentStepAction = useCallback((action, _step, sessionId) => {
+    if (action === 'resume_agent') void onResumeAgentTask?.(sessionId, { web_search_enabled: activeWebSearchEnabled, search_provider: activeSearchProvider, mcp_selection: mcpSelection});
+  }, [onResumeAgentTask, activeWebSearchEnabled, activeSearchProvider, mcpSelection]);
+
   const isSearchProviderReady = useCallback((providerId) => {
     const provider = (searchConfig.providers || SEARCH_PROVIDER_FALLBACKS).find((item) => item.id === providerId);
     if (!provider) return false;
@@ -3406,16 +3476,10 @@ export function AgentWorkspace({ messages, conversationId = null, interactions =
     const sourceMediaItems = Array.isArray(sourceMeta.media_items) && sourceMeta.media_items.length > 0
       ? dedupeAgentMedia(sourceMeta.media_items)
       : sourceMedia;
-    const hasOriginalSearchPreference = Object.prototype.hasOwnProperty.call(sourceMeta, 'web_search_enabled');
-    const retryWebSearchEnabled = options.reason === 'retry' && hasOriginalSearchPreference
-      ? Boolean(sourceMeta.web_search_enabled)
-      : activeWebSearchEnabled;
-    const retrySearchProvider = options.reason === 'retry' && sourceMeta.search_provider
-      ? String(sourceMeta.search_provider)
-      : activeSearchProvider;
-    const retryMcpSelection = options.reason === 'retry' && sourceMeta.mcp_selection?.mode
-      ? (sourceMeta.mcp_selection.mode === 'auto' ? { mode: 'auto' } : { mode: 'off' })
-      : mcpSelection;
+    // 重试和改写都采用此刻的工具选择；原消息只提供正文、附件与引用。
+    const retryWebSearchEnabled = activeWebSearchEnabled;
+    const retrySearchProvider = activeSearchProvider;
+    const retryMcpSelection = mcpSelection;
     if (!nextContent) {
       toast('当前消息没有可发送内容', 'warning');
       return false;
@@ -3538,10 +3602,11 @@ export function AgentWorkspace({ messages, conversationId = null, interactions =
         <div className="notus-agent-workspace__content" style={{ width: AGENT_CHAT_CONTENT_WIDTH, maxWidth: 'none', minWidth: 0, margin: '0 auto', overflow: 'hidden' }}>
           {restoringConversation ? (
             <div className="notus-agent-conversation-restore" role="status" aria-live="polite">
-              <Spinner size={16} />
-              <div>
-                <strong>正在恢复上次对话…</strong>
-                <span>消息与执行记录将自动显示</span>
+              <div className="notus-agent-message-skeleton" aria-label="正在加载对话">
+                <Skeleton width="55%" height={48} style={{alignSelf:'flex-end'}} />
+                <SkeletonText lines={5} />
+                <Skeleton width="38%" height={40} style={{alignSelf:'flex-end'}} />
+                <SkeletonText lines={4} />
               </div>
             </div>
           ) : <MessageList
@@ -3569,9 +3634,7 @@ export function AgentWorkspace({ messages, conversationId = null, interactions =
             onPreviewToolchainImages={openToolchainImagePreview}
             files={files}
             onOpenFileLink={onOpenFileLink}
-            onAgentStepAction={(action, _step, sessionId) => {
-              if (action === 'resume_agent') void onResumeAgentTask?.(sessionId);
-            }}
+            onAgentStepAction={handleAgentStepAction}
           />}
           <div style={{ height: 12 }} />
         </div>
@@ -3592,8 +3655,11 @@ export function AgentWorkspace({ messages, conversationId = null, interactions =
       <DiffDialog
         open={Boolean(detailOperationSet)}
         operationSet={detailOperationSet}
-        onClose={() => { detailRequestRef.current += 1; setDetailOperationSet(null); }}
-        onOpenBatch={setDetailOperationSet}
+        approvalMode={detailOperationSet?.approval_mode || taskChangeSetsBySession?.[String(detailOperationSet?.agent_session_id)]?.approval_mode}
+        onClose={() => { detailRequestRef.current += 1; detailAbortRef.current?.abort(); setLoadingTaskChangeSetId(null); setDetailOperationSet(null); }}
+        onOpenBatch={openDiffBatch}
+        onLoadItem={loadDiffItem}
+        onRetry={() => openTaskChangeSet(detailSourceRef.current)}
         onOperationUpdated={(updated) => setDetailOperationSet((current) => (current && Number(current.id) === Number(updated.id) && Number(current.agent_session_id) === Number(updated.agent_session_id) ? updated : current))}
         onApplyAll={onApplyOperationSet}
         onApplyFile={onApplyOperationFile}

@@ -1,7 +1,7 @@
 const { estimateChatRequestTokens, trimTextToTokenBudget } = require('./llmBudget');
 const { sha256 } = require('./files');
 const { archiveToolResult, buildToolResultReceipt } = require('./agentToolResultStore');
-const INLINE_READ_TOOLS = new Set(['read_tool_result', 'read_conversation_history', 'list_tool_results']);
+const INLINE_READ_TOOLS = new Set(['read_tool_result', 'read_conversation_history', 'list_tool_results', 'list_materials', 'read_attachment', 'list_file_images']);
 function parse(value) { try { return JSON.parse(value); } catch { return null; } }
 
 async function migrateCheckpointResults(checkpoint, session) {
@@ -38,26 +38,41 @@ async function migrateCheckpointResults(checkpoint, session) {
   return { ...checkpoint, messages, toolResults, resumeToolResult, toolResultProjectionVersion: 2 };
 }
 
-function evictOldReadWindows(messages) {
+function evictOldReadWindows(messages, tokenBudget = 60000) {
+  let estimated = estimateChatRequestTokens({ messages });
+  if (estimated <= tokenBudget) return messages;
   const names = new Map();
+  const candidates = [];
   const recentStart = Math.max(1, messages.length - 4);
-  return messages.map((message, index) => {
-    if (!Array.isArray(message.content)) return message;
-    return { ...message, content: message.content.map((block) => {
+  messages.forEach((message, index) => {
+    for (const [blockIndex, block] of (Array.isArray(message.content) ? message.content : []).entries()) {
       if (block.type === 'tool_use') names.set(block.id, { name: block.name, input: block.input });
       const call = names.get(block.tool_use_id);
-      if (index >= recentStart || block.type !== 'tool_result' || !INLINE_READ_TOOLS.has(call?.name)) return block;
+      if (index >= recentStart || block.type !== 'tool_result' || !INLINE_READ_TOOLS.has(call?.name)) continue;
       const result = parse(block.content);
-      if (block.is_error || result?.error) return block;
-      return { ...block, content: JSON.stringify({ status: 'read_window_evicted', tool_name: call.name,
-        result_ref: result?.result_ref || result?.history_ref, read_arguments: call.input,
-        summary: '此前按需读取的片段已移出活跃上下文，需要细节时用相同参数重新读取。' }) };
-    }) };
+      if (block.is_error || result?.error || result?.status === 'read_window_evicted') continue;
+      // Small directories and facts are working context, not disposable read windows.
+      const cost = estimateChatRequestTokens({ messages: [{ role: 'user', content: [block] }] });
+      if (cost <= 2048) continue;
+      candidates.push({ index, blockIndex, block, call, result, cost });
+    }
   });
+  const projected = messages.slice();
+  for (const { index, blockIndex, block, call, result, cost } of candidates) {
+    if (estimated <= tokenBudget) break;
+    const replacement = { ...block, content: JSON.stringify({ status: 'read_window_evicted', tool_name: call.name,
+      result_ref: result?.result_ref || result?.history_ref, read_arguments: call.input,
+      next_offset: result?.next_offset, total_bytes: result?.total_bytes,
+      summary: '上下文预算不足，较早的大段材料已移出；仅在完成任务确实缺少该片段时按引用回查，继续分页使用next_offset。' }) };
+    projected[index] = { ...projected[index], content: projected[index].content.slice() };
+    projected[index].content[blockIndex] = replacement;
+    estimated -= cost - estimateChatRequestTokens({ messages: [{ role: 'user', content: [replacement] }] });
+  }
+  return projected;
 }
 
 function compactMessages(messages = [], tokenBudget = 60000) {
-  const projected = evictOldReadWindows(messages);
+  const projected = evictOldReadWindows(messages, tokenBudget);
   if (!projected.length || estimateChatRequestTokens({ messages: projected }) <= tokenBudget) return projected;
   // 以完整assistant/tool_result交换为单位压缩；未解决的调用不丢弃、不拆对。
   const groups = [];

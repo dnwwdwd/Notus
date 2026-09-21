@@ -84,6 +84,22 @@ async function runTests() {
   assert.strictEqual(cached.cache_hit, true);
   assert.strictEqual(knowledgeQueries.length, 5, '重复或换词调用不能产生额外 Provider 请求');
 
+  // 两篇实际不同的文章必须在首次/缓存投影及模型回执中保留各自 ID。
+  const identitySession = createSession({goal: '核对两篇 Notus 文章', conversationId: conversation.id});
+  const identityResults = [
+    {file_id: 9907892, file_path: 'Notus/欢迎使用.md', file_title: '欢迎使用', content: '正文 A', score: 1},
+    {file_id: 9567188, file_path: 'Notus/前瞻.md', file_title: '前瞻', content: '正文 B', score: 1},
+  ];
+  const identityInput = {session: getSession(identitySession.sessionId), sourceType: 'knowledge', query: 'Notus', evidence: knowledgeHasEvidence};
+  const liveIdentity = await executePlannedResearch({...identityInput, executeQuery: async () => ({results: identityResults})});
+  const cachedIdentity = await executePlannedResearch({...identityInput, executeQuery: async () => {throw Error('缓存不得重新查询');}});
+  const {buildToolResultReceipt} = require('../lib/agentToolResultStore');
+  for (const result of [liveIdentity,cachedIdentity]) {
+    assert.deepStrictEqual(result.results.map(item=>item.file_id), [9907892,9567188]);
+    assert.deepStrictEqual(buildToolResultReceipt({toolName:'search_knowledge',result}).file_refs, identityResults.map(({file_id,file_path})=>({file_id,file_path})));
+  }
+  assert.strictEqual(cachedIdentity.cache_hit,true);
+
   const webSession = createSession({
     goal: '用户任务：联网查询 Notus Agent 检索策略',
     conversationId: conversation.id,

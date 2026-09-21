@@ -1,6 +1,7 @@
 const { createLogger } = require('./logger');
 const { resolveLlmRuntimeConfig } = require('./llmConfigs');
 const { runAgentLoop } = require('./agentLoop');
+const { prepareMcpTools } = require('./mcp');
 const { getSession, updateSessionStatus } = require('./agentSession');
 const { appendConversationMessage, touchConversation } = require('./conversations');
 const { parseAgentInputSources } = require('./agentInputSources');
@@ -156,7 +157,6 @@ async function execute(task) {
     const attachments = assertAttachmentLimits(conversationId, media.attachments);
     const images = assertImageLimits(conversationId, media.images);
     const llmConfig = resolveLlmRuntimeConfig({ llmConfigId: task.llm_config_id || input.llm_config_id || undefined });
-    if (String(llmConfig.llmApiProtocol || '').toLowerCase() === 'anthropic') assertImageContextSize(images, MAX_ANTHROPIC_IMAGE_CONTEXT_BYTES);
     const userQuery = String(input.user_query || input.input_text || input.display_query || '').trim();
     let turnFrame = null;
     if (agentRuntimeAtLeast('shadow', runtimeMode)) {
@@ -177,7 +177,8 @@ async function execute(task) {
         mentions: Array.isArray(input.mentions) ? input.mentions : [],
         attachments,
         activeFileId: Number(input.turn_context?.active_file_id || 0) || null,
-        webSearchEnabled: Boolean(session.web_search_enabled),
+        // 内置搜索开关与 MCP 授权独立；MCP 可提供联网能力，显式禁网仍由意图规则处理。
+        webSearchEnabled: Boolean(session.web_search_enabled || session.mcp_selection?.mode !== 'off' && session.mcp_selection?.mode),
         llmConfig,
         runId,
         resumeInteraction,
@@ -261,6 +262,8 @@ async function execute(task) {
       }) || turnFrame;
     }
     registerParsedInputSources({ sessionId, conversationId, parsedAttachments, attachments: loadAttachments(conversationId) });
+    const preparedMcpContext = await prepareMcpTools(session.mcp_selection, session.goal, session.mcp_session_permissions || {}, { forceRefresh: true });
+    if (controller.signal.aborted || historyDiscarded()) return;
     if (agentRuntimeAtLeast('search', runtimeMode) && turnFrame) {
       const mission = await executeRuntimeSearchMission({ session, task, frame: turnFrame, userQuery, llmConfig, runId });
       if (historyDiscarded()) return;
@@ -271,12 +274,12 @@ async function execute(task) {
         });
       }
       const searchCapabilityLimitation = getSearchCapabilityLimitation(mission.result);
-      if (searchCapabilityLimitation) {
+      if (searchCapabilityLimitation && preparedMcpContext.tools.length === 0) {
         finishWithCapabilityLimitation({ task, sessionId, conversationId, runId, turnFrame, limitation: searchCapabilityLimitation, resumeJob });
         return;
       }
     }
-    let initialImages = getImageInputBlocks(images, { messageId: task.user_message_id });
+    let initialImages = [];
     let currentImageRecognition = null;
     if (images.length && task.user_message_id) {
       const viewedImages = buildViewedImagePreviews(images, conversationId);
@@ -290,18 +293,23 @@ async function execute(task) {
         images: viewedImages,
       });
       try {
-        currentImageRecognition = await recognizeConversationImages({ conversationId, messageId: task.user_message_id, images, llmConfig, signal: controller.signal });
+        currentImageRecognition = await recognizeConversationImages({ conversationId, messageId: task.user_message_id, images, llmConfig, signal: controller.signal, onUsage: (usage) => recordRunUsage({ sessionId, runId, sourceType: 'image_recognition', provider: llmConfig.llmProvider, model: llmConfig.llmModel, usage }) });
         if (currentImageRecognition?.usage) recordRunUsage({ sessionId, sourceType: 'image_recognition', provider: llmConfig.llmProvider, model: llmConfig.llmModel, usage: currentImageRecognition.usage });
-        emit(sessionId, runId, { type: 'progress', stage: 'image_recognition_done', text: `已查看 ${images.length} 张图片。`, conversation_id: conversationId, message_id: task.user_message_id, image_count: images.length, images: viewedImages });
+        emit(sessionId, runId, { type: 'progress', stage: 'image_recognition_done', text: `已识别 ${currentImageRecognition?.recognizedCount || 0} 张图片${currentImageRecognition?.failedCount ? `，${currentImageRecognition.failedCount} 张未完成，可按需重试` : ''}。`, status: currentImageRecognition?.failedCount ? 'partial' : 'success', conversation_id: conversationId, message_id: task.user_message_id, image_count: images.length, images: viewedImages });
         initialImages = [];
       } catch (error) {
+        if (controller.signal.aborted) throw error;
+        try {
+          if (String(llmConfig.llmApiProtocol || '').toLowerCase() === 'anthropic') assertImageContextSize(images, MAX_ANTHROPIC_IMAGE_CONTEXT_BYTES);
+          initialImages = getImageInputBlocks(images, { messageId: task.user_message_id });
+        } catch {}
         emit(sessionId, runId, { type: 'progress', stage: 'image_recognition_done', text: '图片查看未完成，任务将继续使用其他材料。', status: 'error', error: error.code || 'IMAGE_RECOGNITION_FAILED', conversation_id: conversationId, message_id: task.user_message_id, image_count: images.length, images: viewedImages });
       }
     }
     if (historyDiscarded()) return;
     const loopResult = await runAgentLoop({
       sessionId, runId, llmConfig, signal: controller.signal, approvalMode: task.approval_mode,
-      taskId: task.id, turnFrame,
+      taskId: task.id, turnFrame, preparedMcpContext,
       resumeInteractionId: Number(resumeJob?.interaction_id || input.resume_interaction_id || 0) || null, initialImages, currentImageRecognition,
       onStream: (event) => {
         if (event.type === 'final') {

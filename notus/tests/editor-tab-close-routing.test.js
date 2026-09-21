@@ -6,7 +6,7 @@ const vm = require('vm');
 const page = fs.readFileSync(process.env.NOTUS_FILES_PAGE_TEST_SOURCE || path.join(__dirname, '../pages/files/index.js'), 'utf8');
 const contextSource = fs.readFileSync(path.join(__dirname, '../contexts/AppContext.js'), 'utf8');
 const between = (source, start, end) => source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start)));
-const closeCode = between(contextSource, '  const closeFileTab =', '  const setActiveWorkspacePage =');
+const closeCode = between(contextSource, contextSource.includes('  const closeFileTabs =') ? '  const closeFileTabs =' : '  const closeFileTab =', '  const setActiveWorkspacePage =');
 const openCode = between(page, '  const openWorkspaceFile =', '  const requestOpenWorkspaceFile =');
 const syncCode = page.includes('  const syncWorkspaceRoute =')
   ? between(page, '  const syncWorkspaceRoute =', '  const openWorkspaceFile =') : '';

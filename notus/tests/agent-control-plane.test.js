@@ -241,6 +241,12 @@ async function run() {
   assert.strictEqual(detectDeadloop(created.sessionId, 'read_file', { content: 'same' }), false, '非连续重复不能误判');
   assert.strictEqual(detectDeadloop(created.sessionId, 'read_file', { content: 'same' }), false);
   assert.strictEqual(detectDeadloop(created.sessionId, 'read_file', { content: 'same' }), true, '连续三次相同结果必须终止');
+  for (const url of ['https://example.com/a', 'https://example.com/b', 'https://example.com/c']) {
+    assert.equal(detectDeadloop(created.sessionId, 'mcp_fetch', { ok: true }, { url }), false, '不同 URL 相同结果不是死循环');
+  }
+  for (const offset of [0, 100, 200]) assert.equal(detectDeadloop(created.sessionId, 'read_file', { content: 'same' }, { offset }), false);
+  assert.equal(detectDeadloop(created.sessionId, 'read_file', { content: 'same' }, { offset: 200 }), false);
+  assert.equal(detectDeadloop(created.sessionId, 'read_file', { content: 'same' }, { offset: 200 }), true);
   const nextRun = acquireRunLease(created.sessionId, { runId: 'run-next' });
   assert.strictEqual(nextRun.acquired, true);
   assert.strictEqual(detectDeadloop(created.sessionId, 'read_file', { content: 'same' }), false, '新 run 必须重置连续窗口');

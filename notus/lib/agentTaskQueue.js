@@ -91,16 +91,37 @@ function updateTask(sessionId, updates = {}) {
   return getTaskBySession(sid);
 }
 
-function wakeTask(sessionId, { llmConfigId = null, resumeJobId = undefined } = {}) {
+function wakeTask(sessionId, { llmConfigId = null, resumeJobId = undefined, toolPreferences = {} } = {}) {
   const sid = asId(sessionId);
   const resumeJobPatch = resumeJobId === undefined ? '' : ', resume_job_id = ?';
   const values = [llmConfigId ? String(llmConfigId) : null];
   if (resumeJobId !== undefined) values.push(resumeJobId ? String(resumeJobId) : null);
   values.push(sid);
-  getDb().prepare(`UPDATE agent_task_queue SET status = 'queued', run_id = NULL, last_error_json = NULL,
-    llm_config_id = COALESCE(?, llm_config_id)${resumeJobPatch}, updated_at = datetime('now')
-    WHERE session_id = ? AND status IN ('waiting_interaction','waiting_operation_confirmation','waiting_limit_confirmation','waiting_retry','waiting_model_recovery')`).run(...values);
-  return getTaskBySession(sid);
+  const db = getDb();
+  return db.transaction(() => {
+    const updated = db.prepare(`UPDATE agent_task_queue SET status = 'queued', run_id = NULL, last_error_json = NULL,
+      llm_config_id = COALESCE(?, llm_config_id)${resumeJobPatch}, updated_at = datetime('now')
+      WHERE session_id = ? AND status IN ('waiting_interaction','waiting_operation_confirmation','waiting_limit_confirmation','waiting_retry','waiting_model_recovery')`).run(...values);
+    if (updated.changes) {
+      const fields = [];
+      const params = [];
+      if (typeof toolPreferences.web_search_enabled === 'boolean') {
+        fields.push('web_search_enabled = ?'); params.push(toolPreferences.web_search_enabled ? 1 : 0);
+      }
+      if (typeof toolPreferences.search_provider === 'string') {
+        fields.push('web_search_provider = ?'); params.push(toolPreferences.search_provider);
+      }
+      if (toolPreferences.mcp_selection && typeof toolPreferences.mcp_selection === 'object') {
+        const choice = toolPreferences.mcp_selection;
+        const normalized = choice.mode === 'auto' ? { mode: 'auto' }
+          : choice.mode === 'server' && String(choice.serverId || '').trim()
+            ? { mode: 'server', serverId: String(choice.serverId).trim() } : { mode: 'off' };
+        fields.push('mcp_selection_json = ?'); params.push(JSON.stringify(normalized));
+      }
+      if (fields.length) db.prepare(`UPDATE agent_sessions SET ${fields.join(', ')} WHERE id = ?`).run(...params, sid);
+    }
+    return getTaskBySession(sid);
+  })();
 }
 
 function requestTaskResume(sessionId) {

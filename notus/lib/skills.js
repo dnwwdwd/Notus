@@ -218,7 +218,7 @@ function setSkillEnabled(id, enabled) {
 function eligibleSkillSummaries(goal = '', explicitIds = []) {
   const words = String(goal).toLowerCase().split(/[\s，。；、,.!?？]+/).filter((word) => word.length > 1);
   const explicit = new Set(explicitIds.map(String));
-  return listSkills().filter((item) => item.status === 'valid' && item.enabled).map((item) => ({ ...item, score: explicit.has(item.id) ? 10000 : words.reduce((sum, word) => sum + (String(item.name + ' ' + item.description).toLowerCase().includes(word) ? 1 : 0), 0) })).sort((left, right) => right.score - left.score || String(left.name).localeCompare(String(right.name))).slice(0, 50).map((item) => ({ id: item.id, name: item.name, description: item.description, sourceLabel: item.source_label, explicit: explicit.has(item.id) }));
+  return listSkills().filter((item) => item.status === 'valid' && item.enabled).map((item) => ({ ...item, score: explicit.has(item.id) ? 10000 : words.reduce((sum, word) => sum + (String(item.name + ' ' + item.description).toLowerCase().includes(word) ? 1 : 0), 0) })).sort((left, right) => right.score - left.score || String(left.name).localeCompare(String(right.name))).slice(0, 50).map((item) => ({ id: item.id, name: item.name, description: item.description, sourceLabel: item.source_label, contentHash: item.content_hash, explicit: explicit.has(item.id) }));
 }
 function loadSkill(id) {
   const skill = getSkill(id);

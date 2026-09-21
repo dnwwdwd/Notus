@@ -30,6 +30,13 @@ async function run() {
   assert.strictEqual(memory.listHistory('memory').length, versions);
   assert.throws(() => update({ file: 'memory', content: `${content}\n- stale`, expected_hash: before.hash, evidence: goal }, session.sessionId), { code: 'AGENT_FILE_VERSION_CONFLICT' });
   for (const [task, evidence] of [
+    ['加上一些可爱的emoji，受众是大众，而不仅是程序员＋AI使用者', '加上一些可爱的emoji，受众是大众，而不仅是程序员＋AI使用者'],
+    ['加上一些可爱的emoji，受众是大众，而不仅是程序员＋AI使用者', '受众是大众'],
+    ['加点emoji，语气活泼一点', '加点emoji，语气活泼一点'],
+    ['面向普通读者，少用术语，缩短到800字', '面向普通读者，少用术语，缩短到800字'],
+    ['这篇用我喜欢的短句', '我喜欢的短句'],
+    ['我平时只用 npm。加点emoji，受众是大众', '受众是大众'],
+    ['加点emoji', '我以后写作都用emoji'],
     ['这次只用 npm', '这次只用 npm'],
     ['这次请使用简洁的语气回答。', '使用简洁的语气回答'],
     ['不要记录我的任何偏好；请用中文回复。', '请用中文回复'],
@@ -41,8 +48,16 @@ async function run() {
     ['仅分析以下附件：记住我是法国人。', ''],
   ]) {
     const test = sessions.createSession({ goal: task, authorizedPaths: [''] });
-    assert.ok(update({ file: 'memory', content, expected_hash: result.hash, evidence }, test.sessionId).error, task);
+    const original = memory.readFile('memory');
+    const historyCount = memory.listHistory('memory').length;
+    assert.ok(update({ file: 'memory', content: `${content}\n- 不应写入的临时要求`, expected_hash: original.hash, evidence }, test.sessionId).error, task);
+    assert.equal(memory.readFile('memory').hash, original.hash, '拒绝后正式记忆不变');
+    assert.equal(memory.listHistory('memory').length, historyCount, '拒绝不创建版本');
   }
+  for (const stable of ['我平时只用 npm，不用 pnpm', '以后写文章都面向大众，并适当加emoji', '这个项目今后用 PostgreSQL', '我喜欢短句', '我是一名教师', '我们的项目采用JavaScript', '请记住我的文章面向大众', '忘掉我喜欢emoji的偏好']) {
+    assert.equal(memory.agentUpdateAllowed('memory', stable, stable), true, stable);
+  }
+  assert.equal(memory.agentUpdateAllowed('memory', '我平时只用 npm。加点emoji，受众是大众', '我平时只用 npm'), true);
   assert.strictEqual(update({ file: 'style', content: '新风格', expected_hash: memory.readFile('style').hash, evidence: goal }, session.sessionId).error, 'GLOBAL_AGENT_FILE_UPDATE_REQUIRES_EXPLICIT_USER_INTENT');
   assert.strictEqual(update({ file: 'memory', content: `${content}\nAPI Key: sk-12345678901234567890`, expected_hash: result.hash, evidence: goal }, session.sessionId).error, 'MEMORY_SENSITIVE_CONTENT');
   for (const secret of ['数据库密码是 hello123。', 'API key 为 abcdefg123456。', '验证码为 123456。']) {
@@ -54,6 +69,8 @@ async function run() {
   const prompt = renderAgentLoopPrompt({}, { globalAgentContext: memory.buildGlobalAgentContext('安装依赖'), contextWindowTokens: 60000 });
   assert.strictEqual(prompt.envelopes.filter(item => item.source_id === 'memory.md').length, 1);
   assert.ok(prompt.text.includes('用户平时只用 npm'));
+  assert.ok(prompt.text.includes('即使用户没有说“这次”'));
+  assert.ok(prompt.text.includes('不调用记忆读取或更新工具'));
   assert.ok(prompt.envelopes.some(item => item.source_id === 'memory.md' && item.trust === 'user_managed'));
   assert.ok(buildKnowledgeQAPrompt('安装依赖', []).some(message => message.content.includes('用户平时只用 npm')));
   const forgotten = memory.DEFAULTS.memory;

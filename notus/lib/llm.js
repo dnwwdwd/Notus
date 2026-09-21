@@ -49,6 +49,7 @@ function requestSignal(userSignal, timeoutMs) {
   const onTimeout = () => abort('timeout');
   userSignal?.addEventListener?.('abort', onUserAbort, { once: true });
   timeoutController.signal.addEventListener('abort', onTimeout, { once: true });
+  if (userSignal?.aborted) onUserAbort();
   return {
     signal: controller.signal,
     dispose() {
@@ -607,6 +608,31 @@ async function completeToolChat({
             ...(typeof onVisibleText === 'function' ? { stream: true, stream_options: { include_usage: true } } : {}),
           }),
         });
+      if (!response.ok) {
+        const errorPayload = await readErrorPayload(response);
+        const overflow = isContextOverflowError(response.status, errorPayload.body);
+        if (overflow && retryCount < Math.max(0, Number(maxRetries) || 0)) {
+          retryCount += 1;
+          continue;
+        }
+        throw createAppError(overflow ? 'CONTEXT_BUDGET_EXCEEDED' : 'LLM_API_ERROR', errorPayload.message, {
+          status: response.status,
+          response_body: errorPayload.body,
+          overflow,
+          budget: buildBudgetPayload(budget, estimatedPromptTokens, retryCount),
+        });
+      }
+
+      const streamed = typeof onVisibleText === 'function'
+        ? await consumeToolStream(response, { apiProtocol, onVisibleText })
+        : null;
+      const payload = streamed ? null : await response.json();
+      const usage = streamed ? streamed.usage : (apiProtocol === 'anthropic' ? normalizeAnthropicUsage(payload.usage) : normalizeUsage(payload.usage));
+      const parsed = streamed || (apiProtocol === 'anthropic' ? parseAnthropicToolResponse(payload) : parseOpenAiToolResponse(payload));
+      return {
+        role: 'assistant', content: parsed.content, stopReason: parsed.stopReason, usage,
+        budget: buildBudgetPayload(budget, estimatedPromptTokens, retryCount), raw: payload,
+      };
     } catch (error) {
       if (scopedSignal.signal.aborted) {
         throw createAppError(scopedSignal.reason() === 'user' ? 'ABORTED' : 'LLM_REQUEST_TIMEOUT',
@@ -616,32 +642,6 @@ async function completeToolChat({
     } finally {
       scopedSignal.dispose();
     }
-
-    if (!response.ok) {
-      const errorPayload = await readErrorPayload(response);
-      const overflow = isContextOverflowError(response.status, errorPayload.body);
-      if (overflow && retryCount < Math.max(0, Number(maxRetries) || 0)) {
-        retryCount += 1;
-        continue;
-      }
-      throw createAppError(overflow ? 'CONTEXT_BUDGET_EXCEEDED' : 'LLM_API_ERROR', errorPayload.message, {
-        status: response.status,
-        response_body: errorPayload.body,
-        overflow,
-        budget: buildBudgetPayload(budget, estimatedPromptTokens, retryCount),
-      });
-    }
-
-    const streamed = typeof onVisibleText === 'function'
-      ? await consumeToolStream(response, { apiProtocol, onVisibleText })
-      : null;
-    const payload = streamed ? null : await response.json();
-    const usage = streamed?.usage || (apiProtocol === 'anthropic' ? normalizeAnthropicUsage(payload.usage) : normalizeUsage(payload.usage));
-    const parsed = streamed || (apiProtocol === 'anthropic' ? parseAnthropicToolResponse(payload) : parseOpenAiToolResponse(payload));
-    return {
-      role: 'assistant', content: parsed.content, stopReason: parsed.stopReason, usage,
-      budget: buildBudgetPayload(budget, estimatedPromptTokens, retryCount), raw: payload,
-    };
   }
 }
 

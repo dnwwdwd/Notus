@@ -1,6 +1,7 @@
 // /files — File management + WYSIWYG markdown editor (Tiptap)
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import dynamic from 'next/dynamic';
+import Head from 'next/head';
 import { useRouter } from 'next/router';
 import { Shell } from '../../components/Layout/Shell';
 import { EditorToolbar } from '../../components/Editor/EditorToolbar';
@@ -154,6 +155,7 @@ export default function FilesPage() {
     clearPendingCitation,
     selectFile,
     closeFileTab,
+    closeFileTabs,
     refreshFiles,
     getCachedContent,
     setCachedContent,
@@ -715,7 +717,7 @@ export default function FilesPage() {
   }, [allFiles, navigationGuard, openWorkspaceFile, router]);
 
   useEffect(() => {
-    if (!workspaceHydrated || !hasLoadedFilesOnce || !activeFileId || activeFile) {
+    if (!workspaceHydrated || !hasLoadedFilesOnce || !activeFileId || activeFile || allFiles.some(file => Number(file.id) === Number(activeFileId))) {
       missingFileGuardRef.current = null;
       return;
     }
@@ -730,7 +732,7 @@ export default function FilesPage() {
       return;
     }
     closeMissingFile();
-  }, [activeFile, activeFileId, closeFileTab, hasLoadedFilesOnce, navigationGuard, syncWorkspaceRoute, workspaceHydrated]);
+  }, [activeFile, activeFileId, allFiles, closeFileTab, hasLoadedFilesOnce, navigationGuard, syncWorkspaceRoute, workspaceHydrated]);
 
   const handleOpenEditorLink = useCallback(async (fileId) => {
     const targetFileId = Number(fileId);
@@ -765,6 +767,14 @@ export default function FilesPage() {
     close();
   }, [activeFileId, closeFileTab, navigationGuard, syncWorkspaceRoute]);
 
+  const handleCloseTabs = useCallback((closingFiles) => {
+    const ids = closingFiles.map(file => Number(file.id));
+    if (!ids.length) return;
+    const close = () => syncWorkspaceRoute(closeFileTabs(ids));
+    if (ids.includes(Number(activeFileId)) && navigationGuard) navigationGuard(close);
+    else close();
+  }, [activeFileId, closeFileTabs, navigationGuard, syncWorkspaceRoute]);
+
   const handleRenameTab = useCallback(async (file, name) => {
     if (!file?.id || !String(name || '').trim()) return false;
     if (Number(file.id) === Number(activeFileId) && saveState !== 'saved') {
@@ -775,7 +785,7 @@ export default function FilesPage() {
       const response = await fetch('/api/files/rename', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: file.id, name: String(name).trim() }),
+        body: JSON.stringify({ id: file.id, name: String(name).trim(), sync_title: true }),
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.error || '重命名失败');
@@ -821,6 +831,7 @@ export default function FilesPage() {
         onActivate={requestOpenWorkspaceFile}
         onClose={handleCloseTab}
         onRename={handleRenameTab}
+        onCloseMany={handleCloseTabs}
       />
       {activeFile ? <EditorToolbar editor={editor} fileId={activeFile.id} isDirty={saveState === 'dirty'} /> : null}
       {!activeFile ? (
@@ -945,6 +956,14 @@ export default function FilesPage() {
     updateWorkspacePanels({ agentOpen: !workspacePanelsRef.current.agentOpen });
   };
 
+  const pageTitle = activeFile
+    ? String(
+      (loadedFileIdRef.current === activeFileId ? documentTitle : '')
+      || activeFile.title
+      || getFileNameLabel(activeFile, '未命名文档')
+    ).replace(/\s+/g, ' ').trim() || '未命名文档'
+    : 'Notus';
+
   return (
     <Shell
       active="files"
@@ -967,6 +986,9 @@ export default function FilesPage() {
       }}
       onToggleAgent={handleToggleAgentPanel}
     >
+      <Head>
+        <title>{pageTitle}</title>
+      </Head>
       {workspaceContent}
       <UnindexedFilesDialog />
       {unsavedGuard.dialog}

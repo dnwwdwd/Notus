@@ -4,7 +4,7 @@ function buildResourcesModule(options = {}) {
   const envelopes = [];
   (options.skillCatalog || []).forEach((skill) => envelopes.push(createEnvelope({
     sourceType: 'skill', sourceId: skill.id, trust: 'user_managed',
-    content: JSON.stringify({ name: skill.name, description: skill.description, source: skill.sourceLabel, explicit: Boolean(skill.explicit) }),
+    content: JSON.stringify({ name: skill.name, description: skill.description, source: skill.sourceLabel, content_hash: skill.contentHash, explicit: Boolean(skill.explicit) }),
   })));
   (options.mcpInstructions || []).forEach((item, index) => envelopes.push(createEnvelope({
     sourceType: 'mcp', sourceId: item.server || `mcp-${index + 1}`, content: item.text,

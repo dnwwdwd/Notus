@@ -367,6 +367,8 @@ function projectResults(results = [], sourceType) {
   return (Array.isArray(results) ? results : []).map((item) => {
     if (sourceType === 'knowledge') {
       return {
+        ...(Number.isSafeInteger(Number(item.file_id)) && Number(item.file_id) > 0
+          ? { file_id: Number(item.file_id) } : {}),
         file_title: item.file_title || item.title || '',
         file_path: item.file_path || item.path || '',
         heading_path: item.heading_path || '',
@@ -427,6 +429,34 @@ function recordQueryAndResultReceipts({ session, sourceType, query, phase, resul
       details: { kind: 'result' },
     });
   });
+}
+
+// MCP 搜索结果只有返回可核验的网页来源与内容时才计入联网证据。
+// 不把任意 MCP 调用成功或模型自述当成已联网。
+function recordMcpWebEvidence({ session, toolName = '', result, query = '' } = {}) {
+  if (!/(?:search|fetch|crawl|browse|scrape|web)/i.test(toolName) || result?.error || result?.isError) return;
+  const results = [];
+  const seen = new Set();
+  let visited = 0;
+  const visit = (value, depth = 0) => {
+    if (depth > 6 || ++visited > 500 || results.length >= 50) return;
+    if (typeof value === 'string') {
+      if (value.length > 256 * 1024) return;
+      try { visit(JSON.parse(value), depth + 1); } catch {}
+      return;
+    }
+    if (Array.isArray(value)) { value.slice(0, 100).forEach((item) => visit(item, depth + 1)); return; }
+    if (!value || typeof value !== 'object' || value.error || value.isError) return;
+    const url = typeof value.url === 'string' ? value.url : typeof value.link === 'string' ? value.link : '';
+    const content = [value.content, value.snippet, value.description, value.text].find((item) => typeof item === 'string' && item.trim());
+    if (/^https?:\/\//i.test(url) && content && !seen.has(url)) {
+      seen.add(url);
+      results.push({ url, title: String(value.title || ''), content });
+    }
+    Object.values(value).slice(0, 100).forEach((item) => visit(item, depth + 1));
+  };
+  visit(result);
+  if (results.length) recordQueryAndResultReceipts({ session, sourceType: 'web', query, phase: 'mcp', result: { results }, provider: `mcp:${toolName}` });
 }
 
 async function executePlannedResearch({ session, runId = null, sourceType, query, llmConfig, executeQuery, evidence, missionFingerprint = '' } = {}) {
@@ -772,6 +802,7 @@ module.exports = {
   KNOWLEDGE_EVIDENCE_SCORE,
   buildAgentQueryPlan,
   executePlannedResearch,
+  recordMcpWebEvidence,
   knowledgeHasEvidence,
   webHasEvidence,
   getResearchState,

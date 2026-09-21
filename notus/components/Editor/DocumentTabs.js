@@ -1,3 +1,4 @@
+import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { getFileNameLabel } from '../../lib/documentLabels';
 import { Button } from '../ui/Button';
@@ -9,7 +10,8 @@ function tabName(file) {
   return getFileNameLabel(file, '未命名文档');
 }
 
-export function DocumentTabs({ files = [], activeFileId = null, onActivate, onClose, onRename }) {
+export function DocumentTabs({ files = [], activeFileId = null, onActivate, onClose, onRename, onCloseMany }) {
+  const [contextMenu, setContextMenu] = useState(null);
   const [renameFile, setRenameFile] = useState(null);
   const [renameName, setRenameName] = useState('');
   const [renaming, setRenaming] = useState(false);
@@ -81,6 +83,10 @@ export function DocumentTabs({ files = [], activeFileId = null, onActivate, onCl
           return (
             <div
               key={file.id}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                setContextMenu({file, x: event.clientX, y: event.clientY});
+              }}
               style={{
                 height: '100%',
                 minWidth: 0,
@@ -108,18 +114,26 @@ export function DocumentTabs({ files = [], activeFileId = null, onActivate, onCl
                 }}
                 type="button"
                 role="tab"
-                title={`${label}\n双击或右键重命名`}
+                draggable={Boolean(file.id && file.path)}
+                onDragStart={(event) => {
+                  if (!file.id || !file.path) { event.preventDefault(); return; }
+                  event.dataTransfer.effectAllowed = 'copy';
+                  event.dataTransfer.setData('application/x-notus-mention', JSON.stringify({
+                    id: String(file.id), type: 'file', name: label, path: file.path,
+                  }));
+                }}
+                title={`${label}\n双击重命名，拖入 AI 输入框引用`}
                 aria-selected={active}
                 aria-controls="notus-editor-tabpanel"
                 tabIndex={active ? 0 : -1}
                 onClick={() => onActivate?.(file)}
                 onDoubleClick={() => openRename(file)}
-                onContextMenu={(event) => {
-                  event.preventDefault();
-                  openRename(file);
-                }}
                 onKeyDown={(event) => {
-                  if (event.key === 'ArrowLeft') {
+                  if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+                    event.preventDefault();
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    setContextMenu({file, x: rect.left, y: rect.bottom});
+                  } else if (event.key === 'ArrowLeft') {
                     event.preventDefault();
                     moveFocus(file.id, -1);
                   } else if (event.key === 'ArrowRight') {
@@ -173,6 +187,20 @@ export function DocumentTabs({ files = [], activeFileId = null, onActivate, onCl
           );
         })}
       </div>
+      <DropdownMenu.Root open={Boolean(contextMenu)} onOpenChange={(open) => { if (!open) setContextMenu(null); }}>
+        <DropdownMenu.Trigger aria-label="标签菜单" tabIndex={-1} style={{position:'fixed',left:contextMenu?.x || 0,top:contextMenu?.y || 0,width:1,height:1,opacity:0,pointerEvents:'none'}} />
+        <DropdownMenu.Portal>
+          <DropdownMenu.Content className="notus-tab-context-menu" side="bottom" align="start" collisionPadding={8} onCloseAutoFocus={(event) => { event.preventDefault(); tabButtonRefs.current.get(Number(contextMenu?.file?.id))?.focus(); }}>
+            <DropdownMenu.Item onSelect={() => openRename(contextMenu.file)}>重命名</DropdownMenu.Item>
+            {[
+              ['关闭标签', tabs.filter(file => file.id === contextMenu?.file?.id)],
+              ['关闭左侧所有标签', tabs.slice(0, Math.max(0, tabs.findIndex(file => file.id === contextMenu?.file?.id)))],
+              ['关闭右侧所有标签', tabs.slice(tabs.findIndex(file => file.id === contextMenu?.file?.id) + 1)],
+              ['关闭所有标签', tabs],
+            ].map(([label, targets]) => <DropdownMenu.Item key={label} disabled={!targets.length} onSelect={() => onCloseMany?.(targets)}>{label}</DropdownMenu.Item>)}
+          </DropdownMenu.Content>
+        </DropdownMenu.Portal>
+      </DropdownMenu.Root>
       {renameFile ? (
         <Dialog
           open

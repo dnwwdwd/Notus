@@ -48,4 +48,8 @@ const { buildInitialUserMessage, buildLoopSystemPrompt } = require('../lib/agent
 const initial = buildInitialUserMessage('翻译一句话', session);
 assert.ok(!initial.includes('请先说明执行计划'));
 assert.ok(!buildLoopSystemPrompt(session).includes('每轮开始时用一两句话'));
+assert.ok(rendered.text.includes('不要为了定位同一文件再调用 search_knowledge 或 analyze_folder'));
+assert.ok(rendered.text.includes('read_conversation_history 回查用户引用'));
+assert.ok(initial.includes('工具内部自动执行 3→5'));
+assert.ok(!rendered.text.includes('充分检索和阅读'));
 console.log('agent prompt registry tests passed');

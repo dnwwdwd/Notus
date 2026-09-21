@@ -22,12 +22,12 @@ assert.ok(controller.includes("label: '执行说明'"), '模型可见执行说�
 assert.ok(workspace.includes('正在思考'), '工具链必须提供可展开的“执行说明”步骤。');
 assert.ok(controller.includes('本执行段已完成。'), '任务结束后，最后一个执行段不能继续显示等待模型响应。');
 assert.ok(controller.includes('recoverPersistedSession'), '订阅中断后必须以持久化任务状态恢复界面，不能直接标记任务失败。');
-assert.ok(loop.includes("reason: 'manual_preview_generated'"), '手动模式生成 Diff 后必须以完成事件收口任务。');
+assert.ok(loop.includes("reason: 'operation_confirmation_required'"), '手动预览保留确认与恢复边界。');
 assert.ok(controller.includes('payload.task_resumed && !controllerRef.current'), '自动模式的高风险确认仍须恢复原任务订阅。');
 assert.ok(taskChangeSets.includes('resumeNonManualOperationConfirmation'), '自动模式的高风险确认必须保留受控续跑能力。');
 assert.ok(applyRoute.includes("const isManualDiff = String(task?.approval_mode || '') === 'manual_confirm';"), '应用接口必须按服务端任务确认模式区分手动 Diff。');
 assert.ok(applyRoute.includes('if (isManualDiff) {'), '手动 Diff 的应用路径必须独立处理。');
-assert.ok(applyRoute.includes('task_resumed: resumed'), '手动 Diff 的默认 resumed 状态必须保持 false。');
+assert.ok(applyRoute.includes('task_resumed: resumed'), '确认响应必须返回实际恢复状态。');
 assert.ok(workspace.includes('来源：{sourceBatchLabel}'), '累计 Diff 的文件详情必须显示执行段和批次来源。');
 assert.ok(workspace.includes('source_batches: Array.isArray(patch.source_batches)'), '累计 Diff 组装文件项时不能丢弃执行段和批次来源。');
 assert.ok(taskChangeSets.includes('execution_segment_sequence_no'), '累计 Diff 详情必须从持久化批次读取执行段顺序。');

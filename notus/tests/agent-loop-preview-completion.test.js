@@ -83,7 +83,7 @@ async function runTests() {
     } = require('../lib/agentSession');
     const { getOperationSetById } = require('../lib/canvasOperationSets');
     const { applyPreviewWithConflictCheck } = require('../lib/agentTools');
-    const { getTaskChangeSetDetail, resolveOperationSet } = require('../lib/agentTaskChangeSets');
+    const { getTaskChangeSetDetail } = require('../lib/agentTaskChangeSets');
     const { listExecutionSegments } = require('../lib/agentExecutionSegments');
     const { createTask, getTaskBySession, settleTaskRun, updateTask } = require('../lib/agentTaskQueue');
     const { runAgentLoop } = require('../lib/agentLoop');
@@ -117,32 +117,32 @@ async function runTests() {
       onStream: (event) => events.push(event),
     });
 
-    assert.strictEqual(result.status, 'completed');
+    assert.strictEqual(result.status, 'waiting_operation_confirmation');
     assert.strictEqual(llmCallCount, 1);
-    assert.strictEqual(getSession(session.sessionId).status, 'completed');
+    assert.strictEqual(getSession(session.sessionId).status, 'waiting_operation_confirmation');
     assert.ok(result.operation_set_id > 0);
     assert.strictEqual(getOperationSetById(result.operation_set_id).status, 'pending');
     const finalEvents = events.filter((event) => event.type === 'final');
-    assert.strictEqual(finalEvents.length, 1, JSON.stringify(events));
-    assert.strictEqual(finalEvents[0].reason, 'manual_preview_generated');
-    assert.ok(!events.some((event) => event.type === 'artifact' && event.artifact_type === 'operation_confirmation'), JSON.stringify(events));
+    assert.strictEqual(finalEvents.length, 0, JSON.stringify(events));
+    assert.ok(events.some((event) => event.type === 'artifact' && event.artifact_type === 'operation_confirmation'), JSON.stringify(events));
     assert.ok(events.some((event) => event.type === 'artifact' && event.artifact_type === 'operation_set'), JSON.stringify(events));
     assert.ok(events.every((event) => !String(event.text || '').includes('内部推理')), JSON.stringify(events));
-    assert.strictEqual(loadMessagesCheckpoint(session.sessionId), null, '手动 Diff 生成后不能保留可恢复 checkpoint');
+    assert.strictEqual(loadMessagesCheckpoint(session.sessionId).pendingOperationSetId, result.operation_set_id);
     settleTaskRun(session.sessionId, result.status, { finished: true });
-    assert.strictEqual(getTaskBySession(session.sessionId).status, 'completed');
+    assert.strictEqual(getTaskBySession(session.sessionId).status, 'waiting_operation_confirmation');
 
     const applied = await applyPreviewWithConflictCheck(result.operation_set_id, session.sessionId, { approvalMode: 'manual_confirm' });
     assert.strictEqual(applied.success, true);
     assert.strictEqual(applied.applied, true);
-    resolveOperationSet({
-      operationSetId: result.operation_set_id,
-      sessionId: session.sessionId,
-      resolution: 'applied',
-      toolResult: applied,
-    });
-    assert.strictEqual(llmCallCount, 1, '应用 Diff 后不得为了收尾总结再次请求模型');
-    assert.strictEqual(getSession(session.sessionId).status, 'completed');
+    const { resolveManualConfirmation } = require('../lib/agentManualConfirmation');
+    const resumed = resolveManualConfirmation({ operationSetId: result.operation_set_id, sessionId: session.sessionId, action: 'apply_all', toolResult: applied });
+    assert.strictEqual(resumed.resumed, true);
+    assert.strictEqual(resolveManualConfirmation({ operationSetId: result.operation_set_id, sessionId: session.sessionId, action: 'apply_all', toolResult: applied }).resumed, false);
+    assert.strictEqual(getTaskBySession(session.sessionId).status, 'queued');
+    const completed = await runAgentLoop({ sessionId: session.sessionId, approvalMode: 'manual_confirm', llmConfig: { llmContextWindowTokens: 60000 }, onStream: () => {} });
+    settleTaskRun(session.sessionId, completed.status, { finished: true });
+    assert.strictEqual(completed.status, 'completed');
+    assert.strictEqual(llmCallCount, 2, '手动应用后恢复原任务检查剩余步骤');
     assert.strictEqual(getTaskBySession(session.sessionId).status, 'completed');
     assert.ok(getFileByPath('case.md').content.includes('alpha changed'));
     const changeSet = getTaskChangeSetDetail(session.sessionId);
@@ -151,7 +151,7 @@ async function runTests() {
     assert.strictEqual(changeSet.operation_sets.length, 1);
     assert.strictEqual(changeSet.operation_set_view.patches.length, 1);
     const segments = listExecutionSegments(session.sessionId);
-    assert.strictEqual(segments.length, 1);
+    assert.strictEqual(segments.length, 2);
     assert.strictEqual(segments[0].status, 'completed');
 
   } finally {

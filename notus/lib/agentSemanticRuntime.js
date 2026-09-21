@@ -2,7 +2,7 @@ const { completeChat } = require('./llm');
 const { extractWebUrls } = require('./attachmentParsing');
 const { getFileById, sha256 } = require('./files');
 const { recordRunUsage } = require('./agentControlPlane');
-const { createTurnFrame, getTaskTurnFrame } = require('./agentTurnFrames');
+const { createTurnFrame, getTaskTurnFrame, updateTurnFrame } = require('./agentTurnFrames');
 
 const INTENT_TYPES = new Set([
   'general', 'skill_discovery', 'skill_install', 'skill_create', 'mcp_manage',
@@ -476,7 +476,20 @@ function clarificationIntent(interaction, fallback) {
 
 async function composeTurnFrame({ task, session, userQuery, mentions = [], attachments = [], activeFileId = null, webSearchEnabled = false, llmConfig, runId = null, resumeInteraction = null, allowSemanticPlanner = true } = {}) {
   const existing = getTaskTurnFrame(task?.id);
-  if (existing && !resumeInteraction) return { frame: existing, clarification: null, reused: true };
+  if (existing && !resumeInteraction) {
+    // 原任务的文件/交互事实保留，输入框切换仅刷新可选联网权限。
+    if (['general', 'file_read', 'file_write'].includes(existing.intent?.task_kind)
+      && !existing.provenance?.resumed_from_interaction_id) {
+      const web = deterministicIntent(userQuery, { webSearchEnabled }).source_policy.web;
+      if (web !== existing.intent?.source_policy?.web) {
+        const frame = updateTurnFrame(existing.id, { intent: {
+          ...existing.intent, source_policy: { ...existing.intent.source_policy, web },
+        } });
+        return { frame: frame || existing, clarification: null, reused: true };
+      }
+    }
+    return { frame: existing, clarification: null, reused: true };
+  }
   const continuation = require('./agentTaskContinuation').resolveFailedFileContinuation(session);
   const effectiveQuery = continuation?.goal || userQuery;
   const effectiveFileId = continuation ? continuation.active_file?.id : activeFileId;

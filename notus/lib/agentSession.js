@@ -722,7 +722,7 @@ function updateToolGuard(sessionId, toolName, toolResult, failed, toolInput = nu
     const hash = sha256(JSON.stringify(toolResult || null));
     const inputHash = sha256(JSON.stringify(toolInput || null));
     const errorCode = failed ? String(toolResult?.error || toolResult?.code || 'TOOL_EXECUTION_ERROR') : '';
-    const sameSuccessfulResult = !failed && !previous?.failed && previous?.tool_name === name && previous?.result_hash === hash;
+    const sameSuccessfulResult = !failed && !previous?.failed && previous?.tool_name === name && previous?.input_hash === inputHash && previous?.result_hash === hash;
     const consecutiveFailure = failed && previous?.failed && previous?.tool_name === name
       && previous?.input_hash === inputHash && previous?.error_code === errorCode;
     const next = {
@@ -742,8 +742,8 @@ function updateToolGuard(sessionId, toolName, toolResult, failed, toolInput = nu
   })();
 }
 
-function detectDeadloop(sessionId, toolName, toolResult) {
-  return updateToolGuard(sessionId, toolName, toolResult, false).consecutive_same_result >= 3;
+function detectDeadloop(sessionId, toolName, toolResult, toolInput = null) {
+  return updateToolGuard(sessionId, toolName, toolResult, false, toolInput).consecutive_same_result >= 3;
 }
 
 function recordToolFail(sessionId, toolName, toolInput = null, toolResult = {}) {

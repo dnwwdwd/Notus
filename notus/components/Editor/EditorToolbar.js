@@ -579,7 +579,6 @@ export const EditorToolbar = ({ editor, fileId, isDirty = false }) => {
           <ClearFormatIcon />
         </ToolbarButton>
 
-        <div style={{ flex: 1 }} />
         <ToolbarButton
           title={copiedAll ? '已复制' : '复制全文'}
           active={copiedAll}

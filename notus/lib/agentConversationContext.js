@@ -8,10 +8,21 @@ function historyBoundary(session) {
   return Number(task?.user_message_id) || Number(getDb().prepare('SELECT COALESCE(MAX(id), 0) + 1 AS id FROM messages WHERE conversation_id = ?').get(session.conversation_id)?.id || 1);
 }
 
+// Only user-selected file references belong in conversation context, never all meta.
+function projectHistoryRow(row) {
+  let meta = {};
+  try { meta = typeof row.meta === 'string' ? JSON.parse(row.meta) : row.meta || {}; } catch { /* Legacy malformed metadata. */ }
+  const mentions = row.role === 'user' && Array.isArray(meta?.mentions)
+    ? meta.mentions.filter((item) => ['file', 'folder'].includes(item?.type) && typeof item.path === 'string' && item.path.trim())
+      .map((item) => ({ type: item.type, path: item.path })) : [];
+  const references = mentions.length ? `\n用户引用的工作区路径（仅定位，不含正文）：${JSON.stringify(mentions)}` : '';
+  return { id: row.id, role: row.role, content: `${row.content || ''}${references}` };
+}
+
 function historyRows(conversationId, beforeId) {
-  return getDb().prepare(`SELECT id, role, content FROM messages WHERE conversation_id = ?
+  return getDb().prepare(`SELECT id, role, content, meta FROM messages WHERE conversation_id = ?
     AND id < ? AND role IN ('user','assistant') AND COALESCE(type, 'text') = 'text'
-    ORDER BY id`).all(conversationId, beforeId);
+    ORDER BY id`).all(conversationId, beforeId).map(projectHistoryRow);
 }
 
 function renderRow(row) {
@@ -162,12 +173,19 @@ function readConversationHistory({ session, query, before_id: beforeId, message_
   const params = [session.conversation_id, Math.min(Number(beforeId) || boundary, boundary)];
   let where = "conversation_id = ? AND id < ? AND role IN ('user','assistant') AND COALESCE(type, 'text') = 'text'";
   if (messageId) { where += ' AND id = ?'; params.push(Number(messageId)); }
-  if (query) { where += ' AND instr(lower(content), lower(?)) > 0'; params.push(String(query)); }
-  const rows = db.prepare(`SELECT id,role,content FROM messages WHERE ${where} ORDER BY id DESC LIMIT 20`).all(...params);
+  if (query) {
+    where += ` AND (instr(lower(content), lower(?)) > 0 OR (role = 'user' AND EXISTS (
+      SELECT 1 FROM json_each(CASE WHEN json_valid(meta) THEN meta ELSE '{}' END, '$.mentions') AS mention
+      WHERE json_extract(CASE WHEN mention.type = 'object' THEN mention.value ELSE '{}' END, '$.type') IN ('file', 'folder')
+        AND instr(lower(json_extract(CASE WHEN mention.type = 'object' THEN mention.value ELSE '{}' END, '$.path')), lower(?)) > 0
+    )))`;
+    params.push(String(query), String(query));
+  }
+  const rows = db.prepare(`SELECT id,role,content,meta FROM messages WHERE ${where} ORDER BY id DESC LIMIT 20`).all(...params);
   const items = [];
   let size = 0;
   for (const row of rows) {
-    const raw = String(sanitizeArtifactValue(row.content));
+    const raw = String(sanitizeArtifactValue(projectHistoryRow(row).content));
     const start = messageId ? Math.max(0, Number(offset) || 0) : query ? Math.max(0, raw.toLowerCase().indexOf(String(query).toLowerCase()) - 240) : 0;
     const content = raw.slice(start, start + limit - size);
     items.push({ message_id: row.id, role: row.role, content, offset: start, next_offset: start + content.length, total_chars: raw.length, truncated: start + content.length < raw.length });

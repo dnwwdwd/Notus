@@ -386,8 +386,12 @@ function agentUpdateAllowed(fileType, goal = '', evidence = '') {
       .replace(/^["“「]|["”」]$/g, '').replace(/[。！？；;!]+$/, '');
     // 使用完整来源句判断临时/引用语境，防止只摘出偏好片段丢失限定。
     const sentences = directText.split(/[。！？；;!\n]/).filter(sentence => sentence.includes(quote));
-    return quote.length >= 4 && sentences.some(sentence =>
-      !/(?:这次|本次|暂时|临时|试试|假设|假如|例如|比如|引用|原文|他说|她说|网页|附件|this time|for now|suppose)/i.test(sentence));
+    // Matching a task instruction is not evidence of a durable preference.
+    // Require a positive cross-task signal in the quoted evidence, not elsewhere
+    // in the task (a separate long-term preference must not authorize this one).
+    const durableEvidence = /(?:平时|一贯|长期|一直|通常|习惯|常用|默认|以后|今后|每次)|(?:我|我们)(?:更)?(?:喜欢|偏好)|(?:我的|我们的)(?:职业|工作是|母语|长期项目)|(?:我|我们)(?:是|从事|住在)|(?:我的|我们的)(?:项目|产品).{0,24}(?:使用|采用|面向)|(?:i (?:usually|always|prefer)|from now on|by default)/i.test(quote);
+    return quote.length >= 4 && durableEvidence && sentences.some(sentence =>
+      !/(?:这次|本次|这篇|本文|当前文章|这段|暂时|临时|试试|假设|假如|例如|比如|引用|原文|他说|她说|网页|附件|this time|this article|for now|suppose)/i.test(sentence));
 
   }
   if (fileType === 'style') return /(以后|长期|今后).{0,16}(写法|写作|风格|语气|格式)|(?:写作风格|风格).{0,16}(修改|更新|调整|改成)/.test(text);

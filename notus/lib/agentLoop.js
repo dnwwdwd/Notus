@@ -25,7 +25,7 @@ const {
 } = require('./agentSession');
 const { broadcast: broadcastRunEvent } = require('./agentRunEventBus');
 const { applyPreviewWithConflictCheck, buildToolDefinitions, executeToolSafely, summarizeInput, validateToolUseBlock } = require('./agentTools');
-const { getOperationSetByToolUse } = require('./canvasOperationSets');
+const { getOperationSetByToolUse, getOperationSetById } = require('./canvasOperationSets');
 const {
   beginExecutionSegment,
   beginRequestWindow,
@@ -46,7 +46,7 @@ const {
   buildInteractionAnswerSummary,
   getInteractionById,
 } = require('./conversationInteractions');
-const { eligibleSkillSummaries } = require('./skills');
+const { eligibleSkillSummaries, scanAllSkills } = require('./skills');
 const { prepareMcpTools } = require('./mcp');
 const { buildConversationResourceContext } = require('./agentResourceContext');
 const { buildGlobalAgentContext } = require('./globalAgentFiles');
@@ -115,12 +115,28 @@ function sanitizeAssistantVisibleText(text = '') {
   return require('./assistantVisibleText').visibleText(text).trim();
 }
 
+function llmFailureReason(error = {}) {
+  const text = `${error.code || ''} ${error.message || ''} ${typeof error.response_body === 'string' ? error.response_body : JSON.stringify(error.response_body || '')}`;
+  if (/context|maximum.{0,20}tokens|too.{0,10}(?:long|large)/i.test(text)) return 'context_limit';
+  if (/tool[_ -]?(?:use|call|result)|reasoning_content|thinking.{0,30}(?:signature|block)|message.{0,30}(?:role|alternat)/i.test(text)) return 'history_protocol';
+  if (/quota|billing|credit|balance|payment/i.test(text) || Number(error.status) === 402) return 'quota';
+  if ([401,403].includes(Number(error.status))) return 'authentication';
+  if (/model.{0,30}(?:not.found|unsupported|unavailable)/i.test(text)) return 'model_unavailable';
+  if (/parameter|schema|invalid.request/i.test(text)) return 'request_parameters';
+  return 'unknown';
+}
+
 function classifyLLMError(error = {}) {
   const status = Number(error.status || 0);
   const code = String(error.code || '').trim().toUpperCase();
   const body = typeof error.response_body === 'string' ? error.response_body : JSON.stringify(error.response_body || '');
   const fingerprint = `${code} ${body} ${String(error.message || '')}`.toLowerCase();
-  const actionRequired = status === 401
+  if (code === 'CONTEXT_BUDGET_EXCEEDED') return {
+    category: 'action_required', retryable: false, publicCode: code,
+    publicMessage: '当前任务超出模型上下文预算，已保留进度。请换用更大上下文的模型后继续。',
+  };
+  const actionRequired = status === 402
+    || status === 401
     || status === 403
     || ['LLM_API_KEY_MISSING', 'LLM_BASE_URL_MISSING', 'LLM_MODEL_MISSING'].includes(code)
     || /insufficient[_\s-]*quota|quota[_\s-]*(?:exceeded|insufficient)|billing|credit|balance|invalid[_\s-]*(?:api[_\s-]*)?key|authentication|permission|model[_\s-]*(?:not[_\s-]*found|unavailable|access)/i.test(fingerprint);
@@ -128,7 +144,18 @@ function classifyLLMError(error = {}) {
     category: 'action_required', retryable: false, publicCode: 'LLM_ACTION_REQUIRED',
     publicMessage: '模型服务需要处理，请检查额度、API Key、权限或模型配置后继续任务。',
   };
-  const retryable = ['LLM_REQUEST_TIMEOUT', 'ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN', 'UND_ERR_CONNECT_TIMEOUT'].includes(code)
+  if ([400, 404, 413, 422].includes(status)) return {
+    category: 'action_required', retryable: false, publicCode: 'LLM_REQUEST_REJECTED',
+    publicMessage: `模型拒绝了当前请求（HTTP ${status}），已保留任务进度。请检查模型协议、上下文长度或更换兼容模型后继续。`,
+  };
+  const transportCodes = new Set(['LLM_REQUEST_TIMEOUT', 'ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'UND_ERR_SOCKET']);
+  let transportError = error;
+  let transportFailure = false;
+  for (let depth = 0; transportError && depth < 5; depth += 1) {
+    if (transportCodes.has(String(transportError.code || '').toUpperCase())) transportFailure = true;
+    transportError = transportError.cause;
+  }
+  const retryable = transportFailure
     || [408, 425, 429, 500, 502, 503, 504].includes(status)
     || error.name === 'FetchError'
     || (error.name === 'TypeError' && /fetch|network|socket/i.test(String(error.message || '')));
@@ -288,7 +315,7 @@ function buildInitialUserContent(session, options = {}) {
   ];
 }
 
-async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId = null, llmConfig, onStream, signal, approvalMode = 'auto_confirm', resumeInteractionId = null, initialImages = [], currentImageRecognition = null, llmRetryDelayMs = null, llmRetryWait = null } = {}) {
+async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId = null, llmConfig, onStream, signal, approvalMode = 'auto_confirm', resumeInteractionId = null, initialImages = [], currentImageRecognition = null, preparedMcpContext = null, llmRetryDelayMs = null, llmRetryWait = null } = {}) {
   let session = getSession(sessionId);
   const config = getEffectiveConfig();
   const runtimeMode = getAgentRuntimeMode();
@@ -322,16 +349,14 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
     ? await loadStyleContext(session)
     : null;
   const resourceContext = agentRuntimeAtLeast('context', runtimeMode) ? null : buildConversationResourceContext(session.conversation_id);
+  scanAllSkills();
   const skillCatalog = !agentRuntimeAtLeast('profile', runtimeMode) || effectiveFrame?.intent?.source_policy?.local_skills !== 'forbidden'
     ? eligibleSkillSummaries(session.goal, session.skill_mentions || [])
     : [];
   const mcpSelection = session.mcp_selection || { mode: 'off' };
-  const mcpDisallowedByFrame = effectiveFrame?.intent?.source_policy?.web === 'required'
-    || ['skill_discovery', 'web_research'].includes(String(effectiveFrame?.intent?.task_kind || ''));
-  const mcpContext = agentRuntimeAtLeast('profile', runtimeMode)
-    && (String(mcpSelection.mode || 'off') === 'off' || mcpDisallowedByFrame)
-    ? { tools: [], map: {}, instructions: [] }
-    : await prepareMcpTools(mcpSelection, session.goal, session.mcp_session_permissions || {});
+  const mcpContext = preparedMcpContext || await prepareMcpTools(
+    mcpSelection, session.goal, session.mcp_session_permissions || {}, { forceRefresh: true },
+  );
   const allTools = buildToolDefinitions(session, { mcpTools: mcpContext.tools });
   const tools = agentRuntimeAtLeast('profile', runtimeMode)
     ? projectToolDefinitions(allTools, effectiveFrame)
@@ -366,7 +391,7 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
     const promptOptions = {
       ...basePromptOptions,
       globalAgentContext: buildGlobalAgentContext(session.goal, { memoryTokens: restricted ? 800 : Math.min(4800, Math.floor(basePromptOptions.contextWindowTokens * 0.08)) }),
-      taskMaterialContext: projectedContext?.taskMaterialContext || [attachmentContext, webSearchContext, researchReceiptContext].filter(Boolean).join('\n\n'),
+      taskMaterialContext: [projectedContext?.taskMaterialContext || [attachmentContext, webSearchContext, researchReceiptContext].filter(Boolean).join('\n\n'), require('./agentMaterials').materialDirectoryPrompt(session)].filter(Boolean).join('\n\n'),
       taskMaterials: projectedContext?.taskMaterials || [
         attachmentContext ? { sourceType: 'attachment', sourceId: `conversation-${session.conversation_id}-attachments`, content: attachmentContext } : null,
         webSearchContext ? { sourceType: 'web', sourceId: `conversation-${session.conversation_id}-web`, content: webSearchContext } : null,
@@ -383,7 +408,7 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
       taskMaterials: agentRuntimeAtLeast('context', runtimeMode)
         ? promptOptions.taskMaterials
         : promptOptions.taskMaterials.filter((item) => item.sourceType === 'attachment'),
-      taskMaterialContext: '',
+      taskMaterialContext: require('./agentMaterials').materialDirectoryPrompt(session),
       completionCorrection,
     } : { ...promptOptions, completionCorrection };
     return session.prompt_version === 'legacy-v1'
@@ -539,8 +564,6 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
     session = getSession(session.id);
     const isResumingDispatch = Boolean(pendingDispatch);
     let response;
-    let responseDraft = '';
-    let lastDraftEmittedAt = 0;
     let emittedDraft = '';
     const emitResponseDraft = (rawText, complete = false) => {
       const text = require('./agentToolPolicy').redactStreamingText(rawText, { complete });
@@ -584,17 +607,8 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
         segment_sequence_no: activeExecutionSegment.sequence_no,
       });
 
-    if (loopIndex === session.soft_limit || (loopIndex > session.soft_limit && (loopIndex - session.soft_limit) % 5 === 0)) {
-      emit({ type: 'progress', stage: 'soft_limit_notice', text: '任务轮次较多，正在收紧上下文。', loop_index: loopIndex });
-    }
-
-    if (loopIndex > session.hard_limit) {
-      saveMessagesCheckpoint(session.id, messages, [], '', runId);
-      updateSessionStatus(session.id, 'waiting_limit_confirmation');
-      emit({ type: 'artifact', artifact_type: 'limit_confirmation', reason: 'hard_limit_reached', loop_index: loopIndex });
-      return { status: 'waiting_limit_confirmation', reason: 'hard_limit_reached' };
-    }
-
+    // Historical soft_limit/hard_limit fields remain for storage compatibility.
+    // Completion and independent budget/safety checks govern execution, not round count.
     const usageBefore = getSessionUsage(session.id);
     const tokenBudgetTotal = Math.max(1, Number(session.token_budget_total || llmConfig?.llmContextWindowTokens || config.llmContextWindowTokens || 60000));
     if (usageBefore.total_tokens >= tokenBudgetTotal) {
@@ -661,18 +675,14 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
           messages: compactMessages(requestMessages, Math.floor(budget.hardInputBudgetTokens * (mode === 'hard' ? 0.6 : 0.75))),
         }),
         maxRetries: 1,
-        onVisibleText: (text) => {
-          responseDraft += String(text || '');
-          if (Date.now() - lastDraftEmittedAt < 100) return;
-          emitResponseDraft(sanitizeAssistantVisibleText(responseDraft));
-          lastDraftEmittedAt = Date.now();
+        onVisibleText: () => {
+          // 文本块可能先于 tool_use 到达。响应完成前不能把它认作正式答案。
+          // 保留 Provider 流读取与取消能力，只在下方分类后发布可见文字。
         },
       }, DEFAULT_LLM_RETRY_LIMIT, {
         ...(typeof llmRetryDelayMs === 'function' ? { retryDelayMs: llmRetryDelayMs } : {}),
         ...(typeof llmRetryWait === 'function' ? { waitForRetry: llmRetryWait } : {}),
         onRetry: ({ attempt, maxRetries, delayMs, classification }) => {
-          responseDraft = '';
-          lastDraftEmittedAt = 0;
           emitResponseDraft('');
           recordRequestRetry(activeRequestWindow.id, attempt, classification);
           emit({
@@ -719,17 +729,16 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
         });
         return { status: 'queued_resume', reason: 'connection_interrupted' };
       }
-      if (error.code === 'CONTEXT_BUDGET_EXCEEDED') {
-        finishRequestWindow(activeRequestWindow?.id, 'failed', {
-          category: 'context_budget',
-          code: 'CONTEXT_BUDGET_EXCEEDED',
-        });
-        updateExecutionSegment(activeExecutionSegment?.id, { status: 'failed', completed: true });
-        updateSessionStatus(session.id, 'failed');
-        emit({ type: 'final', text: '当前任务上下文超出模型预算，请缩小处理范围后重试。', status: 'failed', reason: 'context_budget_exceeded', loop_index: loopIndex, usage: getSessionUsage(session.id) });
-        return { status: 'failed', reason: 'context_budget_exceeded' };
-      }
       const classification = classifyLLMError(error);
+      // Never persist provider bodies: they can echo credentials, note contents or signed URLs.
+      require('./logger').createLogger('agent.loop').warn('agent.llm.request_failed', {
+        session_id: session.id, request_window_id: activeRequestWindow?.id,
+        llm_config_id: llmConfig?.llmConfigId || llmConfig?.id || null,
+        http_status: Number(error.status || 0), error_code: classification.publicCode,
+        reason: llmFailureReason(error),
+        failure_code: /^[A-Z][A-Z0-9_]{0,79}$/.test(String(error.code || '')) ? error.code : 'UNKNOWN',
+        error_category: classification.category, retry_attempts: Number(error.retryAttempts || 0),
+      });
       const nextStatus = classification.category === 'fatal'
         ? 'failed'
         : classification.category === 'action_required' ? 'waiting_model_recovery' : 'waiting_retry';
@@ -788,8 +797,9 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
 
     if (!isResumingDispatch) {
       // A tool prelude belongs to the execution timeline; a final answer stays
-      // in its own streamed draft. Never accumulate previous tool preludes.
-      emitResponseDraft(toolUseBlocks.length ? '' : thinking, true);
+      // only after completion checks. Never accumulate previous tool preludes.
+      // 正式正文只在完成检查后通过 final 发布，避免草稿与最终消息双重挂载。
+      emitResponseDraft('');
       if (toolUseBlocks.length && thinking) emit({
         type: 'progress', stage: 'model_progress', text: thinking,
         loop_index: loopIndex,
@@ -951,6 +961,8 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
           preview: existingOperationSet.status === 'pending',
           applied: existingOperationSet.status === 'applied',
           recovered: true,
+          operation_set: existingOperationSet,
+          ...(existingOperationSet.revision_type === 'file_revision' ? { file_id: existingOperationSet.file_id, file_path: existingOperationSet.revision_file_path } : {}),
         }
         : await executeToolSafely(toolUse, session, config.notesDir, {
           mcpToolMap: mcpContext.map,
@@ -991,6 +1003,9 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
       }
       const durationMs = Date.now() - startedAt;
       const failed = Boolean(result?.error);
+      if (externalMcp && !failed && !recoveredInvocation) {
+        require('./agentResearch').recordMcpWebEvidence({ session, toolName: mcpContext.map[toolUse.name].toolName, result: rawResult, query: String(toolUse.input?.query || '') });
+      }
       const outcomeUnknown = failed && shouldTreatToolFailureAsOutcomeUnknown({
         replayPolicy,
         externalMcp,
@@ -1103,10 +1118,10 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
         }
       } else {
         resetToolFail(session.id, toolUse.name);
-        if (detectDeadloop(session.id, toolUse.name, result)) {
+        if (detectDeadloop(session.id, toolUse.name, result, toolUse.input || {})) {
           updateExecutionSegment(activeExecutionSegment.id, { status: 'failed', completed: true });
           updateSessionStatus(session.id, 'failed');
-          emit({ type: 'final', text: '检测到连续重复的工具结果，任务已停止。', status: 'failed', reason: 'deadloop_detected', tool_name: toolUse.name, loop_index: loopIndex, usage: getSessionUsage(session.id) });
+          emit({ type: 'final', text: '同一工具连续三次使用相同参数且未获得新结果，任务已停止以避免无效重复。', status: 'failed', reason: 'deadloop_detected', tool_name: toolUse.name, loop_index: loopIndex, usage: getSessionUsage(session.id) });
           return { status: 'failed', reason: 'deadloop_detected' };
         }
       }
@@ -1164,12 +1179,67 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
             auto: true,
           });
           if (!previewResult.success) {
+            // 应用按补丁逐项写入，失败不能否认此前批次或本批已完成的写入。
+            const failedSet = getOperationSetById(result.operation_set_id);
+            const appliedCount = (failedSet?.patches || []).filter(patch => ['applied', 'auto_applied'].includes(patch.status)).length;
+            const unfinishedCount = Math.max(1, (failedSet?.patches || []).filter(patch => ['pending', 'failed'].includes(patch.status)).length);
+            const failureSummary = `本批已应用 ${appliedCount} 项，${unfinishedCount} 项未完成。`;
+            const failureResult = {
+              ...result,
+              ...previewResult,
+              success: false,
+              error: previewResult.error || 'PREVIEW_APPLY_FAILED',
+              operation_set: failedSet,
+              applied_count: appliedCount,
+              unfinished_count: unfinishedCount,
+            };
+            const failureArtifact = await archiveToolResult({
+              conversationId: session.conversation_id,
+              sessionId: session.id,
+              taskId,
+              turnFrameId: effectiveFrame?.id,
+              toolCallId: toolUse.id,
+              invocationKey,
+              toolName: toolUse.name,
+              actor: 'model',
+              result: failureResult,
+              replace: true,
+            });
+            const conflictReason = String(previewResult.conflicting_files?.[0]?.reason || previewResult.error || '');
+            const failureHint = /FILE_ALREADY_EXISTS|FOLDER_ALREADY_EXISTS|目标文件已存在/.test(conflictReason)
+              ? '目标路径已存在。'
+              : /FILE_NOT_FOUND|ENOENT|file not found/.test(conflictReason)
+                ? '原路径已不存在，文件可能已被重命名或移动。'
+                : /STALE|OLD_NOT_FOUND/.test(conflictReason)
+                  ? '文件内容已变化，需要重新生成预览。'
+                  : '请在修改详情中核对文件状态。';
+            emit({
+              type: 'progress', stage: 'tool_done',
+              tool_name: toolUse.name, tool_display_name: toolDisplayName,
+              loop_index: loopIndex, tool_index: toolIndex,
+              execution_segment_id: activeExecutionSegment.id,
+              segment_sequence_no: activeExecutionSegment.sequence_no,
+              failed: true,
+              result_summary: { operation_set_id: result.operation_set_id, preview_generated: true, apply_success: false, message: failureHint + failureSummary, result_ref: failureArtifact?.result_ref || null },
+            });
+            emit({
+              type: 'artifact',
+              artifact_type: 'operation_set',
+              operation_set_id: result.operation_set_id,
+              task_change_set_id: changeSet.id,
+              task_change_set_version: changeSet.version,
+              status: 'apply_failed',
+              message: failureHint + failureSummary,
+              loop_index: loopIndex,
+              execution_segment_id: activeExecutionSegment.id,
+              segment_sequence_no: activeExecutionSegment.sequence_no,
+            });
             updateExecutionSegment(activeExecutionSegment.id, { status: 'failed', completed: true });
             updateSessionStatus(session.id, 'failed');
             markTaskChangeSetFinished(session.id, 'failed');
             emit({
               type: 'final',
-              text: '预览自动应用失败，正式文件未修改。',
+              text: `预览已生成，但本批次未完成应用。${failureHint}${failureSummary}已保存的修改会保留，请查看下方修改详情。${failureArtifact?.status === 'ready' ? '' : '应用结果记录保存失败，请同时核对实际文件。'}`,
               status: 'failed',
               reason: 'preview_auto_apply_failed',
               tool_name: toolUse.name,
@@ -1238,7 +1308,7 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
         });
         const batchPatches = Array.isArray(mergedPreviewResult.operation_set?.patches)
           ? mergedPreviewResult.operation_set.patches
-          : (Array.isArray(result.operation_set?.patches) ? result.operation_set.patches : []);
+          : (Array.isArray(result.operation_set?.patches) ? result.operation_set.patches : (getOperationSetById(result.operation_set_id)?.patches || []));
         const directoryChangeTypes = new Set(['create_folder', 'rename_folder', 'move_folder', 'delete_folder']);
         const directoryChangeCount = batchPatches.filter((patch) => directoryChangeTypes.has(String(patch?.change_type || ''))).length;
         const fileChangeCount = Math.max(0, batchPatches.length - directoryChangeCount);
@@ -1265,35 +1335,6 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
           change_file_count: fileChangeCount,
           change_directory_count: directoryChangeCount,
         });
-        if (!actualApplied && normalizedApprovalMode === 'manual_confirm') {
-          // 手动模式的边界是生成 Diff，而不是用户应用后的下一轮模型调用。
-          // 保留 operation set 与任务变更集供用户随时应用、废弃或回滚，但不再保存
-          // 可恢复 checkpoint 或阻塞同会话队列，避免应用后再额外请求模型生成收尾总结。
-          updateExecutionSegment(activeExecutionSegment.id, { status: 'completed', completed: true });
-              markTaskChangeSetFinished(session.id, 'completed');
-          if (checkpointToCommit) clearMessagesCheckpoint(session.id, checkpointToCommit);
-          checkpointToCommit = null;
-          const usage = getSessionUsage(session.id);
-          emit({
-            type: 'final',
-            text: finalThinking,
-            status: 'completed',
-            reason: 'manual_preview_generated',
-            loop_index: loopIndex,
-            operation_set_id: result.operation_set_id,
-            task_change_set_id: changeSet.id,
-            task_change_set_version: changeSet.version,
-            usage,
-          });
-          return {
-            status: 'completed',
-            reason: 'manual_preview_generated',
-            operation_set_id: result.operation_set_id,
-            task_change_set_id: changeSet.id,
-            final_text: finalThinking,
-            usage,
-          };
-        }
         if (!actualApplied) {
           saveMessagesCheckpoint(session.id, messages, content, toolUse.id, runId, {
             phase: 'waiting_operation_confirmation',

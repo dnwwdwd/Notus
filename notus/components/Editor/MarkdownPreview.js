@@ -1,3 +1,4 @@
+import { websiteLinkProps } from '../../utils/websiteLinks';
 // MarkdownPreview — react-markdown based rendered preview
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -38,7 +39,7 @@ export const MarkdownPreview = ({ content }) => (
       .md-preview .katex-display { margin: 20px 0; overflow-x: auto; overflow-y: hidden; padding: 2px 0; }
       .md-preview .katex { font-size: 1em; }
     `}</style>
-    <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeHighlight, rehypeKatex]}>
+    <ReactMarkdown components={{ a: ({ node, href, ...props }) => <a href={href} {...props} {...websiteLinkProps(href)} /> }} remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeHighlight, rehypeKatex]}>
       {content || ''}
     </ReactMarkdown>
   </div>

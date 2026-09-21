@@ -1,6 +1,6 @@
 // Skeleton shimmer loading placeholders
 export const Skeleton = ({ width = '100%', height = 16, style }) => (
-  <div
+  <div className="notus-skeleton"
     style={{
       width,
       height,

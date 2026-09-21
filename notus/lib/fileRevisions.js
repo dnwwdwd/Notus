@@ -306,6 +306,7 @@ function analyzeRevisionSafety({
 async function previewFileRevision({
   filePath = '',
   file_path: snakeFilePath = '',
+  allow_image_changes = false,
   draftContent = '',
   draft_content: snakeDraftContent = '',
   parentOperationSetId = null,
@@ -329,6 +330,8 @@ async function previewFileRevision({
     conversationId: session.conversation_id,
     taskText: session.goal,
   }));
+  const imageIssue = require('./agentVision').validateImageChanges(baseContent, draft, { allow_image_changes });
+  if (imageIssue) return imageIssue;
   const baseHash = hashRevisionContent(baseContent);
   const draftHash = hashRevisionContent(draft);
   const safety = analyzeRevisionSafety({
@@ -405,9 +408,9 @@ async function applyFileRevision(operationSetId, sessionId, { auto = false } = {
   if (!isFileRevisionSet(set)) return { success: false, error: 'NOT_FILE_REVISION' };
   if (Number(set.agent_session_id || 0) !== Number(sessionId)) return { success: false, error: 'SESSION_OPERATION_SET_MISMATCH' };
   if (set.status === 'applied') {
-    return { success: true, applied: true, changed_files: [], operation_set: getOperationSetById(set.id), status: 'applied' };
+    return { success: true, applied: true, changed_files: [], file_id: set.file_id, file_path: set.revision_file_path, operation_set: getOperationSetById(set.id), status: 'applied' };
   }
-  if (set.status !== 'pending') return { success: false, error: 'REVISION_NOT_PENDING', revision_status: set.status };
+  if (!['pending', 'apply_failed'].includes(set.status)) return { success: false, error: 'REVISION_NOT_PENDING', revision_status: set.status };
 
   const filePath = set.revision_file_path;
   const file = filePath ? getFileByPath(filePath) : null;
@@ -456,7 +459,7 @@ async function applyFileRevision(operationSetId, sessionId, { auto = false } = {
     });
     const latestSet = getRevisionStorageSet(set.id);
     if (latestSet?.status === 'applied') return { success: true, applied: true, changed_files: [], operation_set: getOperationSetById(set.id) };
-    if (latestSet?.status !== 'pending') return { success: false, error: 'REVISION_NOT_PENDING' };
+    if (!['pending', 'apply_failed'].includes(latestSet?.status)) return { success: false, error: 'REVISION_NOT_PENDING' };
     const currentFile = getFileByPath(filePath);
     if (!currentFile || currentFile.id !== file.id || hashRevisionContent(normalizeRevisionContent(currentFile.content || '')) !== set.revision_base_hash) {
       const stale = updateRevisionFailure(set, 'stale', '文件内容已变化，需要重新生成预览');
@@ -465,7 +468,8 @@ async function applyFileRevision(operationSetId, sessionId, { auto = false } = {
     const savedFile = updateFile(file.id, normalizeRevisionContent(materialized.content));
     const finalPath = savedFile.path;
     const nextFile = getFileByPath(finalPath);
-    const appliedHash = hashRevisionContent(nextFile?.content || '');
+    const savedContent = normalizeRevisionContent(nextFile?.content || '');
+    const appliedHash = hashRevisionContent(savedContent);
     const mediaChanges = materialized.media_changes.map((change) => (
       String(change?.file_path || '') === String(filePath)
         ? { ...change, file_path: finalPath }
@@ -474,8 +478,8 @@ async function applyFileRevision(operationSetId, sessionId, { auto = false } = {
     const operationSet = updateOperationSet(set.id, {
       status: 'applied',
       revisionFilePath: finalPath,
-      revisionDraftContent: materialized.content,
-      revisionDraftHash: hashRevisionContent(materialized.content),
+      revisionDraftContent: savedContent,
+      revisionDraftHash: appliedHash,
       revisionAppliedHash: appliedHash,
       revisionAppliedAt: nowSql(),
       revisionError: '',
@@ -489,6 +493,8 @@ async function applyFileRevision(operationSetId, sessionId, { auto = false } = {
       operation_set: operationSet,
       status: 'applied',
       applied_hash: appliedHash,
+      file_id: file.id,
+      file_path: finalPath,
     };
   } catch (error) {
     const failed = updateRevisionFailure(set, 'apply_failed', error.message || 'APPLY_FAILED');

@@ -26,6 +26,7 @@ export default async function handler(req, res) {
     const {
       id,
       name,
+      sync_title: syncTitle,
       old_path: oldPathFromBody,
       new_path: newPathFromBody,
     } = req.body || {};
@@ -46,7 +47,7 @@ export default async function handler(req, res) {
     let finalFile = file;
     let titleBindingApplied = false;
 
-    if (isTitleFilenameBindingEnabled()) {
+    if (syncTitle === true || isTitleFilenameBindingEnabled()) {
       try {
         const syncedFile = syncFileHeadingToName(file.id, file.name.replace(/\.md$/i, ''));
         titleBindingApplied = syncedFile.content !== file.content;

@@ -271,6 +271,7 @@ function resolveLlmRuntimeConfig({ llmConfigId, model } = {}) {
 
   return {
     ...readEnvConfig(),
+    llmConfigId: selected.id,
     llmProvider: selected.provider,
     llmApiProtocol: normalizeApiProtocol(selected.api_protocol),
     llmModel: String(model || selected.model).trim() || selected.model,

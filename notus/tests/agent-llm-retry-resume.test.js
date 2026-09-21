@@ -78,8 +78,10 @@ const {
 
   assert.equal(classifyLLMError({ status: 429, response_body: 'rate_limit_exceeded' }).category, 'retryable');
   assert.equal(classifyLLMError({ status: 401 }).category, 'action_required');
-  assert.equal(classifyLLMError({ status: 400, message: 'invalid request schema' }).category, 'fatal');
+  assert.equal(classifyLLMError({ status: 400, message: 'invalid request schema' }).category, 'action_required');
 
+  assert.equal(classifyLLMError({ status: 402 }).category, 'action_required');
+  assert.equal(classifyLLMError({ code: 'CONTEXT_BUDGET_EXCEEDED' }).category, 'action_required');
   const loopSource = fs.readFileSync(path.join(root, 'lib/agentLoop.js'), 'utf8');
   const routeSource = fs.readFileSync(path.join(root, 'pages/api/agent/loop/start.js'), 'utf8');
   const interactionResumeSource = fs.readFileSync(path.join(root, 'pages/api/agent/sessions/[id]/resume-interaction.js'), 'utf8');

@@ -434,7 +434,7 @@ async function readToolResult({ conversationId, sessionId = null, resultRef, jso
 }
 
 function summarizeResult(result = {}) {
-  if (result?.error) return String(result.message || result.error).slice(0, 400);
+  if (result?.error || result?.success === false) return String(result.message || result.error || '工具执行失败').slice(0, 400);
   if (result?.applied === true) return `文件操作已应用${result.operation_set_id ? ` ${result.operation_set_id}` : ''}`;
   if (Array.isArray(result?.results)) return `返回 ${result.results.length} 条结果`;
   if (result?.operation_set_id) return `生成文件操作预览 ${result.operation_set_id}`;
@@ -470,12 +470,12 @@ function listToolResults({ conversationId, beforeId, toolName } = {}) {
 }
 
 function buildToolResultReceipt({ toolName, result = {}, artifact = null } = {}) {
-  const failed = Boolean(result?.error);
+  const failed = Boolean(result?.error || result?.success === false);
   const receipt = {
     tool_name: String(toolName || ''),
     status: failed ? 'failed' : 'success',
     summary: summarizeResult(result),
-    error_code: failed ? String(result.error || '') : '',
+    error_code: failed ? String(result.error || 'TOOL_EXECUTION_FAILED') : '',
     operation_set_id: result?.operation_set_id || null,
     interaction_id: result?.interaction_id || null,
     result_ref: artifact?.status === 'ready' ? artifact.result_ref : null,
@@ -488,8 +488,23 @@ function buildToolResultReceipt({ toolName, result = {}, artifact = null } = {})
     original_bytes: Number(artifact?.original_bytes || 0),
     stored_bytes: Number(artifact?.stored_bytes || 0),
   };
-  for (const key of ['applied', 'requires_confirmation', 'approval_required', 'approved', 'cancelled', 'resource_changed']) {
+  // Image recognition is already a concise derived result. Deliver it with the
+  // receipt so the model can compare images without an extra read per image.
+  if (toolName === 'inspect_image' && !failed && artifact?.status === 'ready') {
+    const content = String(sanitizeArtifactValue(result.content || ''));
+    receipt.observation = content.slice(0, 4000);
+    receipt.observation_truncated = content.length > 4000;
+    receipt.image_ref = String(sanitizeArtifactValue(result.ref || ''));
+    receipt.read_hint = receipt.observation_truncated
+      ? '图片观察摘要仅展示前4000字符，需要余下细节时按result_ref读取。'
+      : 'observation已包含完整图片观察摘要；无需再读同一摘要。仅需原图其他细节时重新inspect_image。';
+  }
+  for (const key of ['applied', 'already_applied', 'partially_applied', 'requires_confirmation', 'approval_required', 'approved', 'cancelled', 'resource_changed']) {
     if (typeof result?.[key] === 'boolean') receipt[key] = result[key];
+  }
+  // 写入可能触发标题与文件名绑定；后续工具必须得到落盘后的路径。
+  if (Array.isArray(result?.changed_files)) {
+    receipt.changed_files = result.changed_files.filter(item => typeof item === 'string').slice(0, 50);
   }
   const fileRefs = collectFileRefs(result);
   if (fileRefs.length > 0) receipt.file_refs = fileRefs;

@@ -12,7 +12,7 @@ async function main() {
   const { buildConversationContext, readConversationHistory } = require('../lib/agentConversationContext');
   const cid = ensureConversation({ kind: 'canvas', title: '上下文' }).id;
   const add = (role, content) => appendConversationMessage({ conversationId: cid, role, content });
-  const first = add('user', '活动暗号苔藓593，预算4700元。');
+  const first = appendConversationMessage({ conversationId: cid, role: 'user', content: '活动暗号苔藓593，预算4700元。', meta: { mentions: [{ type: 'file', path: '文章/活动.md' }], secret: 'must-not-leak' } });
   for (let i = 0; i < 12; i++) { add('assistant', `已知短任务${i}`); add('user', `解释第${i}个知识点。`); }
   const correction = add('user', '预算改成5200元。');
   const current = add('user', '最开始的暗号和最新预算是多少？');
@@ -22,6 +22,9 @@ async function main() {
   const full = await buildConversationContext({ session });
   assert.ok(full.text.includes('苔藓593') && full.text.includes('5200'));
   assert.ok(!full.text.includes('最开始的暗号和最新预算是多少？'), '不重复当前用户消息');
+  assert.ok(full.text.includes('文章/活动.md'));
+  assert.ok(!full.text.includes('must-not-leak'));
+  assert.ok(readConversationHistory({ session, query: '文章/活动.md' }).items[0].content.includes('文章/活动.md'));
   let calls = 0;
   const summarize = async ({ previous, text }) => { calls++; return { text: `${previous}\n${text}` }; };
   const budgets = { recent: 60, summary: 3000, batch: 300 };
@@ -30,6 +33,10 @@ async function main() {
   const cachedCalls = calls;
   await buildConversationContext({ session, budgets, summarize, maxSummaryCalls: 20, remainingTokens: 1000000 });
   assert.strictEqual(calls, cachedCalls, '刷新复用匹配来源的摘要');
+  getDb().prepare('UPDATE messages SET meta=? WHERE id=?').run(JSON.stringify({ mentions: [{ type: 'file', path: '文章/新活动.md' }] }), first);
+  const mentionChanged = await buildConversationContext({ session, budgets, summarize, maxSummaryCalls: 20, remainingTokens: 1000000 });
+  assert.ok(mentionChanged.text.includes('文章/新活动.md'));
+  assert.ok(!mentionChanged.text.includes('文章/活动.md'), '修改Mention必须使旧摘要失效');
   getDb().prepare('UPDATE messages SET content=? WHERE id=?').run('暗号改为松果842', first);
   const changed = await buildConversationContext({ session, budgets, summarize, maxSummaryCalls: 20, remainingTokens: 1000000 });
   assert.ok(!changed.text.includes('苔藓593') && changed.text.includes('松果842'));

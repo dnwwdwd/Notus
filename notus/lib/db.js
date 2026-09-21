@@ -20,6 +20,7 @@ const agentResumeJobBindingMigration = require('./migrations/012_agent_resume_jo
 const agentSemanticRuntimeMigration = require('./migrations/013_agent_semantic_runtime');
 const agentCheckpointProjectionColumnsMigration = require('./migrations/014_agent_checkpoint_projection_columns');
 const agentConversationContextMigration = require('./migrations/015_agent_conversation_context');
+const revisionBasePathMigration = require('./migrations/016_revision_base_path');
 
 let db = null;
 let vecAvailable = false;
@@ -71,7 +72,7 @@ function runMigrations(database) {
     );
   `);
 
-  [agentLoopMigration, agentControlPlaneMigration, agentRunTimelineMigration, agentTaskQueueMigration, orphanVectorCleanupMigration, agentExecutionChangesMigration, agentQueueResumeRequestMigration, agentResumeJobBindingMigration, agentSemanticRuntimeMigration, agentCheckpointProjectionColumnsMigration, agentConversationContextMigration].forEach((migration) => {
+  [agentLoopMigration, agentControlPlaneMigration, agentRunTimelineMigration, agentTaskQueueMigration, orphanVectorCleanupMigration, agentExecutionChangesMigration, agentQueueResumeRequestMigration, agentResumeJobBindingMigration, agentSemanticRuntimeMigration, agentCheckpointProjectionColumnsMigration, agentConversationContextMigration, revisionBasePathMigration].forEach((migration) => {
     const version = Number(migration.version);
     if (!Number.isFinite(version) || version <= 0 || typeof migration.up !== 'function') return;
     const applied = database.prepare('SELECT version FROM schema_version WHERE version = ?').get(version);
@@ -187,6 +188,7 @@ function ensureAgentLoopSchema(database) {
     [
       ['revision_type', 'TEXT'],
       ['revision_file_path', 'TEXT'],
+      ['revision_base_path', "TEXT NOT NULL DEFAULT ''"],
       ['revision_base_hash', 'TEXT'],
       ['revision_draft_hash', 'TEXT'],
       ['revision_applied_hash', 'TEXT'],
@@ -872,6 +874,7 @@ function initDb() {
         status          TEXT NOT NULL DEFAULT 'pending',
         revision_type   TEXT,
         revision_file_path TEXT,
+        revision_base_path TEXT NOT NULL DEFAULT '',
         revision_base_hash TEXT,
         revision_draft_hash TEXT,
         revision_applied_hash TEXT,

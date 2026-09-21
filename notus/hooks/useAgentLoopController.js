@@ -110,7 +110,7 @@ function upsertStep(list = [], step = null) {
 }
 
 function completeSteps(list = [], { resolveOperationConfirmations = false, resolveModelErrors = false } = {}) {
-  return (Array.isArray(list) ? list : []).filter((step) => !(resolveModelErrors && step.kind === 'llm_error')).map((step) => {
+  return (Array.isArray(list) ? list : []).filter((step) => !(resolveModelErrors && (step.kind === 'llm_error' || step.errorType === 'agent'))).map((step) => {
     if (step.status === 'running') return finishRunningStep(step);
     if (
       resolveOperationConfirmations
@@ -207,14 +207,15 @@ function buildEventStep(event = {}) {
   if (event.type === 'artifact' && event.artifact_type === 'limit_confirmation') {
     return buildEventStep({ ...event, type: 'loop_done', reason: event.reason || 'hard_limit_reached' });
   }
-  if (event.type === 'artifact' && event.artifact_type === 'operation_confirmation') {
+  if (event.type === 'artifact' && ['operation_confirmation', 'operation_resolution'].includes(event.artifact_type)) {
+    const resolved = event.artifact_type === 'operation_resolution';
     const segment = executionSegmentFields(event);
     return {
       id: `operation-confirmation-${event.execution_segment_id || event.loop_index || 'current'}`,
       kind: 'operation_confirmation',
       ...segment,
-      label: '等待确认文件修改',
-      status: 'waiting',
+      label: resolved ? (event.status === 'applied' ? '本批修改已确认' : '本批修改已处理') : '等待确认文件修改',
+      status: resolved ? 'done' : 'waiting',
       detail: event.text || '已保存这批修改预览，可手动应用或废弃。',
       tool: 'preview_patch_files',
       result: event.operation_set_id ? `修改批次 #${event.operation_set_id}` : '修改预览已生成',
@@ -344,6 +345,7 @@ function buildEventStep(event = {}) {
     return {
       id: `model-progress-${segment.executionSegmentId || loop || 'current'}`,
       kind: 'model_progress',
+      presentationAnimate: Boolean(event.presentationAnimate),
       ...segment,
       label: '执行说明',
       status: 'running',
@@ -381,7 +383,9 @@ function buildEventStep(event = {}) {
       ...segment,
       label: toolLabel(displayTool),
       status: event.failed ? 'error' : 'done',
-      detail: event.failed ? '工具调用失败。' : '工具调用已完成。',
+      detail: event.result_summary?.preview_generated && event.result_summary?.apply_success === false
+        ? '预览已生成，但自动应用未完成。'
+        : event.failed ? '工具调用失败。' : '工具调用已完成。',
       tool: event.tool_name || '',
       displayTool,
       result: typeof event.result_summary === 'string'
@@ -418,13 +422,15 @@ function buildEventStep(event = {}) {
     const directoryCount = Number(event.change_directory_count || 0);
     const countLabel = [fileCount ? `${fileCount} 个文件` : '', directoryCount ? `${directoryCount} 个目录` : ''].filter(Boolean).join('、') || '文件或目录修改';
     const applied = event.status === 'applied';
+    const applyFailed = event.status === 'apply_failed';
+    const discarded = ['discarded', 'cancelled', 'rolled_back'].includes(event.status);
     return {
       id: `operation-batch-${event.operation_set_id || segment.executionSegmentId || loop || 'current'}`,
       kind: 'operation_batch',
       ...segment,
-      label: applied ? '已应用修改批次' : '已生成修改批次',
-      status: applied ? 'done' : 'waiting',
-      detail: applied ? `已应用本批 ${countLabel}。` : `本批涉及 ${countLabel}，等待你决定是否应用。`,
+      label: discarded ? '修改批次已撤回' : applyFailed ? '修改批次应用未完成' : applied ? '已应用修改批次' : '已生成修改批次',
+      status: applyFailed ? 'error' : applied || discarded ? 'done' : 'waiting',
+      detail: discarded ? '本批修改已废弃或回滚。' : applyFailed ? (event.message || '预览已生成，但本批次应用未完成。') : applied ? `已应用本批 ${countLabel}。` : `本批涉及 ${countLabel}，等待你决定是否应用。`,
       tool: 'preview_patch_files',
       result: event.operation_set_id ? `修改批次 #${event.operation_set_id}` : '修改批次已生成',
       open: !applied,
@@ -437,6 +443,12 @@ function buildEventStep(event = {}) {
       label: reasonLabel(event.reason),
       status: ['goal_achieved', 'hard_limit_reached'].includes(event.reason) ? 'done' : 'error',
       detail: reasonLabel(event.reason),
+      ...(event.reason === 'hard_limit_reached' ? {
+        status: 'waiting',
+        action: 'resume_agent',
+        actionLabel: '继续任务',
+        open: true,
+      } : {}),
     };
   }
   if (event.type === 'cancelled') {
@@ -497,8 +509,14 @@ export function buildRestoredAgentTimeline(session = {}) {
     }));
   let steps = sourceEvents.reduce((current, event) => {
     const step = buildEventStep(event);
-    return upsertStep(current, step ? { ...step, createdAt: event.created_at || undefined, updatedAt: event.created_at || undefined } : null);
+    return upsertStep(resolveResumedAgentErrors(current, event), step ? { ...step, createdAt: event.created_at || undefined, updatedAt: event.created_at || undefined } : null);
   }, []);
+  if (session.status !== 'waiting_limit_confirmation') {
+    steps = steps.filter((step) => step.id !== 'loop-done-hard_limit_reached');
+  }
+  if (['running', 'queued', 'completed'].includes(session.status)) {
+    steps = steps.filter((step) => step.errorType !== 'agent' && step.kind !== 'llm_error');
+  }
   steps = steps.map((step) => step.status === 'running'
     ? (isCompleted
       ? finishRunningStep(step)
@@ -547,6 +565,20 @@ export function buildAgentSubscriptionSnapshot(session = {}, requestedCursor = 0
   return { cursor, ...buildRestoredAgentTimeline({ ...session, status: 'running', run_events: prefix }) };
 }
 
+// 只在服务端确认恢复或出现新的执行活动时撤下任务错误，不删除工具失败记录。
+function resolveResumedAgentErrors(steps, event) {
+  const type = event.type === 'progress' ? event.stage : event.type;
+  const resumed = ['session_resumed', 'session_created', 'loop_start', 'model_requesting',
+    'model_progress', 'tool_start', 'tool_done', 'llm_retry', 'assistant_text_delta',
+    'assistant_text_replace'].includes(type)
+    || (event.type === 'task_state' && ['queued', 'running'].includes(event.status));
+  const resolved = resumed || ['final', 'cancelled'].includes(type);
+  return steps.filter((step) => {
+    if (resolved && step.id === 'loop-done-hard_limit_reached') return false;
+    return !resumed || (step.errorType !== 'agent' && step.kind !== 'llm_error');
+  });
+}
+
 export function applyAgentTimelineEvent(timeline = {}, event = {}) {
   const step = buildEventStep(event);
   let activeSteps = Array.isArray(timeline.activeSteps) ? timeline.activeSteps : [];
@@ -554,6 +586,7 @@ export function applyAgentTimelineEvent(timeline = {}, event = {}) {
   let sessionStatus = String(timeline.sessionStatus || '');
   let loading = Boolean(timeline.loading);
   let finishedAt = String(timeline.finishedAt || '');
+  activeSteps = resolveResumedAgentErrors(activeSteps, event);
   if (step) activeSteps = upsertStep(activeSteps, step);
 
   if (event.type === 'task_state') {
@@ -575,6 +608,10 @@ export function applyAgentTimelineEvent(timeline = {}, event = {}) {
     streamText = '';
   } else if (event.type === 'artifact' && event.artifact_type === 'interaction') {
     sessionStatus = 'waiting_interaction';
+    loading = false;
+    streamText = '';
+  } else if (event.type === 'artifact' && event.artifact_type === 'operation_confirmation') {
+    sessionStatus = 'waiting_operation_confirmation';
     loading = false;
     streamText = '';
   } else if (event.type === 'artifact' && event.artifact_type === 'limit_confirmation') {
@@ -768,6 +805,7 @@ export function useAgentLoopController({
   const appendAssistant = useCallback((message) => {
     onAppendAssistantMessage?.({
       id: makeMessageId('agent-loop-assistant'),
+      presentationAnimate: true,
       role: 'assistant',
       content: '',
       createdAt: new Date().toISOString(),
@@ -802,6 +840,10 @@ export function useAgentLoopController({
     const subscribeOnly = Boolean(input?.subscribe_only || input?.subscribeOnly);
     const body = isResume
       ? {
+        // 缺省字段保持原任务授权；只读订阅由服务端忽略配置变更。
+        web_search_enabled: input?.web_search_enabled,
+        search_provider: input?.search_provider,
+        mcp_selection: input?.mcp_selection,
         session_id: resumeSessionId,
         session_token: resumeToken,
         control_ticket: input?.control_ticket || input?.controlTicket || sessionRef.current?.control_ticket || undefined,
@@ -880,6 +922,10 @@ export function useAgentLoopController({
     const publishTimeline = (event = null, patch = {}) => {
       const baseTimeline = { ...timeline, ...patch };
       timeline = event ? applyAgentTimelineEvent(baseTimeline, event) : baseTimeline;
+      // 实时起止使用同一客户端时钟；历史与续跑仍沿用持久化时间。
+      if (!isResume && event) {
+        timeline.finishedAt = timeline.loading ? '' : (baseTimeline.finishedAt || new Date().toISOString());
+      }
       if (timeline.sessionId) onSessionTimeline?.(timeline);
       return timeline;
     };
@@ -936,6 +982,7 @@ export function useAgentLoopController({
         const finalEvent = [...restoredSession.run_events].reverse().find((row) => row?.payload?.type === 'final')?.payload;
         if (restoredSession.status === 'completed' && finalEvent && isCurrentPresentation()) {
           appendAssistant({
+            presentationAnimate: false,
             content: String(finalEvent.text || finalEvent.final_text || '').trim() || reasonLabel(finalEvent.reason),
             meta: {
               agent_loop: true,
@@ -1011,6 +1058,8 @@ export function useAgentLoopController({
       if (!isSubscriptionActive()) return;
       acceptedSessionId = Number(accepted.session_id || resumeSessionId || 0);
       if (!acceptedSessionId) throw new Error('服务未返回 Agent 任务 ID');
+      // 请求去重只覆盖受理阶段，不能覆盖后台任务的整个 SSE 生命周期。
+      options.onAccepted?.(accepted);
       controller.agentSessionId = String(acceptedSessionId);
       acceptedConversationId = Number(accepted.conversation_id || input?.conversation_id || 0) || null;
       const acceptedToken = accepted.session_token || resumeToken;
@@ -1051,7 +1100,7 @@ export function useAgentLoopController({
       publishTimeline(null, {
         sessionId: String(acceptedSessionId),
         userMessageId: Number(accepted.user_message_id || 0) || null,
-        startedAt: accepted.created_at || timeline.startedAt,
+        startedAt: isResume ? (accepted.created_at || timeline.startedAt) : timeline.startedAt,
         loading: true,
         sessionStatus: accepted.status || 'queued',
       });
@@ -1087,11 +1136,15 @@ export function useAgentLoopController({
           if (terminalSessionEventsRef.current.has(eventSessionId)) return;
           terminalSessionEventsRef.current.add(eventSessionId);
         }
-        const eventTimeline = publishTimeline(event, {
+        const eventTimeline = publishTimeline({ ...event, presentationAnimate: true }, {
           sessionId: eventSessionId,
           userMessageId: Number(event.user_message_id || timeline.userMessageId || accepted.user_message_id || 0) || null,
         });
         if (!isCurrentPresentation()) {
+          if (event.type === 'artifact' && event.artifact_type === 'limit_confirmation') {
+            controller.abort();
+            return;
+          }
           if (event.type === 'tool_done' && !event.failed) dispatchAgentResourceChange(event.tool_name);
           if (
             FILE_MUTATION_TOOL_NAMES.has(event.tool_name)
@@ -1154,8 +1207,8 @@ export function useAgentLoopController({
           if (event.type === 'cancelled') controller.abort();
           return;
         }
-        const step = buildEventStep(event);
-        if (step) appendStep(step);
+        const step = buildEventStep({ ...event, presentationAnimate: true });
+        setSteps((prev) => upsertStep(resolveResumedAgentErrors(prev, event), step));
         if (event.type === 'tool_done' && !event.failed) dispatchAgentResourceChange(event.tool_name);
         if (event.conversation_id) {
           onConversationId?.(Number(event.conversation_id));
@@ -1232,6 +1285,7 @@ export function useAgentLoopController({
             setActiveAgentSession({ status: 'waiting_limit_confirmation', reason: event.reason || 'hard_limit_reached' });
             setStreamText('');
             setLoading(false);
+            controller.abort();
           } else if (event.artifact_type === 'run_error') {
             setActiveAgentSession({
               status: event.status || (event.resumable ? 'waiting_retry' : 'failed'),
@@ -1545,8 +1599,10 @@ export function useAgentLoopController({
       if (payload.operation_set) {
         onOperationSetHandled?.(operationSetId, action, payload.operation_set);
       }
+      if (payload.task_change_set) onTaskChangeSet?.(payload.task_change_set);
+      if (payload.partially_applied || payload.changed_files?.length) await onApplySuccess?.(payload, operationSet);
       if (payload.conflict) {
-        throw new Error('文件已经变化，请检查冲突后重新确认');
+        throw new Error('文件已经变化，请检查冲突后重新确认；本批已成功的修改仍然保留');
       }
       throw new Error(payload.error || payload.code || '处理修改失败');
     }
@@ -1559,8 +1615,7 @@ export function useAgentLoopController({
       await onRollbackSuccess?.(payload, operationSet);
     }
     if (payload.session && Number(sessionRef.current?.id) === Number(session.id)) setActiveAgentSession({ ...payload.session, token: session.token, control_tickets: session.control_tickets });
-    // 仅自动确认模式下的高风险批次会返回 task_resumed；手动 Diff 始终为 false，
-    // 因此不会在应用后重新订阅或请求无意义的模型收尾。
+    // 手动批次全部应用后继续原任务；已有 SSE 继续接收事件，断开时重建订阅。
     if (payload.task_resumed && !controllerRef.current) {
       startAgentLoop({
         session_id: session.id,

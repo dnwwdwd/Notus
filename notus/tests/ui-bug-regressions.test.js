@@ -180,7 +180,7 @@ assert.ok(settings.includes("{ id: 'global-agent', label: 'Agent 个性', icon: 
 
   const agentWorkspace = read('components/AgentWorkspace/AgentWorkspace.js');
   const fileAgentWorkspace = read('components/AgentWorkspace/FileAgentWorkspace.js');
-  assert.ok(agentWorkspace.includes('正在恢复上次对话…'), '当前对话恢复提示必须保留');
+  assert.ok(agentWorkspace.includes('notus-agent-message-skeleton') && agentWorkspace.includes('aria-label="正在加载对话"'), '当前对话恢复应显示带无障碍说明的骨架屏');
   assert.ok(settings.includes('下载应用数据备份'));
   assert.ok(settings.includes('上传备份并还原'));
   assert.ok(settings.includes('覆盖还原应用数据'));
@@ -227,7 +227,7 @@ assert.ok(settings.includes("{ id: 'global-agent', label: 'Agent 个性', icon: 
   assert.ok(agentWorkspace.includes('function AgentWorkspace({'));
   assert.ok(agentWorkspace.includes('mentionOptions={mentionOptions}'));
   assert.ok(agentWorkspace.includes('function isFileSystemOperation(operation = {})'));
-  assert.ok(agentWorkspace.includes('const activePath = activeOperation.new_path || activeOperation.file_path || activeOperation.old_path || activeOperation.path || \'全文\''));
+  assert.ok(agentWorkspace.includes('const activePath = activeOperation.new_path || activeOperation.file_path || activeOperation.old_path || activeOperation.path || (operations.length === 0 ? \'当前无文件差异\' : \'全文\')'));
   assert.ok(agentWorkspace.includes('function DiffFileLink'));
   assert.ok(agentWorkspace.includes('function diffSidebarFileName(path)'));
   assert.ok(agentWorkspace.includes('<DiffFileLink path={pathText} onOpenFile={openDiffFile}'));

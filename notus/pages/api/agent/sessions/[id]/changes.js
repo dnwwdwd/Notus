@@ -20,7 +20,18 @@ export default function handler(req, res) {
     const access = validateSessionAccess(sessionId, token);
     if (!access.valid) return res.status(403).json({ error: access.reason, code: access.reason });
   }
-  const changeSet = getTaskChangeSetDetail(sessionId);
+  if (req.query.batch_id) {
+    const { getOperationSetById } = require('../../../../../lib/canvasOperationSets');
+    const { getDb } = require('../../../../../lib/db');
+    const owned = getDb().prepare('SELECT id FROM canvas_operation_sets WHERE id = ? AND agent_session_id = ?').get(Number(req.query.batch_id), sessionId);
+    if (!owned) return res.status(404).json({ error: 'BATCH_NOT_FOUND' });
+    const batch = getOperationSetById(owned.id);
+    if (!batch || Number(batch.agent_session_id) !== sessionId) return res.status(404).json({ error: 'BATCH_NOT_FOUND' });
+    return res.status(200).json({ operation_set: batch });
+  }
+  const itemId = req.query.item_id == null ? null : Number(req.query.item_id);
+  if (itemId !== null && (!Number.isSafeInteger(itemId) || itemId <= 0)) return res.status(400).json({ error: 'INVALID_ITEM_ID' });
+  const changeSet = getTaskChangeSetDetail(sessionId, { manifest: req.query.view === 'manifest', itemId });
   if (!changeSet) return res.status(404).json({ error: 'TASK_CHANGE_SET_NOT_FOUND', code: 'TASK_CHANGE_SET_NOT_FOUND' });
   return res.status(200).json({ task_change_set: changeSet });
 }

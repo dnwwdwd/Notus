@@ -84,7 +84,8 @@ function collectConversationOperationSets(payload = {}) {
 }
 
 function hasTaskChangeSetChanges(changeSet = null) {
-  return Number(changeSet?.file_count || 0) + Number(changeSet?.directory_count || 0) > 0;
+  return ['file_count', 'directory_count', 'applied_count', 'rolled_back_count', 'discarded_count']
+    .some(key => Number(changeSet?.[key] || 0) > 0);
 }
 
 function timelineFromSession(session = {}) {
@@ -278,7 +279,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], activeFileId 
   const conversationLoadSequenceRef = useRef(0);
   const agentLoopRef = useRef(null);
   const [liveSessionTimelines, setLiveSessionTimelines] = useState({});
-  const resumeAgentTaskInFlightRef = useRef(false);
+  const resumeAgentTaskInFlightRef = useRef(new Map());
 
   useEffect(() => {
     setAgentConfirmMode(readConfirmMode());
@@ -490,14 +491,34 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], activeFileId 
     }));
   }, []);
 
+  const pendingTimelinesRef = useRef(new Map());
+  const timelineTimerRef = useRef(null);
+  const flushTimelines = useCallback(() => {
+    clearTimeout(timelineTimerRef.current);
+    timelineTimerRef.current = null;
+    const batch = [...pendingTimelinesRef.current.entries()];
+    pendingTimelinesRef.current.clear();
+    if (!batch.length) return;
+    setLiveSessionTimelines(previous => {
+      const next = {...previous};
+      for (const [id, timeline] of batch) next[id] = {...(next[id] || {}), ...timeline};
+      return next;
+    });
+  }, []);
+  useEffect(() => {
+    pendingTimelinesRef.current.clear();
+    clearTimeout(timelineTimerRef.current);
+    timelineTimerRef.current = null;
+    const pending = pendingTimelinesRef.current;
+    return () => { clearTimeout(timelineTimerRef.current); pending.clear(); };
+  }, [activeConversationId]);
   const handleSessionTimeline = useCallback((timeline) => {
     const sessionId = String(timeline?.sessionId || '');
     if (!sessionId) return;
-    setLiveSessionTimelines((previous) => ({
-      ...previous,
-      [sessionId]: { ...(previous[sessionId] || {}), ...timeline },
-    }));
-  }, []);
+    pendingTimelinesRef.current.set(sessionId, {...pendingTimelinesRef.current.get(sessionId), ...timeline});
+    if (!['running', 'queued', 'created'].includes(timeline.sessionStatus)) flushTimelines();
+    else if (!timelineTimerRef.current) timelineTimerRef.current = setTimeout(flushTimelines, 50);
+  }, [flushTimelines]);
 
   const agentLoop = useAgentLoopController({
     onAppendUserMessage: (message) => setMessages((previous) => {
@@ -661,8 +682,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], activeFileId 
     });
   }, [activeAgentSessionId, agentLoop.loading, agentResumeJobs, getAgentSession, restoreAgentSession, restoredAgentSessions, resumeAgentLoop, selectedLlmConfigId]);
 
-  const resumeFailedAgentTask = useCallback(async (targetSessionId = null) => {
-    if (resumeAgentTaskInFlightRef.current) return;
+  const resumeFailedAgentTask = useCallback(async (targetSessionId = null, toolPreferences = {}) => {
     const targetId = String(targetSessionId || '');
     const session = targetId
       ? (agentLoop.getAgentSession?.(targetId) || restoredAgentSessions.find((item) => String(item?.id || '') === targetId) || {})
@@ -672,9 +692,18 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], activeFileId 
       toast('当前 Agent 任务的恢复凭据已失效，请刷新会话后再试', 'warning');
       return;
     }
-    resumeAgentTaskInFlightRef.current = true;
+    const key = String(session.id);
+    if (resumeAgentTaskInFlightRef.current.has(key)) return;
+    const request = Symbol(key);
+    resumeAgentTaskInFlightRef.current.set(key, request);
+    const releaseRequest = () => {
+      if (resumeAgentTaskInFlightRef.current.get(key) === request) {
+        resumeAgentTaskInFlightRef.current.delete(key);
+      }
+    };
     try {
       await agentLoop.startAgentLoop({
+        ...toolPreferences,
         session_id: session.id,
         conversation_id: session.conversation_id,
         session_token: session.token,
@@ -682,11 +711,11 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], activeFileId 
         read_ticket: session.control_tickets?.read,
         control_tickets: session.control_tickets,
         llm_config_id: selectedLlmConfigId || undefined,
-      }, { resume: true });
+      }, { resume: true, onAccepted: releaseRequest });
     } catch (error) {
       toast(error.message || '继续 Agent 任务失败', 'error');
     } finally {
-      resumeAgentTaskInFlightRef.current = false;
+      releaseRequest();
     }
   }, [agentLoop, restoredAgentSessions, selectedLlmConfigId, toast]);
 

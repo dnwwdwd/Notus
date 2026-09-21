@@ -592,6 +592,8 @@ a {
 }
 
 .notus-agent-error-card {
+  display: flex;
+  align-items: stretch;
   overflow: hidden;
   margin: 10px 0 2px;
   border: 1px solid rgba(234, 208, 196, 0.95);
@@ -601,16 +603,19 @@ a {
 }
 
 .notus-agent-error-card__main {
+  flex: 1 1 auto;
+  min-width: 0;
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr);
-  gap: 12px;
-  padding: 15px 16px 14px;
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: 10px;
+  padding: 12px;
 }
 
 .notus-agent-error-card__icon {
   display: inline-flex;
-  width: 34px;
-  height: 34px;
+  align-self: center;
+  width: 32px;
+  height: 32px;
   align-items: center;
   justify-content: center;
   border-radius: 10px;
@@ -626,7 +631,7 @@ a {
   display: flex;
   flex-wrap: wrap;
   gap: 6px 14px;
-  margin-top: 12px;
+  margin-top: 6px;
   color: var(--text-tertiary);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 11px;
@@ -635,23 +640,21 @@ a {
 
 .notus-agent-error-card__footer {
   display: flex;
-  min-height: 56px;
-  align-items: center;
+  flex: 0 0 auto;
+  align-items: flex-end;
   justify-content: flex-end;
-  gap: 12px;
-  padding: 10px 12px 12px 16px;
-  background: var(--bg-primary);
+  padding: 12px 12px 12px 0;
 }
 
 .notus-agent-error-card__actions { display: flex; flex: 0 0 auto; justify-content: flex-end; gap: 8px; }
-.notus-agent-error-card__actions button { min-height: 32px; border-radius: 9px; padding: 0 12px; font-size: 12px; font-weight: 800; }
+.notus-agent-error-card__actions button { height: 48px; min-width: 72px; min-height: 48px; border-radius: 9px; padding: 0 12px; font-size: 12px; font-weight: 800; }
 .notus-agent-error-card__secondary { border: 1px solid var(--border-subtle); background: var(--bg-secondary); color: var(--text-secondary); }
 .notus-agent-error-card__primary { display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid var(--accent); background: var(--accent); color: #fff; box-shadow: 0 4px 11px rgba(217, 119, 87, 0.18); }
 .notus-agent-error-card__primary:disabled { cursor: not-allowed; opacity: 0.52; box-shadow: none; }
 .notus-agent-error-card__secondary:disabled { cursor: not-allowed; opacity: 0.52; }
 
 @media (max-width: 520px) {
-  .notus-agent-error-card__footer { padding: 8px 12px 12px; }
+  .notus-agent-error-card__footer { padding: 12px 10px 12px 0; }
   .notus-agent-error-card__actions { flex-wrap: wrap; }
 }
 
@@ -756,6 +759,7 @@ a {
 .notus-diff-dialog__footer {
   min-height: 56px;
   flex-shrink: 0;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 10px;
   padding: 10px 12px;
@@ -773,6 +777,10 @@ a {
   display: flex;
   align-items: center;
   flex-shrink: 0;
+  flex-wrap: wrap;
+  max-width: 100%;
+  max-height: 144px;
+  overflow-y: auto;
   gap: 8px;
 }
 
@@ -2617,4 +2625,26 @@ a {
   .notus-settings-content {
     padding: 16px 12px !important;
   }
+}
+
+.notus-tab-context-menu { z-index: 10000; min-width: 180px; padding: 5px; border: 1px solid var(--border-primary); border-radius: var(--radius-md); background: var(--bg-primary); color: var(--text-primary); box-shadow: 0 8px 30px #0002; }
+.notus-tab-context-menu [role="menuitem"] { padding: 8px 12px; font-size: 13px; border-radius: 5px; outline: none; cursor: default; }
+.notus-tab-context-menu [data-highlighted] { background: var(--bg-secondary); }
+.notus-tab-context-menu [data-disabled] { color: var(--text-tertiary); opacity: .5; }
+
+.notus-diff-loading-skeleton { display: grid; grid-template-columns: minmax(120px, 24%) 1fr; gap: 32px; min-height: 340px; }
+.notus-diff-loading-skeleton > div { display: flex; flex-direction: column; gap: 24px; }
+.notus-agent-message-skeleton { width: 100%; display: flex; flex-direction: column; gap: 28px; padding: 12px 0; }
+.notus-agent-conversation-restore:has(.notus-agent-message-skeleton) { display: block; }
+@media (prefers-reduced-motion: reduce) { .notus-skeleton { animation: none !important; } }
+
+.notus-streaming-cursor { display:inline-block; width:2px; height:1em; margin-left:3px; background:var(--accent); animation:blink .95s step-end infinite; }
+
+/* 计时仅做轻微文字过渡，不使用转圈，也不闪动整个工具链。 */
+.notus-agent-trace-status { display: inline-flex; align-items: baseline; white-space: pre; font-variant-numeric: tabular-nums; }
+.notus-agent-trace-status[data-animate] .notus-agent-trace-status__phase { animation: notus-trace-text-in 180ms ease-out both; }
+.notus-agent-trace-status[data-animate] .notus-agent-trace-status__elapsed { animation: notus-trace-text-in 160ms ease-out both; }
+@keyframes notus-trace-text-in { from { opacity: .35; transform: translateY(2px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) {
+  .notus-agent-trace-status[data-animate] .notus-agent-trace-status__phase, .notus-agent-trace-status[data-animate] .notus-agent-trace-status__elapsed { animation: none; }
 }

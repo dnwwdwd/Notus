@@ -85,7 +85,7 @@ function deriveOperationSetStatus(patches = []) {
   return 'partial';
 }
 
-function formatRow(row) {
+function formatRow(row, { includeDiff = true } = {}) {
   if (!row) return null;
   const revisionType = String(row.revision_type || '').trim();
   const revisionBaseContent = String(row.revision_base_content || '');
@@ -94,6 +94,7 @@ function formatRow(row) {
     ? {
       type: revisionType,
       file_path: String(row.revision_file_path || ''),
+      base_path: String(row.revision_base_path || ''),
       base_hash: String(row.revision_base_hash || ''),
       draft_hash: String(row.revision_draft_hash || ''),
       applied_hash: String(row.revision_applied_hash || ''),
@@ -103,7 +104,7 @@ function formatRow(row) {
       applied_at: row.revision_applied_at || null,
       discarded_at: row.revision_discarded_at || null,
       rolled_back_at: row.revision_rolled_back_at || null,
-      diff_hunks: createDiffHunks(revisionBaseContent, revisionDraftContent),
+      diff_hunks: includeDiff ? createDiffHunks(revisionBaseContent, revisionDraftContent) : [],
       base_line_count: revisionBaseContent ? revisionBaseContent.split('\n').length : 0,
       draft_line_count: revisionDraftContent ? revisionDraftContent.split('\n').length : 0,
     }
@@ -123,6 +124,7 @@ function formatRow(row) {
     type: revisionType || normalizeMode(row.mode),
     revision_type: revisionType || '',
     revision_file_path: revision?.file_path || '',
+    revision_base_path: revision?.base_path || '',
     revision,
     media_changes: parseOperations(row.media_changes_json),
     operations: parseOperations(row.operations_json),
@@ -243,6 +245,9 @@ function createOperationSet({
   if (hasColumn(database, 'canvas_operation_sets', 'revision_type')) {
     pushColumn('revision_type', String(revisionType || snakeRevisionType || ''));
     pushColumn('revision_file_path', String(revisionFilePath || snakeRevisionFilePath || ''));
+    if (hasColumn(database, 'canvas_operation_sets', 'revision_base_path')) {
+      pushColumn('revision_base_path', String(revisionFilePath || snakeRevisionFilePath || ''));
+    }
     pushColumn('revision_base_hash', String(revisionBaseHash || snakeRevisionBaseHash || ''));
     pushColumn('revision_draft_hash', String(revisionDraftHash || snakeRevisionDraftHash || ''));
     pushColumn('revision_applied_hash', String(revisionAppliedHash || snakeRevisionAppliedHash || ''));
@@ -270,14 +275,14 @@ function createOperationSet({
   return getOperationSetById(result.lastInsertRowid);
 }
 
-function getOperationSetById(id) {
+function getOperationSetById(id, options = {}) {
   const database = getDb();
   const row = database.prepare(`
     SELECT *
     FROM canvas_operation_sets
     WHERE id = ?
   `).get(normalizeNullablePositiveInt(id));
-  return formatRow(row);
+  return formatRow(row, options);
 }
 
 function getOperationSetByToolUse(sessionId, toolUseId) {

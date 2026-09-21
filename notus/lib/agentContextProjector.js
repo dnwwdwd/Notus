@@ -24,7 +24,7 @@ function buildCurrentFileMaterial(frame = {}) {
   return {
     sourceType: 'current_file',
     sourceId: `file-${file.id}-${file.hash || frame?.facts?.active_file?.hash || 'current'}`,
-    content: [`当前文件：${file.path}`, `标题：${file.title || ''}`, '', String(file.content || '')].join('\n'),
+    content: [`当前文件：${file.path}`, `标题：${file.title || ''}`, '', require('./agentVision').projectFileImages(file)].join('\n'),
   };
 }
 
@@ -53,7 +53,7 @@ function buildMentionMaterials(frame = {}) {
       return [{
         sourceType: 'mention',
         sourceId: `file-${file.id}-${file.hash || 'current'}`,
-        content: [`显式 Mention 文件：${file.path}`, `标题：${file.title || ''}`, '', String(file.content || '')].join('\n'),
+        content: [`显式 Mention 文件：${file.path}`, `标题：${file.title || ''}`, '', require('./agentVision').projectFileImages(file)].join('\n'),
       }];
     }
     if (mention?.type === 'folder' && mention.path) {

@@ -307,7 +307,7 @@ const FileRow = ({ item, isActive, onSelect, onToggle, onContextMenu, dragEnable
         outlineOffset: -1,
         fontSize: 'var(--text-sm)',
         fontWeight: isActive ? 500 : 400,
-        cursor: dragEnabled ? (isDragging ? 'grabbing' : 'grab') : 'pointer',
+        cursor: isDragging ? 'grabbing' : 'pointer',
         opacity: isDragging ? 0.58 : 1,
         pointerEvents: isDragging ? 'none' : 'auto',
         transition: 'background var(--transition-fast), opacity var(--transition-fast)',

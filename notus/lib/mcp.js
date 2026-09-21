@@ -193,14 +193,19 @@ function intentTerms(goal = '') {
   });
   return [...terms].slice(0, 80);
 }
-async function prepareMcpTools(selection = {}, goal = '', sessionPermissions = {}) {
+async function prepareMcpTools(selection = {}, goal = '', sessionPermissions = {}, { forceRefresh = false } = {}) {
   const mode = selection.mode || 'off';
   if (mode === 'off') return { tools: [], map: {}, instructions: [] };
   const servers = listServers({ includeDisabled: false }).filter((server) => sessionPermissions.allow_local_http === true || !isLocalHttpServer(server));
   let selected = mode === 'server' ? servers.filter((item) => item.id === selection.serverId) : servers;
   // 连接测试会写入缓存；长期运行或重启后，首次任务也应在缓存过期时静默
   // 刷新，避免自动选择和工具 schema 长期停留在旧版本。
-  await Promise.all(selected.filter((server) => isToolCacheStale(server.id)).map((server) => refreshTools(server).catch(() => null)));
+  const unavailable = new Set();
+  await Promise.all(selected.filter((server) => forceRefresh || isToolCacheStale(server.id)).map((server) => refreshTools(server).catch(() => {
+    if (forceRefresh) unavailable.add(server.id);
+  })));
+  // 强制发现失败时，旧缓存只留作诊断，不能冒充本次可用的工具定义。
+  selected = selected.filter((server) => !unavailable.has(server.id));
   if (mode === 'auto') {
     const terms = intentTerms(goal);
     const ranked = selected.map((server) => ({ server, score: cachedTools(server.id).reduce((score, tool) => score + terms.reduce((sum, term) => sum + (String(`${server.name} ${tool.tool_name} ${tool.description}`).toLowerCase().includes(term) ? 1 : 0), 0), 0) })).sort((left, right) => right.score - left.score || String(left.server.name).localeCompare(String(right.server.name)));

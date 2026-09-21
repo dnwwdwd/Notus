@@ -106,7 +106,7 @@ function buildLargeDiffEntries(oldLines = [], newLines = []) {
     && newSuffix >= prefix
     && oldLines[oldSuffix] === newLines[newSuffix]
   ) {
-    suffix.unshift({
+    suffix.push({
       type: 'context',
       content: oldLines[oldSuffix],
       oldLineNumber: oldSuffix + 1,
@@ -131,7 +131,7 @@ function buildLargeDiffEntries(oldLines = [], newLines = []) {
     });
   }
 
-  entries.push(...suffix);
+  for (let index = suffix.length - 1; index >= 0; index -= 1) entries.push(suffix[index]);
   return entries;
 }
 
@@ -147,9 +147,9 @@ function createHunk(entries = [], start = 0, end = entries.length - 1) {
   const oldNumbers = lines.map((line) => line.oldLineNumber).filter((value) => Number.isFinite(value));
   const newNumbers = lines.map((line) => line.newLineNumber).filter((value) => Number.isFinite(value));
   return {
-    oldStart: oldNumbers.length > 0 ? Math.min(...oldNumbers) : 0,
+    oldStart: oldNumbers.length > 0 ? oldNumbers[0] : 0,
     oldLines: lines.filter((line) => line.type !== 'insert').length,
-    newStart: newNumbers.length > 0 ? Math.min(...newNumbers) : 0,
+    newStart: newNumbers.length > 0 ? newNumbers[0] : 0,
     newLines: lines.filter((line) => line.type !== 'delete').length,
     lines,
   };

@@ -18,13 +18,15 @@ const {
 } = require('../../../../lib/agentSession');
 const { validateCapability } = require('../../../../lib/agentControlPlane');
 const { getOperationSetById, markOperationSetStatus } = require('../../../../lib/canvasOperationSets');
-const { getTaskChangeSetBySession, markTaskChangeSetFinished, resolveOperationSet, resumeNonManualOperationConfirmation } = require('../../../../lib/agentTaskChangeSets');
-const { getTaskBySession, settleTaskRun, requestTaskResume, cancelTask } = require('../../../../lib/agentTaskQueue');
+const { getTaskChangeSetBySession, resumeNonManualOperationConfirmation } = require('../../../../lib/agentTaskChangeSets');
+const { getTaskBySession, requestTaskResume, cancelTask } = require('../../../../lib/agentTaskQueue');
 const { wakeAgentTaskWorker } = require('../../../../lib/agentTaskWorker');
+const { resolveManualConfirmation } = require('../../../../lib/agentManualConfirmation');
 const { getSessionTurnFrame } = require('../../../../lib/agentTurnFrames');
 const { agentRuntimeAtLeast } = require('../../../../lib/agentRuntimeMode');
 const { recordRuntimeFact, recordToolCallPrepared, recordToolCallTerminal } = require('../../../../lib/agentRuntimeFacts');
 const { archiveToolResult } = require('../../../../lib/agentToolResultStore');
+const { publish } = require('../../../../lib/agentRunEventBus');
 const { sha256 } = require('../../../../lib/files');
 
 function normalizePositiveInt(value) {
@@ -178,6 +180,14 @@ export default async function handler(req, res) {
     const artifact = await archiveToolResult({ conversationId: access.session.conversation_id, sessionId, taskId: taskBeforeOperation?.id, turnFrameId: turnFrame?.id, toolCallId: `operation-set-${operationSetId}`, invocationKey: operationInvocationKey, toolName: `operation_set_${action}`, actor: 'runtime', result });
     recordToolCallTerminal({ conversationId: access.session.conversation_id, sessionId, taskId: taskBeforeOperation?.id, turnFrameId: turnFrame?.id, actor: 'user', toolCallId: `operation-set-${operationSetId}`, invocationKey: operationInvocationKey, factType: result.conflict || !result.success ? 'tool_call_failed' : 'tool_call_completed', payload: { tool_name: `operation_set_${action}`, operation_set_id: Number(operationSetId), resource_changed: Boolean(result.success && !String(action).startsWith('discard')), result_ref: artifact?.status === 'ready' ? artifact.result_ref : null, artifact_status: artifact?.status || 'archive_failed' } });
   }
+  const handledSet = getOperationSetById(operationSetId);
+  const eventStatus = result.success ? handledSet?.status : 'apply_failed';
+  const handledPatches = handledSet?.patches || [];
+  const directoryCount = handledPatches.filter(patch => /folder/.test(patch.change_type || '')).length;
+  const eventBase = { type: 'artifact', operation_set_id: Number(operationSetId), execution_segment_id: handledSet?.execution_segment_id,
+    status: eventStatus, change_file_count: handledSet?.revision_type === 'file_revision' ? 1 : handledPatches.length - directoryCount, change_directory_count: directoryCount };
+  publish({ sessionId, event: { ...eventBase, artifact_type: 'operation_set', message: result.success ? '' : '本批应用未完成，已成功的修改保留，请检查失败项。' } });
+  if (result.success && isOperationSetResolved(handledSet)) publish({ sessionId, event: { ...eventBase, artifact_type: 'operation_resolution', text: eventStatus === 'applied' ? '本批已成功应用。' : '本批已处理。' } });
   result.task_change_set = getTaskChangeSetBySession(sessionId);
   if (result.conflict) return res.status(409).json(result);
   if (!result.success) return res.status(400).json(result);
@@ -186,9 +196,15 @@ export default async function handler(req, res) {
   const isManualDiff = String(task?.approval_mode || '') === 'manual_confirm';
   let changeSet = result.task_change_set;
   let resumed = false;
+  if (isManualDiff) {
+    const completion = resolveManualConfirmation({ operationSetId, sessionId, action, toolResult: result });
+    changeSet = completion.changeSet || changeSet;
+    resumed = completion.resumed;
+    if (resumed) wakeAgentTaskWorker();
+  }
   const resolvesManualPreview = ['apply', 'apply_all', 'apply_file', 'discard_file', 'discard_pending'].includes(action)
     && isOperationSetResolved(latestOperationSet);
-  if (resolvesManualPreview) {
+  if (resolvesManualPreview && !isManualDiff) {
     const resolution = ['applied', 'partial'].includes(String(latestOperationSet.status || '')) ? 'applied' : 'discarded';
     const toolResult = {
       ...result,
@@ -197,22 +213,12 @@ export default async function handler(req, res) {
       discarded: resolution === 'discarded',
       approval_mode: task?.approval_mode || approvalMode || 'manual_confirm',
     };
-    if (isManualDiff) {
-      changeSet = resolveOperationSet({ operationSetId, sessionId, resolution, toolResult });
-    } else {
-      const completion = resumeNonManualOperationConfirmation({ operationSetId, sessionId, resolution, toolResult });
-      changeSet = completion.changeSet;
-      if (completion.resumed) {
-        wakeAgentTaskWorker();
-        resumed = true;
-      }
+    const completion = resumeNonManualOperationConfirmation({ operationSetId, sessionId, resolution, toolResult });
+    changeSet = completion.changeSet;
+    if (completion.resumed) {
+      wakeAgentTaskWorker();
+      resumed = true;
     }
-  }
-  // 兼容旧版本遗留的等待确认会话：用户处理完 Diff 后直接收口，绝不再唤醒模型。
-  if (isManualDiff && getSession(sessionId)?.status === 'waiting_operation_confirmation' && isOperationSetResolved(latestOperationSet)) {
-    updateSessionStatus(sessionId, 'completed');
-    changeSet = markTaskChangeSetFinished(sessionId, 'completed') || changeSet;
-    settleTaskRun(sessionId, 'completed', { finished: true });
   }
   if (agentRuntimeAtLeast('facts')) {
     recordRuntimeFact({ eventKey: `operation-set:${operationSetId}:${action}:state`, conversationId: access.session.conversation_id, sessionId, taskId: taskBeforeOperation?.id, turnFrameId: turnFrame?.id, actor: 'user', factType: String(action).startsWith('rollback') ? 'operation_rolled_back' : String(action).startsWith('discard') ? 'operation_discarded' : 'operation_applied', payload: { operation_set_id: Number(operationSetId), action, status: latestOperationSet?.status || '' } });

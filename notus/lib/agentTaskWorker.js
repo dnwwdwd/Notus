@@ -17,7 +17,6 @@ const { getDb } = require('./db');
 const { updateResumeJob } = require('./agentControlPlane');
 const { mergeAgentMedia } = require('./agentMedia');
 const { markTaskChangeSetFinished } = require('./agentTaskChangeSets');
-const { agentRuntimeAtLeast, getAgentRuntimeMode } = require('./agentRuntimeMode');
 const { composeTurnFrame } = require('./agentSemanticRuntime');
 const { updateTurnFrame } = require('./agentTurnFrames');
 const { executeRuntimeSearchMission, getSearchCapabilityLimitation } = require('./agentSearchMission');
@@ -152,14 +151,13 @@ async function execute(task) {
     resumeJob = getDb().prepare('SELECT * FROM agent_resume_jobs WHERE id = ?').get(resumeJob.id);
   }
   try {
-    const runtimeMode = getAgentRuntimeMode();
     const media = splitMedia(input);
     const attachments = assertAttachmentLimits(conversationId, media.attachments);
     const images = assertImageLimits(conversationId, media.images);
     const llmConfig = resolveLlmRuntimeConfig({ llmConfigId: task.llm_config_id || input.llm_config_id || undefined });
     const userQuery = String(input.user_query || input.input_text || input.display_query || '').trim();
     let turnFrame = null;
-    if (agentRuntimeAtLeast('shadow', runtimeMode)) {
+    {
       const resumeInteraction = resumeJob?.interaction_id ? getInteractionById(resumeJob.interaction_id) : null;
       if (resumeInteraction?.payload?.origin === 'turn_composer' && resumeInteraction.status === 'cancelled') {
         updateSessionStatus(sessionId, 'cancelled');
@@ -182,7 +180,7 @@ async function execute(task) {
         llmConfig,
         runId,
         resumeInteraction,
-        allowSemanticPlanner: agentRuntimeAtLeast('search', runtimeMode),
+        allowSemanticPlanner: true,
       });
       if (historyDiscarded()) return;
       turnFrame = composed.frame;
@@ -195,9 +193,9 @@ async function execute(task) {
         runId,
         actor: 'runtime',
         factType: 'turn_frame_activated',
-        payload: { frame_version: turnFrame.frame_version, task_kind: turnFrame.intent?.task_kind || 'general', runtime_mode: runtimeMode },
+        payload: { frame_version: turnFrame.frame_version, task_kind: turnFrame.intent?.task_kind || 'general' },
       });
-      if (agentRuntimeAtLeast('search', runtimeMode) && composed.clarification) {
+      if (composed.clarification) {
         const interaction = createInteraction({
           conversationId,
           kind: 'clarify_card',
@@ -239,7 +237,7 @@ async function execute(task) {
       attachments,
       userInputText: userQuery,
       sourceMessageId: task.user_message_id,
-      selectedUrls: agentRuntimeAtLeast('search', runtimeMode) ? (turnFrame?.intent?.direct_url_policy?.inspect_urls || []) : undefined,
+      selectedUrls: turnFrame?.intent?.direct_url_policy?.inspect_urls || [],
       onEvent: (event) => emit(sessionId, runId, {
         ...event, type: 'progress', stage: event.type || 'attachment_progress', legacy_type: event.type,
         text: event.type === 'attachment_parse_start' ? `正在解析 ${event.source || '附件'}。` : event.status === 'error' ? `${event.source || '附件'}解析失败。` : `${event.source || '附件'}解析完成。`,
@@ -264,8 +262,8 @@ async function execute(task) {
     registerParsedInputSources({ sessionId, conversationId, parsedAttachments, attachments: loadAttachments(conversationId) });
     const preparedMcpContext = await prepareMcpTools(session.mcp_selection, session.goal, session.mcp_session_permissions || {}, { forceRefresh: true });
     if (controller.signal.aborted || historyDiscarded()) return;
-    if (agentRuntimeAtLeast('search', runtimeMode) && turnFrame) {
-      const mission = await executeRuntimeSearchMission({ session, task, frame: turnFrame, userQuery, llmConfig, runId });
+    if (turnFrame) {
+      const mission = await executeRuntimeSearchMission({ session, task, frame: turnFrame, userQuery, llmConfig, runId, preparedMcpContext, signal: controller.signal });
       if (historyDiscarded()) return;
       turnFrame = mission.frame || turnFrame;
       if (mission.executed && mission.receipt?.payload_unavailable) {
@@ -354,9 +352,7 @@ async function execute(task) {
       try { markTaskChangeSetFinished(sessionId, cancelled ? 'cancelled' : 'failed'); } catch {}
     }
     updateTask(sessionId, { status, lastError: { code: error.code || 'AGENT_TASK_FAILED', message: error.message || '任务执行失败' }, finished: !interrupted });
-    if (agentRuntimeAtLeast('facts')) {
-      recordRuntimeFact({ eventKey: `task:${task.id}:run:${runId}:${status}`, conversationId, sessionId, taskId: task.id, runId, actor: cancelled ? 'user' : 'runtime', factType: cancelled ? 'task_cancelled' : interrupted ? 'task_interrupted' : 'task_failed', payload: { error_code: error.code || 'AGENT_TASK_FAILED' } });
-    }
+    recordRuntimeFact({ eventKey: `task:${task.id}:run:${runId}:${status}`, conversationId, sessionId, taskId: task.id, runId, actor: cancelled ? 'user' : 'runtime', factType: cancelled ? 'task_cancelled' : interrupted ? 'task_interrupted' : 'task_failed', payload: { error_code: error.code || 'AGENT_TASK_FAILED' } });
     emit(sessionId, runId, { type: 'artifact', artifact_type: 'run_error', status: interrupted ? 'queued_resume' : 'failed', error_category: interrupted ? 'interrupted' : 'fatal', error_code: interrupted ? 'WORKER_INTERRUPTED' : (error.code || 'AGENT_TASK_FAILED'), message: interrupted ? '任务已保存，将在服务恢复后继续执行。' : 'Agent 执行异常，执行记录已保留。', resumable: interrupted });
     logger.error('agent.task.failed', { session_id: sessionId, error });
     if (resumeJob) {
@@ -383,7 +379,7 @@ function startAgentTaskWorker() {
   if (workerState.timer) return;
   recoverOrphanedTasks();
   recoverStaleRunLeases();
-  if (agentRuntimeAtLeast('facts')) reconcileUnresolvedToolCalls();
+  reconcileUnresolvedToolCalls();
   schedule();
   workerState.timer = setInterval(schedule, 1_000);
   if (workerState.timer.unref) workerState.timer.unref();

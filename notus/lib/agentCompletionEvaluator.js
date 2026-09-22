@@ -21,6 +21,28 @@ function hasSuccessfulResearch(sessionId, sourceType) {
   `).get(Number(sessionId), String(sourceType)));
 }
 
+function normalizeEvidenceText(value = '') {
+  return String(value || '').toLocaleLowerCase().replace(/[\s_-]+/g, '');
+}
+
+function hasMatchingVerificationEvidence(sessionId, frame = {}) {
+  const verification = frame?.intent?.verification || {};
+  if (verification.policy === 'direct') return true;
+  const subjects = (verification.research_subjects || []).map((item) => normalizeEvidenceText(item.raw_name)).filter(Boolean);
+  const rows = getDb().prepare(`
+    SELECT query, source_title, source_ref, summary, details_json
+    FROM agent_research_receipts
+    WHERE session_id = ? AND source_type IN ('web','explicit_url')
+      AND status IN ('success','partial') AND (result_count > 0 OR source_ref != '')
+    ORDER BY id DESC LIMIT 100
+  `).all(Number(sessionId));
+  if (!rows.length) return false;
+  if (!subjects.length) return true;
+  return subjects.every((subject) => rows.some((row) => normalizeEvidenceText([
+    row.query, row.source_title, row.source_ref, row.summary, row.details_json,
+  ].join(' ')).includes(subject)));
+}
+
 function hasOperationSet(sessionId, appliedOnly = false) {
   return Boolean(getDb().prepare(`
     SELECT 1 FROM canvas_operation_sets
@@ -59,6 +81,16 @@ function evaluateCompletion({ sessionId, frame, finalText = '', correctionCount 
   const reasons = [];
   if (hasUnknownToolOutcome(sessionId)) reasons.push('存在无法确认外部结果的工具调用');
   if (criteria.requires_web && !hasSuccessfulResearch(sessionId, 'web')) reasons.push('用户要求联网，但没有成功的联网来源事实');
+  const verification = frame?.intent?.verification || {};
+  if (verification.policy && verification.policy !== 'direct' && verification.network_allowed !== false
+    && !hasMatchingVerificationEvidence(sessionId, frame)) {
+    reasons.push('查证证据没有对应用户指定的完整研究对象或待核实问题');
+  }
+  if (verification.negative_claim_requires_evidence
+    && /不存在|没有这个|用户记错|你记错|无法部署|不能部署|不支持|虚构/i.test(String(finalText || ''))
+    && !hasMatchingVerificationEvidence(sessionId, frame)) {
+    reasons.push('确定性否定结论缺少对应对象的可核验证据；没有结果只能说明本次未查到');
+  }
   if (criteria.requires_write && !hasOperationSet(sessionId, criteria.requires_applied_write)) reasons.push(criteria.requires_applied_write
     ? '用户要求继续保存文件，但本轮没有已应用的文件变更'
     : '用户要求修改或创建文件，但没有文件预览或变更记录');
@@ -86,5 +118,6 @@ module.exports = {
   hasResourceChangeEvidence,
   hasSkillDraftEvidence,
   hasSuccessfulResearch,
+  hasMatchingVerificationEvidence,
   isResourceMutationTool,
 };

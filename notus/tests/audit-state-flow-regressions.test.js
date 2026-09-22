@@ -10,7 +10,7 @@ Object.assign(process.env, {
   NOTUS_RUNTIME_TARGET: 'web', NOTUS_DATA_ROOT: temp,
   NOTES_DIR: path.join(temp, 'notes'), ASSETS_DIR: path.join(temp, 'assets'),
   DB_PATH: path.join(temp, 'index.db'), SESSION_DIR: path.join(temp, 'session'),
-  LOG_DIR: path.join(temp, 'logs'), NOTUS_AGENT_RUNTIME_MODE: 'legacy',
+  LOG_DIR: path.join(temp, 'logs'),
 });
 function stub(name, exports) {
   const id = require.resolve(`../lib/${name}`);
@@ -82,14 +82,12 @@ async function run() {
     { file_path: 'patch.md', old: 'alpha', new: 'beta', change_type: 'modify' },
     { file_path: 'patch.md', old: 'delta', new: 'epsilon', change_type: 'modify' },
   ]);
-  process.env.NOTUS_AGENT_RUNTIME_MODE = 'shadow';
   const operate = control.issueCapability({ sessionId: ctx.session.sessionId, action: 'operate' });
   const first = await call(apply, { ...body, action: 'apply_file', operation_set_id: set.id, patch_index: 0, control_ticket: operate });
   assert.equal(first.status, 200, 'scoped ticket 与 token 必须使用相同的已授权 session 上下文');
   let item = changes.getTaskChangeSetDetail(ctx.session.sessionId).items[0];
   assert.ok(item.applied_content.includes('beta delta'));
   assert.ok(item.pending_content.includes('beta epsilon'));
-  process.env.NOTUS_AGENT_RUNTIME_MODE = 'legacy';
   await call(apply, { ...body, action: 'apply_all', operation_set_id: set.id });
   await call(apply, { ...body, action: 'rollback_file', operation_set_id: set.id, patch_index: 0 });
   item = changes.getTaskChangeSetDetail(ctx.session.sessionId).items[0];

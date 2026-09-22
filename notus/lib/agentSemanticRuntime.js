@@ -28,6 +28,66 @@ const MCP_ACTION = /\bmcp\b|mcp\s*server/i;
 const URL_READ_ACTION = /读取|阅读|打开|访问|检查|分析|总结|看看|查看|抓取|解析|比较/i;
 const ACTION_NEGATION = /(?:不要|不得|别|禁止|无需|不需要|不必|不能|不可|勿|并非要|不是要|尚未|未|不)(?:再|去|进行|帮我|直接|自动|现在|立刻|马上|这个|该|任何|只|\s){0,8}$/i;
 const CLAUSE_BOUNDARY = /[，。！？；,;\n]/;
+const DIRECT_PROCESSING = /润色|改写|重写|翻译|校对|缩写|扩写|排版|总结(?:以下|这段|上述|已提供|附件)|根据(?:以下|上述|已提供)(?:内容|材料|文本)/i;
+const USER_CORRECTION = /(?:我(?:已经|刚才)?说(?:过)?|我指的是|型号就是|名称就是|你(?:说|记|理解)错了|不是.+是|纠正|更正|确实存在|就是这个)/i;
+const VERIFICATION_REQUEST = /核实|查证|验证|确认(?:一下)?(?:是否|型号|版本|规格|存在)|搜索(?:一下)?|查一下|查找(?:一下)?|联网/i;
+const VERSIONED_FACT = /(?:型号|版本|规格|参数|显存|量化|兼容|部署|支持|发布|价格|政策|当前|最新|实时|仓库|项目功能)/i;
+const NEGATIVE_ASSERTION_RISK = /不存在|没有这个|用户记错|你记错|无法部署|不能部署|不支持|假的|虚构/i;
+
+function extractResearchSubjects(value = '') {
+  const text = normalizeText(value);
+  const candidates = [];
+  const patterns = [
+    /\b[A-Za-z][A-Za-z0-9]*(?:[._/-][A-Za-z0-9]+)+(?:\s+\d+(?:\.\d+)?\s*[Bb])?\b/g,
+    /\b[A-Za-z]+[A-Za-z0-9]*\d(?:\.\d+)*(?:[-_]\d+(?:\.\d+)?[Bb])?(?:\s+\d+(?:\.\d+)?\s*[Bb])?\b/g,
+    /\b\d+(?:\.\d+)?\s*[Bb]\b/g,
+  ];
+  patterns.forEach((pattern) => {
+    for (const match of text.matchAll(pattern)) candidates.push(match[0]);
+  });
+  const unique = [];
+  const seen = new Set();
+  candidates.sort((left, right) => right.length - left.length).forEach((raw) => {
+    const name = raw.replace(/\s+/g, ' ').trim();
+    const key = name.toLocaleLowerCase();
+    if (!name || seen.has(key) || unique.some((item) => item.raw_name.toLocaleLowerCase().includes(key))) return;
+    seen.add(key);
+    const version = name.match(/\d+(?:\.\d+)+/)?.[0] || '';
+    const spec = name.match(/\d+(?:\.\d+)?\s*[Bb]\b/i)?.[0]?.replace(/\s+/g, '') || '';
+    unique.push({ raw_name: name, normalized_name: name, version, spec, correction_from_user: USER_CORRECTION.test(text) });
+  });
+  return unique.slice(0, 6);
+}
+
+function buildVerificationContract(userQuery, { taskKind = 'general', webNegated = false } = {}) {
+  const text = normalizeText(userQuery);
+  const subjects = extractResearchSubjects(text);
+  const directProcessing = DIRECT_PROCESSING.test(text) || taskKind === 'file_write';
+  const correction = USER_CORRECTION.test(text);
+  const explicit = !webNegated && VERIFICATION_REQUEST.test(text);
+  const factNeedsEvidence = subjects.length > 0 && VERSIONED_FACT.test(text);
+  const negativeClaimRisk = NEGATIVE_ASSERTION_RISK.test(text);
+  const policy = directProcessing && !explicit
+    ? 'direct'
+    : correction || explicit || negativeClaimRisk
+    ? 'verification_required'
+    : factNeedsEvidence
+    ? 'evidence_needed'
+    : 'direct';
+  return {
+    policy,
+    network_allowed: !webNegated,
+    research_subjects: subjects,
+    verification_questions: policy === 'direct' ? [] : [text].filter(Boolean),
+    evidence_requirements: policy === 'direct' ? [] : [
+      subjects.length ? '来源必须对应用户指定的完整对象名称、版本和规格' : '来源必须直接回答当前待核实问题',
+      '空搜索结果不得支持对象不存在或用户记错等确定性否定结论',
+    ],
+    negative_claim_requires_evidence: policy !== 'direct' || negativeClaimRisk,
+    correction_from_user: correction,
+    search_budget: policy === 'direct' ? 0 : 2,
+  };
+}
 
 function normalizeText(value = '') {
   return String(value || '').replace(/\s+/g, ' ').trim();
@@ -191,11 +251,14 @@ function deterministicIntent(userQuery, context = {}) {
     && (context.mentions?.length || context.attachments?.length) > 1;
   const needsPlanner = mixedSkillActions > 1 || hasUnresolvedDeictic || conflictingWebInstruction || ambiguousUrlSelection;
   const needsClarification = mixedSkillActions > 1 || hasUnresolvedDeictic || conflictingWebInstruction || ambiguousUrlSelection;
+  const verification = buildVerificationContract(text, { taskKind, webNegated });
+  const verificationNeedsWeb = verification.policy !== 'direct' && verification.network_allowed;
+  if (verificationNeedsWeb && taskKind === 'general') intentSignals.push('verification');
 
   return {
     task_kind: taskKind,
     source_policy: {
-      web: webRequired ? 'required' : webNegated ? 'forbidden' : context.webSearchEnabled ? 'allowed' : 'forbidden',
+      web: webRequired || verificationNeedsWeb ? 'required' : webNegated ? 'forbidden' : context.webSearchEnabled ? 'allowed' : 'forbidden',
       knowledge: knowledgePolicy,
       local_skills: localSkillPolicy,
       direct_urls: inspectUrls.length ? 'inspect_selected' : 'do_not_inspect',
@@ -215,7 +278,7 @@ function deterministicIntent(userQuery, context = {}) {
     allowed_actions: requiresWrite ? ['read', 'write'] : ['read'],
     forbidden_actions: taskKind === 'skill_discovery' ? ['skill_install', 'skill_create', 'knowledge_substitution'] : [],
     completion_criteria: {
-      requires_web: webRequired,
+      requires_web: webRequired || verificationNeedsWeb,
       requires_write: taskKind === 'file_write',
       requires_skill_draft: taskKind === 'skill_create',
       requires_resource_change: taskKind === 'skill_install'
@@ -227,6 +290,7 @@ function deterministicIntent(userQuery, context = {}) {
     ambiguity_kind: mixedSkillActions > 1 ? 'skill_action' : conflictingWebInstruction ? 'web_permission' : ambiguousUrlSelection ? 'url_selection' : hasUnresolvedDeictic ? 'source_reference' : '',
     missing_slots: mixedSkillActions > 1 ? ['skill_action'] : conflictingWebInstruction ? ['web_permission'] : ambiguousUrlSelection ? ['url_selection'] : hasUnresolvedDeictic ? ['source_reference'] : [],
     signals: intentSignals,
+    verification,
   };
 }
 
@@ -538,6 +602,7 @@ async function composeTurnFrame({ task, session, userQuery, mentions = [], attac
 
 function formatTurnFrameForPrompt(frame = {}) {
   const intent = frame.intent || {};
+  const verification = intent.verification || {};
   const activeFile = intent.material_policy?.use_current_file ? frame.facts?.active_file : null;
   return [
     '## 当前轮任务契约',
@@ -547,6 +612,9 @@ function formatTurnFrameForPrompt(frame = {}) {
     `- 本地 Skill：${intent.source_policy?.local_skills || 'allowed'}`,
     `- 允许动作：${(intent.allowed_actions || []).join('、') || 'read'}`,
     `- 禁止动作：${(intent.forbidden_actions || []).join('、') || '无额外限制'}`,
+    `- 查证策略：${verification.policy || 'direct'}`,
+    verification.research_subjects?.length ? `- 研究对象（必须原样保留）：${verification.research_subjects.map((item) => item.raw_name).join('、')}` : '- 本轮没有指定研究对象。',
+    verification.negative_claim_requires_evidence ? '- “不存在、记错了、无法部署、不支持”等否定结论必须有对应对象的证据；没有结果只能说明本次未查到。' : '',
     activeFile ? `- 本轮明确当前文件：${activeFile.path}` : '- 本轮没有明确使用编辑器当前文件。',
     '任务契约由运行时生成。不得把搜索升级成安装，不得用被禁止的来源代替必需来源。',
   ].join('\n');
@@ -558,6 +626,8 @@ module.exports = {
   compileIntent,
   composeTurnFrame,
   deterministicIntent,
+  buildVerificationContract,
+  extractResearchSubjects,
   formatTurnFrameForPrompt,
   sanitizeUrl,
 };

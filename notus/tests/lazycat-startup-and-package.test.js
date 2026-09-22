@@ -21,6 +21,7 @@ async function runTests() {
   const containerScript = fs.readFileSync(path.join(repoRoot, 'desktop/scripts/build-lpk-container.sh'), 'utf8');
   const lpkBuildScript = fs.readFileSync(path.join(repoRoot, 'desktop/scripts/build-lpk.js'), 'utf8').replace(/\r\n/g, '\n');
   const lpkBuildConfig = fs.readFileSync(path.join(repoRoot, 'lzc-build.yml'), 'utf8').replace(/\r\n/g, '\n');
+  const lpkManifest = fs.readFileSync(path.join(repoRoot, 'lzc-manifest.yml'), 'utf8').replace(/\r\n/g, '\n');
   const proxyFunction = packageScript.match(/normalize_docker_proxy\(\) \{[\s\S]*?\n\}\n\nclean_runtime_state/);
 
   assert.ok(home.includes("const target = status.needsSetup ? '/setup' : '/files';"), '启动页只能根据初始化状态跳转，不能因待索引文件自动进入重建页');
@@ -65,6 +66,10 @@ async function runTests() {
     'node_modules/@next/swc-linux-x64-gnu',
     'npm install --no-save --package-lock=false --ignore-scripts --include=optional',
     'run_timed "Next.js 构建" npm run build',
+    'chmod 0755 "$DIST_DIR"',
+    'output_uid=$(stat -c %u /output)',
+    'if [ "$output_uid:$output_gid" = "0:0" ]',
+    'setpriv --reuid "$output_uid" --regid "$output_gid"',
   ].forEach((expected) => {
     assert.ok(packageScript.includes(expected), `LPK Docker 构建必须正确传递宿主代理：${expected}`);
   });
@@ -84,6 +89,8 @@ async function runTests() {
   assert.strictEqual(normalizeProxy('http://proxy.example:7898'), 'http://proxy.example:7898', '远程代理必须保持原值');
 
   assert.ok(lpkBuildConfig.includes('buildscript: sh lzc/build-package.sh'), 'LPK 配置必须声明唯一的内容构建脚本');
+  assert.ok(!lpkManifest.includes('NOTUS_AGENT_RUNTIME_MODE'), 'LPK 清单不得保留已删除的 Harness 模式变量');
+  assert.ok(lpkBuildScript.includes('assertSingleHarnessManifest(lzcManifestPath)'), 'LPK 入口必须在封包前拒绝重新引入 Harness 模式变量');
   assert.ok(lpkBuildScript.includes("await runCommand('lzc-cli', ['project', 'build', '-o', stagingPath]"), 'LPK 入口必须由 lzc-cli project build 写入临时包');
   assert.ok(!lpkBuildScript.includes("await run('sh', ['lzc/build-package.sh']"), 'LPK 入口不得在 lzc-cli project build 前重复执行内容构建脚本');
   assert.strictEqual(
@@ -94,7 +101,7 @@ async function runTests() {
   assert.ok(!lpkBuildScript.includes('removeOldPackages'), '打包前不得删除已有 LPK');
   assert.ok(lpkBuildScript.includes('await promoteStagedPackage(stagingPath, outputPath)'), '临时包存在后必须替换正式包');
 
-  const { buildLpk, createStagedPackagePath } = require(path.join(repoRoot, 'desktop/scripts/build-lpk.js'));
+  const { assertSingleHarnessManifest, buildLpk, createStagedPackagePath } = require(path.join(repoRoot, 'desktop/scripts/build-lpk.js'));
   const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'notus-lpk-promote-'));
   try {
     const outputPath = path.join(fixtureDir, 'cloud.lazycat.app.notus-v0.1.17.lpk');
@@ -103,9 +110,26 @@ async function runTests() {
     fs.mkdirSync(lzcDir);
     fs.writeFileSync(packagePath, 'package: cloud.lazycat.app.notus\nversion: 0.1.17\n');
     fs.writeFileSync(path.join(fixtureDir, 'lzc-build.yml'), 'buildscript: sh lzc/build-package.sh\n');
-    fs.writeFileSync(path.join(fixtureDir, 'lzc-manifest.yml'), 'name: Notus\n');
+    const manifestPath = path.join(fixtureDir, 'lzc-manifest.yml');
+    fs.writeFileSync(manifestPath, 'application:\n  environment:\n    - NODE_ENV=production\n');
     fs.writeFileSync(path.join(lzcDir, 'build-package.sh'), '#!/bin/sh\n');
     fs.writeFileSync(outputPath, 'previous-package');
+
+    for (const manifest of [
+      'application:\n  environment:\n    - NOTUS_AGENT_RUNTIME_MODE=legacy\n',
+      'application:\n  environment:\n    - NOTUS_AGENT_RUNTIME_MODE=enforced\n',
+    ]) {
+      fs.writeFileSync(manifestPath, manifest);
+      let commandCalled = false;
+      await assert.rejects(buildLpk({
+        repoRoot: fixtureDir,
+        runCommand: async () => { commandCalled = true; },
+      }), /Harness 模式变量/);
+      assert.strictEqual(commandCalled, false, '存在已删除的 Harness 模式变量时不得调用 lzc-cli');
+      assert.strictEqual(fs.readFileSync(outputPath, 'utf8'), 'previous-package', '清单无效时不得替换正式包');
+    }
+    fs.writeFileSync(manifestPath, 'application:\n  environment:\n    - NODE_ENV=production\n');
+    assert.doesNotThrow(() => assertSingleHarnessManifest(manifestPath));
 
     await assert.rejects(
       buildLpk({

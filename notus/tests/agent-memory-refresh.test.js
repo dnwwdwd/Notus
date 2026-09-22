@@ -23,11 +23,10 @@ async function run() {
   const { ensureConversation } = require('../lib/conversations');
   const { createSession, listRunEvents } = require('../lib/agentSession');
   const { runAgentLoop } = require('../lib/agentLoop');
-  for (const mode of ['legacy', 'enforced']) {
-    process.env.NOTUS_AGENT_RUNTIME_MODE = mode;
-    marker = mode === 'legacy' ? '短句' : '具体示例';
+  for (const markerValue of ['短句', '具体示例']) {
+    marker = markerValue;
     count = 0; requests = [];
-    const conversation = ensureConversation({ kind: 'canvas', title: mode });
+    const conversation = ensureConversation({ kind: 'canvas', title: marker });
     const session = createSession({ goal: `我平时偏好${marker}`, authorizedPaths: [''], conversationId: conversation.id });
     const result = await runAgentLoop({ sessionId: session.sessionId, llmConfig: { llmContextWindowTokens: 60000 } });
     assert.strictEqual(result.status, 'completed');

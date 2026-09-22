@@ -4,7 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 const root = fs.mkdtempSync(path.join(os.tmpdir(),'notus-resource-refresh-'));
-Object.assign(process.env,{NOTUS_RUNTIME_TARGET:'web',NOTUS_DATA_ROOT:root,NOTES_DIR:path.join(root,'notes'),ASSETS_DIR:path.join(root,'assets'),DB_PATH:path.join(root,'db.sqlite'),LOG_DIR:path.join(root,'logs'),NOTUS_AGENT_RUNTIME_MODE:'profile'});
+Object.assign(process.env,{NOTUS_RUNTIME_TARGET:'web',NOTUS_DATA_ROOT:root,NOTES_DIR:path.join(root,'notes'),ASSETS_DIR:path.join(root,'assets'),DB_PATH:path.join(root,'db.sqlite'),LOG_DIR:path.join(root,'logs')});
 let request;
 const llmPath=require.resolve('../lib/llm');
 require.cache[llmPath]={id:llmPath,filename:llmPath,loaded:true,exports:{completeToolChat:async (input)=>{request=input;return {content:[{type:'text',text:'done'}]};}}};

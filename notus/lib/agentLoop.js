@@ -1,12 +1,10 @@
 const { completeToolChat } = require('./llm');
 const { getEffectiveConfig } = require('./config');
 const { getStyleContext } = require('./style');
-const { buildInitialUserMessage, buildLoopSystemPrompt } = require('./agentLoopPrompt');
+const { buildInitialUserMessage } = require('./agentLoopPrompt');
 const { renderAgentLoopPrompt } = require('./prompt/agent-loop/render');
 const { buildConversationContext } = require('./agentConversationContext');
 const { compactMessages, migrateCheckpointResults, INLINE_READ_TOOLS } = require('./agentMessageProjection');
-const { loadAttachments, formatAttachmentsForPrompt } = require('./parsedAttachmentStore');
-const { formatWebSearchContextsForPrompt } = require('./webSearchContextStore');
 const {
   clearMessagesCheckpoint,
   detectDeadloop,
@@ -48,14 +46,11 @@ const {
 } = require('./conversationInteractions');
 const { eligibleSkillSummaries, scanAllSkills } = require('./skills');
 const { prepareMcpTools } = require('./mcp');
-const { buildConversationResourceContext } = require('./agentResourceContext');
 const { buildGlobalAgentContext } = require('./globalAgentFiles');
 const {
-  formatResearchReceiptsForPrompt,
   recordToolReceipt,
   recordWriteReceipt,
 } = require('./agentResearch');
-const { agentRuntimeAtLeast, getAgentRuntimeMode } = require('./agentRuntimeMode');
 const { getSessionTurnFrame } = require('./agentTurnFrames');
 const { projectAgentContext } = require('./agentContextProjector');
 const { projectToolDefinitions, requiredToolNames, toolReplayPolicy } = require('./agentToolProfile');
@@ -318,12 +313,11 @@ function buildInitialUserContent(session, options = {}) {
 async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId = null, llmConfig, onStream, signal, approvalMode = 'auto_confirm', resumeInteractionId = null, initialImages = [], currentImageRecognition = null, preparedMcpContext = null, llmRetryDelayMs = null, llmRetryWait = null } = {}) {
   let session = getSession(sessionId);
   const config = getEffectiveConfig();
-  const runtimeMode = getAgentRuntimeMode();
-  let effectiveFrame = turnFrame || (agentRuntimeAtLeast('shadow', runtimeMode) ? getSessionTurnFrame(sessionId) : null);
+  let effectiveFrame = turnFrame || getSessionTurnFrame(sessionId);
   const { resolveFailedFileContinuation, formatFailedFileContinuation } = require('./agentTaskContinuation');
   const fileContinuation = effectiveFrame?.facts?.failed_file_continuation || resolveFailedFileContinuation(session);
   const completionFrame = fileContinuation
-    ? { intent: { completion_criteria: { ...effectiveFrame?.intent?.completion_criteria, requires_write: true, requires_applied_write: normalizeApprovalMode(approvalMode) === 'auto_confirm', requires_answer: true } } }
+    ? { ...effectiveFrame, intent: { ...effectiveFrame?.intent, completion_criteria: { ...effectiveFrame?.intent?.completion_criteria, requires_write: true, requires_applied_write: normalizeApprovalMode(approvalMode) === 'auto_confirm', requires_answer: true } } }
     : null;
   const rawEmit = typeof onStream === 'function' ? onStream : () => {};
   const emit = (event) => {
@@ -345,12 +339,11 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
   };
   const normalizedApprovalMode = normalizeApprovalMode(approvalMode);
 
-  const styleContext = !agentRuntimeAtLeast('profile', runtimeMode) || effectiveFrame?.intent?.task_kind === 'file_write'
+  const styleContext = effectiveFrame?.intent?.task_kind === 'file_write'
     ? await loadStyleContext(session)
     : null;
-  const resourceContext = agentRuntimeAtLeast('context', runtimeMode) ? null : buildConversationResourceContext(session.conversation_id);
   scanAllSkills();
-  const skillCatalog = !agentRuntimeAtLeast('profile', runtimeMode) || effectiveFrame?.intent?.source_policy?.local_skills !== 'forbidden'
+  const skillCatalog = effectiveFrame?.intent?.source_policy?.local_skills !== 'forbidden'
     ? eligibleSkillSummaries(session.goal, session.skill_mentions || [])
     : [];
   const mcpSelection = session.mcp_selection || { mode: 'off' };
@@ -358,45 +351,28 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
     mcpSelection, session.goal, session.mcp_session_permissions || {}, { forceRefresh: true },
   );
   const allTools = buildToolDefinitions(session, { mcpTools: mcpContext.tools });
-  const tools = agentRuntimeAtLeast('profile', runtimeMode)
-    ? projectToolDefinitions(allTools, effectiveFrame)
-    : allTools;
+  const tools = projectToolDefinitions(allTools, effectiveFrame);
   session = setSessionRuntimeVersions(session.id, {
     promptVersion: config.agentPromptVersion || 'agent-loop-v2',
     toolsetVersion: sha256(JSON.stringify(tools)).slice(0, 16),
     tokenBudgetTotal: Number(llmConfig?.llmContextWindowTokens || config.llmContextWindowTokens || 60000),
   });
-  const attachmentContext = !agentRuntimeAtLeast('context', runtimeMode) && session.conversation_id
-    ? formatAttachmentsForPrompt(loadAttachments(session.conversation_id))
-    : '';
-  const webSearchContext = !agentRuntimeAtLeast('context', runtimeMode) && session.conversation_id && session.web_search_enabled
-    ? formatWebSearchContextsForPrompt(session.conversation_id)
-    : '';
-  const researchReceiptContext = agentRuntimeAtLeast('context', runtimeMode) ? '' : formatResearchReceiptsForPrompt(session.id);
   const basePromptOptions = {
     styleContext,
-    resourceContext,
+    resourceContext: null,
     skillCatalog,
     mcpInstructions: mcpContext.instructions,
     intentContract: effectiveFrame ? require('./agentSemanticRuntime').formatTurnFrameForPrompt(effectiveFrame) : '',
     contextWindowTokens: Number(llmConfig?.llmContextWindowTokens || config.llmContextWindowTokens || 60000),
   };
   const renderRequestPrompt = ({ restricted = false, completionCorrection = '' } = {}) => {
-    if (agentRuntimeAtLeast('context', runtimeMode)) {
-      effectiveFrame = getSessionTurnFrame(session.id) || effectiveFrame;
-    }
-    const projectedContext = agentRuntimeAtLeast('context', runtimeMode)
-      ? projectAgentContext(effectiveFrame)
-      : null;
+    effectiveFrame = getSessionTurnFrame(session.id) || effectiveFrame;
+    const projectedContext = projectAgentContext(effectiveFrame);
     const promptOptions = {
       ...basePromptOptions,
       globalAgentContext: buildGlobalAgentContext(session.goal, { memoryTokens: restricted ? 800 : Math.min(4800, Math.floor(basePromptOptions.contextWindowTokens * 0.08)) }),
-      taskMaterialContext: [projectedContext?.taskMaterialContext || [attachmentContext, webSearchContext, researchReceiptContext].filter(Boolean).join('\n\n'), require('./agentMaterials').materialDirectoryPrompt(session)].filter(Boolean).join('\n\n'),
-      taskMaterials: projectedContext?.taskMaterials || [
-        attachmentContext ? { sourceType: 'attachment', sourceId: `conversation-${session.conversation_id}-attachments`, content: attachmentContext } : null,
-        webSearchContext ? { sourceType: 'web', sourceId: `conversation-${session.conversation_id}-web`, content: webSearchContext } : null,
-        researchReceiptContext ? { sourceType: 'knowledge', sourceId: `session-${session.id}-research-receipts`, content: researchReceiptContext } : null,
-      ].filter(Boolean),
+      taskMaterialContext: [projectedContext?.taskMaterialContext || '', require('./agentMaterials').materialDirectoryPrompt(session)].filter(Boolean).join('\n\n'),
+      taskMaterials: projectedContext?.taskMaterials || [],
     };
     const options = restricted ? {
       ...promptOptions,
@@ -405,15 +381,11 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
       resourceContext: null,
       skillCatalog: [],
       mcpInstructions: [],
-      taskMaterials: agentRuntimeAtLeast('context', runtimeMode)
-        ? promptOptions.taskMaterials
-        : promptOptions.taskMaterials.filter((item) => item.sourceType === 'attachment'),
+      taskMaterials: promptOptions.taskMaterials,
       taskMaterialContext: require('./agentMaterials').materialDirectoryPrompt(session),
       completionCorrection,
     } : { ...promptOptions, completionCorrection };
-    return session.prompt_version === 'legacy-v1'
-      ? { text: buildLoopSystemPrompt(session, options), version: 'legacy-v1', moduleIds: ['legacy-v1'] }
-      : renderAgentLoopPrompt(session, options);
+    return renderAgentLoopPrompt(session, options);
   };
   const renderedPrompt = renderRequestPrompt();
   logToolCall({
@@ -619,9 +591,7 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
     }
     const contextWindow = Number(llmConfig?.llmContextWindowTokens || config.llmContextWindowTokens || 60000);
     const normalPrompt = renderRequestPrompt({ completionCorrection });
-    const normalTools = agentRuntimeAtLeast('profile', runtimeMode)
-      ? projectToolDefinitions(allTools, effectiveFrame)
-      : tools;
+    const normalTools = projectToolDefinitions(allTools, effectiveFrame);
     const estimatedRequestTokens = estimateChatRequestTokens({ system: normalPrompt.text, messages, tools: normalTools });
     const requestPressure = estimatedRequestTokens / Math.max(contextWindow, 1);
     const nextBudgetRestricted = requestPressure >= 0.85;
@@ -811,7 +781,7 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
 
     if (isGoalAchieved(stopReason, toolUseBlocks)) {
       logToolCall({ sessionId: session.id, loopIndex, toolName: null, toolInput: null, toolResult: null, thinking, status: 'success', durationMs: 0 });
-      if (agentRuntimeAtLeast('enforced', runtimeMode) || fileContinuation) {
+      {
         const completion = evaluateCompletion({
           sessionId: session.id,
           frame: completionFrame || effectiveFrame,
@@ -909,8 +879,7 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
         tool_index: toolIndex,
       });
       const startedAt = Date.now();
-      if (agentRuntimeAtLeast('shadow', runtimeMode)) {
-        recordToolCallPrepared({
+      recordToolCallPrepared({
           conversationId: session.conversation_id,
           sessionId: session.id,
           taskId,
@@ -930,10 +899,9 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
             'update_skill_from_git', 'uninstall_skill', 'add_mcp_server', 'update_mcp_server',
             'set_mcp_server_enabled', 'remove_mcp_server',
           ].includes(toolUse.name) ? 'resource_mutation' : '',
-        });
-      }
+      });
       const existingOperationSet = getOperationSetByToolUse(session.id, toolUse.id);
-      const invocationState = agentRuntimeAtLeast('facts', runtimeMode) ? getInvocationState(invocationKey) : { terminal: null };
+      const invocationState = getInvocationState(invocationKey);
       const recoveredInvocation = invocationState.terminal && replayPolicy === 'non_replayable'
         && invocationState.terminal.fact_type !== 'tool_call_outcome_unknown'
         ? await readArtifactResultForRuntime({
@@ -1012,7 +980,7 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
         errorCode: result?.error,
       });
 
-      if (agentRuntimeAtLeast('shadow', runtimeMode)) {
+      {
         const resourceChangeTools = new Set([
           'install_skill_from_git', 'install_skill_draft', 'update_skill_draft', 'set_skill_enabled',
           'update_skill_from_git', 'uninstall_skill', 'add_mcp_server', 'update_mcp_server',

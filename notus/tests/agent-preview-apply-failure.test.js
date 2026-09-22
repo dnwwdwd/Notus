@@ -8,7 +8,7 @@ Object.assign(process.env, {
   NOTUS_RUNTIME_TARGET: 'web', NOTUS_DATA_ROOT: root,
   NOTES_DIR: path.join(root, 'notes'), DB_PATH: path.join(root, 'notus.db'),
   ASSETS_DIR: path.join(root, 'assets'), LOG_DIR: path.join(root, 'logs'),
-  SESSION_DIR: path.join(root, 'session'), NOTUS_AGENT_RUNTIME_MODE: 'legacy',
+  SESSION_DIR: path.join(root, 'session'),
 });
 let calls = [];
 let requests = [];

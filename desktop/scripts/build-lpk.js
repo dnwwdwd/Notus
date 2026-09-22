@@ -35,6 +35,11 @@ function readPackageMeta(filePath) {
   };
 }
 
+function assertSingleHarnessManifest(filePath) {
+  const content = fs.readFileSync(filePath, 'utf8');
+  if (/NOTUS_AGENT_RUNTIME_MODE/.test(content)) throw new Error(`懒猫清单不得声明已删除的 Harness 模式变量：${filePath}`);
+}
+
 function createStagedPackagePath(outputPath) {
   const directory = path.dirname(outputPath);
   const extension = path.extname(outputPath) || '.lpk';
@@ -59,6 +64,7 @@ async function buildLpk(options = {}) {
       throw new Error(`缺少懒猫打包文件：${target}`);
     }
   });
+  assertSingleHarnessManifest(lzcManifestPath);
 
   const { packageName, version } = readPackageMeta(packagePath);
   const outputName = `${packageName}-v${version}.lpk`;
@@ -105,6 +111,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  assertSingleHarnessManifest,
   buildLpk,
   createStagedPackagePath,
   promoteStagedPackage,

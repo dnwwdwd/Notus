@@ -371,6 +371,7 @@ async function executeSearchKnowledge({ query, scope_paths: scopePaths = [], top
     sourceType: 'knowledge',
     query: q,
     llmConfig: context.llmConfig,
+    maxQueries: context.maxQueries,
     evidence: knowledgeHasEvidence,
     executeQuery: async (plannedQuery) => {
       if (hasScopeRequest && fileIds.length === 0) {

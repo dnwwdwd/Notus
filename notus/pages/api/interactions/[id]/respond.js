@@ -24,7 +24,6 @@ const { wakeTask } = require('../../../../lib/agentTaskQueue');
 const { wakeAgentTaskWorker } = require('../../../../lib/agentTaskWorker');
 const { getTaskBySession } = require('../../../../lib/agentTaskQueue');
 const { getSessionTurnFrame } = require('../../../../lib/agentTurnFrames');
-const { agentRuntimeAtLeast } = require('../../../../lib/agentRuntimeMode');
 const { recordRuntimeFact, recordToolCallPrepared, recordToolCallTerminal } = require('../../../../lib/agentRuntimeFacts');
 const { archiveToolResult } = require('../../../../lib/agentToolResultStore');
 const { sha256 } = require('../../../../lib/files');
@@ -256,7 +255,7 @@ export default async function handler(req, res) {
     const resourceTask = agentSessionId ? getTaskBySession(agentSessionId) : null;
     const resourceFrame = agentSessionId ? getSessionTurnFrame(agentSessionId) : null;
     const resourceInvocationKey = `interaction:${interaction.id}:resource`;
-    if (agentRuntimeAtLeast('shadow') && agentSessionId) {
+    if (agentSessionId) {
       recordToolCallPrepared({
         conversationId: interaction.conversation_id,
         sessionId: agentSessionId,
@@ -277,7 +276,7 @@ export default async function handler(req, res) {
       result = await applyResourceApproval(claimed.payload || {}, action);
     } catch (error) {
       const failed = getDb().transaction(() => {
-        if (agentRuntimeAtLeast('shadow') && agentSessionId) {
+        if (agentSessionId) {
           recordToolCallTerminal({ conversationId: interaction.conversation_id, sessionId: agentSessionId, taskId: resourceTask?.id, turnFrameId: resourceFrame?.id, actor: 'runtime', toolCallId: `interaction-${interaction.id}`, invocationKey: resourceInvocationKey, factType: 'tool_call_failed', payload: { tool_name: claimed.payload?.action || 'resource_approval', error_code: error.code || 'RESOURCE_ACTION_FAILED' } });
         }
         return updateInteractionWhen(interaction.id, ['processing'], {
@@ -294,7 +293,7 @@ export default async function handler(req, res) {
     }
 
     let resourceArtifact = null;
-    if (agentRuntimeAtLeast('shadow') && agentSessionId) {
+    if (agentSessionId) {
       resourceArtifact = await archiveToolResult({ conversationId: interaction.conversation_id, sessionId: agentSessionId, taskId: resourceTask?.id, turnFrameId: resourceFrame?.id, toolCallId: `interaction-${interaction.id}`, invocationKey: resourceInvocationKey, toolName: claimed.payload?.action || 'resource_approval', actor: 'runtime', result });
     }
 
@@ -305,7 +304,7 @@ export default async function handler(req, res) {
         answeredAt: new Date().toISOString(),
       });
       if (!updated) return null;
-      if (agentRuntimeAtLeast('shadow') && agentSessionId) {
+      if (agentSessionId) {
         recordToolCallTerminal({
           conversationId: interaction.conversation_id,
           sessionId: agentSessionId,
@@ -363,7 +362,7 @@ export default async function handler(req, res) {
       return res.status(error.status || 409).json({ error: error.message, code: error.code || 'INTERACTION_RESPONSE_FAILED', request_id: context.request_id });
     }
     if (!cancelled?.updated) return respondWithCurrentInteraction(res, interaction.id, context.request_id);
-    if (agentRuntimeAtLeast('facts') && agentSessionId) {
+    if (agentSessionId) {
       const frame = getSessionTurnFrame(agentSessionId);
       const task = getTaskBySession(agentSessionId);
       recordRuntimeFact({ eventKey: `interaction:${interaction.id}:cancelled`, conversationId: interaction.conversation_id, sessionId: agentSessionId, taskId: task?.id, turnFrameId: frame?.id, actor: 'user', factType: 'interaction_cancelled', payload: { interaction_id: interaction.id, origin: interaction.payload?.origin || '' } });
@@ -493,7 +492,7 @@ export default async function handler(req, res) {
   }
   if (!finalized) return respondWithCurrentInteraction(res, interaction.id, context.request_id);
 
-  if (agentRuntimeAtLeast('facts') && agentSessionId && finalized.updatedInteraction?.status === 'answered') {
+  if (agentSessionId && finalized.updatedInteraction?.status === 'answered') {
     const frame = getSessionTurnFrame(agentSessionId);
     const task = getTaskBySession(agentSessionId);
     recordRuntimeFact({ eventKey: `interaction:${interaction.id}:answered`, conversationId: interaction.conversation_id, sessionId: agentSessionId, taskId: task?.id, turnFrameId: frame?.id, actor: 'user', factType: 'interaction_answered', payload: { interaction_id: interaction.id, origin: interaction.payload?.origin || '', answer_message_id: finalized.answerMessageId } });

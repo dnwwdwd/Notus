@@ -23,7 +23,6 @@ const { getTaskBySession, requestTaskResume, cancelTask } = require('../../../..
 const { wakeAgentTaskWorker } = require('../../../../lib/agentTaskWorker');
 const { resolveManualConfirmation } = require('../../../../lib/agentManualConfirmation');
 const { getSessionTurnFrame } = require('../../../../lib/agentTurnFrames');
-const { agentRuntimeAtLeast } = require('../../../../lib/agentRuntimeMode');
 const { recordRuntimeFact, recordToolCallPrepared, recordToolCallTerminal } = require('../../../../lib/agentRuntimeFacts');
 const { archiveToolResult } = require('../../../../lib/agentToolResultStore');
 const { publish } = require('../../../../lib/agentRunEventBus');
@@ -146,9 +145,7 @@ export default async function handler(req, res) {
   const taskBeforeOperation = getTaskBySession(sessionId);
   const turnFrame = getSessionTurnFrame(sessionId);
   const operationInvocationKey = `operation-set:${operationSetId}:${action}:${patchIndex ?? (filePath || 'all')}`;
-  if (agentRuntimeAtLeast('shadow')) {
-    recordToolCallPrepared({ conversationId: access.session.conversation_id, sessionId, taskId: taskBeforeOperation?.id, turnFrameId: turnFrame?.id, actor: 'user', toolCallId: `operation-set-${operationSetId}`, invocationKey: operationInvocationKey, toolName: `operation_set_${action}`, inputDigest: sha256(JSON.stringify({ operationSetId, action, patchIndex, filePath, force: Boolean(force) })), replayPolicy: 'operation_set', control: { operation_set_id: Number(operationSetId), action: String(action || '') } });
-  }
+  recordToolCallPrepared({ conversationId: access.session.conversation_id, sessionId, taskId: taskBeforeOperation?.id, turnFrameId: turnFrame?.id, actor: 'user', toolCallId: `operation-set-${operationSetId}`, invocationKey: operationInvocationKey, toolName: `operation_set_${action}`, inputDigest: sha256(JSON.stringify({ operationSetId, action, patchIndex, filePath, force: Boolean(force) })), replayPolicy: 'operation_set', control: { operation_set_id: Number(operationSetId), action: String(action || '') } });
 
   let result;
   const isFileRevision = String(currentConversation.operationSet?.revision_type || currentConversation.operationSet?.type || currentConversation.operationSet?.mode || '') === 'file_revision';
@@ -176,10 +173,8 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: `unsupported action: ${action}`, code: 'UNSUPPORTED_ACTION' });
   }
 
-  if (agentRuntimeAtLeast('shadow')) {
-    const artifact = await archiveToolResult({ conversationId: access.session.conversation_id, sessionId, taskId: taskBeforeOperation?.id, turnFrameId: turnFrame?.id, toolCallId: `operation-set-${operationSetId}`, invocationKey: operationInvocationKey, toolName: `operation_set_${action}`, actor: 'runtime', result });
-    recordToolCallTerminal({ conversationId: access.session.conversation_id, sessionId, taskId: taskBeforeOperation?.id, turnFrameId: turnFrame?.id, actor: 'user', toolCallId: `operation-set-${operationSetId}`, invocationKey: operationInvocationKey, factType: result.conflict || !result.success ? 'tool_call_failed' : 'tool_call_completed', payload: { tool_name: `operation_set_${action}`, operation_set_id: Number(operationSetId), resource_changed: Boolean(result.success && !String(action).startsWith('discard')), result_ref: artifact?.status === 'ready' ? artifact.result_ref : null, artifact_status: artifact?.status || 'archive_failed' } });
-  }
+  const artifact = await archiveToolResult({ conversationId: access.session.conversation_id, sessionId, taskId: taskBeforeOperation?.id, turnFrameId: turnFrame?.id, toolCallId: `operation-set-${operationSetId}`, invocationKey: operationInvocationKey, toolName: `operation_set_${action}`, actor: 'runtime', result });
+  recordToolCallTerminal({ conversationId: access.session.conversation_id, sessionId, taskId: taskBeforeOperation?.id, turnFrameId: turnFrame?.id, actor: 'user', toolCallId: `operation-set-${operationSetId}`, invocationKey: operationInvocationKey, factType: result.conflict || !result.success ? 'tool_call_failed' : 'tool_call_completed', payload: { tool_name: `operation_set_${action}`, operation_set_id: Number(operationSetId), resource_changed: Boolean(result.success && !String(action).startsWith('discard')), result_ref: artifact?.status === 'ready' ? artifact.result_ref : null, artifact_status: artifact?.status || 'archive_failed' } });
   const handledSet = getOperationSetById(operationSetId);
   const eventStatus = result.success ? handledSet?.status : 'apply_failed';
   const handledPatches = handledSet?.patches || [];
@@ -220,9 +215,7 @@ export default async function handler(req, res) {
       resumed = true;
     }
   }
-  if (agentRuntimeAtLeast('facts')) {
-    recordRuntimeFact({ eventKey: `operation-set:${operationSetId}:${action}:state`, conversationId: access.session.conversation_id, sessionId, taskId: taskBeforeOperation?.id, turnFrameId: turnFrame?.id, actor: 'user', factType: String(action).startsWith('rollback') ? 'operation_rolled_back' : String(action).startsWith('discard') ? 'operation_discarded' : 'operation_applied', payload: { operation_set_id: Number(operationSetId), action, status: latestOperationSet?.status || '' } });
-  }
+  recordRuntimeFact({ eventKey: `operation-set:${operationSetId}:${action}:state`, conversationId: access.session.conversation_id, sessionId, taskId: taskBeforeOperation?.id, turnFrameId: turnFrame?.id, actor: 'user', factType: String(action).startsWith('rollback') ? 'operation_rolled_back' : String(action).startsWith('discard') ? 'operation_discarded' : 'operation_applied', payload: { operation_set_id: Number(operationSetId), action, status: latestOperationSet?.status || '' } });
   return res.status(200).json({
     ...result,
     operation_set: latestOperationSet,

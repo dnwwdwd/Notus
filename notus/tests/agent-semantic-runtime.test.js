@@ -11,11 +11,7 @@ async function runTests() {
   process.env.NOTES_DIR = path.join(tempRoot, 'notes');
   process.env.ASSETS_DIR = path.join(tempRoot, 'assets');
   process.env.SESSION_DIR = path.join(tempRoot, 'session');
-  process.env.NOTUS_AGENT_RUNTIME_MODE = 'enforced';
-
-  const { getAgentRuntimeMode } = require('../lib/agentRuntimeMode');
-  assert.strictEqual(getAgentRuntimeMode({}), 'legacy');
-  const { clarificationIntent, compileIntent, deterministicIntent } = require('../lib/agentSemanticRuntime');
+  const { clarificationIntent, compileIntent, deterministicIntent, extractResearchSubjects } = require('../lib/agentSemanticRuntime');
   const { requiredToolNames } = require('../lib/agentToolProfile');
   const { getSearchCapabilityLimitation, sanitizeOutboundSearchQuery } = require('../lib/agentSearchMission');
   const skillDiscovery = deterministicIntent('帮我找生成应用 icon 的 Skill', { webSearchEnabled: true });
@@ -38,6 +34,24 @@ async function runTests() {
   assert.strictEqual(compiledDiscovery.completion_criteria.requires_web, true);
   assert.ok(compiledDiscovery.forbidden_actions.includes('skill_install'));
   assert.ok(requiredToolNames(createWithoutInstall).has('create_skill_draft'));
+
+  assert.deepStrictEqual(extractResearchSubjects('qwen3.8 27b 能否部署').map((item) => item.raw_name), ['qwen3.8 27b']);
+  assert.deepStrictEqual(extractResearchSubjects('Qwen3.8-27B 能否部署').map((item) => item.raw_name), ['Qwen3.8-27B']);
+  const modelVerification = deterministicIntent('这张卡能否部署 Qwen3.8-27B？', { webSearchEnabled: true });
+  assert.strictEqual(modelVerification.intent?.verification, undefined);
+  assert.strictEqual(modelVerification.verification.policy, 'evidence_needed');
+  assert.strictEqual(modelVerification.source_policy.web, 'required');
+  assert.strictEqual(modelVerification.verification.research_subjects[0].raw_name, 'Qwen3.8-27B');
+  const correctedModel = deterministicIntent('你记错了，型号就是 Qwen3.8-27B，请重新回答。', { webSearchEnabled: true });
+  assert.strictEqual(correctedModel.verification.policy, 'verification_required');
+  assert.strictEqual(correctedModel.verification.correction_from_user, true);
+  const rewriteWithModel = deterministicIntent('润色这句话：Qwen3.8-27B 是一个新型号。', { webSearchEnabled: true });
+  assert.strictEqual(rewriteWithModel.verification.policy, 'direct');
+  assert.notStrictEqual(rewriteWithModel.source_policy.web, 'required');
+  const offlineModel = deterministicIntent('不要联网，Qwen3.8-27B 能否部署？', { webSearchEnabled: true });
+  assert.strictEqual(offlineModel.verification.policy, 'evidence_needed');
+  assert.strictEqual(offlineModel.verification.network_allowed, false);
+  assert.strictEqual(offlineModel.source_policy.web, 'forbidden');
 
   const explicitWeb = deterministicIntent('联网搜索这个 Skill', { webSearchEnabled: false });
   assert.strictEqual(explicitWeb.source_policy.web, 'required');
@@ -122,7 +136,7 @@ async function runTests() {
   getDb();
   const { ensureConversation } = require('../lib/conversations');
   const { createSession } = require('../lib/agentSession');
-  const { executePlannedResearch, webHasEvidence } = require('../lib/agentResearch');
+  const { executePlannedResearch, insertResearchReceipt, webHasEvidence } = require('../lib/agentResearch');
   const conversation = ensureConversation({ kind: 'knowledge', title: 'search mission' });
   const { parseAgentInputSources } = require('../lib/agentInputSources');
   let networkRequests = 0;
@@ -156,6 +170,15 @@ async function runTests() {
   await executePlannedResearch({ session, sourceType: 'web', query: 'second new question', missionFingerprint: 'mission-b', executeQuery, evidence: webHasEvidence });
   assert.ok(calls.length > firstCount, '新问题不能复用旧 Search Mission。');
   assert.ok(calls.slice(firstCount).includes('second new question'));
+
+  const evidenceSession = createSession({ goal: 'Qwen3.8-27B 部署核实', conversationId: conversation.id });
+  const evidenceFrame = { intent: { verification: modelVerification.verification, completion_criteria: { requires_answer: true, requires_web: true } } };
+  const { evaluateCompletion, hasMatchingVerificationEvidence } = require('../lib/agentCompletionEvaluator');
+  insertResearchReceipt({ sessionId: evidenceSession.sessionId, conversationId: conversation.id, sourceType: 'web', query: 'Qwen3-30B-A3B 部署', sourceRef: 'https://example.com/other', status: 'success', resultCount: 1, summary: '其他型号' });
+  assert.strictEqual(hasMatchingVerificationEvidence(evidenceSession.sessionId, evidenceFrame), false, '相近型号不能替代用户指定对象');
+  assert.strictEqual(evaluateCompletion({ sessionId: evidenceSession.sessionId, frame: evidenceFrame, finalText: '无法部署。' }).complete, false, '否定结论必须绑定指定对象证据');
+  insertResearchReceipt({ sessionId: evidenceSession.sessionId, conversationId: conversation.id, sourceType: 'web', query: 'Qwen3.8-27B 官方 部署', sourceRef: 'https://example.com/qwen38', status: 'success', resultCount: 1, summary: 'Qwen3.8-27B 官方规格' });
+  assert.strictEqual(hasMatchingVerificationEvidence(evidenceSession.sessionId, evidenceFrame), true);
 
   assert.strictEqual(deterministicIntent('新建《恢复按钮回归0919》，写下摄影活动的口令和最新预算').task_kind, 'file_write');
 assert.strictEqual(deterministicIntent('创建《活动安排》').completion_criteria.requires_write, true);

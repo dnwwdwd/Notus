@@ -161,7 +161,7 @@ function formatSession(row) {
     lease_expires_at: row.lease_expires_at || null,
     cancel_requested_at: row.cancel_requested_at || null,
     last_committed_checkpoint_id: normalizePositiveInt(row.last_committed_checkpoint_id),
-    prompt_version: String(row.prompt_version || 'legacy-v1'),
+    prompt_version: 'agent-loop-v2',
     toolset_version: String(row.toolset_version || ''),
     token_budget_total: row.token_budget_total === null || row.token_budget_total === undefined ? null : Number(row.token_budget_total),
   };
@@ -445,8 +445,6 @@ function compactMessagesForStorage(messages = []) {
 }
 
 function saveMessagesCheckpoint(sessionId, messages, lastResponseContent, appliedToolUseId, runId = '', options = {}) {
-  const { agentRuntimeAtLeast, getAgentRuntimeMode } = require('./agentRuntimeMode');
-  const runtimeMode = getAgentRuntimeMode();
   const toolResultProjectionVersion = 2;
   const checkpoint = {
     messages: compactMessagesForStorage(messages),
@@ -461,8 +459,8 @@ function saveMessagesCheckpoint(sessionId, messages, lastResponseContent, applie
         session_id, run_id, messages_json, last_response_content_json, tool_use_id,
         phase, execution_segment_id, llm_request_window_id, tool_results_json,
         next_tool_index, pending_operation_set_id, resume_tool_result_json,
-        runtime_mode, tool_result_projection_version
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        tool_result_projection_version
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       sid,
       String(runId || '') || null,
@@ -476,7 +474,6 @@ function saveMessagesCheckpoint(sessionId, messages, lastResponseContent, applie
       Math.max(0, Number(options.nextToolIndex) || 0),
       normalizePositiveInt(options.pendingOperationSetId),
       options.resumeToolResult == null ? null : JSON.stringify(options.resumeToolResult),
-      runtimeMode,
       toolResultProjectionVersion
     );
     const checkpointId = Number(result.lastInsertRowid);
@@ -516,7 +513,6 @@ function loadMessagesCheckpoint(sessionId) {
       nextToolIndex: Math.max(0, Number(current.next_tool_index || 0)),
       pendingOperationSetId: normalizePositiveInt(current.pending_operation_set_id),
       resumeToolResult: safeJsonParse(current.resume_tool_result_json, null),
-      runtimeMode: current.runtime_mode || 'legacy',
       toolResultProjectionVersion: Math.max(0, Number(current.tool_result_projection_version || 0)),
     };
   }
@@ -529,7 +525,6 @@ function loadMessagesCheckpoint(sessionId) {
     messages: Array.isArray(checkpoint.messages) ? checkpoint.messages : [],
     lastResponseContent: checkpoint.last_response_content || [],
     appliedToolUseId: row.checkpoint_tool_use_id || '',
-    runtimeMode: 'legacy',
     toolResultProjectionVersion: 0,
   };
 }

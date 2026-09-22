@@ -145,9 +145,7 @@ function readEnvConfig() {
     agentToolTimeoutMs: numberFromEnv(process.env.AGENT_TOOL_TIMEOUT_MS, DEFAULTS.agentToolTimeoutMs),
     agentMcpTimeoutMs: numberFromEnv(process.env.AGENT_MCP_TIMEOUT_MS, DEFAULTS.agentMcpTimeoutMs),
     allowLoopbackHttpMcp: booleanFromEnv(process.env.NOTUS_ALLOW_LOOPBACK_HTTP_MCP, DEFAULTS.allowLoopbackHttpMcp),
-    agentPromptVersion: ['legacy-v1', 'agent-loop-v2'].includes(String(process.env.NOTUS_AGENT_PROMPT_VERSION || '').trim())
-      ? String(process.env.NOTUS_AGENT_PROMPT_VERSION).trim()
-      : DEFAULTS.agentPromptVersion,
+    agentPromptVersion: DEFAULTS.agentPromptVersion,
     diagnosticsToken: String(process.env.NOTUS_DIAGNOSTICS_TOKEN || DEFAULTS.diagnosticsToken).trim(),
 
     vecScoreThreshold: floatFromEnv(process.env.VEC_SCORE_THRESHOLD, DEFAULTS.vecScoreThreshold),

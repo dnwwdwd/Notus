@@ -54,6 +54,7 @@ function runTests() {
   assert.ok(sidebar.includes('disabled={!labelTruncated}'));
   assert.ok(desktopMain.includes('minWidth: 390'));
   assert.ok(desktopMain.includes('minHeight: 640'));
+  assert.ok(!desktopMain.includes('NOTUS_AGENT_RUNTIME_MODE'), 'Electron 正式安装包不得保留已删除的 Harness 模式变量');
   assert.ok(!appRoot.includes('PageTransitionOverlay'));
   assert.ok(!fs.existsSync(path.join(root, 'components/ui/PageTransitionOverlay.js')));
   assert.ok(!sidebar.includes('activeTocKey'));

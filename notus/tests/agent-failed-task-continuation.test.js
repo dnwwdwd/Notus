@@ -9,7 +9,6 @@ process.env.DB_PATH = path.join(root, 'notus.db');
 process.env.NOTES_DIR = path.join(root, 'notes');
 process.env.ASSETS_DIR = path.join(root, 'assets');
 process.env.SESSION_DIR = path.join(root, 'session');
-process.env.NOTUS_AGENT_RUNTIME_MODE = 'enforced';
 let calls = 0;
 let scripted = [];
 const llmPath = require.resolve('../lib/llm');
@@ -34,12 +33,11 @@ async function main() {
   const { frame } = await composeTurnFrame({ ...next, userQuery: next.session.goal, allowSemanticPlanner: false });
   assert.strictEqual(frame.intent.completion_criteria.requires_write, true, '继续失败文件任务必须保留写入完成条件');
   assert.ok(frame.intent.allowed_actions.includes('write'), '不能投影为只读工具');
-  for (const mode of ['enforced', 'legacy']) {
-    process.env.NOTUS_AGENT_RUNTIME_MODE = mode;
+  for (const pass of ['explicit-frame', 'restored-frame']) {
     calls = 0;
     updateSessionStatus(next.session.id, 'running');
-    const result = await runAgentLoop({ sessionId: next.session.id, turnFrame: mode === 'enforced' ? frame : null, llmConfig: { llmContextWindowTokens: 60000 }, signal: new AbortController().signal });
-    assert.strictEqual(result.status, 'failed', `${mode}不能将口头保存当完成`);
+    const result = await runAgentLoop({ sessionId: next.session.id, turnFrame: pass === 'explicit-frame' ? frame : null, llmConfig: { llmContextWindowTokens: 60000 }, signal: new AbortController().signal });
+    assert.strictEqual(result.status, 'failed', `${pass}不能将口头保存当完成`);
     assert.strictEqual(result.reason, 'incomplete');
     assert.strictEqual(calls, 2, '纠正一次后仍未写入必须停止');
   }
@@ -55,10 +53,9 @@ async function main() {
   const other = ensureConversation({ kind: 'canvas', title: '隔离对话' });
   assert.strictEqual(resolveFailedFileContinuation({ ...next.session, conversation_id: other.id }), null);
   const { createFile, getFileByPath } = require('../lib/files');
-  for (const mode of ['legacy', 'enforced']) {
-    process.env.NOTUS_AGENT_RUNTIME_MODE = mode;
-    const cid = ensureConversation({ kind: 'canvas', title: `实际写入-${mode}` }).id;
-    const filePath = `继续-${mode}.md`;
+  for (const pass of ['explicit-frame', 'restored-frame']) {
+    const cid = ensureConversation({ kind: 'canvas', title: `实际写入-${pass}` }).id;
+    const filePath = `继续-${pass}.md`;
     createFile(filePath, '# 清单\n\n- 帐篷\n');
     const before = make(`创建${filePath}，再读回并补充数量后保存。`, cid);
     await composeTurnFrame({ ...before, userQuery: before.session.goal, allowSemanticPlanner: false });
@@ -67,12 +64,12 @@ async function main() {
     const composed = await composeTurnFrame({ ...after, userQuery: after.session.goal, allowSemanticPlanner: false });
     const tool = (name, input, id) => ({ content: [{ type: 'tool_use', id, name, input }], stopReason: 'tool_use' });
     scripted = [
-      tool('read_file', { path: filePath }, `read-${mode}`),
-      tool('preview_patch_files', { patches: [{ file_path: filePath, old: '- 帐篷', new: '- 帐篷 2 顶' }] }, `patch-${mode}`),
+      tool('read_file', { path: filePath }, `read-${pass}`),
+      tool('preview_patch_files', { patches: [{ file_path: filePath, old: '- 帐篷', new: '- 帐篷 2 顶' }] }, `patch-${pass}`),
       { content: [{ type: 'text', text: '数量已保存。' }], stopReason: 'end_turn' },
     ];
-    const result = await runAgentLoop({ sessionId: after.session.id, turnFrame: mode === 'enforced' ? composed.frame : null, llmConfig: { llmContextWindowTokens: 60000 }, signal: new AbortController().signal });
-    assert.strictEqual(result.status, 'completed', mode);
+    const result = await runAgentLoop({ sessionId: after.session.id, turnFrame: pass === 'explicit-frame' ? composed.frame : null, llmConfig: { llmContextWindowTokens: 60000 }, signal: new AbortController().signal });
+    assert.strictEqual(result.status, 'completed', pass);
     assert.ok(getFileByPath(filePath).content.includes('帐篷 2 顶'));
     assert.strictEqual(scripted.length, 0);
     const { getDb } = require('../lib/db');

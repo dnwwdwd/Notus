@@ -16,7 +16,6 @@ async function runTests() {
   process.env.DB_PATH = path.join(tempRoot, 'notus.db');
   process.env.LOG_DIR = path.join(tempRoot, 'logs');
   process.env.SESSION_DIR = path.join(tempRoot, 'session');
-  process.env.NOTUS_AGENT_RUNTIME_MODE = 'enforced';
 
   [
     '../lib/db', '../lib/config', '../lib/files', '../lib/conversations',

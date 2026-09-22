@@ -3,7 +3,6 @@ const { getSession, validateSessionAccess } = require('../../../../lib/agentSess
 const { requestCancellation, validateCapability } = require('../../../../lib/agentControlPlane');
 const { cancelTask, getTaskBySession } = require('../../../../lib/agentTaskQueue');
 const { getSessionTurnFrame } = require('../../../../lib/agentTurnFrames');
-const { agentRuntimeAtLeast } = require('../../../../lib/agentRuntimeMode');
 const { recordRuntimeFact } = require('../../../../lib/agentRuntimeFacts');
 
 export default async function handler(req, res) {
@@ -46,9 +45,7 @@ export default async function handler(req, res) {
     const frame = getSessionTurnFrame(id);
     requestCancellation(id);
     cancelTask(id);
-    if (agentRuntimeAtLeast('facts')) {
-      recordRuntimeFact({ eventKey: `task:${task?.id || id}:cancel-requested`, conversationId: session.conversation_id, sessionId: id, taskId: task?.id, turnFrameId: frame?.id, actor: 'user', factType: 'task_cancel_requested', payload: {} });
-    }
+    recordRuntimeFact({ eventKey: `task:${task?.id || id}:cancel-requested`, conversationId: session.conversation_id, sessionId: id, taskId: task?.id, turnFrameId: frame?.id, actor: 'user', factType: 'task_cancel_requested', payload: {} });
   });
   return res.status(200).json({
     success: true,

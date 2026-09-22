@@ -66,18 +66,21 @@ function uniqueStrings(values = [], limit = RESEARCH_LIMIT) {
 }
 
 function extractKeywords(value = '') {
-  const text = String(value || '')
+  const original = String(value || '').replace(/\s+/g, ' ').trim();
+  const exactSubjects = require('./agentSemanticRuntime').extractResearchSubjects(original).map((item) => item.raw_name);
+  const text = original
     .replace(/https?:\/\/\S+/gi, ' ')
     .replace(/[“”"'`~!@#$%^&*()_+=\[\]{}|\\:;,.，。！？?、<>]/g, ' ')
     .replace(/(?:请|帮我|一下|一下子|关于|怎么|如何|能否|可以|想要|需要|介绍|查询|搜索|查找|资料|信息)/g, ' ');
   const matches = text.match(/[\u4e00-\u9fff]{2,}|[a-zA-Z][a-zA-Z0-9_-]{1,}/g) || [];
-  return uniqueStrings(matches, 8);
+  return uniqueStrings([...exactSubjects, ...matches], 8);
 }
 
 function ruleBasedQueries(query = '') {
   const original = String(query || '').replace(/\s+/g, ' ').trim();
   const keywords = extractKeywords(original);
-  const subject = keywords.slice(0, 4).join(' ') || original;
+  const exactSubjects = require('./agentSemanticRuntime').extractResearchSubjects(original).map((item) => item.raw_name);
+  const subject = exactSubjects.join(' ') || keywords.slice(0, 4).join(' ') || original;
   const candidates = [
     original,
     `${subject} 功能 实现 使用说明`,
@@ -459,7 +462,7 @@ function recordMcpWebEvidence({ session, toolName = '', result, query = '' } = {
   if (results.length) recordQueryAndResultReceipts({ session, sourceType: 'web', query, phase: 'mcp', result: { results }, provider: `mcp:${toolName}` });
 }
 
-async function executePlannedResearch({ session, runId = null, sourceType, query, llmConfig, executeQuery, evidence, missionFingerprint = '' } = {}) {
+async function executePlannedResearch({ session, runId = null, sourceType, query, llmConfig, executeQuery, evidence, missionFingerprint = '', maxQueries = RESEARCH_LIMIT } = {}) {
   const requestedQuery = String(query || '').replace(/\s+/g, ' ').trim();
   if (!requestedQuery) return { error: 'QUERY_REQUIRED', message: '检索需要 query 参数', results: [] };
   const state = getResearchState(session.id);
@@ -496,8 +499,9 @@ async function executePlannedResearch({ session, runId = null, sourceType, query
   const initialQueries = sourceType === 'web'
     ? [requestedQuery]
     : queryPlan.initial_queries;
+  const queryBudget = Math.min(RESEARCH_LIMIT, Math.max(1, Number(maxQueries) || RESEARCH_LIMIT));
   const fallbackQueries = sourceType === 'web'
-    ? uniqueStrings([...queryPlan.initial_queries.slice(1), ...queryPlan.fallback_queries], RESEARCH_LIMIT - 1)
+    ? queryBudget > 1 ? uniqueStrings([...queryPlan.initial_queries.slice(1), ...queryPlan.fallback_queries], queryBudget - 1) : []
     : queryPlan.fallback_queries;
   const sourceState = {
     mission_fingerprint: missionKey,
@@ -559,7 +563,7 @@ async function executePlannedResearch({ session, runId = null, sourceType, query
       && (!requiresTimeEvidence || Boolean(item.publishedAt || item.published_at));
   });
   sourceState.had_evidence = hasEvidence();
-  if (!sourceState.had_evidence) {
+  if (!sourceState.had_evidence && fallbackQueries.length > 0) {
     await runBatch(fallbackQueries, 'fallback');
     sourceState.fallback_executed = true;
     sourceState.had_evidence = hasEvidence();
@@ -588,7 +592,7 @@ async function executePlannedResearch({ session, runId = null, sourceType, query
     message: providerError
       ? '检索服务本轮未能返回结果，已记录失败原因。'
       : sourceState.time_evidence_insufficient ? '已完成有限扩展搜索，但来源缺少可核实的发布日期，时间证据不足。'
-        : sourceState.had_evidence ? '已完成本次任务的批量检索。' : '已完成 5 个查询，没有补充结果。',
+        : sourceState.had_evidence ? '已完成本次任务的有限检索。' : `已完成 ${sourceState.query_records.length} 个查询，没有补充结果。`,
   };
 }
 

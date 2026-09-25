@@ -1836,6 +1836,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
   const [webSearchPreferenceEnabled, setWebSearchPreferenceEnabled] = useState(Boolean(searchPreference?.webSearchEnabled));
   const [searchOpen, setSearchOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
+  const [modelMenuPosition, setModelMenuPosition] = useState(null);
   const [modelQuery, setModelQuery] = useState('');
   const [mentionQuery, setMentionQuery] = useState(null);
   const [activeMentionIndex, setActiveMentionIndex] = useState(0);
@@ -1852,6 +1853,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
   const selectedMediaCountRef = useRef({ image: 0, attachment: 0 });
   const previewUrlsRef = useRef(new Set());
   const modelSearchRef = useRef(null);
+  const modelTriggerRef = useRef(null);
   const modelLabelRef = useRef(null);
   const composerDraftHydratedRef = useRef(false);
   const composerDraftSaveTimerRef = useRef(null);
@@ -1929,6 +1931,29 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
     }
     const timer = window.setTimeout(() => modelSearchRef.current?.focus(), 0);
     return () => window.clearTimeout(timer);
+  }, [modelOpen]);
+  useLayoutEffect(() => {
+    if (!modelOpen) return undefined;
+    const updatePosition = () => {
+      const rect = modelTriggerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const width = Math.min(260, window.innerWidth - 24);
+      setModelMenuPosition({
+        left: Math.max(12, Math.min(rect.right - width, window.innerWidth - width - 12)),
+        bottom: window.innerHeight - rect.top + 4,
+        width,
+        maxHeight: Math.max(80, Math.min(window.innerHeight * 0.4, rect.top - 16)),
+      });
+    };
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    window.visualViewport?.addEventListener('resize', updatePosition);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+      window.visualViewport?.removeEventListener('resize', updatePosition);
+    };
   }, [modelOpen]);
   useEffect(() => {
     if (!mcpAvailabilityChecked || mcpAvailable || mcpMode !== 'auto') return;
@@ -2930,11 +2955,11 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
           </div>
           <div className="notus-agent-composer__actions">
             <div className="notus-agent-composer__model-wrap">
-              <Tooltip content={selectedModelLabel} disabled={!selectedConfig || !modelLabelTruncated} triggerStyle={{ minWidth: 0, maxWidth: '100%' }}><button type="button" className="notus-agent-composer__model" onClick={() => { setSearchOpen(false); setModelOpen((prev) => !prev); }} disabled={busy || disabled || llmConfigs.length === 0} style={transitionButton({ height: 28, padding: '0 8px', borderRadius: 8, background: 'transparent', color: C.secondary, display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 13, fontWeight: 700, opacity: llmConfigs.length === 0 || disabled ? 0.55 : 1 })}><span ref={modelLabelRef} className="notus-agent-composer__model-label">{selectedModelLabel}</span><Icons.chevronDown size={13} style={{ flex: '0 0 auto' }} /></button></Tooltip>
-              {modelOpen ? (
+              <Tooltip content={selectedModelLabel} disabled={!selectedConfig || !modelLabelTruncated} triggerStyle={{ minWidth: 0, maxWidth: '100%' }}><button ref={modelTriggerRef} type="button" className="notus-agent-composer__model" aria-expanded={modelOpen} onClick={() => { setSearchOpen(false); setModelOpen((prev) => !prev); }} disabled={busy || disabled || llmConfigs.length === 0} style={transitionButton({ height: 28, padding: '0 8px', borderRadius: 8, background: 'transparent', color: C.secondary, display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 13, fontWeight: 700, opacity: llmConfigs.length === 0 || disabled ? 0.55 : 1 })}><span ref={modelLabelRef} className="notus-agent-composer__model-label">{selectedModelLabel}</span><Icons.chevronDown size={13} style={{ flex: '0 0 auto' }} /></button></Tooltip>
+              {modelOpen && modelMenuPosition ? createPortal(
                 <>
-                  <button type="button" aria-label="关闭模型下拉" onClick={() => setModelOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 19, border: 0, background: 'transparent', padding: 0 }} />
-                  <div style={{ position: 'absolute', bottom: 'calc(100% + 4px)', right: 0, width: 260, maxHeight: '40vh', overflowY: 'auto', padding: '8px 0', borderRadius: 14, background: '#fff', boxShadow: '0 -10px 40px -10px rgba(0,0,0,0.10), inset 0 0 0 1px rgba(229,227,216,0.95)', zIndex: 20 }}>
+                  <button type="button" aria-label="关闭模型下拉" onClick={() => setModelOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 1090, border: 0, background: 'transparent', padding: 0 }} />
+                  <div style={{ position: 'fixed', bottom: modelMenuPosition.bottom, left: modelMenuPosition.left, width: modelMenuPosition.width, maxHeight: modelMenuPosition.maxHeight, overflowY: 'auto', overscrollBehavior: 'contain', padding: '8px 0', borderRadius: 14, background: '#fff', boxShadow: '0 -10px 40px -10px rgba(0,0,0,0.10), inset 0 0 0 1px rgba(229,227,216,0.95)', zIndex: 1091 }}>
                     <div style={{ padding: '2px 8px 8px' }}><input ref={modelSearchRef} value={modelQuery} onChange={(event) => setModelQuery(event.target.value)} placeholder="搜索模型或 Provider" aria-label="搜索模型或 Provider" style={{ width: '100%', height: 32, padding: '0 10px', border: '1px solid #E5E3D8', borderRadius: 9, outline: 'none', boxSizing: 'border-box', color: C.text, fontSize: 12, fontFamily: 'inherit' }} /></div>
                     {groupedConfigs.length === 0 ? <div style={{ padding: 12, fontSize: 13, color: C.tertiary }}>暂无模型配置</div> : filteredGroupedConfigs.length === 0 ? <div style={{ padding: 12, fontSize: 13, color: C.tertiary }}>没有匹配的模型或 Provider</div> : filteredGroupedConfigs.map((group, index) => (
                       <div key={group.label} style={{ marginTop: index > 0 ? 8 : 0, paddingTop: index > 0 ? 8 : 0, borderTop: index > 0 ? '1px solid #F2F0EA' : 'none' }}>
@@ -2948,7 +2973,7 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
                       </div>
                     ))}
                   </div>
-                </>
+                </>, document.body
               ) : null}
             </div>
             <Tooltip content={canInterrupt ? '中断当前任务' : '发送'}><span style={{ display: 'inline-flex' }}><button type="button" aria-label={canInterrupt ? '中断当前任务' : '发送'} disabled={!primaryActionEnabled} onClick={handlePrimaryAction} style={transitionButton({ width: 34, height: 34, borderRadius: 10, background: primaryActionEnabled ? C.accent : C.muted, color: primaryActionEnabled ? '#fff' : '#BDBBB3', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: primaryActionEnabled ? 'pointer' : 'not-allowed', boxShadow: primaryActionEnabled ? '0 6px 18px rgba(217,119,87,0.22)' : 'none' })}>{canInterrupt ? <Icons.square size={16} /> : uploading ? <span aria-hidden="true" style={{ width: 14, height: 14, borderRadius: 999, display: 'inline-block', boxSizing: 'border-box', border: '2px solid rgba(255,255,255,0.45)', borderTopColor: '#fff', animation: 'spin 0.82s linear infinite' }} /> : <Icons.arrowUp size={18} />}</button></span></Tooltip>

@@ -984,7 +984,7 @@ const Personalization = ({ onOpenImageSettings }) => {
             <Toggle on={defaultAgentOpen} onChange={(value) => handleWorkspaceDefaultToggle('default_agent_open', value)} />
           </div>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+        <div className="notus-personalization-image-location" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
           <div style={{ minWidth: 0 }}>
             <div style={{ fontSize: 'var(--text-sm)', fontWeight: 600 }}>图片上传位置</div>
             <div style={{ marginTop: 4, fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', lineHeight: 1.6 }}>选择已配置的图床后，新图片会使用对应位置保存。</div>

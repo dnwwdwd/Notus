@@ -316,7 +316,7 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
   let effectiveFrame = turnFrame || getSessionTurnFrame(sessionId);
   const { resolveFailedFileContinuation, formatFailedFileContinuation } = require('./agentTaskContinuation');
   const fileContinuation = effectiveFrame?.facts?.failed_file_continuation || resolveFailedFileContinuation(session);
-  const completionFrame = fileContinuation
+  const completionFrame = fileContinuation || effectiveFrame?.intent?.completion_criteria?.requires_write
     ? { ...effectiveFrame, intent: { ...effectiveFrame?.intent, completion_criteria: { ...effectiveFrame?.intent?.completion_criteria, requires_write: true, requires_applied_write: normalizeApprovalMode(approvalMode) === 'auto_confirm', requires_answer: true } } }
     : null;
   const rawEmit = typeof onStream === 'function' ? onStream : () => {};
@@ -352,6 +352,7 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
   );
   const allTools = buildToolDefinitions(session, { mcpTools: mcpContext.tools });
   const tools = projectToolDefinitions(allTools, effectiveFrame);
+  let dispatchToolDefinitions = tools;
   session = setSessionRuntimeVersions(session.id, {
     promptVersion: config.agentPromptVersion || 'agent-loop-v2',
     toolsetVersion: sha256(JSON.stringify(tools)).slice(0, 16),
@@ -608,6 +609,7 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
     const requestTools = budgetRestricted
       ? normalTools.filter((tool) => requiredNames.has(tool.name) || (!tool.mcp && !pressureOptionalNames.has(tool.name)))
       : normalTools;
+    dispatchToolDefinitions = requestTools;
     const requestPrompt = budgetRestricted
       ? renderRequestPrompt({ restricted: true, completionCorrection })
       : normalPrompt;
@@ -836,7 +838,7 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
     const validation = validateToolUseBlock(toolUseBlocks);
     if (validation.error) {
       messages.push({ role: 'assistant', content });
-      messages.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: validation.errorToolUseId, content: validation.message, is_error: true }] });
+      messages.push({ role: 'user', content: toolUseBlocks.map((toolUse) => ({ type: 'tool_result', tool_use_id: toolUse.id, content: validation.message, is_error: true })) });
       if (checkpointToCommit) clearMessagesCheckpoint(session.id, checkpointToCommit);
       checkpointToCommit = null;
       pendingDispatch = null;
@@ -934,7 +936,7 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
         }
         : await executeToolSafely(toolUse, session, config.notesDir, {
           mcpToolMap: mcpContext.map,
-          toolDefinitions: tools,
+          toolDefinitions: dispatchToolDefinitions,
           llmConfig,
           runId,
           turnFrame: effectiveFrame,

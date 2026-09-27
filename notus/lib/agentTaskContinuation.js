@@ -4,7 +4,7 @@ const { hasUnknownToolOutcome } = require('./agentRuntimeFacts');
 
 // 只处理没有新增范围的短句承接；否定、附加要求和新任务继续走正常意图判断。
 function isTaskContinuation(text = '') {
-  return /^(?:请|请帮我|帮我)?(?:继续|接着)(?:完成|执行|做)?(?:(?:刚才|之前|上一个|上一轮|未完成|剩下)(?:的)?(?:任务|工作|步骤))?[。！.!\s]*$/.test(
+  return /^(?:请|请帮我|帮我)?(?:继续|接着|确认|确认写入|直接写入)(?:完成|执行|做)?(?:(?:刚才|之前|上一个|上一轮|未完成|剩下)(?:的)?(?:任务|工作|步骤))?[。！.!\s]*$/.test(
     String(text || '').replace(/^用户任务[：:]\s*/, '').trim()
   );
 }
@@ -16,13 +16,16 @@ function resolveFailedFileContinuation(session, depth = 0) {
     WHERE conversation_id = ? AND id < ? ORDER BY id DESC LIMIT 1`)
     .get(session.conversation_id, session.id);
   // 不越过已完成、取消或等待确认的任务去寻找更早的失败任务。
-  if (!previous || previous.status !== 'failed' || hasUnknownToolOutcome(previous.id)) return null;
+  if (!previous || !['failed', 'completed'].includes(previous.status) || hasUnknownToolOutcome(previous.id)) return null;
+  // 只允许承接此前口头结束却没有任何文件产物的任务，已有预览/应用不重复执行。
+  if (previous.status === 'completed' && !/^(?:请)?(?:确认|确认写入|直接写入)[。！.!\s]*$/.test(String(session.goal || '').replace(/^用户任务[：:]\s*/, '').trim())) return null;
+  if (previous.status === 'completed' && db.prepare('SELECT 1 FROM canvas_operation_sets WHERE agent_session_id = ? LIMIT 1').get(previous.id)) return null;
   const task = db.prepare('SELECT user_message_id FROM agent_task_queue WHERE session_id = ?').get(previous.id);
   if (task?.user_message_id && !db.prepare('SELECT id FROM messages WHERE id = ?').get(task.user_message_id)) return null;
   const frame = getSessionTurnFrame(previous.id);
   const inherited = frame?.facts?.failed_file_continuation || resolveFailedFileContinuation(previous, depth + 1);
   const goal = inherited?.goal || previous.goal;
-  const intent = frame?.intent || require('./agentSemanticRuntime').deterministicIntent(goal);
+  const intent = frame?.intent?.completion_criteria?.requires_write ? frame.intent : require('./agentSemanticRuntime').deterministicIntent(goal);
   if (!intent.completion_criteria?.requires_write && !inherited) return null;
   const operations = db.prepare(`SELECT id, status FROM canvas_operation_sets
     WHERE agent_session_id = ? ORDER BY id`).all(previous.id);
@@ -45,7 +48,7 @@ function resolveFailedFileContinuation(session, depth = 0) {
 function formatFailedFileContinuation(continuation) {
   if (!continuation) return '';
   return [
-    '本轮用户明确要求承接紧邻的失败文件任务。以下是运行时保留的原目标与已发生的变更记录：',
+    '本轮用户明确要求承接紧邻但尚未完成写入的文件任务。以下是运行时保留的原目标与已发生的变更记录：',
     JSON.stringify(continuation),
     '先核对已有文件和变更记录，只完成剩余步骤；已经创建的文件不要重复创建或覆盖。原任务的变更不代表本轮剩余修改已保存。',
   ].join('\n');

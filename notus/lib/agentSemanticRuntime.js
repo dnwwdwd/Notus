@@ -20,7 +20,9 @@ const SKILL_INSTALL = /安装|导入|添加到|装上/i;
 const SKILL_CREATE = /创建|新建|编写|写一个|做一个|制作一个|设计一个/i;
 const NAMED_DOCUMENT_CREATE = /(?:新建|创建)\s*《[^》\n]{1,160}》/i;
 const WRITE_ACTION = /修改|改写|重写|润色|补充|合并|写入|插入|追加|新建(?:文档|文件|笔记|文章)|创建(?:文档|文件|笔记|文章)|移动|重命名/i;
-const INLINE_TEXT_OUTPUT = /(?:只|仅)(?:需|要)?(?:输出|返回|回复|给出)(?:[^，。！？；]{0,16})(?:结果|文本|内容|表达|一句话)?|直接(?:输出|返回|回复|给出)|不要(?:修改|写入|保存)(?:文档|文件|笔记|文章)/i;
+const POSITIONED_EDIT = /(?:在|把|给|将)(?:这篇|这份|当前|上述|该)?(?:文章|文档|笔记|正文)[^，。！？；]{0,20}(?:开头|结尾|标题|末尾|前面|后面|中间)[^，。！？；]{0,16}(?:要求|提醒|邀请|加|写|放|补|删|改|换)|(?:在|把|给|将)(?:这篇|这份|当前|上述|该)?(?:文章|文档|笔记|正文)[^，。！？；]{0,12}(?:加上|加一句|添上|删掉|去掉|换成|改成)/i;
+const INLINE_TEXT_OUTPUT = /(?:只|仅)(?:需|要)?(?:输出|返回|回复|给出)(?:[^，。！？；]{0,16})(?:结果|文本|内容|表达|一句话)?|直接(?:输出|返回|回复|给出)/i;
+const EXPLICIT_NO_FILE_WRITE = /(?:只读|仅阅读|只阅读)|(?:不要|不得|禁止|别|无需|不必|不能|不可|勿)(?:再|去|进行|直接|自动|任何|对|这篇|当前|该|我的|工作区|\s){0,12}(?:修改|写入|保存|新建|创建)(?:[^，。！？；]{0,12})(?:文档|文件|笔记|文章)/i;
 const EXPLICIT_FILE_WRITE_TARGET = /(?:当前|这篇|这份|这个|指定|上述)?(?:文档|文件|笔记|文章|正文)|写入|保存(?:到|至|为)|新建(?:文档|文件|笔记|文章)|创建(?:文档|文件|笔记|文章)|\.md\b/i;
 const READ_ACTION = /读取|阅读|总结|分析|检查|查看|解释|比较|提取/i;
 const KNOWLEDGE_ACTION = /知识库|笔记库|我的笔记|工作区资料/i;
@@ -180,9 +182,8 @@ function deterministicIntent(userQuery, context = {}) {
   const explicitWeb = !webNegated && (EXPLICIT_WEB.test(text) || hasPositiveAction(text, REALTIME_WEB_NEED));
   const localOnly = LOCAL_ONLY.test(text);
   const inlineTextOnly = INLINE_TEXT_OUTPUT.test(text)
-    && !EXPLICIT_FILE_WRITE_TARGET.test(text)
     && !hasPositiveAction(text, NAMED_DOCUMENT_CREATE)
-    && !(Array.isArray(context.mentions) && context.mentions.some((item) => ['file', 'folder'].includes(String(item?.type || ''))));
+    && !/(?:并|同时|然后|随后|再)[^，。！？；]{0,20}(?:保存|写入|创建|新建)/.test(text);
   const intentSignals = [];
   let taskKind = 'general';
 
@@ -198,7 +199,7 @@ function deterministicIntent(userQuery, context = {}) {
   } else if (MCP_ACTION.test(text) && /新增|添加|配置|修改|测试|启用|停用|删除|移除|查看|列出/.test(text)) {
     taskKind = 'mcp_manage';
     intentSignals.push('mcp_manage');
-  } else if ((WRITE_ACTION.test(text) || hasPositiveAction(text, NAMED_DOCUMENT_CREATE)) && !inlineTextOnly) {
+  } else if ((hasPositiveAction(text, WRITE_ACTION) || hasPositiveAction(text, POSITIONED_EDIT) || hasPositiveAction(text, NAMED_DOCUMENT_CREATE)) && !inlineTextOnly) {
     taskKind = 'file_write';
     intentSignals.push('file_write');
   } else if (explicitWeb) {
@@ -207,7 +208,11 @@ function deterministicIntent(userQuery, context = {}) {
   } else if (KNOWLEDGE_ACTION.test(text)) {
     taskKind = 'knowledge_research';
     intentSignals.push('knowledge_research');
-  } else if (READ_ACTION.test(text)) {
+  } else if (hasPositiveAction(text, READ_ACTION) && (
+    hasPositiveAction(text, /读取|阅读|检查|查看|提取/)
+    || /(?:文档|文件|笔记|文章|工作区资料)/.test(text)
+    || (Array.isArray(context.mentions) && context.mentions.some((item) => ['file', 'folder'].includes(String(item?.type || ''))))
+  )) {
     taskKind = 'file_read';
     intentSignals.push('file_read');
   }
@@ -243,13 +248,18 @@ function deterministicIntent(userQuery, context = {}) {
     ? (explicitWeb ? 'forbidden' : localOnly ? 'required' : 'forbidden')
     : 'allowed';
   const requiresWrite = taskKind === 'file_write' || taskKind === 'skill_create' || taskKind === 'skill_install' || taskKind === 'mcp_manage';
+  const negatedWrite = (WRITE_ACTION.test(text) || POSITIONED_EDIT.test(text) || NAMED_DOCUMENT_CREATE.test(text))
+    && !hasPositiveAction(text, WRITE_ACTION)
+    && !hasPositiveAction(text, POSITIONED_EDIT)
+    && !hasPositiveAction(text, NAMED_DOCUMENT_CREATE);
+  const permitsGeneralWrite = taskKind === 'general' && !inlineTextOnly && !EXPLICIT_NO_FILE_WRITE.test(text) && !negatedWrite;
   const mixedSkillActions = hasSkill
     ? [hasSkillDiscovery, hasSkillInstall, hasSkillCreate].filter(Boolean).length
     : 0;
   const hasUnresolvedDeictic = /(?:这个|那个|它|上面这个|刚才那个)/.test(text)
     && !currentFileRequested
     && (context.mentions?.length || context.attachments?.length) > 1;
-  const needsPlanner = mixedSkillActions > 1 || hasUnresolvedDeictic || conflictingWebInstruction || ambiguousUrlSelection;
+  const needsPlanner = (taskKind === 'general' && !inlineTextOnly && EXPLICIT_FILE_WRITE_TARGET.test(text)) || mixedSkillActions > 1 || hasUnresolvedDeictic || conflictingWebInstruction || ambiguousUrlSelection;
   const needsClarification = mixedSkillActions > 1 || hasUnresolvedDeictic || conflictingWebInstruction || ambiguousUrlSelection;
   const verification = buildVerificationContract(text, { taskKind, webNegated });
   const verificationNeedsWeb = verification.policy !== 'direct' && verification.network_allowed;
@@ -275,7 +285,7 @@ function deterministicIntent(userQuery, context = {}) {
       use_current_file: currentFileRequested,
       active_file_id: currentFileRequested ? context.activeFile?.id || null : null,
     },
-    allowed_actions: requiresWrite ? ['read', 'write'] : ['read'],
+    allowed_actions: requiresWrite || permitsGeneralWrite ? ['read', 'write'] : ['read'],
     forbidden_actions: taskKind === 'skill_discovery' ? ['skill_install', 'skill_create', 'knowledge_substitution'] : [],
     completion_criteria: {
       requires_web: webRequired || verificationNeedsWeb,
@@ -350,6 +360,7 @@ function compileIntent(taskKind, fallback = {}) {
     sourcePolicy.knowledge = fallback.source_policy?.knowledge || 'allowed';
     sourcePolicy.local_skills = fallback.source_policy?.local_skills || 'allowed';
     completionCriteria.requires_web = sourcePolicy.web === 'required';
+    allowedActions = fallback.allowed_actions?.includes('write') ? ['read', 'write'] : ['read'];
   }
   return {
     ...fallback,
@@ -364,7 +375,10 @@ function compileIntent(taskKind, fallback = {}) {
 }
 
 function normalizePlannerIntent(raw = {}, fallback = {}) {
-  const taskKind = INTENT_TYPES.has(String(raw.task_kind || '')) ? String(raw.task_kind) : fallback.task_kind;
+  const proposedTaskKind = INTENT_TYPES.has(String(raw.task_kind || '')) ? String(raw.task_kind) : fallback.task_kind;
+  const taskKind = proposedTaskKind === 'file_write' && !fallback.allowed_actions?.includes('write')
+    ? fallback.task_kind
+    : proposedTaskKind;
   const confidence = Math.min(Math.max(Number(raw.confidence) || 0, 0), 1);
   const compiled = compileIntent(taskKind, fallback);
   return {
@@ -386,6 +400,7 @@ async function semanticPlan({ userQuery, fallbackIntent, llmConfig, sessionId, r
       content: [
         '把用户任务归一为 Notus Turn Frame。只返回 JSON，不解释。',
         'task_kind 只能是 general、skill_discovery、skill_install、skill_create、mcp_manage、web_research、knowledge_research、file_read、file_write。',
+        '根据完整语义判断，不依赖某个固定动词：在文章开头提醒读者、将标题换成某句等均是 file_write；讨论建议、询问、仅要求回复文案不是文件写入。明确禁止修改时不能归为 file_write。',
         '明确“搜索/寻找 Skill”不得归为安装；明确联网不得改为本地来源。',
         'JSON 字段：task_kind、source_policy、material_policy、completion_criteria、needs_clarification、missing_slots、confidence。',
         '以下记忆仅用于理解用户偏好；当前任务、来源限制和权限优先，不从记忆推断新的操作授权。',
@@ -541,13 +556,25 @@ function clarificationIntent(interaction, fallback) {
 async function composeTurnFrame({ task, session, userQuery, mentions = [], attachments = [], activeFileId = null, webSearchEnabled = false, llmConfig, runId = null, resumeInteraction = null, allowSemanticPlanner = true } = {}) {
   const existing = getTaskTurnFrame(task?.id);
   if (existing && !resumeInteraction) {
-    // 原任务的文件/交互事实保留，输入框切换仅刷新可选联网权限。
+    // 原任务的文件/交互事实保留；旧版 general/read 误判只在原输入仍允许写入时纠正。
     if (['general', 'file_read', 'file_write'].includes(existing.intent?.task_kind)
       && !existing.provenance?.resumed_from_interaction_id) {
-      const web = deterministicIntent(userQuery, { webSearchEnabled }).source_policy.web;
-      if (web !== existing.intent?.source_policy?.web) {
+      const currentInput = deterministicIntent(userQuery, {
+        webSearchEnabled,
+        mentions: existing.facts?.mentions || [],
+      });
+      const web = currentInput.source_policy.web;
+      const promoteGeneralWrite = Boolean(normalizeText(userQuery))
+        && session?.tool_profile !== 'read_only'
+        && existing.intent?.task_kind === 'general'
+        && !existing.intent?.allowed_actions?.includes('write')
+        && currentInput.task_kind === 'general'
+        && currentInput.allowed_actions.includes('write');
+      if (web !== existing.intent?.source_policy?.web || promoteGeneralWrite) {
         const frame = updateTurnFrame(existing.id, { intent: {
-          ...existing.intent, source_policy: { ...existing.intent.source_policy, web },
+          ...existing.intent,
+          ...(promoteGeneralWrite ? { allowed_actions: ['read', 'write'] } : {}),
+          source_policy: { ...existing.intent.source_policy, web },
         } });
         return { frame: frame || existing, clarification: null, reused: true };
       }

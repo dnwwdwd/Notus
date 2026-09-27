@@ -34,7 +34,7 @@ function allowedToolNames(intent = {}) {
   const webAllowed = intent.source_policy?.web !== 'forbidden';
   const knowledgeAllowed = intent.source_policy?.knowledge !== 'forbidden';
   const localSkillsAllowed = intent.source_policy?.local_skills !== 'forbidden';
-  const base = new Set([...CONTROL_TOOLS, 'read_global_agent_file', 'update_global_agent_file']);
+  const base = new Set([...CONTROL_TOOLS, 'read_global_agent_file']);
   const add = (...names) => names.forEach((name) => base.add(name));
 
   if (taskKind === 'skill_discovery') {
@@ -78,6 +78,7 @@ function allowedToolNames(intent = {}) {
   }
 
   add('read_file', 'analyze_folder', 'check_links', 'read_global_agent_file');
+  if (intent.allowed_actions?.includes('write')) add(...OPERATION_SET_TOOLS, 'update_global_agent_file');
   if (knowledgeAllowed) add('search_knowledge');
   if (webAllowed) add('web_search', 'fetch_web_url');
   if (localSkillsAllowed) add('load_skill', 'read_skill_file');

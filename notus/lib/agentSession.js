@@ -576,7 +576,9 @@ function clearMessagesCheckpoint(sessionId, checkpointId = null) {
 function summarizeToolResult(toolName, result) {
   if (result?.error) return {
     error: result.error,
-    message: result.message || result.reason || '',
+    message: result.message || result.reason || '工具执行失败，请核对调用参数和错误码。',
+    ...(result.file_path ? { file_path: result.file_path } : {}),
+    ...(Array.isArray(result.candidates) ? { candidates: result.candidates.slice(0, 10) } : {}),
     details: Array.isArray(result.details)
       ? result.details.slice(0, 10).map((item) => ({ path: item?.path || '/', keyword: item?.keyword || '', message: item?.message || '' }))
       : [],

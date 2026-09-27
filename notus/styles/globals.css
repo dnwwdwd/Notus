@@ -1382,6 +1382,19 @@ a {
   white-space: nowrap;
 }
 
+.notus-agent-model-menu {
+  box-sizing: border-box;
+  overflow-x: hidden;
+}
+
+.notus-agent-model-menu__provider {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .notus-agent-tool-row:active,
 .notus-agent-pressable:active {
   transform: scale(0.96);
@@ -1402,11 +1415,13 @@ a {
   transform: rotate(90deg);
 }
 
-.notus-agent-markdown > :first-child {
+.notus-agent-markdown > :first-child,
+.notus-agent-markdown .notus-reveal-content > :first-child {
   margin-top: 0;
 }
 
-.notus-agent-markdown > :last-child {
+.notus-agent-markdown > :last-child,
+.notus-agent-markdown .notus-reveal-content > :last-child {
   margin-bottom: 0;
 }
 

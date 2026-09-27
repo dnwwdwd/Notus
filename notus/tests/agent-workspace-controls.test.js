@@ -45,6 +45,10 @@ assert.ok(workspace.includes('const [modelQuery, setModelQuery] = useState(\'\')
 assert.ok(workspace.includes('搜索模型或 Provider'));
 assert.ok(workspace.includes('modelLabel(config), providerLabel(config), config?.name'));
 assert.ok(workspace.includes('没有匹配的模型或 Provider'));
+assert.ok(workspace.includes('className="notus-agent-model-menu"'), '模型菜单必须拥有独立的横向溢出约束');
+assert.ok(workspace.includes('className="notus-agent-model-menu__provider"'), 'Provider 分组标题必须使用可裁剪的菜单标题样式');
+assert.ok(globalStyles.includes('.notus-agent-model-menu {\n  box-sizing: border-box;\n  overflow-x: hidden;\n}'), '模型菜单不得因子元素撑出视口内的选择框');
+assert.ok(globalStyles.includes('.notus-agent-model-menu__provider {\n  min-width: 0;\n  max-width: 100%;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}'), '长 Provider 名必须在模型菜单标题内单行省略');
 
 const drawer = read('components/ChatArea/ConversationDrawer.js');
 assert.ok(drawer.includes('搜索对话或消息'));

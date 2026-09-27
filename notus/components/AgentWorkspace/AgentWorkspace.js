@@ -1,3 +1,4 @@
+import { createDiffHunks } from '../../utils/lineDiff';
 import { agentTraceState } from '../../utils/agentTraceState';
 import { TraceStatus } from './TraceStatus';
 import { ProgressiveReveal } from '../ui/ProgressiveReveal';
@@ -1036,8 +1037,10 @@ function operationLabel(operation = {}) {
 }
 
 function buildDiffLines(operation = {}) {
-  if (operation.change_type === 'file_revision' && Array.isArray(operation.diff_hunks)) {
-    return operation.diff_hunks.flatMap((hunk, hunkIndex) => [
+  if (!isFileSystemOperation(operation)) {
+    const hunks = Array.isArray(operation.diff_hunks) ? operation.diff_hunks
+      : createDiffHunks(operation.old || '', operation.new ?? operation.content ?? '');
+    return hunks.flatMap((hunk, hunkIndex) => [
       { type: 'hunk', content: `@@ -${hunk.oldStart || 0},${hunk.oldLines || 0} +${hunk.newStart || 0},${hunk.newLines || 0} @@`, key: `hunk-${hunkIndex}` },
       ...(Array.isArray(hunk.lines) ? hunk.lines.map((line) => ({
         type: line.type === 'insert' ? 'add' : line.type === 'delete' ? 'remove' : 'context',
@@ -1065,11 +1068,7 @@ function buildDiffLines(operation = {}) {
       ...added.map((content) => ({ type: 'add', content })),
     ];
   }
-  return [
-    ...(operation.old ? String(operation.old).split('\n').map((line) => ({ type: 'remove', content: line })) : []),
-    ...(operation.new ? String(operation.new).split('\n').map((line) => ({ type: 'add', content: line })) : []),
-    ...(operation.content ? String(operation.content).split('\n').map((line) => ({ type: 'add', content: line })) : []),
-  ];
+  return [];
 }
 
 function operationSetSummary(operationSet) {
@@ -1396,6 +1395,7 @@ function DiffDialog({ approvalMode, onLoadItem, onRetry, onOpenBatch, onOperatio
                   const add = line.type === 'add';
                   return (
                     <div key={index} style={{ display: 'flex', minWidth: '100%', padding: '0 14px', background: hunk ? 'rgba(229,227,216,0.45)' : add ? 'rgba(187,247,208,0.45)' : remove ? 'rgba(254,202,202,0.45)' : 'transparent', color: hunk ? C.tertiary : add ? '#166534' : remove ? '#991B1B' : C.secondary, textDecoration: remove ? 'line-through' : 'none' }}>
+                      {!hunk ? <><span aria-label="原行号" style={{ width: 38, flex: '0 0 auto', color: C.tertiary, textAlign: 'right', paddingRight: 8, userSelect: 'none' }}>{line.oldLineNumber || ''}</span><span aria-label="新行号" style={{ width: 38, flex: '0 0 auto', color: C.tertiary, textAlign: 'right', paddingRight: 8, userSelect: 'none' }}>{line.newLineNumber || ''}</span></> : null}
                       <span style={{ width: 20, flex: '0 0 auto', color: '#BDBBB3', textAlign: 'right', paddingRight: 8, userSelect: 'none' }}>{hunk ? ' ' : add ? '+' : remove ? '-' : ' '}</span>
                       <span style={{ flex: '0 0 auto', whiteSpace: 'pre' }}>{line.content}</span>
                     </div>
@@ -2959,11 +2959,11 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
               {modelOpen && modelMenuPosition ? createPortal(
                 <>
                   <button type="button" aria-label="关闭模型下拉" onClick={() => setModelOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 1090, border: 0, background: 'transparent', padding: 0 }} />
-                  <div style={{ position: 'fixed', bottom: modelMenuPosition.bottom, left: modelMenuPosition.left, width: modelMenuPosition.width, maxHeight: modelMenuPosition.maxHeight, overflowY: 'auto', overscrollBehavior: 'contain', padding: '8px 0', borderRadius: 14, background: '#fff', boxShadow: '0 -10px 40px -10px rgba(0,0,0,0.10), inset 0 0 0 1px rgba(229,227,216,0.95)', zIndex: 1091 }}>
+                  <div className="notus-agent-model-menu" style={{ position: 'fixed', bottom: modelMenuPosition.bottom, left: modelMenuPosition.left, width: modelMenuPosition.width, maxHeight: modelMenuPosition.maxHeight, overflowY: 'auto', overscrollBehavior: 'contain', padding: '8px 0', borderRadius: 14, background: '#fff', boxShadow: '0 -10px 40px -10px rgba(0,0,0,0.10), inset 0 0 0 1px rgba(229,227,216,0.95)', zIndex: 1091 }}>
                     <div style={{ padding: '2px 8px 8px' }}><input ref={modelSearchRef} value={modelQuery} onChange={(event) => setModelQuery(event.target.value)} placeholder="搜索模型或 Provider" aria-label="搜索模型或 Provider" style={{ width: '100%', height: 32, padding: '0 10px', border: '1px solid #E5E3D8', borderRadius: 9, outline: 'none', boxSizing: 'border-box', color: C.text, fontSize: 12, fontFamily: 'inherit' }} /></div>
                     {groupedConfigs.length === 0 ? <div style={{ padding: 12, fontSize: 13, color: C.tertiary }}>暂无模型配置</div> : filteredGroupedConfigs.length === 0 ? <div style={{ padding: 12, fontSize: 13, color: C.tertiary }}>没有匹配的模型或 Provider</div> : filteredGroupedConfigs.map((group, index) => (
                       <div key={group.label} style={{ marginTop: index > 0 ? 8 : 0, paddingTop: index > 0 ? 8 : 0, borderTop: index > 0 ? '1px solid #F2F0EA' : 'none' }}>
-                        <div style={{ position: 'sticky', top: 0, padding: '6px 16px', color: '#A3A19A', fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, background: 'rgba(255,255,255,0.92)' }}>{group.label}</div>
+                        <div className="notus-agent-model-menu__provider" title={group.label} style={{ position: 'sticky', top: 0, padding: '6px 16px', color: '#A3A19A', fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, background: 'rgba(255,255,255,0.92)' }}>{group.label}</div>
                         {group.configs.map((config) => {
                           const active = String(config.id) === String(selectedConfig?.id);
                           return (

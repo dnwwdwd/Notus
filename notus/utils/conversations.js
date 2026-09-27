@@ -1,5 +1,12 @@
 import { normalizeMentionSegments, normalizeMessageMentions, parseLegacyMentions, segmentsToContent, segmentsToMentions } from './messageMentions.js';
 
+export function isInternalAgentInteractionMessage(message = {}) {
+  const meta = message?.meta && typeof message.meta === 'object' ? message.meta : {};
+  if (!meta.interaction_id) return false;
+  return Boolean(meta.interaction_resolution_status
+    || (message.role === 'assistant' && meta.answer_mode === 'clarify_needed'));
+}
+
 export function createDraftConversationKey(prefix = 'draft') {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return `${prefix}_${crypto.randomUUID()}`;

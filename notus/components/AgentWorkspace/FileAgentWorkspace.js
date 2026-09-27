@@ -13,7 +13,7 @@ import { buildRestoredAgentTimeline, useAgentLoopController } from '../../hooks/
 import { useLlmConfigs } from '../../hooks/useLlmConfigs';
 import { useStableAiReadiness } from '../../hooks/useStableAiReadiness';
 import { deriveAiReadiness } from '../../utils/aiReadiness';
-import { mapConversationMessages } from '../../utils/conversations';
+import { isInternalAgentInteractionMessage, mapConversationMessages } from '../../utils/conversations';
 import {
   buildConversationExportFileName,
   downloadTextFile,
@@ -31,11 +31,6 @@ const CONFIRM_MODE_STORAGE_KEY = 'notus-files-agent-confirm-mode';
 const AUTO_CONFIRM = 'auto_confirm';
 const MANUAL_CONFIRM = 'manual_confirm';
 const INTERRUPTIBLE_AGENT_SESSION_STATUSES = new Set(['created', 'queued', 'running']);
-
-function isInternalInteractionAnswerMessage(message = {}) {
-  const meta = message?.meta && typeof message.meta === 'object' ? message.meta : {};
-  return Boolean(meta.interaction_id && meta.interaction_resolution_status);
-}
 
 function readConfirmMode() {
   if (typeof window === 'undefined') return AUTO_CONFIRM;
@@ -981,7 +976,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], activeFileId 
   }, [respondToInteraction, resumeInteraction, shouldReconnectInteractionSession, toast]);
 
   const displayedMessages = useMemo(() => {
-    const visibleMessages = messages.filter((message) => !isInternalInteractionAnswerMessage(message));
+    const visibleMessages = messages.filter((message) => !isInternalAgentInteractionMessage(message));
     const latestAssistantIndexBySession = new Map();
     visibleMessages.forEach((message, index) => {
       const sessionId = String(message?.meta?.session_id || '');

@@ -17,6 +17,11 @@ async function migrateCheckpointResults(checkpoint, session) {
     const result = parse(block.content);
     if (result?.result_ref && result?.tool_name) return block;
     const name = names.get(block.tool_use_id) || 'restored_tool';
+    // The resumed question card is the user's answer to this tool call. A generic
+    // archive receipt only says that an interaction completed and hides the
+    // answers from the model, causing it to ask the same questions again.
+    if (name === 'ask_question_card' && result?.interaction_id
+      && (result.answered === true || result.cancelled === true)) return block;
     if (INLINE_READ_TOOLS.has(name)) return block;
     const key = `${block.tool_use_id}:${sha256(String(block.content))}`;
     if (!migrated.has(key)) {

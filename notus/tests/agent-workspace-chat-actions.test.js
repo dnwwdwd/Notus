@@ -11,6 +11,12 @@ async function runTests() {
   const fileWorkspaceSource = read('components/AgentWorkspace/FileAgentWorkspace.js');
   const conversationsSource = read('utils/conversations.js');
   const conversations = await import('../utils/conversations.js');
+  const internalAnswer = { role: 'user', meta: { interaction_id: 19, interaction_resolution_status: 'resolved' } };
+  const clarificationIntro = { role: 'assistant', meta: { interaction_id: 19, answer_mode: 'clarify_needed' } };
+  assert.ok(conversations.isInternalAgentInteractionMessage(internalAnswer));
+  assert.ok(conversations.isInternalAgentInteractionMessage(clarificationIntro), '提问说明应由卡片展示，回答后不能仍像新请求一样留在消息流中');
+  assert.ok(!conversations.isInternalAgentInteractionMessage({ role: 'assistant', meta: { interaction_id: 19, answer_mode: 'final' } }));
+  assert.ok(!conversations.isInternalAgentInteractionMessage({ role: 'user', content: '新的独立任务' }));
 
   [
     'const [showJumpToBottom, setShowJumpToBottom] = useState(false);',

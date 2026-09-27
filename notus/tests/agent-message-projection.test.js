@@ -47,6 +47,32 @@ async function main() {
   assert.notStrictEqual(JSON.parse(approval.toolResults[0].content).result_ref, JSON.parse(approval.resumeToolResult.content).result_ref);
   const applied = await readToolResult({ conversationId: cid, resultRef: JSON.parse(approval.resumeToolResult.content).result_ref, jsonPointer: '/applied' });
   assert.strictEqual(applied.content, 'true');
+  const questionAnswer = { answered: true, interaction_id: 19, answers: {
+    audience: { value: '国内用户购买美区礼品卡（人民币收款）' },
+    delivery: { value: '手动采购 + 手动发卡' },
+    payment: { value: '支付宝 + 微信支付' },
+  } };
+  const resumedQuestion = await migrateCheckpointResults({
+    messages: [], lastResponseContent: [use('question', 'ask_question_card')],
+    toolResults: [result('question', questionAnswer)],
+  }, session);
+  assert.deepStrictEqual(JSON.parse(resumedQuestion.toolResults[0].content), questionAnswer, '恢复后的模型输入必须直接包含提问卡片答案');
+  const resumedAgain = await migrateCheckpointResults({
+    messages: [{ role: 'assistant', content: [use('question', 'ask_question_card')] },
+      { role: 'user', content: resumedQuestion.toolResults }],
+  }, session);
+  assert.deepStrictEqual(JSON.parse(resumedAgain.messages[1].content[0].content), questionAnswer, '再次恢复不能把已回答内容压成归档回执');
+  const partialQuestion = await migrateCheckpointResults({
+    messages: [], lastResponseContent: [use('partial-question', 'ask_question_card')],
+    toolResults: [result('partial-question', { answered: true, interaction_id: 21,
+      answers: { audience: { value: '国内用户' }, delivery: { skipped: true } } })],
+  }, session);
+  assert.strictEqual(JSON.parse(partialQuestion.toolResults[0].content).answers.delivery.skipped, true, '跳过状态不能在投影时丢失');
+  const cancelledQuestion = await migrateCheckpointResults({
+    messages: [], lastResponseContent: [use('cancelled-question', 'ask_question_card')],
+    toolResults: [result('cancelled-question', { answered: false, cancelled: true, interaction_id: 20 })],
+  }, session);
+  assert.strictEqual(JSON.parse(cancelledQuestion.toolResults[0].content).cancelled, true, '取消决定也必须直接送达模型');
   const compact = compactMessages(projected.messages, 1500);
   const pending = new Set();
   for (const message of compact) for (const block of Array.isArray(message.content) ? message.content : []) {

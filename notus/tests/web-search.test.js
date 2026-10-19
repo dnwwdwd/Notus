@@ -206,6 +206,88 @@ async function runTests() {
     assert.strictEqual(zhipuCall.payload.tools[0].web_search.search_engine, 'search_pro');
     assert.strictEqual(zhipuCall.payload.tools[0].web_search.count, '6');
 
+    assert.strictEqual(hasConfiguredSearchProvider('deepseek'), false);
+    saveSearchProviderConfig({
+      selected_provider: 'deepseek',
+      api_keys: { deepseek: 'sk-deepseek-test' },
+      counts: { deepseek: 3 },
+      modes: { deepseek: 'normal' },
+    });
+    assert.strictEqual(hasConfiguredSearchProvider('deepseek'), true);
+    const deepseekConfig = resolveWebSearchConfig('deepseek');
+    assert.strictEqual(deepseekConfig.provider, 'deepseek');
+    assert.strictEqual(deepseekConfig.api_key, 'sk-deepseek-test');
+    assert.strictEqual(deepseekConfig.max_results, 3);
+    assert.strictEqual(deepseekConfig.missing_api_key, false);
+
+    const deepseekFetchCalls = [];
+    const originalFetch = global.fetch;
+    global.fetch = async (url, init) => {
+      deepseekFetchCalls.push({ url, init: JSON.parse(init.body) });
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          results: [{
+            rerank_score: 2.4,
+            title: 'DeepSeek Result',
+            url: 'https://example.com/deepseek',
+            snippet: 'deepseek snippet',
+            summary: 'deepseek summary',
+            content: 'deepseek content',
+            date: '2026-06-01T00:00:00+00:00',
+          }],
+        }),
+      };
+    };
+    try {
+      const deepseek = await webSearch('notus deepseek', {
+        provider: 'deepseek',
+        apiKey: 'sk-deepseek-test',
+        mode: 'normal',
+        maxResults: 3,
+      });
+      assert.strictEqual(deepseek.provider, 'deepseek');
+      assert.strictEqual(deepseek.results.length, 1);
+      assert.strictEqual(deepseek.results[0].url, 'https://example.com/deepseek');
+      assert.strictEqual(deepseek.results[0].content, 'deepseek content');
+      assert.strictEqual(deepseek.results[0].publishedAt, '2026-06-01T00:00:00+00:00');
+      assert.strictEqual(deepseekFetchCalls.length, 1);
+      assert.strictEqual(deepseekFetchCalls[0].url, 'https://api.deepseek.com/v1/tools/search');
+      assert.strictEqual(deepseekFetchCalls[0].init.count, 3);
+      assert.strictEqual(deepseekFetchCalls[0].init.need_content, true);
+
+      const deepseekFast = await webSearch('notus deepseek fast', {
+        provider: 'deepseek',
+        apiKey: 'sk-deepseek-test',
+        mode: 'fast',
+        maxResults: 60,
+      });
+      assert.strictEqual(deepseekFast.results[0].content, 'deepseek content');
+      assert.strictEqual(deepseekFetchCalls[1].init.need_content, false);
+      assert.strictEqual(deepseekFetchCalls[1].init.count, 50);
+    } finally {
+      global.fetch = originalFetch;
+    }
+
+    global.fetch = async () => ({
+      ok: false,
+      status: 402,
+      json: async () => ({ error: { message: 'Insufficient Balance', type: 'invalid_request_error' } }),
+    });
+    try {
+      await webSearch('notus deepseek error', {
+        provider: 'deepseek',
+        apiKey: 'sk-deepseek-test',
+        mode: 'normal',
+      });
+      assert.fail('deepseek 非 200 响应应抛出错误');
+    } catch (error) {
+      assert.strictEqual(error.message, 'Insufficient Balance');
+    } finally {
+      global.fetch = originalFetch;
+    }
+
     const conversation = createConversation({ kind: 'knowledge', title: '联网搜索上下文测试' });
     const messageId = saveWebSearchContext(conversation.id, {
       query: 'Notus',

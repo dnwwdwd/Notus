@@ -8,6 +8,7 @@ function normalizeDepth(provider, mode) {
     return 'normal';
   }
   if (provider === 'zhipu') return value === 'search-prime' || value === 'search_pro' ? 'deep' : 'normal';
+  if (provider === 'deepseek') return value === 'fast' ? 'fast' : 'normal';
   return 'normal';
 }
 
@@ -158,6 +159,43 @@ async function searchWithZhipu(query, options = {}) {
   })).filter((item) => item.url || item.content);
 }
 
+const DEEPSEEK_SEARCH_ENDPOINT = 'https://api.deepseek.com/v1/tools/search';
+
+async function searchWithDeepseek(query, options = {}) {
+  if (!options.apiKey) throw new Error('DeepSeek 联网搜索需要 API Key');
+  const depth = normalizeDepth('deepseek', options.mode);
+  const payload = {
+    query: String(query || '').slice(0, 128),
+    count: clampLimit(options.maxResults, 5, 50),
+    // fast 只返回 snippet/summary；normal 返回网页正文
+    need_content: depth !== 'fast',
+  };
+  // 官方 Search 接口为短请求：带 30s 超时，避免上游挂起拖住 Agent 工具调用
+  const response = await fetch(DEEPSEEK_SEARCH_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${options.apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(30000),
+  });
+  const body = await response.json().catch(() => null);
+  if (!response.ok) {
+    const message = body?.error?.message || `DeepSeek 搜索请求失败（HTTP ${response.status}）`;
+    throw new Error(message);
+  }
+  const items = Array.isArray(body?.results) ? body.results : [];
+  return items.map((item) => compactResult({
+    title: item.title,
+    url: item.url,
+    // need_content=false 或正文缺失时回退到 summary/snippet
+    content: item.content || item.summary || item.snippet || '',
+    snippet: item.snippet || item.summary || '',
+    publishedAt: item.date || undefined,
+  })).filter((item) => item.url || item.content);
+}
+
 async function webSearch(query, config = {}) {
   const q = String(query || '').trim();
   if (!q) throw new Error('搜索关键词不能为空');
@@ -172,6 +210,8 @@ async function webSearch(query, config = {}) {
     results = await searchWithExa(q, { ...config, maxResults: config.max_results || config.maxResults });
   } else if (provider === 'zhipu') {
     results = await searchWithZhipu(q, { ...config, maxResults: config.max_results || config.maxResults });
+  } else if (provider === 'deepseek') {
+    results = await searchWithDeepseek(q, { ...config, maxResults: config.max_results || config.maxResults });
   } else {
     throw new Error(`未知搜索服务商：${provider}`);
   }
@@ -190,4 +230,5 @@ module.exports = {
   searchWithTavily,
   searchWithExa,
   searchWithZhipu,
+  searchWithDeepseek,
 };

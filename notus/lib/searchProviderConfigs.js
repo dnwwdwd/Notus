@@ -5,6 +5,7 @@ const SEARCH_PROVIDERS = [
   { id: 'tavily', name: 'Tavily', quota_url: 'https://app.tavily.com/home', max_limit: 20, requires_api_key: true },
   { id: 'exa', name: 'Exa', quota_url: 'https://dashboard.exa.ai/api-keys', max_limit: 100, requires_api_key: true },
   { id: 'zhipu', name: '智谱', quota_url: 'https://bigmodel.cn/usercenter/proj-mgmt/overview', max_limit: 50, requires_api_key: true },
+  { id: 'deepseek', name: 'DeepSeek', quota_url: 'https://platform.deepseek.com/api_keys', max_limit: 50, requires_api_key: true },
 ];
 
 const DEFAULT_MODES = {
@@ -12,6 +13,7 @@ const DEFAULT_MODES = {
   tavily: 'basic',
   exa: 'auto',
   zhipu: 'search-prime',
+  deepseek: 'normal',
 };
 
 const DEFAULT_COUNTS = {
@@ -19,6 +21,7 @@ const DEFAULT_COUNTS = {
   tavily: 5,
   exa: 10,
   zhipu: 5,
+  deepseek: 5,
 };
 
 const SETTINGS_KEY = 'agent_search_provider_config';

@@ -18,7 +18,7 @@ const DEFAULTS = {
   llmMaxOutputTokens: 32768,
   llmRequestTimeoutMs: 180000,
   agentToolTimeoutMs: 30000,
-  agentMcpTimeoutMs: 30000,
+  agentMcpTimeoutMs: 120000,
   allowLoopbackHttpMcp: false,
   agentPromptVersion: 'agent-loop-v2',
   diagnosticsToken: '',

@@ -1,4 +1,4 @@
-const DEFAULT_CONTEXT_WINDOW_TOKENS = 800000;
+const DEFAULT_CONTEXT_WINDOW_TOKENS = 200000;
 const DEFAULT_MAX_OUTPUT_TOKENS = 32768;
 
 const TASK_OUTPUT_BUDGETS = {
@@ -17,12 +17,10 @@ const TASK_OUTPUT_BUDGETS = {
   style_profile: 1024,
   settings_test: 256,
   agent_loop: 32768,
+  agent_task_compaction: 4096,
 };
 
-const KNOWN_MODEL_BUDGETS = {
-  'qwen3-max': { context_window_tokens: 262144, max_output_tokens: 32768 },
-  'qwen3-max-2026-01-23': { context_window_tokens: 262144, max_output_tokens: 32768 },
-};
+const KNOWN_MODEL_BUDGETS = {};
 
 function normalizePositiveInt(value, fallback) {
   const next = Number(value);
@@ -34,6 +32,8 @@ function normalizeModelName(model) {
   return String(model || '').trim().toLowerCase();
 }
 
+// 未显式设置时，所有模型统一使用默认窗口；不再按模型名特判，
+// 具体模型可在设置页 LLM 配置的“上下文窗口”中显式填写。
 function getKnownModelBudget(model) {
   const normalized = normalizeModelName(model);
   if (!normalized) return null;
@@ -43,14 +43,13 @@ function getKnownModelBudget(model) {
 }
 
 function deriveLlmConfigBudgetFields(input = {}) {
-  const known = getKnownModelBudget(input.model);
   const contextWindow = normalizePositiveInt(
     input.context_window_tokens,
-    known?.context_window_tokens || DEFAULT_CONTEXT_WINDOW_TOKENS
+    DEFAULT_CONTEXT_WINDOW_TOKENS
   );
   const configuredMaxOutput = normalizePositiveInt(
     input.max_output_tokens,
-    known?.max_output_tokens || DEFAULT_MAX_OUTPUT_TOKENS
+    DEFAULT_MAX_OUTPUT_TOKENS
   );
   const maxOutputTokens = Math.min(
     configuredMaxOutput,
@@ -135,6 +134,7 @@ function estimateMessagesTokens(messages = []) {
       ? message.content
       : (Array.isArray(message?.content)
         ? message.content.map((block) => {
+          if (block?.type === 'image_reference') return '[图片输入：原图按引用加载]';
           if (block?.type === 'image' && block?.source?.type === 'base64') {
             return `[图片输入：${block.source.media_type || 'unknown'}，按视觉上下文估算]`;
           }
@@ -147,6 +147,7 @@ function estimateMessagesTokens(messages = []) {
       + estimateTextTokens(role)
       + estimateTextTokens(name)
       + estimateTextTokens(content)
+      + estimateTextTokens(message?.reasoning_content ?? message?.providerState?.reasoningContent ?? '')
       + estimateTextTokens(toolCalls);
   }, 0) + 6;
 }

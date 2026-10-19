@@ -10,10 +10,17 @@ const http = require('http');
   const { completeToolChat } = require('../lib/llm');
   const { classifyLLMError } = require('../lib/agentLoop');
   let delayMs = 1500;
+  let errorMode = '';
   const timers = new Set();
   const server = http.createServer((req, res) => {
     req.resume();
     res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    if (errorMode) {
+      // The stream may fail after a partial tool call; it must never become executable.
+      res.write('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"partial","function":{"name":"create_note","arguments":"{\\\"path\\\":"}}]}}]}\n\n');
+      res.end(`${errorMode === 'anthropic' ? 'event: error\n' : ''}data: {"type":"error","error":{"type":"invalid_request_error","message":"Invalid history block","param":"messages"},"request_id":"stream-error-123"}\n\n`);
+      return;
+    }
     res.write('data: {"choices":[{"delta":{"content":"开始"}}]}\n\n');
     const timer = setTimeout(() => {
       timers.delete(timer);
@@ -41,12 +48,22 @@ const http = require('http');
     delayMs = 20;
     const result = await completeToolChat(request);
     assert.strictEqual(result.content[0].text, '开始完成');
+    for (const protocol of ['openai', 'anthropic']) {
+      errorMode = protocol;
+      await assert.rejects(completeToolChat({ ...request, llmConfig: { ...request.llmConfig, llmApiProtocol: protocol } }), error => {
+        assert.equal(error.code, 'LLM_API_ERROR'); assert.equal(error.status, 400);
+        assert.equal(error.provider_request_id, 'stream-error-123');
+        assert(error.response_body.includes('Invalid history block'));
+        return true;
+      }, 'HTTP 200 中的错误流不得当作成功或执行未完成的工具');
+    }
     for (const code of ['UND_ERR_SOCKET', 'UND_ERR_BODY_TIMEOUT', 'ECONNRESET']) {
       const error = new TypeError('terminated', { cause: Object.assign(new Error('connection closed'), { code }) });
       assert.strictEqual(classifyLLMError(error).retryable, true, `底层 ${code} 应可重试`);
     }
     assert.strictEqual(classifyLLMError(new TypeError('programming error')).retryable, false);
     assert.strictEqual(classifyLLMError({ status: 401, cause: { code: 'UND_ERR_SOCKET' } }).category, 'action_required');
+    assert.strictEqual(classifyLLMError({ status: 529 }).retryable, true, 'Anthropic overloaded 错误应保留进度并按临时失败处理');
     console.log('llm stream lifecycle tests passed');
   } finally {
     timers.forEach(clearTimeout);

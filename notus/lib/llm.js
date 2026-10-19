@@ -1,6 +1,7 @@
 const { getEffectiveConfig } = require('./config');
 const { buildAnthropicCompatibleAuthHeaders, normalizeAnthropicApiBaseUrl } = require('./anthropicCompat');
 const { createAppError } = require('./errors');
+const { summarizeLlmRequest } = require('./llmDiagnostics');
 const {
   compactMessageWindow,
   estimateChatRequestTokens,
@@ -22,6 +23,7 @@ async function readErrorPayload(response) {
   return {
     body,
     message: `LLM API ${response.status}: ${body}`,
+    requestId: response.headers?.get('x-request-id') || response.headers?.get('request-id') || response.headers?.get('x-amzn-requestid') || '',
   };
 }
 
@@ -82,7 +84,11 @@ async function applyCompaction({
   }
 
   if (!next) {
-    const fallbackMessages = compactMessageWindow(messages, budget.compactTriggerTokens);
+    const hasToolHistory = messages.some((message) => message.providerState
+      || (Array.isArray(message.content) && message.content.some((block) => ['tool_use', 'tool_result'].includes(block?.type))));
+    const fallbackMessages = hasToolHistory
+      ? require('./agentMessageProjection').compactMessages(messages, budget.compactTriggerTokens)
+      : compactMessageWindow(messages, budget.compactTriggerTokens);
     const before = JSON.stringify(messages);
     const after = JSON.stringify(fallbackMessages);
     if (after && after !== before) {
@@ -183,6 +189,7 @@ async function consumeToolStream(response, { apiProtocol, onVisibleText } = {}) 
   let pending = '';
   let usage = null;
   let stopReason = '';
+  let reasoningContent;
 
   const emitText = (text) => {
     const delta = visibleText.push(text);
@@ -192,6 +199,7 @@ async function consumeToolStream(response, { apiProtocol, onVisibleText } = {}) 
     usage = mergeStreamUsage(usage, payload?.usage, 'openai');
     const choice = payload?.choices?.[0] || {};
     const delta = choice.delta || {};
+    if (typeof delta.reasoning_content === 'string') reasoningContent = (reasoningContent ?? '') + delta.reasoning_content;
     if (delta.content) emitText(delta.content);
     (Array.isArray(delta.tool_calls) ? delta.tool_calls : []).forEach((call, fallbackIndex) => {
       const entry = toolStreamEntry(toolCalls, call.index ?? fallbackIndex);
@@ -226,25 +234,44 @@ async function consumeToolStream(response, { apiProtocol, onVisibleText } = {}) 
   const handlePart = (part) => {
     const { event, data } = parseSseEvent(part);
     if (!data || data === '[DONE]') return;
+    let payload;
     try {
-      const payload = JSON.parse(data);
-      if (apiProtocol === 'anthropic') handleAnthropic(event, payload);
-      else handleOpenAi(payload);
+      payload = JSON.parse(data);
     } catch {
       // 忽略 Provider 的 keep-alive 与不完整 SSE 事件。
+      return;
     }
+    if (event === 'error' || payload?.error) {
+      const providerError = payload.error || payload;
+      const typeStatus = { invalid_request_error: 400, authentication_error: 401, permission_error: 403,
+        not_found_error: 404, rate_limit_error: 429, api_error: 500, overloaded_error: 529 };
+      throw createAppError('LLM_API_ERROR', providerError.message || '模型流返回错误', {
+        status: Number(providerError.status || providerError.status_code || typeStatus[providerError.type]) || 502,
+        response_body: JSON.stringify(payload),
+        provider_request_id: response.headers?.get('x-request-id') || response.headers?.get('request-id') || response.headers?.get('x-amzn-requestid') || payload.request_id || '',
+      });
+    }
+    if (apiProtocol === 'anthropic') handleAnthropic(event, payload);
+    else handleOpenAi(payload);
   };
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    pending += decoder.decode(value, { stream: true });
-    const parts = pending.split(/\r?\n\r?\n/);
-    pending = parts.pop() || '';
-    parts.forEach(handlePart);
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      pending += decoder.decode(value, { stream: true });
+      const parts = pending.split(/\r?\n\r?\n/);
+      pending = parts.pop() || '';
+      parts.forEach(handlePart);
+    }
+    pending += decoder.decode();
+    if (pending.trim()) handlePart(pending);
+  } catch (error) {
+    await reader.cancel().catch(() => {});
+    throw error;
+  } finally {
+    reader.releaseLock();
   }
-  pending += decoder.decode();
-  if (pending.trim()) handlePart(pending);
 
   const content = [];
   const text = visibleText.text();
@@ -262,6 +289,7 @@ async function consumeToolStream(response, { apiProtocol, onVisibleText } = {}) 
     content,
     stopReason: stopReason || (toolCalls.size > 0 ? 'tool_use' : 'end_turn'),
     usage,
+    reasoningContent,
   };
 }
 
@@ -352,6 +380,21 @@ function buildAnthropicRequestBody(messages, options, budget, config) {
     max_tokens: budget.maxOutputTokens,
   };
   if (systemMessages.length > 0) body.system = systemMessages.join('\n\n');
+  // 与工具请求体保持一致：合并相邻同角色消息，避免以 assistant 结尾触发
+  // "does not support assistant message prefill" 类协议拒绝。
+  const mergedMessages = [];
+  body.messages.forEach((message) => {
+    const last = mergedMessages[mergedMessages.length - 1];
+    if (last && last.role === message.role) {
+      last.content = `${last.content}\n\n${message.content}`.trim();
+      return;
+    }
+    mergedMessages.push({ ...message });
+  });
+  if (mergedMessages.length > 0 && mergedMessages[mergedMessages.length - 1].role === 'assistant') {
+    mergedMessages.push({ role: 'user', content: '请继续。' });
+  }
+  body.messages = mergedMessages.length > 0 ? mergedMessages : [{ role: 'user', content: '' }];
   return body;
 }
 
@@ -440,7 +483,7 @@ function toAnthropicMessages(messages = []) {
   });
 }
 
-function toOpenAiMessages(system, messages = []) {
+function toOpenAiMessages(system, messages = [], source = null) {
   const output = [];
   if (system) output.push({ role: 'system', content: String(system) });
   (Array.isArray(messages) ? messages : []).forEach((message) => {
@@ -452,7 +495,9 @@ function toOpenAiMessages(system, messages = []) {
         type: 'function',
         function: { name: block.name, arguments: JSON.stringify(block.input || {}) },
       }));
-      output.push({ role: 'assistant', content: text || null, ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}) });
+      const state = message.providerState;
+      output.push({ role: 'assistant', content: text || null, ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+        ...(require('./llmProviderState').matchingProviderState(state, source) ? { reasoning_content: state.reasoningContent } : {}) });
       return;
     }
     const userContent = blocks.flatMap((block) => {
@@ -501,6 +546,7 @@ function parseOpenAiToolResponse(payload = {}) {
   return {
     content,
     stopReason: (message.tool_calls || []).length > 0 ? 'tool_use' : (choice.finish_reason || 'end_turn'),
+    reasoningContent: typeof message.reasoning_content === 'string' ? message.reasoning_content : undefined,
   };
 }
 
@@ -513,10 +559,36 @@ function parseAnthropicToolResponse(payload = {}) {
   return { content, stopReason: payload.stop_reason || 'end_turn' };
 }
 
+function normalizeAnthropicConversation(messages = []) {
+  // Anthropic Messages 协议要求角色交替，且多数 Vertex 系通道不支持以 assistant
+  // 结尾的请求（prefill），会返回 "does not support assistant message prefill"。
+  // 这里统一做三件事：丢弃空 assistant 消息、合并相邻同角色消息、必要时补一条
+  // 用户继续指令，保证任何调用方构造出的对话都符合协议，不需要按模型写 adapter。
+  const merged = [];
+  (Array.isArray(messages) ? messages : []).forEach((message) => {
+    const content = Array.isArray(message.content)
+      ? message.content.filter((block) => block.type !== 'text' || String(block.text || '') !== '')
+      : message.content;
+    const isEmpty = Array.isArray(content) && content.length === 0;
+    if (isEmpty && message.role === 'assistant') return;
+    const normalized = { role: message.role, content: isEmpty ? [{ type: 'text', text: '' }] : content };
+    const last = merged[merged.length - 1];
+    if (last && last.role === normalized.role) {
+      last.content = [...last.content, ...normalized.content];
+      return;
+    }
+    merged.push(normalized);
+  });
+  if (merged.length > 0 && merged[merged.length - 1].role === 'assistant') {
+    merged.push({ role: 'user', content: [{ type: 'text', text: '请继续。' }] });
+  }
+  return merged;
+}
+
 function buildAnthropicToolRequestBody({ system, messages, tools, model, temperature }, budget, config) {
   const body = {
     model: model || config.llmModel,
-    messages: toAnthropicMessages(messages),
+    messages: normalizeAnthropicConversation(toAnthropicMessages(messages)),
     temperature: temperature ?? 0.2,
     max_tokens: budget.maxOutputTokens,
   };
@@ -539,18 +611,24 @@ async function completeToolChat({
   requestTimeoutMs,
   maxRetries = 1,
   onVisibleText,
+  onRequestFailure,
+  requestAttempt = 1,
 } = {}) {
   const config = resolveLlmConfig(llmConfig);
   const apiProtocol = normalizeApiProtocol(config.llmApiProtocol);
   const budget = resolveLlmBudget(config, taskType, { model, maxOutputTokens });
+  const { providerSource, projectReasoningHistory } = require('./llmProviderState');
+  const source = providerSource({ ...config, llmApiProtocol: apiProtocol }, model);
   let currentMessages = Array.isArray(messages) ? messages : [];
   let currentTools = Array.isArray(tools) ? tools : [];
   let retryCount = 0;
 
   while (true) {
+    const startedAt = new Date().toISOString();
+    const started = performance.now();
     let requestMessages = apiProtocol === 'anthropic'
       ? toAnthropicMessages(currentMessages)
-      : toOpenAiMessages(system, currentMessages);
+      : toOpenAiMessages(system, projectReasoningHistory(currentMessages, source, currentTools), source);
     let estimatedPromptTokens = estimateChatRequestTokens({
       messages: apiProtocol === 'anthropic' ? [{ role: 'system', content: system }, ...currentMessages] : requestMessages,
       tools: currentTools,
@@ -575,68 +653,85 @@ async function completeToolChat({
         currentTools = compacted.tools || currentTools;
         requestMessages = apiProtocol === 'anthropic'
           ? toAnthropicMessages(currentMessages)
-          : toOpenAiMessages(system, currentMessages);
+          : toOpenAiMessages(system, projectReasoningHistory(currentMessages, source, currentTools), source);
         estimatedPromptTokens = estimateChatRequestTokens({
           messages: apiProtocol === 'anthropic' ? [{ role: 'system', content: system }, ...currentMessages] : requestMessages,
           tools: currentTools,
         });
       }
     }
+    const endpoint = apiProtocol === 'anthropic' ? buildAnthropicRequestUrl(config.llmBaseUrl, '/messages')
+      : `${config.llmBaseUrl.replace(/\/+$/, '')}/chat/completions`;
+    const requestBody = apiProtocol === 'anthropic'
+      ? { ...buildAnthropicToolRequestBody({ system, messages: currentMessages, tools: currentTools, model, temperature }, budget, config),
+        ...(typeof onVisibleText === 'function' ? { stream: true } : {}) }
+      : { ...buildBaseRequestBody(requestMessages, { model, tools: toOpenAiTools(currentTools), temperature }, budget, config),
+        ...(typeof onVisibleText === 'function' ? { stream: true, stream_options: { include_usage: true } } : {}) };
+    const requestSummary = { ...summarizeLlmRequest({ endpoint, body: requestBody, protocol: apiProtocol, budget,
+      estimatedPromptTokens, attempt: requestAttempt, compactionRetry: retryCount }), started_at: startedAt, phase: 'preflight', dispatched: false };
+    const reportFailure = (error) => {
+      error.llm_request = { ...requestSummary, duration_ms: Math.round(performance.now() - started) };
+      try { onRequestFailure?.(error); } catch { /* 日志写入失败不改变模型恢复流程。 */ }
+      return error;
+    };
     if (estimatedPromptTokens > budget.hardInputBudgetTokens) {
-      throw createAppError('CONTEXT_BUDGET_EXCEEDED', '当前任务上下文超出模型预算，请缩小处理范围。', {
+      throw reportFailure(createAppError('CONTEXT_BUDGET_EXCEEDED', '当前任务上下文超出模型预算，请缩小处理范围。', {
         budget: buildBudgetPayload(budget, estimatedPromptTokens, retryCount),
-      });
+      }));
     }
 
     const scopedSignal = requestSignal(signal, requestTimeoutMs || config.llmRequestTimeoutMs || 180000);
     let response;
     try {
-      response = apiProtocol === 'anthropic'
-        ? await fetch(buildAnthropicRequestUrl(config.llmBaseUrl, '/messages'), {
-          method: 'POST', headers: buildAnthropicHeaders(config), signal: scopedSignal.signal,
-          body: JSON.stringify({
-            ...buildAnthropicToolRequestBody({ system, messages: currentMessages, tools: currentTools, model, temperature }, budget, config),
-            ...(typeof onVisibleText === 'function' ? { stream: true } : {}),
-          }),
-        })
-        : await fetch(`${config.llmBaseUrl.replace(/\/+$/, '')}/chat/completions`, {
-          method: 'POST', headers: buildOpenAiHeaders(config), signal: scopedSignal.signal,
-          body: JSON.stringify({
-            ...buildBaseRequestBody(requestMessages, {
-              model, tools: toOpenAiTools(currentTools), temperature,
-            }, budget, config),
-            ...(typeof onVisibleText === 'function' ? { stream: true, stream_options: { include_usage: true } } : {}),
-          }),
-        });
+      requestSummary.phase = 'connecting';
+      requestSummary.dispatched = true;
+      response = await fetch(endpoint, {
+        method: 'POST', headers: apiProtocol === 'anthropic' ? buildAnthropicHeaders(config) : buildOpenAiHeaders(config),
+        signal: scopedSignal.signal, body: JSON.stringify(requestBody),
+      });
+      requestSummary.phase = 'reading_response';
+      requestSummary.response_http_status = response.status;
+      requestSummary.response_content_type = response.headers?.get('content-type') || '';
       if (!response.ok) {
         const errorPayload = await readErrorPayload(response);
         const overflow = isContextOverflowError(response.status, errorPayload.body);
-        if (overflow && retryCount < Math.max(0, Number(maxRetries) || 0)) {
-          retryCount += 1;
-          continue;
-        }
         throw createAppError(overflow ? 'CONTEXT_BUDGET_EXCEEDED' : 'LLM_API_ERROR', errorPayload.message, {
           status: response.status,
           response_body: errorPayload.body,
+          provider_request_id: errorPayload.requestId,
           overflow,
           budget: buildBudgetPayload(budget, estimatedPromptTokens, retryCount),
         });
       }
 
+      requestSummary.phase = typeof onVisibleText === 'function' ? 'reading_stream' : 'reading_json';
       const streamed = typeof onVisibleText === 'function'
         ? await consumeToolStream(response, { apiProtocol, onVisibleText })
         : null;
       const payload = streamed ? null : await response.json();
+      if (payload?.error) throw createAppError('LLM_API_ERROR', '模型服务在成功状态码中返回错误', {
+        status: Number(payload.error.status || payload.error.status_code) || 502,
+        response_body: JSON.stringify(payload),
+      });
       const usage = streamed ? streamed.usage : (apiProtocol === 'anthropic' ? normalizeAnthropicUsage(payload.usage) : normalizeUsage(payload.usage));
       const parsed = streamed || (apiProtocol === 'anthropic' ? parseAnthropicToolResponse(payload) : parseOpenAiToolResponse(payload));
       return {
         role: 'assistant', content: parsed.content, stopReason: parsed.stopReason, usage,
+        ...(apiProtocol === 'openai' && typeof parsed.reasoningContent === 'string'
+          ? { providerState: { ...source, reasoningContent: parsed.reasoningContent } } : {}),
         budget: buildBudgetPayload(budget, estimatedPromptTokens, retryCount), raw: payload,
       };
     } catch (error) {
+      if (response && !error.provider_request_id) error.provider_request_id = response.headers?.get('x-request-id')
+        || response.headers?.get('request-id') || response.headers?.get('x-amzn-requestid') || '';
       if (scopedSignal.signal.aborted) {
-        throw createAppError(scopedSignal.reason() === 'user' ? 'ABORTED' : 'LLM_REQUEST_TIMEOUT',
-          scopedSignal.reason() === 'user' ? 'LLM 请求已取消' : 'LLM 请求超时');
+        error = createAppError(scopedSignal.reason() === 'user' ? 'ABORTED' : 'LLM_REQUEST_TIMEOUT',
+          scopedSignal.reason() === 'user' ? 'LLM 请求已取消' : 'LLM 请求超时', { provider_request_id: error.provider_request_id, cause: error });
+      }
+      reportFailure(error);
+      if (error.overflow && retryCount < Math.max(0, Number(maxRetries) || 0)) {
+        retryCount += 1;
+        continue;
       }
       throw error;
     } finally {
@@ -744,6 +839,7 @@ async function completeChat(messages, options = {}) {
       throw createAppError('LLM_API_ERROR', errorPayload.message, {
         status: response.status,
         response_body: errorPayload.body,
+        provider_request_id: errorPayload.requestId,
         overflow,
         budget: buildBudgetPayload(budget, estimatedPromptTokens, retryCount),
       });
@@ -846,6 +942,7 @@ async function streamChat(messages, options = {}) {
       throw createAppError('LLM_API_ERROR', errorPayload.message, {
         status: response.status,
         response_body: errorPayload.body,
+        provider_request_id: errorPayload.requestId,
         overflow,
         budget: buildBudgetPayload(budget, estimatedPromptTokens, retryCount),
       });
@@ -910,5 +1007,6 @@ module.exports = {
   consumeToolStream,
   createVisibleTextStream,
   toAnthropicMessages,
+  normalizeAnthropicConversation,
   toOpenAiMessages,
 };

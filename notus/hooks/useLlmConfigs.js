@@ -3,6 +3,21 @@ import { readJsonResponse } from '../utils/fetchJson';
 
 const LLM_CONFIGS_CACHE_KEY = 'notus-llm-configs-cache';
 
+// 模块级共享：同一页面内任何实例（设置页、文件工作区等）刷新配置后，
+// 通过监听器把最新数据同步给所有已挂载实例，避免设置里新增模型后
+// 其他位置的模型列表要等重新挂载才更新。
+const configStateListeners = new Set();
+let latestSharedConfigState = null;
+
+function notifyConfigStateListeners(nextState) {
+  latestSharedConfigState = nextState;
+  configStateListeners.forEach((listener) => {
+    try {
+      listener(nextState);
+    } catch {}
+  });
+}
+
 function readCachedConfigs() {
   if (typeof window === 'undefined') return null;
   try {
@@ -38,7 +53,7 @@ export function useLlmConfigs() {
 
   const refresh = useCallback(async ({ forceLoading = false } = {}) => {
     const hasCache = typeof window !== 'undefined' && Boolean(window.sessionStorage.getItem(LLM_CONFIGS_CACHE_KEY));
-    if (forceLoading || !hasCache) {
+    if ((forceLoading || !hasCache) && !latestSharedConfigState) {
       setState((prev) => ({ ...prev, loading: true }));
     }
 
@@ -52,28 +67,38 @@ export function useLlmConfigs() {
     };
     setState(nextState);
     writeCachedConfigs(nextState);
+    notifyConfigStateListeners(nextState);
 
     return payload;
   }, []);
 
   useEffect(() => {
     let cancelled = false;
+    const applySharedState = (next) => {
+      if (!cancelled) setState(next);
+    };
+    configStateListeners.add(applySharedState);
+
     const cached = readCachedConfigs();
-    if (cached) {
+    if (latestSharedConfigState) {
+      // 其他实例已加载过数据：直接采用，避免先渲染旧缓存再跳加载态
+      setState(latestSharedConfigState);
+    } else if (cached) {
       setState(cached);
     }
 
-    refresh({ forceLoading: !cached }).catch(() => {
+    refresh({ forceLoading: !cached && !latestSharedConfigState }).catch(() => {
       if (cancelled) return;
       setState((prev) => ({ ...prev, loading: false }));
     });
 
     return () => {
       cancelled = true;
+      configStateListeners.delete(applySharedState);
     };
   }, [refresh]);
 
-  const createConfig = useCallback(async (input) => {
+  const createConfigs = useCallback(async (input) => {
     const response = await fetch('/api/settings/llm-configs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -81,7 +106,7 @@ export function useLlmConfigs() {
     });
     const payload = await readJsonResponse(response, { fallbackMessage: '新增 LLM 配置失败' });
     await refresh();
-    return payload.item;
+    return Array.isArray(payload.items) ? payload.items : [];
   }, [refresh]);
 
   const updateConfig = useCallback(async (id, input) => {
@@ -111,7 +136,7 @@ export function useLlmConfigs() {
   return {
     ...state,
     refresh,
-    createConfig,
+    createConfigs,
     updateConfig,
     deleteConfig,
     setActiveConfig,

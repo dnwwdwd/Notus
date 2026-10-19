@@ -32,8 +32,10 @@ export default function handler(req, res) {
 
   const runtime = ensureRuntime();
   if (!runtime.ok) return res.status(500).json({ error: '日志服务初始化失败', code: 'RUNTIME_ERROR', request_id: context.request_id });
+  // 默认开放读取：所有设备都可以查询服务端日志。只有显式配置了
+  // NOTUS_DIAGNOSTICS_TOKEN 时才启用远程授权门禁，此时非 loopback 访问必须携带令牌。
   const diagnosticsToken = getEffectiveConfig().diagnosticsToken;
-  if (!isLoopback(req) && !hasDiagnosticsToken(req, diagnosticsToken)) {
+  if (diagnosticsToken && !isLoopback(req) && !hasDiagnosticsToken(req, diagnosticsToken)) {
     return res.status(403).json({ error: '远程诊断未授权', code: 'DIAGNOSTICS_FORBIDDEN', request_id: context.request_id });
   }
 

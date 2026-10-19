@@ -47,7 +47,7 @@ function listLlmConfigs(options = {}) {
     SELECT id, name, provider, api_protocol, model, base_url, api_key, context_window_tokens, max_output_tokens,
       is_active, last_test_latency_ms, last_tested_at, created_at, updated_at
     FROM llm_configs
-    ORDER BY is_active DESC, updated_at DESC, id DESC
+    ORDER BY updated_at DESC, id ASC
   `).all();
   return rows.map((row) => mapRow(row, options));
 }
@@ -98,8 +98,9 @@ function setActiveLlmConfig(id) {
   if (!existing) throw new Error('LLM 配置不存在');
 
   database.transaction(() => {
-    database.prepare('UPDATE llm_configs SET is_active = 0, updated_at = datetime(\'now\') WHERE is_active = 1').run();
-    database.prepare('UPDATE llm_configs SET is_active = 1, updated_at = datetime(\'now\') WHERE id = ?').run(normalizedId);
+    // 切换默认模型不刷新 updated_at：列表按更新时间排序，选中不应改变顺序
+    database.prepare('UPDATE llm_configs SET is_active = 0 WHERE is_active = 1').run();
+    database.prepare('UPDATE llm_configs SET is_active = 1 WHERE id = ?').run(normalizedId);
   })();
 
   const nextActive = getLlmConfigById(normalizedId, { includeSecret: true });
@@ -136,7 +137,7 @@ function createLlmConfig(input = {}) {
 
   const result = database.transaction(() => {
     if (shouldActivate) {
-      database.prepare('UPDATE llm_configs SET is_active = 0, updated_at = datetime(\'now\') WHERE is_active = 1').run();
+      database.prepare('UPDATE llm_configs SET is_active = 0 WHERE is_active = 1').run();
     }
 
     return database.prepare(`
@@ -165,6 +166,16 @@ function createLlmConfig(input = {}) {
   return getLlmConfigById(result.lastInsertRowid);
 }
 
+function createLlmConfigGroup(sharedInput = {}, modelEntries = []) {
+  const database = getDb();
+  const created = database.transaction(() => modelEntries.map((entry) => createLlmConfig({
+    ...sharedInput,
+    model: entry.model,
+    last_test_latency_ms: entry.last_test_latency_ms,
+  })))();
+  return created;
+}
+
 function updateLlmConfig(id, input = {}) {
   const database = getDb();
   const normalizedId = Number(id);
@@ -185,7 +196,9 @@ function updateLlmConfig(id, input = {}) {
   };
   const derivedBudget = deriveLlmConfigBudgetFields({
     model: next.model,
-    context_window_tokens: input.context_window_tokens ?? existing.context_window_tokens,
+    context_window_tokens: 'context_window_tokens' in input
+      ? input.context_window_tokens
+      : existing.context_window_tokens,
     max_output_tokens: input.max_output_tokens ?? existing.max_output_tokens,
   });
 
@@ -195,9 +208,31 @@ function updateLlmConfig(id, input = {}) {
   if (!next.base_url) throw new Error('LLM Base URL 不能为空');
   if (!next.api_key) throw new Error('LLM API Key 不能为空');
 
+  // 内容字段是否发生变化：仅切换默认模型（如输入框选择模型）不刷新 updated_at，
+  // 避免列表按更新时间排序时"选了谁就排到最前面"
+  const normalizeLatency = (value) => (Number.isFinite(value) ? Number(value) : null);
+  const contentChanged =
+    next.name !== existing.name ||
+    next.provider !== existing.provider ||
+    next.api_protocol !== existing.api_protocol ||
+    next.model !== existing.model ||
+    next.base_url !== existing.base_url ||
+    next.api_key !== existing.api_key ||
+    (derivedBudget.context_window_tokens ?? null) !== (existing.context_window_tokens ?? null) ||
+    (derivedBudget.max_output_tokens ?? null) !== (existing.max_output_tokens ?? null) ||
+    normalizeLatency(next.last_test_latency_ms) !== normalizeLatency(existing.last_test_latency_ms);
+
   database.transaction(() => {
     if (next.set_default) {
-      database.prepare('UPDATE llm_configs SET is_active = 0, updated_at = datetime(\'now\') WHERE is_active = 1 AND id != ?').run(normalizedId);
+      database.prepare('UPDATE llm_configs SET is_active = 0 WHERE is_active = 1 AND id != ?').run(normalizedId);
+    }
+
+    if (!contentChanged) {
+      database.prepare('UPDATE llm_configs SET is_active = ? WHERE id = ?').run(
+        next.set_default ? 1 : 0,
+        normalizedId
+      );
+      return;
     }
 
     database.prepare(`
@@ -291,6 +326,7 @@ module.exports = {
   getLlmConfigById,
   getActiveLlmConfig,
   createLlmConfig,
+  createLlmConfigGroup,
   updateLlmConfig,
   deleteLlmConfig,
   setActiveLlmConfig,

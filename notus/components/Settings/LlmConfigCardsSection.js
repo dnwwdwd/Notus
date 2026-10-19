@@ -1,12 +1,14 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useToast } from '../ui/Toast';
 import { Icons } from '../ui/Icons';
 import { DropdownSelect } from '../ui/DropdownSelect';
+import { scheduleInitialFocus } from '../ui/dialogFocus';
 import { useLlmConfigs } from '../../hooks/useLlmConfigs';
-import { inferLlmProvider, resolveLlmProviderLabel } from '../../lib/llmForm';
+import { groupLlmConfigs, inferLlmProvider, resolveLlmProviderLabel } from '../../lib/llmForm';
+import { readJsonResponse } from '../../utils/fetchJson';
 
 const API_PROTOCOL_OPTIONS = [
-  { value: 'openai', label: 'OpenAI API' },
+  { value: 'openai', label: 'OpenAI 兼容' },
   { value: 'anthropic', label: 'Anthropic' },
 ];
 
@@ -21,16 +23,20 @@ const LLM_CONFIG_STYLES = [
   '.notus-llm-add-button:active, .notus-llm-primary-button:active, .notus-llm-secondary-button:active, .notus-llm-danger-button:active, .notus-llm-icon-button:active, .notus-llm-modal-close:active { transform: scale(0.96); }',
   '.notus-llm-add-button { height: 34px; padding: 0 14px; border-radius: 8px; color: #fff; background: #d97757; display: inline-flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 700; box-shadow: 0 10px 24px -18px rgba(217, 119, 87, 0.9); white-space: nowrap; }',
   '.notus-llm-add-button:hover { background: #c96849; }',
-  '.notus-llm-list { display: flex; flex-direction: column; gap: 10px; }',
-  '.notus-llm-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-height: 62px; padding: 12px 16px; border: 1px solid #e5e3d8; border-radius: 12px; background: #fdfcfb; transition-property: border-color, background-color, box-shadow; transition-duration: 160ms; transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1); }',
-  '.notus-llm-row:hover { border-color: #d4d2c9; background: #fff; box-shadow: 0 12px 32px -28px rgba(0, 0, 0, 0.35); }',
-  '.notus-llm-row-main { min-width: 0; display: flex; flex-direction: column; gap: 7px; }',
-  '.notus-llm-row-name { color: #2d2d2d; font-size: 14px; line-height: 1.2; font-weight: 700; }',
-  '.notus-llm-row-meta { min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: #8a8881; font-size: 12px; line-height: 1.35; }',
-  '.notus-llm-provider { color: #6b6963; font-weight: 650; }',
-  '.notus-llm-dot { width: 3px; height: 3px; border-radius: 999px; background: #d4d2c9; }',
-  '.notus-llm-code { max-width: 210px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #6b6963; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }',
-  '.notus-llm-url { max-width: 260px; }',
+  '.notus-llm-group-list { display: flex; flex-direction: column; gap: 12px; }',
+  '.notus-llm-group { border: 1px solid #e5e3d8; border-radius: 12px; background: #fdfcfb; overflow: hidden; transition-property: border-color, background-color, box-shadow; transition-duration: 160ms; transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1); }',
+  '.notus-llm-group:hover { border-color: #d4d2c9; background: #fff; box-shadow: 0 12px 32px -28px rgba(0, 0, 0, 0.35); }',
+  '.notus-llm-group-header { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px 16px; border-bottom: 1px solid #f0eee6; }',
+  '.notus-llm-group-main { min-width: 0; display: flex; flex-direction: column; gap: 6px; }',
+  '.notus-llm-group-title-row { display: flex; align-items: center; gap: 8px; min-width: 0; }',
+  '.notus-llm-group-title { color: #2d2d2d; font-size: 14px; line-height: 1.2; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }',
+  '.notus-llm-group-badge { display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 999px; background: rgba(217, 119, 87, 0.12); color: #c96849; font-size: 10px; font-weight: 700; white-space: nowrap; }',
+  '.notus-llm-group-protocol { display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 999px; background: #f2f0ea; color: #6b6963; font-size: 10px; font-weight: 700; white-space: nowrap; }',
+  '.notus-llm-group-meta { display: flex; align-items: center; gap: 6px; min-width: 0; color: #8a8881; font-size: 12px; line-height: 1.35; }',
+  '.notus-llm-code { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #6b6963; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }',
+  '.notus-llm-group-models { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 16px 14px; }',
+  '.notus-llm-model-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; height: 26px; padding: 0 10px; border-radius: 999px; background: #f2f0ea; color: #4b4944; font-size: 12px; font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }',
+  '.notus-llm-model-chip.is-active { background: rgba(217, 119, 87, 0.12); color: #c96849; }',
   '.notus-llm-row-actions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }',
   '.notus-llm-icon-button { width: 36px; height: 36px; border-radius: 9px; color: #8a8881; background: transparent; display: flex; align-items: center; justify-content: center; }',
   '.notus-llm-icon-button:hover { color: #4b4944; background: #f2f0ea; }',
@@ -52,6 +58,36 @@ const LLM_CONFIG_STYLES = [
   '.notus-model-input { width: 100%; min-height: 38px; border: 1px solid #e5e3d8; border-radius: 9px; background: #fafafa; color: #2d2d2d; padding: 8px 12px; font-size: 13px; line-height: 1.4; font-family: inherit; outline: none; transition-property: border-color, box-shadow, background-color; transition-duration: 150ms; transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1); }',
   '.notus-model-input::placeholder { color: #a3a19a; }',
   '.notus-model-input:focus { border-color: rgba(217, 119, 87, 0.6); background: #fff; box-shadow: 0 0 0 3px rgba(217, 119, 87, 0.12); }',
+  '.notus-llm-model-picker { display: flex; flex-direction: column; gap: 10px; padding: 14px; border: 1px solid #e5e3d8; border-radius: 10px; background: #fdfcfb; }',
+  '.notus-llm-picker-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }',
+  '.notus-llm-picker-title { color: #4b4944; font-size: 13px; font-weight: 700; }',
+  '.notus-llm-picker-hint { color: #a3a19a; font-size: 11px; }',
+  '.notus-llm-fetch-button { border: 1px solid #e5e3d8; border-radius: 8px; background: #fff; color: #4b4944; height: 32px; padding: 0 12px; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; transition-property: background-color, color, border-color; transition-duration: 150ms; }',
+  '.notus-llm-fetch-button:hover { background: #f7f5ef; color: #2d2d2d; }',
+  '.notus-llm-fetch-button:disabled { cursor: not-allowed; opacity: 0.6; }',
+  '.notus-llm-selected-chips { display: flex; flex-wrap: wrap; gap: 6px; }',
+  '.notus-llm-selected-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; height: 24px; padding: 0 6px 0 9px; border-radius: 999px; background: rgba(217, 119, 87, 0.1); color: #b95f42; font-size: 11px; font-weight: 700; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }',
+  '.notus-llm-chip-remove { width: 16px; height: 16px; border: 0; border-radius: 999px; padding: 0; display: inline-flex; align-items: center; justify-content: center; color: #b95f42; background: transparent; cursor: pointer; }',
+  '.notus-llm-chip-remove:hover { background: rgba(217, 119, 87, 0.18); }',
+  '.notus-llm-model-catalog { display: flex; flex-direction: column; gap: 8px; }',
+  '.notus-llm-model-catalog-list { max-height: 180px; overflow: auto; border: 1px solid #e5e3d8; border-radius: 8px; background: #fff; display: flex; flex-direction: column; scrollbar-width: thin; scrollbar-color: #d8d5ca transparent; }',
+  '.notus-llm-model-option { display: flex; align-items: center; gap: 8px; padding: 7px 10px; cursor: pointer; font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; color: #4b4944; border-bottom: 1px solid #f4f2ec; }',
+  '.notus-llm-model-option:last-child { border-bottom: 0; }',
+  '.notus-llm-model-option:hover { background: #f9f7f2; }',
+  '.notus-llm-model-option input { accent-color: #d97757; margin: 0; }',
+  '.notus-llm-model-option.is-selected { color: #b95f42; font-weight: 700; }',
+  '.notus-llm-custom-row { display: flex; gap: 8px; }',
+  '.notus-llm-custom-row .notus-model-input { flex: 1; min-width: 0; }',
+  '.notus-llm-test-list { display: flex; flex-direction: column; gap: 6px; }',
+  '.notus-llm-test-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #4b4944; }',
+  '.notus-llm-test-dot { width: 8px; height: 8px; border-radius: 999px; flex: 0 0 auto; }',
+  '.notus-llm-test-dot.is-pending { background: #d4d2c9; animation: notus-llm-test-pulse 1.2s ease-in-out infinite; }',
+  '.notus-llm-test-dot.is-success { background: #3f9d63; }',
+  '.notus-llm-test-dot.is-failed { background: #e2574c; }',
+  '@keyframes notus-llm-test-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }',
+  '.notus-llm-test-model { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
+  '.notus-llm-test-meta { margin-left: auto; flex: 0 0 auto; color: #a3a19a; font-size: 11px; }',
+  '.notus-llm-test-error { color: #c94136; }',
   '.notus-llm-modal-note { color: #a3a19a; font-size: 11px; line-height: 1.65; }',
   '.notus-llm-modal-footer { height: 64px; padding: 0 20px; border-top: 1px solid #e5e3d8; background: #fdfcfb; display: flex; align-items: center; justify-content: flex-end; gap: 10px; }',
   '.notus-llm-primary-button, .notus-llm-secondary-button, .notus-llm-danger-button { min-height: 36px; padding: 0 15px; border-radius: 9px; font-size: 13px; line-height: 1; font-weight: 700; }',
@@ -66,22 +102,25 @@ const LLM_CONFIG_STYLES = [
   '.notus-llm-delete-modal h3 { margin: 0; color: #2d2d2d; font-size: 15px; line-height: 1.25; font-weight: 700; }',
   '.notus-llm-delete-modal p { margin: 10px 0 0; color: #6b6963; font-size: 13px; line-height: 1.7; }',
   '.notus-llm-delete-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 20px; }',
-  '@media (max-width: 560px) { .notus-llm-section-header, .notus-llm-row { align-items: stretch; flex-direction: column; } .notus-llm-add-button { align-self: flex-start; } .notus-llm-row-actions { align-self: flex-end; } .notus-llm-modal-root { padding: 16px; } }',
+  '@media (max-width: 560px) { .notus-llm-section-header, .notus-llm-group-header { align-items: stretch; flex-direction: column; } .notus-llm-add-button { align-self: flex-start; } .notus-llm-row-actions { align-self: flex-end; } .notus-llm-modal-root { padding: 16px; } }',
 ].join('\n');
 
 function normalizeApiProtocol(value) {
   return String(value || '').trim().toLowerCase() === 'anthropic' ? 'anthropic' : 'openai';
 }
 
-function createDraft(config = null) {
+function protocolLabel(value) {
+  return normalizeApiProtocol(value) === 'anthropic' ? 'Anthropic' : 'OpenAI 兼容';
+}
+
+function createGroupDraft(config = null) {
   return {
-    id: config?.id || null,
     apiProtocol: normalizeApiProtocol(config?.api_protocol),
     provider: config?.provider || '',
-    model: config?.model || '',
     baseUrl: config?.base_url || '',
     apiKey: '',
     apiKeySet: Boolean(config?.api_key_set),
+    contextWindow: config?.context_window_tokens ? String(config.context_window_tokens) : '',
   };
 }
 
@@ -94,31 +133,6 @@ function LlmField({ label, badge = '', children }) {
       </div>
       {children}
     </label>
-  );
-}
-
-function ConfigRow({ item, onEdit, onDelete }) {
-  const providerLabel = resolveLlmProviderLabel(item.provider);
-
-  return (
-    <div className="notus-llm-row">
-      <div className="notus-llm-row-main">
-        <div className="notus-llm-row-name">{providerLabel}</div>
-        <div className="notus-llm-row-meta">
-          <span className="notus-llm-code">{item.model}</span>
-          <span className="notus-llm-dot" />
-          <span className="notus-llm-code notus-llm-url">{item.base_url}</span>
-        </div>
-      </div>
-      <div className="notus-llm-row-actions">
-        <button type="button" className="notus-llm-icon-button" aria-label={'编辑 ' + providerLabel + ' 配置'} onClick={() => onEdit(item)}>
-          <Icons.edit size={15} />
-        </button>
-        <button type="button" className="notus-llm-icon-button is-danger" aria-label={'删除 ' + providerLabel + ' 配置'} onClick={() => onDelete(item)}>
-          <Icons.trash size={15} />
-        </button>
-      </div>
-    </div>
   );
 }
 
@@ -144,14 +158,27 @@ export function LlmConfigCardsSection({
   onStateChange,
 }) {
   const toast = useToast();
-  const { configs, activeConfigId, loading, createConfig, updateConfig, deleteConfig } = useLlmConfigs();
+  const { configs, activeConfigId, loading, createConfigs, updateConfig, deleteConfig } = useLlmConfigs();
+  const groups = useMemo(() => groupLlmConfigs(configs), [configs]);
   const [dialogMode, setDialogMode] = useState(null);
-  const [draft, setDraft] = useState(createDraft());
-  const [pendingDelete, setPendingDelete] = useState(null);
+  const [draft, setDraft] = useState(createGroupDraft());
+  const [baselineDraft, setBaselineDraft] = useState(null);
+  const [editingGroupId, setEditingGroupId] = useState(null);
+  const [initialModels, setInitialModels] = useState([]);
+  const [selectedModels, setSelectedModels] = useState([]);
+  const [testTargets, setTestTargets] = useState([]);
+  const [fetchedModels, setFetchedModels] = useState(null);
+  const [modelFilter, setModelFilter] = useState('');
+  const [customModel, setCustomModel] = useState('');
+  const [fetchingModels, setFetchingModels] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResults, setTestResults] = useState({});
   const [submitting, setSubmitting] = useState(false);
+  const [pendingDeleteGroup, setPendingDeleteGroup] = useState(null);
+  const providerInputRef = useRef(null);
   const inferredProvider = useMemo(
-    () => inferLlmProvider({ baseUrl: draft.baseUrl, model: draft.model }),
-    [draft.baseUrl, draft.model]
+    () => inferLlmProvider({ baseUrl: draft.baseUrl, model: selectedModels[0] || '' }),
+    [draft.baseUrl, selectedModels]
   );
   const selectedProvider = String(draft.provider || '').trim();
   const effectiveProvider = selectedProvider || inferredProvider;
@@ -159,34 +186,183 @@ export function LlmConfigCardsSection({
     () => resolveLlmProviderLabel(effectiveProvider),
     [effectiveProvider]
   );
+  const dialogActive = dialogMode !== null;
+  const editingGroup = useMemo(
+    () => (editingGroupId ? groups.find((group) => group.items.some((item) => item.id === editingGroupId)) || null : null),
+    [editingGroupId, groups]
+  );
+  const filteredCatalog = useMemo(() => {
+    if (!Array.isArray(fetchedModels)) return [];
+    const keyword = modelFilter.trim().toLowerCase();
+    const rows = keyword ? fetchedModels.filter((id) => id.toLowerCase().includes(keyword)) : fetchedModels;
+    return [...rows].sort((a, b) => {
+      const aSelected = selectedModels.includes(a) ? 0 : 1;
+      const bSelected = selectedModels.includes(b) ? 0 : 1;
+      if (aSelected !== bSelected) return aSelected - bSelected;
+      return a.localeCompare(b);
+    });
+  }, [fetchedModels, modelFilter, selectedModels]);
+  const testRows = useMemo(() => (
+    Object.entries(testResults).map(([model, result]) => ({ model, ...result }))
+  ), [testResults]);
 
   useEffect(() => {
     onStateChange?.({ configs, activeConfigId, loading });
   }, [activeConfigId, configs, loading, onStateChange]);
 
+  const resetDialogState = () => {
+    setDraft(createGroupDraft());
+    setBaselineDraft(null);
+    setEditingGroupId(null);
+    setInitialModels([]);
+    setSelectedModels([]);
+    setTestTargets([]);
+    setFetchedModels(null);
+    setModelFilter('');
+    setCustomModel('');
+    setTestResults({});
+  };
+
+  // 从设置页打开新增/编辑弹窗时，焦点应直接落在第一个可编辑字段。
+  useEffect(() => {
+    if (!dialogMode) return undefined;
+    return scheduleInitialFocus(providerInputRef, { select: true });
+  }, [dialogMode]);
+
   const openCreate = () => {
-    setDraft(createDraft());
+    resetDialogState();
     setDialogMode('create');
   };
 
-  const openEdit = (item) => {
-    setDraft(createDraft(item));
+  const openEdit = (group) => {
+    resetDialogState();
+    const nextDraft = createGroupDraft(group.items[0]);
+    setDraft(nextDraft);
+    setBaselineDraft(nextDraft);
+    setEditingGroupId(group.items[0].id);
+    setInitialModels(group.items.map((item) => item.model));
+    setSelectedModels(group.items.map((item) => item.model));
     setDialogMode('edit');
   };
 
   const closeDialog = () => {
     if (submitting) return;
     setDialogMode(null);
-    setDraft(createDraft());
+    resetDialogState();
+  };
+
+  const toggleModel = (model) => {
+    setSelectedModels((prev) => {
+      if (prev.includes(model)) {
+        setTestTargets((targets) => targets.filter((item) => item !== model));
+        return prev.filter((item) => item !== model);
+      }
+      return [...prev, model];
+    });
+  };
+
+  const toggleTestTarget = (model) => {
+    setTestTargets((prev) => (
+      prev.includes(model) ? prev.filter((item) => item !== model) : [...prev, model]
+    ));
+  };
+
+  const removeSelectedModel = (model) => {
+    setSelectedModels((prev) => prev.filter((item) => item !== model));
+    setTestTargets((prev) => prev.filter((item) => item !== model));
+  };
+
+  const addCustomModel = () => {
+    const model = String(customModel || '').trim();
+    if (!model) return;
+    if (selectedModels.includes(model)) {
+      toast('该模型已在列表中', 'warning');
+      return;
+    }
+    setSelectedModels((prev) => [...prev, model]);
+    setCustomModel('');
+  };
+
+  const handleFetchModels = async () => {
+    const baseUrl = String(draft.baseUrl || '').trim();
+    if (!baseUrl) {
+      toast('请先填写 LLM Base URL', 'warning');
+      return;
+    }
+    setFetchingModels(true);
+    try {
+      const response = await fetch('/api/settings/llm-models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          api_protocol: normalizeApiProtocol(draft.apiProtocol),
+          base_url: baseUrl,
+          api_key: String(draft.apiKey || '').trim(),
+          llm_config_id: dialogMode === 'edit' ? editingGroupId : null,
+        }),
+      });
+      const payload = await readJsonResponse(response, { fallbackMessage: '获取模型列表失败' });
+      if (!payload.success) {
+        toast(payload.error || '获取模型列表失败', 'error');
+        return;
+      }
+      setFetchedModels(Array.isArray(payload.models) ? payload.models : []);
+      setModelFilter('');
+      toast(`已获取 ${payload.models.length} 个模型`, 'success');
+    } catch (error) {
+      toast(error.message || '获取模型列表失败', 'error');
+    } finally {
+      setFetchingModels(false);
+    }
+  };
+
+  // 可选连通性测试：对已选模型逐个执行真实请求，结果仅作展示与耗时记录，不阻塞保存。
+  const handleRunTests = async () => {
+    const targets = selectedModels.filter((model) => testTargets.includes(model));
+    if (targets.length === 0) {
+      toast('请先勾选要测试的模型', 'warning');
+      return;
+    }
+    setTestResults({});
+    setTesting(true);
+    try {
+      for (const model of targets) {
+        setTestResults((prev) => ({ ...prev, [model]: { status: 'pending' } }));
+        try {
+          const response = await fetch('/api/settings/test', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              kind: 'llm',
+              config: {
+                provider: effectiveProvider,
+                api_protocol: normalizeApiProtocol(draft.apiProtocol),
+                model,
+                base_url: String(draft.baseUrl || '').trim(),
+                ...(String(draft.apiKey || '').trim() ? { api_key: String(draft.apiKey || '').trim() } : {}),
+              },
+              ...(dialogMode === 'edit' && editingGroupId ? { llm_config_id: editingGroupId } : {}),
+            }),
+          });
+          const payload = await readJsonResponse(response, { fallbackMessage: '连通性测试失败' });
+          if (!payload.success) throw new Error(payload.error || '连通性测试未通过');
+          setTestResults((prev) => ({ ...prev, [model]: { status: 'success', latency_ms: payload.latency_ms } }));
+        } catch (error) {
+          setTestResults((prev) => ({ ...prev, [model]: { status: 'failed', error: error.message } }));
+        }
+      }
+    } finally {
+      setTesting(false);
+    }
   };
 
   const handleSubmit = async () => {
-    const model = String(draft.model || '').trim();
     const baseUrl = String(draft.baseUrl || '').trim();
     const apiKey = String(draft.apiKey || '').trim();
+    const contextWindowRaw = String(draft.contextWindow || '').trim();
 
-    if (!model) {
-      toast('请填写 LLM 模型名称', 'warning');
+    if (selectedModels.length === 0) {
+      toast('请至少选择或输入一个模型', 'warning');
       return;
     }
     if (!baseUrl) {
@@ -197,24 +373,89 @@ export function LlmConfigCardsSection({
       toast('请填写 LLM API Key', 'warning');
       return;
     }
+    let contextWindowTokens = null;
+    if (contextWindowRaw) {
+      const parsed = Number(contextWindowRaw);
+      if (!Number.isInteger(parsed) || parsed < 4096 || parsed > 10485760) {
+        toast('上下文窗口需为 4096 ～ 10485760 之间的整数 Token', 'warning');
+        return;
+      }
+      contextWindowTokens = parsed;
+    }
+
+    const addedModels = selectedModels.filter((model) => !initialModels.includes(model));
+    const removedModels = initialModels.filter((model) => !selectedModels.includes(model));
+    const propertyChanged = dialogMode === 'create' || (
+      baselineDraft && (
+        normalizeApiProtocol(draft.apiProtocol) !== normalizeApiProtocol(baselineDraft.apiProtocol)
+        || String(draft.baseUrl || '').trim() !== String(baselineDraft.baseUrl || '').trim()
+        || String(draft.provider || '').trim() !== String(baselineDraft.provider || '').trim()
+        || String(draft.contextWindow || '').trim() !== String(baselineDraft.contextWindow || '').trim()
+        || Boolean(apiKey)
+      )
+    );
+
+    // 可选测试通过后的耗时；未测试的模型以 null / 原值保存，不阻塞提交。
+    const testedLatency = (model) => (
+      testResults[model]?.status === 'success' && Number.isFinite(testResults[model].latency_ms)
+        ? testResults[model].latency_ms
+        : null
+    );
 
     setSubmitting(true);
     try {
-      const payload = {
+      const sharedPayload = {
         name: resolvedProviderLabel,
         provider: effectiveProvider,
         api_protocol: normalizeApiProtocol(draft.apiProtocol),
-        model,
         base_url: baseUrl,
-        api_key: apiKey,
+        context_window_tokens: contextWindowTokens,
       };
 
-      if (dialogMode === 'edit') {
-        await updateConfig(draft.id, payload);
-        toast('LLM 配置已更新', 'success');
-      } else {
-        await createConfig(payload);
+      if (dialogMode === 'create') {
+        await createConfigs({
+          ...sharedPayload,
+          api_key: apiKey,
+          models: selectedModels.map((model) => ({
+            model,
+            last_test_latency_ms: testedLatency(model),
+          })),
+        });
         toast('LLM 配置已添加', 'success');
+      } else {
+        const group = editingGroup;
+        const rowByModel = new Map((group?.items || []).map((item) => [item.model, item]));
+        const keptModels = initialModels.filter((model) => selectedModels.includes(model));
+
+        if (propertyChanged) {
+          for (const model of keptModels) {
+            const row = rowByModel.get(model);
+            if (!row) continue;
+            await updateConfig(row.id, {
+              ...sharedPayload,
+              last_test_latency_ms: testedLatency(model) ?? row.last_test_latency_ms,
+            });
+          }
+        }
+
+        if (addedModels.length > 0) {
+          await createConfigs({
+            ...sharedPayload,
+            ...(apiKey ? { api_key: apiKey } : {}),
+            inherit_api_key_from: editingGroupId,
+            models: addedModels.map((model) => ({
+              model,
+              last_test_latency_ms: testedLatency(model),
+            })),
+          });
+        }
+
+        for (const model of removedModels) {
+          const row = rowByModel.get(model);
+          if (row) await deleteConfig(row.id);
+        }
+
+        toast('LLM 配置已更新', 'success');
       }
       closeDialog();
     } catch (error) {
@@ -224,17 +465,22 @@ export function LlmConfigCardsSection({
     }
   };
 
-  const confirmDelete = async () => {
-    if (!pendingDelete) return;
+  const confirmDeleteGroup = async () => {
+    if (!pendingDeleteGroup) return;
+    const rows = [...pendingDeleteGroup.items].sort((a, b) => Number(a.is_active) - Number(b.is_active));
     try {
-      await deleteConfig(pendingDelete.id);
-      toast('已删除“' + resolveLlmProviderLabel(pendingDelete.provider) + '”', 'success');
+      for (const row of rows) {
+        await deleteConfig(row.id);
+      }
+      toast('已删除“' + resolveLlmProviderLabel(pendingDeleteGroup.provider) + '”', 'success');
     } catch (error) {
       toast(error.message || '删除 LLM 配置失败', 'error');
     } finally {
-      setPendingDelete(null);
+      setPendingDeleteGroup(null);
     }
   };
+
+  const submitDisabled = submitting;
 
   return (
     <div className="notus-llm-section">
@@ -256,22 +502,46 @@ export function LlmConfigCardsSection({
 
       {loading ? (
         <LoadingState />
-      ) : configs.length === 0 ? (
+      ) : groups.length === 0 ? (
         <EmptyState />
       ) : (
-        <div className="notus-llm-list">
-          {configs.map((item) => (
-            <ConfigRow
-              key={item.id}
-              item={item}
-              onEdit={openEdit}
-              onDelete={setPendingDelete}
-            />
+        <div className="notus-llm-group-list">
+          {groups.map((group) => (
+            <section key={group.key} className="notus-llm-group">
+              <div className="notus-llm-group-header">
+                <div className="notus-llm-group-main">
+                  <div className="notus-llm-group-title-row">
+                    <span className="notus-llm-group-title">{resolveLlmProviderLabel(group.provider)}</span>
+                    {group.hasActive ? <span className="notus-llm-group-badge">默认</span> : null}
+                    <span className="notus-llm-group-protocol">{protocolLabel(group.api_protocol)}</span>
+                  </div>
+                  <div className="notus-llm-group-meta">
+                    <span className="notus-llm-code">{group.base_url}</span>
+                  </div>
+                </div>
+                <div className="notus-llm-row-actions">
+                  <button type="button" className="notus-llm-icon-button" aria-label={'编辑 ' + resolveLlmProviderLabel(group.provider) + ' 配置'} onClick={() => openEdit(group)}>
+                    <Icons.edit size={15} />
+                  </button>
+                  <button type="button" className="notus-llm-icon-button is-danger" aria-label={'删除 ' + resolveLlmProviderLabel(group.provider) + ' 配置'} onClick={() => setPendingDeleteGroup(group)}>
+                    <Icons.trash size={15} />
+                  </button>
+                </div>
+              </div>
+              <div className="notus-llm-group-models">
+                {group.items.map((item) => (
+                  <span key={item.id} className={'notus-llm-model-chip' + (item.is_active ? ' is-active' : '')}>
+                    {item.model}
+                    {item.is_active ? ' · 默认' : ''}
+                  </span>
+                ))}
+              </div>
+            </section>
           ))}
         </div>
       )}
 
-      {dialogMode ? (
+      {dialogActive ? (
         <div className="notus-llm-modal-root">
           <button type="button" className="notus-llm-modal-backdrop" aria-label="关闭弹窗" onClick={closeDialog} />
           <section className="notus-llm-modal" role="dialog" aria-modal="true" aria-label={dialogMode === 'edit' ? '编辑 LLM 配置' : '新增 LLM 配置'}>
@@ -302,6 +572,7 @@ export function LlmConfigCardsSection({
 
               <LlmField label="提供商">
                 <input
+                  ref={providerInputRef}
                   className="notus-model-input"
                   value={draft.provider}
                   onChange={(event) => setDraft((prev) => ({ ...prev, provider: event.target.value }))}
@@ -318,12 +589,16 @@ export function LlmConfigCardsSection({
                 />
               </LlmField>
 
-              <LlmField label="模型名称">
+              <LlmField label="上下文窗口（Token）" badge="可选">
                 <input
                   className="notus-model-input"
-                  value={draft.model}
-                  onChange={(event) => setDraft((prev) => ({ ...prev, model: event.target.value }))}
-                  placeholder={draft.apiProtocol === 'anthropic' ? '例如：claude-sonnet-4' : '例如：gpt-4o、qwen-max'}
+                  type="number"
+                  inputMode="numeric"
+                  min={4096}
+                  max={10485760}
+                  value={draft.contextWindow}
+                  onChange={(event) => setDraft((prev) => ({ ...prev, contextWindow: event.target.value }))}
+                  placeholder="留空按默认 200000 处理"
                 />
               </LlmField>
 
@@ -337,27 +612,137 @@ export function LlmConfigCardsSection({
                 />
               </LlmField>
 
-              <div className="notus-llm-modal-note">提供商会根据 Base URL 和模型名自动识别，但这里只作为保存时的兜底推断；输入框本身不再自动回填默认值。保存后即可在文件工作区的 AI Agent 中选用，无需先测试连通性。</div>
+              <div className="notus-llm-model-picker">
+                <div className="notus-llm-picker-header">
+                  <span className="notus-llm-picker-title">模型</span>
+                  <span className="notus-llm-picker-hint">至少选择一个，可多选</span>
+                </div>
+
+                {selectedModels.length > 0 ? (
+                  <div className="notus-llm-selected-chips">
+                    {selectedModels.map((model) => (
+                      <span key={model} className="notus-llm-selected-chip">
+                        <input
+                          type="checkbox"
+                          aria-label={'选择测试 ' + model}
+                          checked={testTargets.includes(model)}
+                          onChange={() => toggleTestTarget(model)}
+                          disabled={testing}
+                          style={{ margin: 0, width: 12, height: 12, accentColor: '#D97757', cursor: 'pointer' }}
+                        />
+                        {model}
+                        <button
+                          type="button"
+                          className="notus-llm-chip-remove"
+                          aria-label={'移除模型 ' + model}
+                          disabled={submitting || testing}
+                          onClick={() => removeSelectedModel(model)}
+                        >
+                          <Icons.x size={11} />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="notus-llm-picker-hint">尚未选择模型：可从服务商拉取列表勾选，或直接输入模型名添加。</div>
+                )}
+
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button type="button" className="notus-llm-fetch-button" onClick={handleFetchModels} disabled={fetchingModels || testing || submitting}>
+                    <Icons.refresh size={12} />
+                    {fetchingModels ? '获取中…' : (Array.isArray(fetchedModels) ? '重新拉取模型列表' : '拉取模型列表')}
+                  </button>
+                  <button type="button" className="notus-llm-fetch-button" onClick={handleRunTests} disabled={testing || submitting || testTargets.length === 0}>
+                    {testing ? '测试中…' : testTargets.length > 0 ? `测试连通性（已选 ${testTargets.length} 个）` : '测试连通性'}
+                  </button>
+                </div>
+                {selectedModels.length > 0 && testTargets.length === 0 && !testing ? (
+                  <div className="notus-llm-picker-hint">点击模型芯片左侧的复选框选择要测试的模型，可多选；不会默认测试全部。</div>
+                ) : null}
+
+                {Array.isArray(fetchedModels) ? (
+                  <div className="notus-llm-model-catalog">
+                    <input
+                      className="notus-model-input"
+                      value={modelFilter}
+                      onChange={(event) => setModelFilter(event.target.value)}
+                      placeholder="过滤模型…"
+                    />
+                    {filteredCatalog.length > 0 ? (
+                      <div className="notus-llm-model-catalog-list">
+                        {filteredCatalog.map((model) => {
+                          const isSelected = selectedModels.includes(model);
+                          return (
+                            <label key={model} className={'notus-llm-model-option' + (isSelected ? ' is-selected' : '')}>
+                              <input type="checkbox" checked={isSelected} onChange={() => toggleModel(model)} disabled={submitting || testing} />
+                              {model}
+                            </label>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="notus-llm-picker-hint">没有匹配的模型</div>
+                    )}
+                  </div>
+                ) : null}
+
+                <div className="notus-llm-custom-row">
+                  <input
+                    className="notus-model-input"
+                    value={customModel}
+                    onChange={(event) => setCustomModel(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault();
+                        addCustomModel();
+                      }
+                    }}
+                    placeholder="自定义输入模型名，如 qwen-max"
+                    disabled={submitting || testing}
+                  />
+                  <button type="button" className="notus-llm-fetch-button" onClick={addCustomModel} disabled={submitting || testing}>
+                    添加
+                  </button>
+                </div>
+
+                {testRows.length > 0 ? (
+                  <div className="notus-llm-test-list" role="status">
+                    {testRows.map((row) => (
+                      <div key={row.model} className="notus-llm-test-row">
+                        <span className={'notus-llm-test-dot is-' + row.status} />
+                        <span className="notus-llm-test-model">{row.model}</span>
+                        {row.status === 'success' ? (
+                          <span className="notus-llm-test-meta">已连通{Number.isFinite(row.latency_ms) ? ` · ${row.latency_ms}ms` : ''}</span>
+                        ) : null}
+                        {row.status === 'failed' ? <span className="notus-llm-test-meta notus-llm-test-error">{row.error || '测试失败'}</span> : null}
+                        {row.status === 'pending' ? <span className="notus-llm-test-meta">测试中…</span> : null}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="notus-llm-modal-note">连通性测试为可选操作：勾选要测试的模型后点击“测试连通性”；测试失败或未测试的配置同样可以直接保存。</div>
             </div>
             <div className="notus-llm-modal-footer">
               <button type="button" className="notus-llm-secondary-button" onClick={closeDialog} disabled={submitting}>取消</button>
-              <button type="button" className="notus-llm-primary-button" onClick={handleSubmit} disabled={submitting}>
-                {submitting ? '保存中…' : dialogMode === 'edit' ? '保存修改' : '添加配置'}
+              <button type="button" className="notus-llm-primary-button" onClick={handleSubmit} disabled={submitDisabled}>
+                {submitting ? '保存中…' : dialogMode === 'edit' ? '保存修改' : '添加'}
               </button>
             </div>
           </section>
         </div>
       ) : null}
 
-      {pendingDelete ? (
+      {pendingDeleteGroup ? (
         <div className="notus-llm-modal-root">
-          <button type="button" className="notus-llm-modal-backdrop" aria-label="关闭删除确认" onClick={() => setPendingDelete(null)} />
+          <button type="button" className="notus-llm-modal-backdrop" aria-label="关闭删除确认" onClick={() => setPendingDeleteGroup(null)} />
           <section className="notus-llm-delete-modal" role="dialog" aria-modal="true" aria-label="删除 LLM 配置">
             <h3>删除 LLM 配置</h3>
-            <p>确定删除“{resolveLlmProviderLabel(pendingDelete.provider)}”吗？如果它是当前回退配置，系统会自动切换到剩余的最新配置。</p>
+            <p>确定删除“{resolveLlmProviderLabel(pendingDeleteGroup.provider)}”及其 {pendingDeleteGroup.items.length} 个模型吗？如果其中包含当前默认模型，系统会自动切换到剩余的最新配置。</p>
             <div className="notus-llm-delete-actions">
-              <button type="button" className="notus-llm-secondary-button" onClick={() => setPendingDelete(null)}>取消</button>
-              <button type="button" className="notus-llm-danger-button" onClick={confirmDelete}>删除</button>
+              <button type="button" className="notus-llm-secondary-button" onClick={() => setPendingDeleteGroup(null)}>取消</button>
+              <button type="button" className="notus-llm-danger-button" onClick={confirmDeleteGroup}>删除</button>
             </div>
           </section>
         </div>

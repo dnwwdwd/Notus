@@ -241,7 +241,8 @@ function buildEventStep(event = {}) {
       errorType: 'agent',
       errorMessage,
       errorCode: event.error_code || '',
-      requestId: event.request_id || event.requestId || '',
+      requestId: event.request_id || event.requestId || event.diagnostics?.provider_request_id || '',
+      diagnostics: event.diagnostics || null,
     };
   }
   if (event.type === 'final') {
@@ -306,6 +307,49 @@ function buildEventStep(event = {}) {
       status: 'running',
       detail: '正在等待模型响应。',
       open: true,
+    };
+  }
+  if (event.type === 'budget_auto_extended') {
+    const segment = executionSegmentFields(event);
+    const summary = event.result_summary && typeof event.result_summary === 'object' ? event.result_summary : {};
+    return {
+      id: `budget-extend-${segment.executionSegmentId || event.loop_index || 'current'}`,
+      kind: 'budget_extension',
+      ...segment,
+      label: '已自动扩展任务预算',
+      status: 'done',
+      detail: `累计用量达到 ${summary.budget_before || '预算上限'} token，预算已自动扩展至 ${summary.budget_after || '下一档'}，任务继续执行。`,
+      tool: 'budget_control',
+    };
+  }
+  if (event.type === 'context_compacting') {
+    const segment = executionSegmentFields(event);
+    return {
+      id: `context-compact-${segment.executionSegmentId || event.loop_index || 'current'}`,
+      kind: 'context_compaction',
+      ...segment,
+      label: '正在压缩任务上下文',
+      status: 'running',
+      detail: '较早执行过程较长，正在生成结构化摘要以继续任务。',
+      tool: 'context_compaction',
+    };
+  }
+  if (event.type === 'context_compacted') {
+    const segment = executionSegmentFields(event);
+    const summary = event.result_summary && typeof event.result_summary === 'object' ? event.result_summary : {};
+    const performed = summary.performed !== false;
+    const before = Number(summary.context_before || 0);
+    const after = Number(summary.context_after || 0);
+    return {
+      id: `context-compact-${segment.executionSegmentId || event.loop_index || 'current'}`,
+      kind: 'context_compaction',
+      ...segment,
+      label: performed ? '已压缩任务上下文' : '上下文压缩未执行',
+      status: performed ? 'done' : 'error',
+      detail: performed
+        ? (before && after ? `较早过程已转为摘要：约 ${before} → ${after} tokens，完整工具结果仍可按引用读取。` : '较早过程已转为结构化摘要，完整工具结果仍可按引用读取。')
+        : (summary.reason === 'summary_failed' ? '摘要生成失败，已保留原上下文继续执行。' : '未满足压缩条件，已保留原上下文。'),
+      tool: 'context_compaction',
     };
   }
   if (event.type === 'image_view_start' || event.type === 'image_view_done' || event.type === 'image_recognition_done') {
@@ -402,6 +446,13 @@ function buildEventStep(event = {}) {
       tool: 'preview_patch_files',
       result: event.operation_set_id ? `预览 #${event.operation_set_id}` : '预览已生成',
     };
+  }
+  if (event.type === 'artifact' && event.artifact_type === 'resource_resolution') {
+    const failed = event.status === 'failed';
+    return { id: `resource-card-${event.interaction_id}`, kind: 'interaction', label: failed ? '资源操作失败' : event.status === 'cancelled' ? '已取消资源操作' : '资源操作已执行', status: failed ? 'error' : 'done', detail: event.text || (failed ? '请查看资源确认卡中的失败原因。' : '资源确认已处理。') };
+  }
+  if (event.type === 'interaction_request' && event.interaction?.kind === 'resource_approval') {
+    return { id: `resource-card-${event.interaction.id}`, kind: 'interaction', ...executionSegmentFields(event), label: '等待确认资源操作', status: 'waiting', detail: event.non_blocking ? '确认卡已生成，正在继续其他步骤。' : '请确认或取消这项资源操作。', tool: event.interaction.payload?.tool_name || event.interaction.payload?.action || 'resource_approval', result: event.interaction.payload?.target || '' };
   }
   if (event.type === 'interaction_request') {
     const segment = executionSegmentFields(event);
@@ -554,6 +605,22 @@ export function buildRestoredAgentTimeline(session = {}) {
   };
 }
 
+export function buildRestoredAgentSessionTimeline(session = {}) {
+  const restored = buildRestoredAgentTimeline(session);
+  if (['waiting_retry', 'waiting_model_recovery'].includes(session.status)
+    && !restored.steps.some((step) => step.errorType === 'agent' || step.kind === 'llm_error')) {
+    restored.steps = upsertStep(restored.steps, buildEventStep({
+      type: 'artifact', artifact_type: 'run_error', status: session.status,
+      error_category: session.status === 'waiting_model_recovery' ? 'action_required' : 'retryable',
+      message: session.status === 'waiting_model_recovery'
+        ? '模型服务需要处理，请检查额度、API Key、权限或模型配置后继续任务。'
+        : '模型服务暂时不可用，已保留当前任务进度。',
+      resumable: true, loop_index: session.loop_count,
+    }));
+  }
+  return restored;
+}
+
 // Seed draft and cursor from the same persisted event prefix. Starting a delta
 // subscription at the server's latest cursor with an empty draft loses text.
 export function buildAgentSubscriptionSnapshot(session = {}, requestedCursor = 0) {
@@ -607,8 +674,8 @@ export function applyAgentTimelineEvent(timeline = {}, event = {}) {
     loading = false;
     streamText = '';
   } else if (event.type === 'artifact' && event.artifact_type === 'interaction') {
-    sessionStatus = 'waiting_interaction';
-    loading = false;
+    sessionStatus = event.non_blocking ? 'running' : 'waiting_interaction';
+    loading = Boolean(event.non_blocking);
     streamText = '';
   } else if (event.type === 'artifact' && event.artifact_type === 'operation_confirmation') {
     sessionStatus = 'waiting_operation_confirmation';
@@ -621,6 +688,20 @@ export function applyAgentTimelineEvent(timeline = {}, event = {}) {
   } else if (event.type === 'artifact' && event.artifact_type === 'run_error') {
     sessionStatus = event.status || (event.resumable ? 'waiting_retry' : 'failed');
     loading = false;
+  } else if (event.type === 'artifact' && ['operation_confirmation', 'operation_resolution'].includes(event.artifact_type)) {
+    // 所有待确认批次都已处置（应用/废弃）后，把停留在等待确认的会话收敛为完成：
+    // 手动确认任务可能就此结束（或确认点已丢失无法续跑），否则工具链会一直
+    // 显示“需要处理”且不再折叠。任务将继续执行时保持等待展示，由续跑事件接管。
+    const stillWaiting = activeSteps.some((item) => (
+      item?.status === 'waiting'
+      && (item.kind === 'operation_confirmation' || String(item.id || '').startsWith('operation-confirmation-'))
+    ));
+    if (!stillWaiting && !event.task_resumed && ['waiting_confirm', 'waiting_operation_confirmation'].includes(sessionStatus)) {
+      sessionStatus = 'completed';
+      loading = false;
+      streamText = '';
+      if (!finishedAt) finishedAt = new Date().toISOString();
+    }
   } else if (event.type === 'final') {
     sessionStatus = event.status || 'completed';
     activeSteps = completeSteps(activeSteps, { resolveOperationConfirmations: true, resolveModelErrors: event.status === 'completed' });
@@ -1257,14 +1338,14 @@ export function useAgentLoopController({
           if (event.artifact_type === 'interaction') {
             const interaction = event.interaction ? { ...event.interaction, resume_ticket: event.resume_ticket } : null;
             setActiveAgentSession({
-              status: 'waiting_interaction',
+              status: event.non_blocking ? 'running' : 'waiting_interaction',
               reason: event.reason || 'question_card_requested',
               interaction_id: interaction?.id || null,
             });
             if (interaction) onInteractionRequest?.(interaction);
-            window.notusDesktop?.notifyAgent?.({ title: 'Notus Agent 等待你的回答', body: '提问卡片已准备好，回答后任务会自动继续。' }).catch?.(() => {});
+            window.notusDesktop?.notifyAgent?.({ title: interaction?.kind === 'resource_approval' ? 'Notus Agent 等待确认' : 'Notus Agent 等待你的回答', body: interaction?.kind === 'resource_approval' ? '资源确认卡已准备好。' : '提问卡片已准备好，回答后任务会自动继续。' }).catch?.(() => {});
             setStreamText('');
-            setLoading(false);
+            setLoading(Boolean(event.non_blocking));
           } else if (event.artifact_type === 'operation_set' && event.operation_set_id) {
             filesMayHaveChangedRef.current = event.status === 'applied' || filesMayHaveChangedRef.current;
             try {
@@ -1602,7 +1683,12 @@ export function useAgentLoopController({
       if (payload.task_change_set) onTaskChangeSet?.(payload.task_change_set);
       if (payload.partially_applied || payload.changed_files?.length) await onApplySuccess?.(payload, operationSet);
       if (payload.conflict) {
-        throw new Error('文件已经变化，请检查冲突后重新确认；本批已成功的修改仍然保留');
+        const conflictError = new Error(payload.message || '文件已经变化，请检查冲突后重新确认；本批已成功的修改仍然保留');
+        conflictError.code = payload.error || payload.code || 'CONFLICT';
+        conflictError.requiresConfirmation = Boolean(payload.requires_force_confirmation);
+        conflictError.operationSetId = operationSetId;
+        conflictError.action = action;
+        throw conflictError;
       }
       throw new Error(payload.error || payload.code || '处理修改失败');
     }
@@ -1856,22 +1942,8 @@ export function useAgentLoopController({
       return;
     }
     setActiveAgentSession({ ...session });
-    const restored = buildRestoredAgentTimeline(session);
-    let restoredSteps = restored.steps;
-    if (['waiting_retry', 'waiting_model_recovery'].includes(session.status)) {
-      restoredSteps = upsertStep(restoredSteps, buildEventStep({
-        type: 'artifact',
-        artifact_type: 'run_error',
-        status: session.status,
-        error_category: session.status === 'waiting_model_recovery' ? 'action_required' : 'retryable',
-        message: session.status === 'waiting_model_recovery'
-          ? '模型服务需要处理，请检查额度、API Key、权限或模型配置后继续任务。'
-          : '模型服务暂时不可用，已保留当前任务进度。',
-        resumable: true,
-        loop_index: session.loop_count,
-      }));
-    }
-    setSteps(restoredSteps);
+    const restored = buildRestoredAgentSessionTimeline(session);
+    setSteps(restored.steps);
     // 已完成会话的最终回复已作为正式助手消息持久化；不能把过程草稿再次标成“中断前”。
     assistantTextRef.current = restored.draft;
     setStreamText(session.status === 'completed' ? '' : restored.draft);

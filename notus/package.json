@@ -1,6 +1,6 @@
 {
   "name": "notus",
-  "version": "0.1.19",
+  "version": "0.1.23",
   "private": true,
   "engines": {
     "node": "20.19.x"
@@ -22,6 +22,8 @@
     "test:skill-mcp": "node tests/skill-mcp.test.js && node tests/skill-lazycat-rescan.test.js && node tests/external-mcp.test.js",
     "test:conversation-persistence": "node tests/conversation-persistence.test.js",
     "test:agent-control-plane": "node tests/agent-control-plane.test.js && node tests/llm-context-budget.test.js && node tests/agent-tool-policy.test.js && node tests/agent-loop-preview-completion.test.js && node tests/agent-loop-auto-write-continuation.test.js && node tests/agent-subtask-retry.test.js && node tests/agent-task-change-composition.test.js && node tests/agent-tool-dispatch-resume.test.js",
+    "test:agent-task-compaction": "node tests/agent-task-compaction.test.js",
+    "test:llm-config-context-window": "node tests/llm-config-context-window.test.js",
     "test:agent-prompt": "node tests/agent-prompt-registry.test.js && node scripts/run-agent-prompt-eval.js",
     "test:agent-live-eval": "node scripts/run-agent-live-eval.js",
     "test:all": "node scripts/run-all-tests.js"

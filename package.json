@@ -1,6 +1,6 @@
 {
   "name": "notus",
-  "version": "0.1.19",
+  "version": "0.1.23",
   "private": true,
   "main": "desktop/main/index.js",
   "scripts": {

@@ -14,7 +14,7 @@ const DEFAULTS = {
   llmModel: 'qwen-max',
   llmApiKey: '',
   llmBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-  llmContextWindowTokens: 800000,
+  llmContextWindowTokens: 200000,
   llmMaxOutputTokens: 32768,
   llmRequestTimeoutMs: 180000,
   agentToolTimeoutMs: 30000,

@@ -7,7 +7,6 @@ const {
   DEFAULT_CONTEXT_WINDOW_TOKENS,
   DEFAULT_MAX_OUTPUT_TOKENS,
   deriveLlmConfigBudgetFields,
-  getKnownModelBudget,
 } = require('./llmBudget');
 const agentLoopMigration = require('./migrations/005_agent_loop');
 const agentControlPlaneMigration = require('./migrations/006_agent_control_plane');
@@ -537,11 +536,10 @@ function migrateRegularTables(database) {
   `);
 
   rows.forEach((row) => {
-    const knownBudget = getKnownModelBudget(row.model);
     const derived = deriveLlmConfigBudgetFields({
       model: row.model,
-      context_window_tokens: knownBudget ? null : row.context_window_tokens,
-      max_output_tokens: knownBudget ? null : row.max_output_tokens,
+      context_window_tokens: row.context_window_tokens,
+      max_output_tokens: row.max_output_tokens,
     });
     if (
       Number(row.context_window_tokens) !== Number(derived.context_window_tokens)

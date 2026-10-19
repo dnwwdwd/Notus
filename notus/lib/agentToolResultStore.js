@@ -6,7 +6,7 @@ const { promisify } = require('util');
 const { getEffectiveConfig } = require('./config');
 const { getDb } = require('./db');
 const { sha256 } = require('./files');
-const { redactSecrets } = require('./agentToolPolicy');
+const { redactSecrets, redactToolResult } = require('./agentToolPolicy');
 
 const gzip = promisify(zlib.gzip);
 const gunzip = promisify(zlib.gunzip);
@@ -14,8 +14,11 @@ const TOOL_RESULT_REF_PREFIX = 'tool-result://';
 const MAX_RESULT_BYTES = 32 * 1024 * 1024;
 const MAX_CONVERSATION_STORED_BYTES = 512 * 1024 * 1024;
 const MAX_READ_BYTES = 16 * 1024;
-const REDACTION_VERSION = 1;
-const SENSITIVE_QUERY_KEY = /^(?:access[_-]?token|api[_-]?key|auth|authorization|code|credential|key|password|secret|signature|token)$/i;
+const REDACTION_VERSION = 2;
+// 脱敏采用「键名以敏感词结尾」的后缀匹配：既能覆盖 X-Amz-Signature、
+// X-Amz-Credential、X-Goog-Signature、sig/sign 等云厂商签名键，又不会
+// 误伤 mock、keyboard 这类仅在中间包含字样的常见非敏感键。
+const SENSITIVE_QUERY_KEY = /(?:access[_-]?token|api[_-]?key|authorization|auth|credential|signature|passcode|password|secret|token|sig|sign|key|code)$/i;
 const INLINE_SECRET_ASSIGNMENT = /\b(authorization|cookie|token|secret|password|api[_-]?key|private[_-]?key)\s*[:=]\s*(?:bearer\s+)?[^\s,;]+/gi;
 
 function asId(value) {
@@ -41,8 +44,8 @@ function sanitizeString(value = '') {
     });
 }
 
-function sanitizeArtifactValue(value) {
-  const redacted = redactSecrets(value);
+function sanitizeArtifactValue(value, toolName = '') {
+  const redacted = toolName ? redactToolResult(toolName, value) : redactSecrets(value);
   const visit = (item) => {
     if (typeof item === 'string') return sanitizeString(item);
     if (Array.isArray(item)) return item.map(visit);
@@ -50,6 +53,18 @@ function sanitizeArtifactValue(value) {
     return Object.fromEntries(Object.entries(item).map(([key, child]) => [key, visit(child)]));
   };
   return visit(redacted);
+}
+
+function artifactNeedsReRedaction(artifact) {
+  return (Number(artifact?.redaction_version) || 0) < REDACTION_VERSION;
+}
+
+// v1 旧工件使用旧版脱敏规则归档，直通会把当时漏掉的凭据暴露给模型；
+// 读取时对 version < 2 的载荷回退执行现行 redactSecrets，v2 保持直通。
+function redactLegacyArtifactPayload(artifact, { text, value }) {
+  if (!artifactNeedsReRedaction(artifact)) return { text, value };
+  const safeValue = sanitizeArtifactValue(value);
+  return { value: safeValue, text: JSON.stringify(safeValue ?? null) };
 }
 
 function formatArtifact(row) {
@@ -121,7 +136,7 @@ async function readArtifactResultForRuntime({ conversationId, sessionId, invocat
   }
   try {
     const payload = await loadArtifactPayload(artifact);
-    return { artifact, result: payload.value, error: '' };
+    return { artifact, result: redactLegacyArtifactPayload(artifact, payload).value, error: '' };
   } catch (error) {
     if (['JSON_POINTER_INVALID', 'JSON_POINTER_NOT_FOUND'].includes(error.code)) return { error: error.code, message: error.message };
     markArtifactCorrupt(artifact.id, error);
@@ -141,7 +156,7 @@ function readArtifactResultForReconciliation({ conversationId, sessionId, invoca
     const decompressed = zlib.gunzipSync(compressed, { maxOutputLength: MAX_RESULT_BYTES });
     const text = decompressed.toString('utf8');
     if (artifact.sha256 && sha256(text) !== artifact.sha256) throw Object.assign(new Error('工具结果摘要校验失败'), { code: 'TOOL_RESULT_DIGEST_MISMATCH' });
-    return { artifact, result: JSON.parse(text), error: '' };
+    return { artifact, result: redactLegacyArtifactPayload(artifact, { text, value: JSON.parse(text) }).value, error: '' };
   } catch (error) {
     if (['JSON_POINTER_INVALID', 'JSON_POINTER_NOT_FOUND'].includes(error.code)) return { error: error.code, message: error.message };
     markArtifactCorrupt(artifact.id, error);
@@ -240,7 +255,7 @@ async function archiveToolResultUnsafe({ conversationId, sessionId, taskId = nul
   let serialized = '';
   let originalBytes = 0;
   try {
-    serialized = JSON.stringify(sanitizeArtifactValue(result) ?? null);
+    serialized = JSON.stringify(sanitizeArtifactValue(result, toolName) ?? null);
     originalBytes = Buffer.byteLength(serialized, 'utf8');
   } catch (error) {
     return saveUnavailable({
@@ -372,8 +387,19 @@ async function readToolResult({ conversationId, sessionId = null, resultRef, jso
   const cid = asId(conversationId);
   const artifactId = parseResultRef(resultRef);
   if (!cid || !artifactId) return { error: 'TOOL_RESULT_REF_INVALID', message: '工具结果引用无效。' };
-  const modes = [jsonPointer !== undefined, query !== undefined, offset !== undefined].filter(Boolean).length;
-  if (modes !== 1) return { error: 'TOOL_RESULT_READ_MODE_INVALID', message: '每次必须且只能使用一种读取模式。' };
+  const providedModes = [
+    jsonPointer !== undefined ? 'json_pointer' : null,
+    query !== undefined ? 'query' : null,
+    offset !== undefined ? 'offset' : null,
+  ].filter(Boolean);
+  if (providedModes.length > 1) {
+    return {
+      error: 'TOOL_RESULT_READ_MODE_INVALID',
+      message: `本次同时传入了 ${providedModes.join('、')}；read_tool_result 每次只能使用 json_pointer、query、offset 中的一种读取方式，省略模式时从开头分块读取。请拆成两次调用并复用同一 result_ref。`,
+      provided_modes: providedModes,
+    };
+  }
+  if (providedModes.length === 0) offset = 0;
   const params = [artifactId, cid];
   const sessionClause = asId(sessionId) ? ' AND session_id = ?' : '';
   if (asId(sessionId)) params.push(asId(sessionId));
@@ -388,8 +414,9 @@ async function readToolResult({ conversationId, sessionId = null, resultRef, jso
   const limit = Math.min(Math.max(Number(maxBytes) || MAX_READ_BYTES, 1), MAX_READ_BYTES);
   try {
     const { text, value } = await loadArtifactPayload(artifact);
+    const safe = redactLegacyArtifactPayload(artifact, { text, value });
     if (jsonPointer !== undefined) {
-      const selected = readJsonPointer(value, String(jsonPointer || ''));
+      const selected = readJsonPointer(safe.value, String(jsonPointer || ''));
       const serialized = JSON.stringify(selected ?? null);
       const bytes = Buffer.from(serialized, 'utf8');
       return {
@@ -401,7 +428,7 @@ async function readToolResult({ conversationId, sessionId = null, resultRef, jso
       };
     }
     if (query !== undefined) {
-      const matches = keywordWindows(text, query);
+      const matches = keywordWindows(safe.text, query);
       const serialized = JSON.stringify(matches);
       const bytes = Buffer.from(serialized, 'utf8');
       return {
@@ -414,7 +441,7 @@ async function readToolResult({ conversationId, sessionId = null, resultRef, jso
       };
     }
     const start = Math.max(0, Number(offset) || 0);
-    const bytes = Buffer.from(text, 'utf8');
+    const bytes = Buffer.from(safe.text, 'utf8');
     const window = utf8Window(bytes, start, limit);
     if (window.end === window.start && window.end < bytes.length) return { error: 'TOOL_RESULT_READ_LIMIT_TOO_SMALL', message: '读取上限不足以容纳一个完整字符，请增大max_bytes。' };
     return {
@@ -434,7 +461,7 @@ async function readToolResult({ conversationId, sessionId = null, resultRef, jso
 }
 
 function summarizeResult(result = {}) {
-  if (result?.error || result?.success === false) return String(result.message || result.error || '工具执行失败').slice(0, 400);
+  if (result?.error || result?.success === false) return require('./agentToolFailure').describeToolFailure(result).slice(0, 400);
   if (result?.applied === true) return `文件操作已应用${result.operation_set_id ? ` ${result.operation_set_id}` : ''}`;
   if (Array.isArray(result?.results)) return `返回 ${result.results.length} 条结果`;
   if (result?.operation_set_id) return `生成文件操作预览 ${result.operation_set_id}`;
@@ -446,15 +473,32 @@ function summarizeResult(result = {}) {
 
 function collectFileRefs(result = {}) {
   const candidates = [result].concat(Array.isArray(result?.results) ? result.results : []);
+  // An applied create/patch stores the authoritative ID inside operation_set.patches.
+  // The model only sees this receipt, so promote verified applied files to file_refs.
+  if (result?.applied === true && result?.operation_set) {
+    const set = result.operation_set;
+    if (set.revision_type === 'file_revision' && set.status === 'applied') {
+      candidates.push({ file_id: set.file_id, file_path: set.revision_file_path });
+    }
+    for (const patch of Array.isArray(set.patches) ? set.patches : []) {
+      if (!['applied', 'auto_applied'].includes(patch?.status)) continue;
+      candidates.push({ file_id: patch.file_id, file_path: patch.file_path, verify_applied: true });
+    }
+  }
   const seen = new Set();
   return candidates.reduce((refs, item) => {
+    if (refs.length >= 10) return refs;
     const fileId = Number(item?.file_id ?? item?.fileId);
     const filePath = String(item?.file_path || item?.path || '').trim();
     if (!Number.isInteger(fileId) || fileId <= 0 || !filePath || seen.has(fileId)) return refs;
+    if (item?.verify_applied) {
+      const actual = require('./files').getFileById(fileId);
+      if (!actual || actual.path !== filePath) return refs;
+    }
     seen.add(fileId);
     refs.push({ file_id: fileId, file_path: filePath });
     return refs;
-  }, []).slice(0, 10);
+  }, []);
 }
 
 function listToolResults({ conversationId, beforeId, toolName } = {}) {
@@ -488,9 +532,19 @@ function buildToolResultReceipt({ toolName, result = {}, artifact = null } = {})
     original_bytes: Number(artifact?.original_bytes || 0),
     stored_bytes: Number(artifact?.stored_bytes || 0),
   };
+  if (failed) {
+    receipt.message = require('./agentToolFailure').describeToolFailure(result).slice(0, 400);
+    receipt.read_hint = '调用失败。message 与 error_details 已说明原因时直接修正参数；需要其他错误细节时再用 read_tool_result 读取 result_ref。依据真实回执继续，不要求用户代查工具是否执行。';
+    receipt.error_pointers = result.error_pointers || require('./agentToolFailure').toolFailurePointers(result);
+  }
   // Image recognition is already a concise derived result. Deliver it with the
   // receipt so the model can compare images without an extra read per image.
-  if (toolName === 'inspect_image' && !failed && artifact?.status === 'ready') {
+  if (toolName === 'inspect_image' && !failed && artifact?.status === 'ready' && result.status === 'image_ready') {
+    receipt.image_ref = String(result.ref || '');
+    receipt.image_path = String(result.path || '');
+    receipt.image_ready = true;
+    receipt.read_hint = '原图随主模型请求直接提供，无需读取文字摘要。';
+  } else if (toolName === 'inspect_image' && !failed && artifact?.status === 'ready') {
     const content = String(sanitizeArtifactValue(result.content || ''));
     receipt.observation = content.slice(0, 4000);
     receipt.observation_truncated = content.length > 4000;
@@ -514,6 +568,25 @@ function buildToolResultReceipt({ toolName, result = {}, artifact = null } = {})
       keyword: String(item?.keyword || ''),
       message: String(item?.message || ''),
     }));
+  }
+  // 全文修订的安全提示属于可核对信息，不是错误；随回执下发给模型，避免它误判为写入失败。
+  if (toolName === 'preview_file_revision' && Array.isArray(result?.safety?.warnings) && result.safety.warnings.length > 0) {
+    receipt.safety_warnings = result.safety.warnings.filter(Boolean).slice(0, 5).map((item) => String(item));
+  }
+  // OLD_NOT_FOUND 的定位诊断：模型只看回执，诊断必须随回执下发才有效。
+  if (result?.old_diagnostics && typeof result.old_diagnostics === 'object') {
+    const redact = require('./agentToolPolicy').redactSecrets;
+    const source = result.old_diagnostics;
+    receipt.old_diagnostics = {
+      hint: String(source.hint || ''),
+      file_hash: String(source.file_hash || ''),
+      current_lines: Number(source.current_lines || 0),
+      lines: (Array.isArray(source.lines) ? source.lines : []).slice(0, 3).map((item) => ({
+        ...item,
+        old_line: redact(String(item?.old_line || '')).slice(0, 160),
+        nearest_excerpt: redact(String(item?.nearest_excerpt || '')).slice(0, 160),
+      })),
+    };
   }
   if (artifact && artifact.status !== 'ready') {
     receipt.payload_unavailable = true;

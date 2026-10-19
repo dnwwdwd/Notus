@@ -28,7 +28,7 @@ Object.assign(process.env,{NOTUS_RUNTIME_TARGET:'web',NOTUS_DATA_ROOT:root,NOTES
     if(turns>=3&&turns<=7)return call('list_materials',{offset:turns,limit:1});
     if(turns===8){
       assert(results.some(r=>r.items?.some(i=>i.ref===ref)),'经过五轮其他读取后快照图片目录仍在');
-      assert(results.some(r=>r.observation==='图片事实：原始配图可读取。'),'视觉摘要直接可见且仍保留');
+      assert(request.messages.some(m=>Array.isArray(m.content)&&m.content.some(b=>b.type==='image'&&b.source.data===src.split(',')[1])),'主 Agent 直接看见原图');
       return call('preview_file_revision',{file_path:file.path,draft_content:`# 新正文\n![图](${ref})`,allow_image_changes:true});
     }
     assert(turns<=10,'不能无进展循环');
@@ -38,7 +38,7 @@ Object.assign(process.env,{NOTUS_RUNTIME_TARGET:'web',NOTUS_DATA_ROOT:root,NOTES
   updateSessionStatus(sessionId,'running');
   const result=await require('../lib/agentLoop').runAgentLoop({sessionId,approvalMode:'auto_confirm',llmConfig:{llmContextWindowTokens:60000}});
   assert.equal(result.status,'completed');
-  assert.equal(visionCalls,1);
+  assert.equal(visionCalls,0);
   assert.equal(tools.filter(t=>t==='list_file_images').length,1);
   assert(!tools.includes('read_tool_result'),'无需为短视觉摘要再发读取');
   assert(getFileById(file.id).content.includes(src));

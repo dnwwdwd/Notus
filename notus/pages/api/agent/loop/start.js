@@ -134,6 +134,8 @@ export default async function handler(req, res) {
     const conversation = ensureConversation({ conversationId: Number(body.conversation_id || 0) || null, kind: body.kind || 'agent', title: displayQuery || goal });
     // “继续任务/重试”会恢复原 session；用户在输入框发起新 prompt 则明确放弃该对话
     // 中等待决定的模型失败任务，避免 FIFO 永久停在等待态。
+    const pendingManual = require('../../../../lib/agentOperationGuards').findPendingManualOperation(conversation.id);
+    if (pendingManual) return res.status(409).json({ error: '还有待处理的修改，请先在 Diff 中手动应用或废弃，再发送新消息。', code: 'MANUAL_DIFF_PENDING', operation_set_id: pendingManual.id });
     const supersededSessionIds = supersedePendingUserActionTasks(conversation.id);
     const media = splitMediaInputs(body);
     const requestedMcpSelection = body.mcp_selection ?? body.mcpSelection ?? { mode: 'off' };

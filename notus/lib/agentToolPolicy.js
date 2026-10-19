@@ -14,6 +14,8 @@ const RESULT_LIMITS = {
 
 const SECRET_KEY_PATTERN = /(authorization|cookie|token|secret|password|api[_-]?key|private[_-]?key)/i;
 const HIGH_ENTROPY_PATTERN = /\b(?:sk-[A-Za-z0-9_-]{16,}|[A-Za-z0-9+/=_-]{40,})\b/g;
+const FILE_IDENTITY_KEYS = /^(?:file_path|path|old_path|new_path|folder_path|revision_file_path|revision_base_path|changed_files)$/;
+const LOCAL_FILE_RESULT_TOOLS = new Set(['read_file', 'analyze_folder', 'search_knowledge', 'create_note', 'preview_patch_files', 'preview_file_revision', 'preview_file_operations', 'list_file_images']);
 
 const ajv = new Ajv({ allErrors: true, strict: false, coerceTypes: false });
 const ajv2020 = new Ajv2020({ allErrors: true, strict: false, coerceTypes: false });
@@ -49,15 +51,29 @@ function validateToolInput(toolUse = {}, definitions = []) {
   };
 }
 
-function redactSecrets(value, seen = new WeakSet()) {
-  if (typeof value === 'string') return value.replace(HIGH_ENTROPY_PATTERN, '[REDACTED]');
+function redactSecrets(value, seen = new WeakSet(), options = {}) {
+  if (typeof value === 'string') return value
+    .replace(/(\b(?:Bearer|Basic)\s+)[A-Za-z0-9+/_=.-]+/gi, '$1[REDACTED]')
+    .replace(/((?:[?&]|\b)(?:access_token|refresh_token|api[_-]?key|token|password|secret)\s*[=:]\s*["']?)[^\s"'&,};<>\[\]，。；]+/gi, '$1[REDACTED]')
+    .replace(HIGH_ENTROPY_PATTERN, (match) => options.identity && !/^sk-/i.test(match) ? match : '[REDACTED]');
   if (!value || typeof value !== 'object') return value;
   if (seen.has(value)) return '[CIRCULAR]';
   seen.add(value);
-  if (Array.isArray(value)) return value.map((item) => redactSecrets(item, seen));
+  if (Array.isArray(value)) return value.map((item) => redactSecrets(item, seen, options));
   return Object.fromEntries(Object.entries(value).map(([key, item]) => (
-    SECRET_KEY_PATTERN.test(key) ? [key, '[REDACTED]'] : [key, redactSecrets(item, seen)]
+    SECRET_KEY_PATTERN.test(key) ? [key, '[REDACTED]'] : [key, redactSecrets(item, seen, {
+      ...options, identity: options.filePaths && FILE_IDENTITY_KEYS.test(key),
+    })]
   )));
+}
+
+function redactToolResult(toolName, value, { isMcp = false } = {}) {
+  if (!isMcp && toolName === 'read_tool_result' && typeof value?.content === 'string' && value?.result_ref) {
+    // The archive has already removed secrets before byte windows are selected.
+    // Redacting a second time would corrupt paths and other resource references.
+    return { ...redactSecrets({ ...value, content: null }), content: value.content };
+  }
+  return redactSecrets(value, new WeakSet(), { filePaths: !isMcp && LOCAL_FILE_RESULT_TOOLS.has(toolName) });
 }
 
 // Do not release a partial credential before its boundary is known. Applying
@@ -74,12 +90,13 @@ function resultLimit(toolName, isMcp = false) {
 }
 
 function limitToolResult(toolName, value, { isMcp = false } = {}) {
-  const redacted = redactSecrets(value);
+  const redacted = redactToolResult(toolName, value, { isMcp });
   const limit = resultLimit(toolName, isMcp);
   const serialized = JSON.stringify(redacted ?? null);
   if (Buffer.byteLength(serialized, 'utf8') <= limit) return redacted;
   const summary = Buffer.from(serialized, 'utf8').subarray(0, limit).toString('utf8');
   return {
+    ...(redacted?.error ? { error: redacted.error, message: require('./agentToolFailure').describeToolFailure(redacted).slice(0, 400), error_pointers: require('./agentToolFailure').toolFailurePointers(redacted) } : {}),
     truncated: true,
     result_bytes: Buffer.byteLength(serialized, 'utf8'),
     result_limit_bytes: limit,
@@ -112,6 +129,7 @@ module.exports = {
   RESULT_LIMITS,
   limitToolResult,
   redactSecrets,
+  redactToolResult,
   redactStreamingText,
   runWithSignal,
   validateToolInput,

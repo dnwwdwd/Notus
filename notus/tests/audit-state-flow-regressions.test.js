@@ -89,7 +89,11 @@ async function run() {
   assert.ok(item.applied_content.includes('beta delta'));
   assert.ok(item.pending_content.includes('beta epsilon'));
   await call(apply, { ...body, action: 'apply_all', operation_set_id: set.id });
-  await call(apply, { ...body, action: 'rollback_file', operation_set_id: set.id, patch_index: 0 });
+  const runningRollback = await call(apply, { ...body, action: 'rollback_file', operation_set_id: set.id, patch_index: 0 });
+  assert.equal(runningRollback.body.code, 'TASK_RUNNING', '续跑中的任务必须先中断再回滚');
+  sessions.updateSessionStatus(ctx.session.sessionId, 'cancelled');
+  queue.cancelTask(ctx.session.sessionId);
+  assert.equal((await call(apply, { ...body, action: 'rollback_file', operation_set_id: set.id, patch_index: 0 })).status, 200);
   item = changes.getTaskChangeSetDetail(ctx.session.sessionId).items[0];
   assert.ok(item.applied_content.includes('alpha epsilon'));
   const other = context('另一个任务');
@@ -97,6 +101,7 @@ async function run() {
   assert.equal(rejected.status, 403, 'reject 不能跨任务操作，即使提供有效票据');
   assert.notEqual(ops.getOperationSetById(set.id).status, 'cancelled');
 
+  sessions.updateSessionStatus(ctx.session.sessionId, 'created');
   files.createFile('parallel.md', '# parallel\nalpha delta\n');
   const concurrent = preview(ctx, [
     { file_path: 'parallel.md', old: 'alpha', new: 'beta', change_type: 'modify' },

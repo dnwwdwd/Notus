@@ -44,9 +44,15 @@ global.fetch=async()=>{
   }
   const large=structuredClone(messages);
   large[2].content[0].content=JSON.stringify({content:'长材料。'.repeat(4000)});
-  const {evictOldReadWindows}=require('../lib/agentMessageProjection');
+  const {evictOldToolResults,KEEP_RECENT_TOOL_RESULTS}=require('../lib/agentMessageProjection');
   const originalCost=estimateChatRequestTokens({messages:large});
-  const reduced=evictOldReadWindows(large,originalCost-1000);
-  assert.equal(reduced.flatMap(m=>m.content||[]).filter(b=>b.type==='tool_result'&&b.content.includes('read_window_evicted')).length,1,'满足预算即停止逐项回收');
-  console.log('retention budget boundaries passed: both protocols, large→small model, system/schema overhead, unsendable request rejection, provider overflow, immutable checkpoints, stop eviction at budget');
+  const reduced=evictOldToolResults(large,originalCost-1000);
+  const allResults=reduced.flatMap(m=>m.content||[]).filter(b=>b.type==='tool_result');
+  const evicted=allResults.filter(b=>b.content.includes('tool_result_evicted'));
+  const kept=allResults.length-evicted.length;
+  assert.equal(kept,KEEP_RECENT_TOOL_RESULTS,'超出预算时只保留最近 N 个工具结果原文');
+  assert.ok(allResults.some(b=>b.tool_use_id==='read-0'&&b.content.includes('tool_result_evicted')),'大段读取窗口一律按最近 N 策略驱逐');
+  assert.ok(evicted.every(b=>JSON.parse(b.content).status==='tool_result_evicted'),'占位必须是可解析的驱逐回执');
+  assert.ok(allResults.some(b=>b.tool_use_id==='read-1'&&(JSON.parse(b.content).result_ref==='tool-result://1')),'源结果带 result_ref 时占位必须保留');
+  console.log('retention budget boundaries passed: both protocols, large→small model, system/schema overhead, unsendable request rejection, provider overflow, immutable checkpoints, keep-recent-N eviction');
 })().catch(e=>{console.error(e);process.exitCode=1;}).finally(()=>{global.fetch=originalFetch;});

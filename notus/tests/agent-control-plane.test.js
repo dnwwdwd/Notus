@@ -240,7 +240,7 @@ async function run() {
   assert.strictEqual(detectDeadloop(created.sessionId, 'search_knowledge', { results: [1] }), false);
   assert.strictEqual(detectDeadloop(created.sessionId, 'read_file', { content: 'same' }), false, '非连续重复不能误判');
   assert.strictEqual(detectDeadloop(created.sessionId, 'read_file', { content: 'same' }), false);
-  assert.strictEqual(detectDeadloop(created.sessionId, 'read_file', { content: 'same' }), true, '连续三次相同结果必须终止');
+  assert.strictEqual(detectDeadloop(created.sessionId, 'read_file', { content: 'same' }), true, '连续三次相同结果必须触发重复警示');
   for (const url of ['https://example.com/a', 'https://example.com/b', 'https://example.com/c']) {
     assert.equal(detectDeadloop(created.sessionId, 'mcp_fetch', { ok: true }, { url }), false, '不同 URL 相同结果不是死循环');
   }

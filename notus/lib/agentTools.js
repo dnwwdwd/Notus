@@ -6,9 +6,10 @@ const { Agent, fetch: undiciFetch } = require('undici');
 const { getDb } = require('./db');
 const { getEffectiveConfig } = require('./config');
 const { hybridSearch } = require('./retrieval');
-const { createFile, getFileById, getFileByPath, updateFile, sha256, extractTitle } = require('./files');
+const { createFile, getFileById, getFileByPath, resolveFileReferencePath, updateFile, sha256, extractTitle } = require('./files');
 const { getConversation } = require('./conversations');
-const { splitEditorVisibleMarkdown } = require('./markdownMeta');
+const { injectFrontmatterId, parseFrontmatter, splitEditorVisibleMarkdown } = require('./markdownMeta');
+const { repairImageHeadingMarkdown } = require('../utils/markdownImageHeadings');
 const { articleFromMarkdown } = require('../utils/markdownBlocks');
 const { removeFile: removeFileFromIndex, triggerIncrementalIndex } = require('./indexer');
 const {
@@ -95,27 +96,24 @@ function webSearchToolDefinition() {
 }
 
 function fetchWebUrlToolDefinition() {
-  return tool('fetch_web_url', '读取一个公开网页链接的正文，用于检查用户提供或文档正文中的具体链接是否可直接抓取。先用它检查已知链接；需要发现新资料或补充来源时再用 web_search；只有网页需要特殊服务能力且内置读取无法完成时才使用 MCP。页面动态渲染、下载文件、访问限制或正文为空会作为可记录的检查结果返回，不要对同一链接重复调用。', {
+  return tool('fetch_web_url', '读取一个公开网页链接的正文，用于检查用户提供或文档正文中的具体链接是否可直接抓取。适用于已知链接；按照用户指定的工具范围选择，用户指定 MCP 时不要改用本工具。页面动态渲染、下载文件、访问限制或正文为空会作为可记录的检查结果返回，不要对同一链接重复调用。', {
     url: { type: 'string', description: '要读取的完整 HTTP(S) 网页链接。' },
   }, ['url']);
 }
 
 function readToolResultDefinition() {
-  const definition = tool('read_tool_result', '按受控引用读取当前会话中的完整工具结果。每次只能使用 JSON Pointer、关键词窗口或字节分块中的一种方式；不能传入文件路径。', {
+  // 三种读取方式互斥由执行层 readToolResult 判定并给出可执行提示。
+  // 这里不能再叠加 oneOf/not：复杂 Schema 约束在部分 Provider 通道不可靠，
+  // 且校验失败只会返回 "not / oneOf / must NOT be valid" 之类的裸关键字，
+  // 模型无法据此修正，会反复触发同一错误。
+  return tool('read_tool_result', '按受控引用读取当前会话中的完整工具结果。只传 result_ref 时从开头读取；json_pointer、query、offset 每次只能传其中一个，不能混用，也不能传文件路径。需要先定位再分页时，拆成两次调用并复用同一 result_ref。', {
     result_ref: { type: 'string', pattern: '^tool-result://[0-9a-fA-F-]{36}$', description: '工具回执中的 opaque result_ref。' },
     json_pointer: { type: 'string', description: '读取 JSON Pointer 指向的内容；根节点使用空字符串。' },
     query: { type: 'string', minLength: 1, description: '搜索关键词并返回有限的命中窗口。' },
     offset: { type: 'integer', minimum: 0, description: '从解压后的 UTF-8 JSON 第几个字节开始读取。' },
     max_bytes: { type: 'integer', minimum: 1, maximum: 16384, default: 8192 },
   }, ['result_ref']);
-  definition.input_schema.oneOf = [
-    { required: ['json_pointer'], not: { anyOf: [{ required: ['query'] }, { required: ['offset'] }] } },
-    { required: ['query'], not: { anyOf: [{ required: ['json_pointer'] }, { required: ['offset'] }] } },
-    { required: ['offset'], not: { anyOf: [{ required: ['json_pointer'] }, { required: ['query'] }] } },
-  ];
-  return definition;
 }
-
 function agentMcpServerToolDefinition() {
   const { caps } = require('./mcp');
   const supportsStdio = Boolean(caps().mcp.stdio);
@@ -148,7 +146,7 @@ function agentMcpServerToolDefinition() {
       },
     };
   }
-  return tool('add_mcp_server', '新增并测试 MCP Server。用户明确提供全部配置后直接执行，不需要二次确认。Streamable HTTP 默认需要 HTTPS；只有用户明确要求的 localhost、127.0.0.1 或 ::1 本机地址可配合 allowLocalHttp 使用 HTTP。stdio 仅桌面端可用。HTTP Header 和 stdio 环境变量的值会保存为密钥，绝不在工具结果中回显。', properties, ['name', 'transport']);
+  return tool('add_mcp_server', '新增并测试 MCP Server。用户明确提供全部配置后，自动模式直接执行，手动模式生成资源确认卡。Streamable HTTP 默认需要 HTTPS；只有用户明确要求的 localhost、127.0.0.1 或 ::1 本机地址可配合 allowLocalHttp 使用 HTTP。stdio 仅桌面端可用。HTTP Header 和 stdio 环境变量的值会保存为密钥，绝不在工具结果中回显。', properties, ['name', 'transport']);
 }
 
 function managementToolDefinitions() {
@@ -158,17 +156,17 @@ function managementToolDefinitions() {
     tool('get_skill_details', '查看 Skill 的受限正文、文件清单和校验结果。', { skill_id: { type: 'string' } }, ['skill_id']),
     tool('create_skill_draft', '创建并校验受管 Skill 草稿，不会写入工作区或安装目录；必须单独调用。', draft, ['name', 'description', 'instructions']),
     tool('validate_skill_draft', '返回 Skill 草稿校验结果。', { draft_id: { type: 'string' } }, ['draft_id']),
-    tool('install_skill_draft', '请求安装 Skill 草稿，必须等待资源确认卡；必须单独调用。', { draft_id: { type: 'string' } }, ['draft_id']),
+    tool('install_skill_draft', '请求安装 Skill 草稿，自动模式执行，手动模式生成资源确认卡。', { draft_id: { type: 'string' } }, ['draft_id']),
     tool('update_skill_draft', '为受管 Skill 创建完整修订草稿，确认后才覆盖；必须单独调用。', { skill_id: { type: 'string' }, ...draft }, ['skill_id', 'description', 'instructions']),
     tool('set_skill_enabled', '启用或停用 Skill；外部扫描 Skill 只能停用。', { skill_id: { type: 'string' }, enabled: { type: 'boolean' } }, ['skill_id', 'enabled']),
     tool('update_skill_from_git', '拉取受管 Git Skill 的 main/master 更新。', { skill_id: { type: 'string' } }, ['skill_id']),
-    tool('uninstall_skill', '请求卸载受管 Skill；外部 Skill 将请求停用；必须等待资源确认卡。', { skill_id: { type: 'string' } }, ['skill_id']),
+    tool('uninstall_skill', '请求卸载受管 Skill；外部 Skill 将请求停用；自动模式执行，手动模式生成资源确认卡。', { skill_id: { type: 'string' } }, ['skill_id']),
     tool('list_mcp_servers', '列出 MCP Server 脱敏配置、状态、最近测试与缓存工具摘要。', {}),
     tool('get_mcp_server_details', '查看 MCP Server 脱敏配置；密钥只显示字段名和已配置状态。', { server_id: { type: 'string' } }, ['server_id']),
-    tool('update_mcp_server', '直接修改 MCP Server；遗漏密钥保持原值。', { server_id: { type: 'string' }, name: { type: 'string' }, enabled: { type: 'boolean' }, transport: { type: 'string' }, http: { type: 'object' }, stdio: { type: 'object' } }, ['server_id']),
+    tool('update_mcp_server', '按自动/手动模式执行或生成资源确认卡修改 MCP Server；遗漏密钥保持原值。', { server_id: { type: 'string' }, name: { type: 'string' }, enabled: { type: 'boolean' }, transport: { type: 'string' }, http: { type: 'object' }, stdio: { type: 'object' } }, ['server_id']),
     tool('test_mcp_server', '测试 MCP Server 并刷新工具缓存。', { server_id: { type: 'string' } }, ['server_id']),
     tool('set_mcp_server_enabled', '启用或停用 MCP Server。', { server_id: { type: 'string' }, enabled: { type: 'boolean' } }, ['server_id', 'enabled']),
-    tool('remove_mcp_server', '请求删除 MCP Server，必须等待资源确认卡；必须单独调用。', { server_id: { type: 'string' } }, ['server_id']),
+    tool('remove_mcp_server', '请求删除 MCP Server，自动模式执行，手动模式生成资源确认卡。', { server_id: { type: 'string' } }, ['server_id']),
   ];
 }
 
@@ -186,7 +184,7 @@ function buildToolDefinitions(session = {}, options = {}) {
       operation_set_id: { type: 'integer', description: '可选，同会话该文章的 Diff 快照 ID；不填时返回当前图片和可用快照目录。' },
       version: { type: 'string', enum: ['before', 'after'], description: '读取快照修改前或修改后的图片，默认 before。' },
     }, ['path']),
-    tool('inspect_image', '读取一张原图并调用当前视觉模型识别。用于会话截图、历史图片及文章配图；摘要缺失或细节不足时主动查看，不要求用户重复描述可读取的图。结果回执的 observation 直接包含视觉摘要；仅 observation_truncated=true 且需要剩余细节时用 read_tool_result，不要为完整摘要重复读取。', {
+    tool('inspect_image', '加载尚未进入当前输入的历史或文档原图，直接供你在下一次请求中查看，不调用额外视觉模型。当前用户图片已直接提供，不要重复加载。用 list_materials/list_file_images 找到引用；依据实际原图作答。', {
       ref: { type: 'string', description: 'list_materials 或 list_file_images 返回的图片引用。' },
       path: { type: 'string', description: '文章图片必须填写所属 Markdown 相对路径。' },
       question: { type: 'string', maxLength: 2000 },
@@ -222,7 +220,7 @@ function buildToolDefinitions(session = {}, options = {}) {
         items: {
           type: 'object',
           properties: {
-            file_path: { type: 'string' },
+            file_path: { type: 'string', description: '已有文件的 notus://file/ID 引用，或完整相对 Markdown 路径；优先复用 read_file 回执中的 file_id。' },
             old: { type: 'string', description: '要替换的原文，必须来自 read_file 或 search_knowledge 结果' },
             new: { type: 'string', description: '替换后的新文本' },
           },
@@ -232,7 +230,7 @@ function buildToolDefinitions(session = {}, options = {}) {
     }, ['patches']),
     tool('preview_file_revision', '为单个已有 Markdown 文件提交完整修订草稿，并由代码生成 diff 预览。适合大规模、碎片化或整篇改写；不要自己生成 old/new patch 数组。自动确认模式自动应用，手动模式等待 Diff 确认；可在同一用户任务内先读取再提交。', {
       allow_image_changes: { type: 'boolean', description: '默认 false，保护原有图片地址；仅用户明确要求删除、替换或恢复图片时设 true。普通改写、润色、重排不得开启。' },
-      file_path: { type: 'string', description: '要修改的 Markdown 文件路径。' },
+      file_path: { type: 'string', description: '已有文件的 notus://file/ID 引用，或完整相对 Markdown 路径；与 read_file 使用同一文件引用。' },
       draft_content: { type: 'string', description: '修改后的完整 Markdown 文件内容，必须保留未修改部分。' },
       parent_operation_set_id: { type: 'integer', description: '可选，上一条相关修订记录 ID。' },
     }, ['file_path', 'draft_content']),
@@ -253,7 +251,7 @@ function buildToolDefinitions(session = {}, options = {}) {
         },
       },
     }, ['operations']),
-    tool('ask_question_card', '生成一张提问卡片，暂停当前 Agent 任务并等待用户回答。适合 Agent 自己发现关键信息不足时主动提问，也适合用户明确要求“生成提问卡片/出几道问题/先问我几个问题”时调用。请在一次模型响应中单独调用；同一用户任务内可先读取再调用，无需用户重新发送消息。', {
+    tool('ask_question_card', '生成一张提问卡片，暂停当前 Agent 任务并等待用户回答。仅用于上下文及可读取材料仍无法补齐、不能合理默认且会改变结果的必要信息；问题须指出答案影响的具体决策。链接加“文章写了啥”等明确请求直接读取总结，不问任务类型、用途或篇幅。内部分类不确定或规划失败不能作为提问理由。工具是否执行成功、搜索是否返回结果由你读取工具回执和结果文件判断，不得用这张卡片让用户代查执行结果。也适合用户明确要求“生成提问卡片/出几道问题/先问我几个问题”时调用。请在一次模型响应中单独调用；同一用户任务内可先读取再调用，无需用户重新发送消息。', {
       title: { type: 'string', description: '卡片标题，默认“提问卡片”。' },
       intro: { type: 'string', description: '展示在助手消息里的简短说明。' },
       submit_label: { type: 'string', description: '提交按钮文案，例如“继续执行”。' },
@@ -325,7 +323,7 @@ function buildToolDefinitions(session = {}, options = {}) {
       skill_id: { type: 'string', description: '已加载 Skill 的 ID' },
       path: { type: 'string', description: 'Skill 目录内的相对文件路径' },
     }, ['skill_id', 'path']),
-    tool('install_skill_from_git', '请求从 HTTPS Git 仓库安装一个 Skill，必须等待资源确认卡；确认前不会访问仓库。确认后系统会依次尝试 main、master，要求仓库根目录有有效 SKILL.md；同名 Skill 不会覆盖。', {
+    tool('install_skill_from_git', '从 HTTPS Git 仓库安装一个 Skill：自动模式直接执行，手动模式生成资源确认卡并可继续无依赖步骤。执行时系统会依次尝试 main、master，要求仓库根目录有有效 SKILL.md；同名 Skill 不会覆盖。', {
       repository_url: { type: 'string', description: '不含用户名、密码或 Token 的 HTTPS Git 仓库地址。' },
     }, ['repository_url']),
     agentMcpServerToolDefinition(),
@@ -336,6 +334,12 @@ function buildToolDefinitions(session = {}, options = {}) {
     ? definitions.filter((item) => readOnlyNames.has(item.name))
     : definitions;
 
+  if (session?.mcp_selection?.mode && session.mcp_selection.mode !== 'off') {
+    scopedDefinitions.push(tool('list_available_mcp_tools', '查看本次已启用且已授权的 MCP 工具目录，含工具描述；本次返回的工具及完整参数 Schema 在下一次模型请求中提供并可调用。初始工具清单可能只展示部分；不要据此判定某项能力不存在。可按名称、描述关键词筛选，也可不筛选分页查看。只发现当前授权范围，不启用、安装或改变任何权限。', {
+      query: { type: 'string', description: '可选，服务名、工具名或描述关键词；无匹配可清空并翻页。' },
+      offset: { type: 'integer', minimum: 0 },
+    }, []));
+  }
   if (session?.web_search_enabled) {
     scopedDefinitions.push(fetchWebUrlToolDefinition());
     const config = resolveWebSearchConfig(session.web_search_provider || '');
@@ -369,6 +373,7 @@ async function executeSearchKnowledge({ query, scope_paths: scopePaths = [], top
     session,
     runId: context.runId,
     sourceType: 'knowledge',
+    missionFingerprint: sha256(JSON.stringify({ query: q.replace(/\s+/g, ' ').toLocaleLowerCase(), scope: [...fileIds].sort((a, b) => a - b), scoped: hasScopeRequest, topK: Math.min(Math.max(1, Number(topK) || 5), 10) })),
     query: q,
     llmConfig: context.llmConfig,
     maxQueries: context.maxQueries,
@@ -765,12 +770,9 @@ function executeAskQuestionCard({
 }
 
 function executeReadFile({ path: filePath, offset_line: offsetLine = 1, line_limit: lineLimit = 4000 } = {}) {
-  const idMatch = String(filePath || '').match(/^notus:\/\/file\/([1-9]\d*)$/);
-  const fileById = idMatch ? getFileById(Number(idMatch[1])) : null;
-  if (idMatch && !fileById) return { error: 'FILE_NOT_FOUND', message: '该文件 ID 已不存在，请从文件列表或对话中的有效引用重新定位。' };
   let normalized;
-  try { normalized = normalizeAgentPath(fileById?.path || filePath, { ensureMarkdown: true }); } catch (error) { return { error: 'INVALID_PATH', message: error.message }; }
-  let file = fileById || getFileByPath(normalized);
+  try { normalized = resolveFileReferencePath(filePath); } catch (error) { return { error: error.code || 'INVALID_PATH', message: error.message }; }
+  let file = getFileByPath(normalized);
   if (!file && !normalized.includes('/')) {
     // 精确路径未命中后，仅为读取解析唯一文件名；写入仍须使用返回的完整路径。
     const candidates = getDb().prepare("SELECT id, path, title FROM files WHERE path = ? OR substr(path, -(length(?) + 1)) = '/' || ? ORDER BY path LIMIT 11")
@@ -829,10 +831,10 @@ async function executeCreateNote({ path: filePath, content = '', title = '' } = 
   if (!check.valid) return { error: 'PERMISSION_DENIED', reason: check.reason, path: normalized };
   const target = resolveInsideNotes(notesDir, normalized);
   if (fs.existsSync(target.absolutePath)) return { error: 'FILE_ALREADY_EXISTS', path: normalized };
-  const finalContent = buildAgentFrontmatterContent(title, ensureConversationImagesInMarkdown(content, {
+  const finalContent = injectFrontmatterId(buildAgentFrontmatterContent(title, repairImageHeadingMarkdown(ensureConversationImagesInMarkdown(content, {
     conversationId: session.conversation_id,
     taskText: session.goal,
-  }));
+  }))));
   const operationSet = createOperationSet({
     conversationId: session.conversation_id,
     agentSessionId: session.id,
@@ -889,6 +891,13 @@ function normalizeStoredPatches(patches = []) {
 
 function isCreatePatch(patch = {}) {
   return String(patch?.change_type || patch?.type || patch?.op || '').trim().toLowerCase() === 'create';
+}
+
+function findCreatedFileForPatch(patch) {
+  const stableId = String(parseFrontmatter(patch?.new || '').data.id || '').trim();
+  if (!stableId) return null;
+  const row = getDb().prepare('SELECT id FROM files WHERE stable_id = ?').get(stableId);
+  return row ? getFileById(row.id) : null;
 }
 
 function patchConflict(reason, patch) {
@@ -1034,7 +1043,12 @@ async function applyPreviewPatchFileInternal(operationSetId, sessionId, {
   let patch = patches[index];
   const status = normalizePatchStatus(patch.status);
   if (['applied', 'auto_applied'].includes(status)) {
-    return { success: true, applied: true, changed_files: [], operation_set: set, patch_index: index };
+    const appliedId = Number(patch.file_id || 0);
+    const current = appliedId > 0 ? getFileById(appliedId) : null;
+    if (isCreatePatch(patch) && (!current || current.path !== patch.file_path || (patch.file_hash && sha256(current.content || '') !== patch.file_hash))) {
+      return patchConflict('APPLIED_FILE_CHANGED', patch);
+    }
+    return { success: true, applied: true, changed_files: [], file_id: current?.id || null, file_path: current?.path || patch.file_path, operation_set: set, patch_index: index };
   }
   if (!['pending', 'failed'].includes(status)) return { success: false, error: 'PATCH_NOT_PENDING', patch_status: status };
   const paths = item => [item.file_path, item.folder_path, item.old_path, item.new_path].filter(Boolean);
@@ -1045,7 +1059,8 @@ async function applyPreviewPatchFileInternal(operationSetId, sessionId, {
   if (blocked) return { success: false, error: 'PREVIOUS_OPERATION_PENDING', message: '请先应用同一文件或目录的前序修改，或按顺序全部应用。' };
 
   if (isCreatePatch(patch)) {
-    if (getFileByPath(patch.file_path)) return patchConflict('FILE_ALREADY_EXISTS', patch);
+    const occupied = getFileByPath(patch.file_path);
+    if (occupied && occupied.id !== findCreatedFileForPatch(patch)?.id) return patchConflict('FILE_ALREADY_EXISTS', patch);
     let materialized;
     try {
       materialized = await materializePatchContent(set, patch);
@@ -1056,12 +1071,28 @@ async function applyPreviewPatchFileInternal(operationSetId, sessionId, {
     if (!latestSet || ['cancelled', 'discarded', 'superseded', 'rolled_back'].includes(latestSet.status)) return patchConflict('PATCH_NOT_PENDING', patch);
     patches = normalizeStoredPatches(latestSet?.patches);
     if (['applied', 'auto_applied'].includes(patches[index]?.status)) {
-      return { success: true, applied: true, changed_files: [], operation_set: latestSet, patch_index: index };
+      const applied = getFileById(Number(patches[index].file_id || 0));
+      if (!applied || applied.path !== patches[index].file_path) return patchConflict('APPLIED_FILE_CHANGED', patches[index]);
+      return { success: true, applied: true, changed_files: [], file_id: applied.id, file_path: applied.path, operation_set: latestSet, patch_index: index };
     }
     if (!['pending', 'failed'].includes(patches[index]?.status || 'pending')) return patchConflict('PATCH_NOT_PENDING', patch);
-    if (getFileByPath(patch.file_path)) return patchConflict('FILE_ALREADY_EXISTS', patch);
     patch = materialized.patch;
-    const file = createFile(patch.file_path, patch.new);
+    let file = findCreatedFileForPatch(patch);
+    if (file && sha256(file.content || '') !== sha256(patch.new || '')) return patchConflict('APPLIED_FILE_CHANGED', patch);
+    if (!file && getFileByPath(patch.file_path)) return patchConflict('FILE_ALREADY_EXISTS', patch);
+    const recovered = Boolean(file);
+    if (!file) {
+      try {
+        file = createFile(patch.file_path, patch.new);
+      } catch (error) {
+        // Another request may have finished this same operation while we waited
+        // for the SQLite write lock. Accept only the persisted stable identity.
+        file = error.code === 'FILE_ALREADY_EXISTS' ? findCreatedFileForPatch(patch) : null;
+        if (!file || sha256(file.content || '') !== sha256(patch.new || '')) {
+          return { success: false, error: error.code || 'FILE_CREATE_FAILED', message: error.message };
+        }
+      }
+    }
     const finalHash = sha256(file.content || '');
     trackCreatedFile(sessionId, file.path, finalHash);
     patches[index] = {
@@ -1086,7 +1117,7 @@ async function applyPreviewPatchFileInternal(operationSetId, sessionId, {
       mediaChanges,
     });
     scheduleIncrementalIndex(file.path);
-    return { success: true, applied: true, changed_files: [file.path], operation_set: operationSet, patch_index: index };
+    return { success: true, applied: true, changed_files: recovered ? [] : [file.path], file_id: file.id, file_path: file.path, operation_set: operationSet, patch_index: index };
   }
 
   if (isFileSystemPatch(patch)) {
@@ -1118,6 +1149,7 @@ async function applyPreviewPatchFileInternal(operationSetId, sessionId, {
 
   const file = getFileByPath(patch.file_path);
   if (!file) return patchConflict('FILE_NOT_FOUND', patch);
+  if (patch.file_id && Number(patch.file_id) !== file.id) return patchConflict('FILE_IDENTITY_CHANGED', patch);
   const replacement = replaceUnique(file.content || '', patch.old, patch.new, 'OLD_REQUIRED');
   if (!replacement.ok && !force) return patchConflict(replacement.reason === 'TEXT_NOT_FOUND' ? 'OLD_NOT_FOUND' : replacement.reason, patch);
   if (!replacement.ok) return patchConflict(replacement.reason, patch);
@@ -1190,6 +1222,9 @@ async function rollbackPreviewPatchFile(operationSetId, sessionId, {
     return { success: true, rolled_back: true, changed_files: [], operation_set: operationSet, patch_index: index };
   }
 
+  const dependencyError = require('./agentOperationGuards').rollbackDependencyError(set, index);
+  if (dependencyError) return dependencyError;
+
   if (isCreatePatch(patch)) {
     const file = getFileByPath(patch.file_path);
     if (!file) {
@@ -1198,7 +1233,13 @@ async function rollbackPreviewPatchFile(operationSetId, sessionId, {
       return { success: true, rolled_back: true, changed_files: [], operation_set: operationSet, patch_index: index };
     }
     const currentHash = sha256(file.content || '');
-    if (patch.file_hash && currentHash !== patch.file_hash && !force) return patchConflict('FILE_CHANGED', patch);
+    if (patch.file_hash && currentHash !== patch.file_hash && !force) {
+      return {
+        ...patchConflict('FILE_CHANGED', patch),
+        requires_force_confirmation: true,
+        message: '新建的文件在应用后已被修改。继续回滚会删除这些外部改动，请确认后再试。',
+      };
+    }
     deleteCreatedFileAndIndex(file.path);
     patches[index] = { ...patch, status: 'rolled_back', handled_at: nowIso(), error: '' };
     const operationSet = savePatchStates(set, patches);
@@ -1226,9 +1267,16 @@ async function rollbackPreviewPatchFile(operationSetId, sessionId, {
 
   const file = getFileByPath(patch.file_path);
   if (!file) return patchConflict('FILE_NOT_FOUND', patch);
+  if (patch.file_id && Number(patch.file_id) !== file.id) return patchConflict('FILE_IDENTITY_CHANGED', patch);
   const replacement = replaceUnique(file.content || '', patch.new, patch.old, 'NEW_NOT_FOUND');
-  if (!replacement.ok && !force) return patchConflict(replacement.reason === 'TEXT_NOT_FOUND' ? 'NEW_NOT_FOUND' : replacement.reason, patch);
-  if (!replacement.ok) return patchConflict(replacement.reason, patch);
+  if (!replacement.ok) {
+    // 局部补丁只能撤销仍能精确匹配的文本；用户已改写这段内容时无法自动恢复。
+    return {
+      ...patchConflict(replacement.reason === 'TEXT_NOT_FOUND' ? 'NEW_NOT_FOUND' : replacement.reason, patch),
+      requires_force_confirmation: false,
+      message: '这批修改写入的文本已被外部改动，无法自动回滚，请手动恢复该文件。',
+    };
+  }
 
   const originalPath = patch.file_path;
   const savedFile = updateFile(file.id, replacement.next);
@@ -1346,7 +1394,68 @@ function alignPatchOldText(currentContent = '', oldText = '') {
   if (collapsedIndex === -2) {
     return { ok: false, reason: 'OLD_MATCH_NOT_UNIQUE', message: 'old 文本在当前文件中出现多处近似匹配，请扩大 old 范围后重试。' };
   }
-  return { ok: false, reason: 'OLD_NOT_FOUND', message: 'old 文本没有在当前文件中找到唯一匹配，请先 read_file 读取精确原文后重试。' };
+  return { ok: false, reason: 'OLD_NOT_FOUND', message: 'old 文本没有在当前文件中找到唯一匹配。请按回执 old_diagnostics 中 not_found 行的 nearest_excerpt，重新调用 read_file 读取当前原文后重写 old 再重试。' };
+}
+
+// OLD_NOT_FOUND 的诊断信息：让模型知道差在哪，而不是盲目重试同样的 old。
+function buildOldNotFoundDiagnostics(currentContent = '', oldText = '') {
+  const current = String(currentContent || '');
+  const old = String(oldText ?? '');
+  const currentLines = current.split('\n');
+
+  function similarityScore(a = '', b = '') {
+    const normalize = (value) => String(value || '').replace(/\s+/g, '');
+    const left = normalize(a);
+    const right = normalize(b);
+    if (left.length < 2 || right.length < 2) return left === right ? 1 : 0;
+    const bigrams = new Set();
+    for (let index = 0; index < left.length - 1; index += 1) bigrams.add(left.slice(index, index + 2));
+    let overlap = 0;
+    for (let index = 0; index < right.length - 1; index += 1) {
+      if (bigrams.has(right.slice(index, index + 2))) overlap += 1;
+    }
+    return Math.round((2 * overlap / (left.length - 1 + right.length - 1)) * 100) / 100;
+  }
+
+  function excerpt(line = '') {
+    const text = String(line || '').trim();
+    return text.length > 160 ? `${text.slice(0, 160)}…` : text;
+  }
+
+  const checkedLines = old.split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 3)
+    .map((line) => {
+      const foundIndex = currentLines.findIndex((candidate) => candidate.trim() === line || candidate.includes(line));
+      if (foundIndex >= 0) {
+        return { old_line: excerpt(line), status: 'found', current_line: foundIndex + 1 };
+      }
+      let bestIndex = -1;
+      let bestScore = 0;
+      for (let index = 0; index < currentLines.length; index += 1) {
+        const score = similarityScore(currentLines[index], line);
+        if (score > bestScore) {
+          bestScore = score;
+          bestIndex = index;
+        }
+      }
+      return {
+        old_line: excerpt(line),
+        status: 'not_found',
+        nearest_current_line: bestIndex >= 0 ? bestIndex + 1 : null,
+        similarity: bestScore,
+        nearest_excerpt: bestIndex >= 0 ? excerpt(currentLines[bestIndex]) : '',
+      };
+    });
+
+  return {
+    hint: 'file_hash 是当前文件内容哈希，可与上次 read_file 返回的 hash 比对：不一致说明文件已被修改（含本任务已应用的批次），必须重新调用 read_file 读取当前内容，不要用 read_tool_result 读取旧结果。not_found 行的 nearest_excerpt 是当前文件中最接近的原文，请以它为准重写 old。',
+    file_hash: sha256(current),
+    current_lines: currentLines.length,
+    old_lines_checked: checkedLines.length,
+    lines: checkedLines,
+  };
 }
 
 async function executePreviewPatchFiles({ patches = [], allow_image_changes = false } = {}, sessionId, _notesDir, context = {}) {
@@ -1358,9 +1467,9 @@ async function executePreviewPatchFiles({ patches = [], allow_image_changes = fa
     const patch = patches[index];
     try {
       if (!patch || typeof patch.old !== 'string' || typeof patch.new !== 'string') throw new Error('INVALID_PATCH');
-      normalized.push(normalizePatch({ file_path: patch.file_path || patch.path, old: patch.old, new: patch.new }));
-    } catch {
-      return { error: 'INVALID_PREVIEW_ITEM', item_index: index, message: `第 ${index + 1} 项路径或正文无效，整批未生成预览，请修正后重试。` };
+      normalized.push(normalizePatch({ file_path: resolveFileReferencePath(patch.file_path || patch.path), old: patch.old, new: patch.new }));
+    } catch (error) {
+      return { error: error.code || 'INVALID_PREVIEW_ITEM', item_index: index, message: error.code ? error.message : `第 ${index + 1} 项路径或正文无效，整批未生成预览，请修正后重试。` };
     }
   }
   if (normalized.length === 0) return { error: 'PATCHES_REQUIRED', message: 'preview_patch_files 需要 patches' };
@@ -1370,6 +1479,7 @@ async function executePreviewPatchFiles({ patches = [], allow_image_changes = fa
     if (!check.valid) return { error: 'PERMISSION_DENIED', reason: check.reason, path: patch.file_path };
     const file = getFileByPath(patch.file_path);
     if (!file) return { error: 'FILE_NOT_FOUND', path: patch.file_path };
+    patch.file_id = file.id;
     const current = pendingContents.has(patch.file_path) ? pendingContents.get(patch.file_path) : String(file.content || '');
     if (patch.old === '' && current !== '') return { error: 'OLD_REQUIRED', path: patch.file_path, message: '非空文件必须提供可二次校验的 old 文本' };
     const aligned = alignPatchOldText(current, patch.old);
@@ -1379,13 +1489,14 @@ async function executePreviewPatchFiles({ patches = [], allow_image_changes = fa
         path: patch.file_path,
         reason: aligned.reason,
         message: aligned.message || 'old 文本没有在当前文件中找到唯一匹配',
+        ...(aligned.reason === 'OLD_NOT_FOUND' ? { old_diagnostics: buildOldNotFoundDiagnostics(current, patch.old) } : {}),
       };
     }
     patch.old = aligned.old;
-    patch.new = ensureConversationImagesInMarkdown(patch.new, {
+    patch.new = repairImageHeadingMarkdown(ensureConversationImagesInMarkdown(patch.new, {
       conversationId: session.conversation_id,
       taskText: session.goal,
-    });
+    }));
     const replacement = replaceUnique(current, patch.old, patch.new, 'OLD_REQUIRED');
     if (!replacement.ok) return { error: replacement.reason, path: patch.file_path };
     pendingContents.set(patch.file_path, replacement.next);
@@ -1683,9 +1794,7 @@ async function applyPreviewWithConflictCheck(operationSetId, sessionId, { force 
   const set = getOperationSetById(operationSetId);
   if (!set) return { success: false, error: 'OPERATION_SET_NOT_FOUND' };
   if (Number(set.agent_session_id || 0) !== Number(sessionId)) return { success: false, error: 'SESSION_OPERATION_SET_MISMATCH' };
-  if (isFileRevisionSet(set)) return applyFileRevision(operationSetId, sessionId, {
-    auto: auto || approvalMode === 'auto_confirm' || approvalMode === 'auto_apply',
-  });
+  if (isFileRevisionSet(set)) return applyFileRevision(operationSetId, sessionId);
   if (!['pending', 'partial', 'applied'].includes(set.status)) return { success: false, error: 'OPERATION_SET_NOT_APPLICABLE' };
   const patches = normalizeStoredPatches(set.patches);
   if (patches.length === 0) return { success: false, error: 'PATCHES_REQUIRED' };
@@ -1868,7 +1977,7 @@ function executeReadGlobalAgentFile({ file = '' } = {}) {
   return { ...statusFor(file), hash: record.hash.match(/.{1,8}/g).join(':'), content: record.content };
 }
 
-function executeUpdateGlobalAgentFile({ file = '', content = '', expected_hash: expectedHash = '', evidence = '' } = {}, sessionId) {
+function executeUpdateGlobalAgentFile({ file = '', content = '', expected_hash: expectedHash = '', evidence = '' } = {}, sessionId, _notesDir, context = {}) {
   const { getSession } = require('./agentSession');
   const { agentUpdateAllowed, saveFile } = require('./globalAgentFiles');
   const session = getSession(sessionId);
@@ -1885,6 +1994,9 @@ function executeUpdateGlobalAgentFile({ file = '', content = '', expected_hash: 
   const { redactSecrets } = require('./agentToolPolicy');
   if (file === 'memory' && (redactSecrets(content) !== content || /(?:api[_ -]?key|password|密码|密钥|token|验证码|otp)\s*(?:[:：=]|是|为|is\b)\s*[^\s，。]{4,}/i.test(content))) {
     return { error: 'MEMORY_SENSITIVE_CONTENT', message: '记忆包含疑似凭据，请移除敏感值；不要影响主任务。' };
+  }
+  if (!context.resourceApproved && ['manual', 'manual_confirm'].includes(require('./agentTaskQueue').getTaskBySession(sessionId)?.approval_mode)) {
+    return requestResourceTool('update_global_agent_file', { file, content, expected_hash: expectedHash, evidence }, sessionId);
   }
   const result = saveFile(file, content, {
     expectedHash: String(expectedHash || '').replace(/:/g, ''),
@@ -2009,20 +2121,65 @@ function safeMcp(server, details = false) {
   if (details && server.transport === 'stdio') result.stdio = { command: config.stdio?.command || '', args: config.stdio?.args || [], cwd: config.stdio?.cwd || '', env: hide(config.stdio?.env) };
   return result;
 }
+async function requestResourceTool(toolName, input, sessionId) {
+  const task = require('./agentTaskQueue').getTaskBySession(sessionId);
+  if (task && !['manual', 'manual_confirm'].includes(task.approval_mode)) {
+    return executeApprovedResourceTool(toolName, input, sessionId);
+  }
+  const target = String(input.mapping?.toolName || input.name || input.file || input.server_id || toolName);
+  const session = getSession(sessionId);
+  const requestDigest = sha256(JSON.stringify({ toolName, input }));
+  const existing = require('./conversationInteractions').listInteractionsByConversation(session?.conversation_id, { statuses: ['pending', 'processing', 'answered', 'failed', 'cancelled'] })
+    .find(item => item.kind === 'resource_approval' && Number(item.payload?.agent_session_id) === Number(sessionId) && item.payload?.request_digest === requestDigest);
+  if (existing) return existing.status === 'pending' || existing.status === 'processing'
+    ? { approval_required: true, interaction_id: existing.id, interaction: existing }
+    : { ...(existing.response || { cancelled: true }), interaction_id: existing.id, replayed: true };
+  // 整份待执行配置只放入密钥存储；卡片、事件和工具结果只携带不透明引用。
+  const inputSecretId = await require('./secretStore').saveSecret(JSON.stringify(input));
+  try { return await resourceApproval(sessionId, 'agent_resource_tool', target, { tool_name: toolName, input_secret_id: inputSecretId, request_digest: requestDigest }); }
+  catch (error) { await require('./secretStore').removeSecret(inputSecretId); throw error; }
+}
+
+async function executeApprovedResourceTool(toolName, input, sessionId) {
+  if (toolName === 'external_mcp_tool') {
+    const session = getSession(sessionId);
+    const selection = session?.mcp_selection;
+    if (!selection || selection.mode === 'off' || (selection.mode === 'server' && selection.serverId !== input.mapping?.serverId)) throw Object.assign(new Error('该 MCP 服务不在当前任务授权范围内'), { code: 'MCP_NOT_AUTHORIZED' });
+    const server = require('./mcp').getServer(input.mapping?.serverId);
+    if (localHttpMcpDenied(sessionId, server)) throw Object.assign(new Error('本机 MCP 未授权'), { code: 'MCP_LOCAL_HTTP_FORBIDDEN' });
+    const result = await require('./mcp').callMcpTool(input.mapping, input.arguments || {}, { timeoutMs: getEffectiveConfig().agentMcpTimeoutMs });
+    if (result?.error || result?.is_error || result?.isError) throw Object.assign(new Error('MCP 操作失败，请查看服务返回结果'), { code: result.error || 'MCP_TOOL_FAILED' });
+    return result;
+  }
+  if (!['add_mcp_server', 'update_mcp_server', 'set_mcp_server_enabled', 'update_global_agent_file'].includes(toolName)) throw Object.assign(new Error('不支持的资源确认操作'), { code: 'RESOURCE_ACTION_UNKNOWN' });
+  const result = await TOOL_EXECUTORS[toolName](input, sessionId, undefined, { resourceApproved: true });
+  if (result?.error) throw Object.assign(new Error(result.message || result.error), { code: result.error });
+  return result;
+}
+
 function resourceApproval(sessionId, action, target, payload = {}) {
   const session = getSession(sessionId);
   if (!session?.conversation_id) return { error: 'CONVERSATION_REQUIRED', message: '资源操作需要当前对话' };
-  const interaction = createInteraction({ conversationId: session.conversation_id, kind: 'resource_approval', source: 'agent_loop', reasonCode: action, expireDays: 1, payload: { ...payload, action, target, agent_session_id: session.id, title: '确认资源操作', submit_label: '确认执行' } });
-  return { approval_required: true, interaction_id: interaction.id, interaction };
+  const task = require('./agentTaskQueue').getTaskBySession(sessionId);
+  if (task && !['manual', 'manual_confirm'].includes(task.approval_mode)) {
+    return require('./agentResourceApproval').applyResourceApproval({ ...payload, action, target }, 'confirm');
+  }
+  const requestDigest = payload.request_digest || sha256(JSON.stringify({ action, target, payload }));
+  const existing = require('./conversationInteractions').listInteractionsByConversation(session.conversation_id, { statuses: ['pending', 'processing', 'answered', 'failed', 'cancelled'] }).find(item => item.kind === 'resource_approval' && Number(item.payload?.agent_session_id) === Number(sessionId) && item.payload?.request_digest === requestDigest);
+  if (existing) return ['pending', 'processing'].includes(existing.status)
+    ? { approval_required: true, interaction_id: existing.id, interaction: existing, message: '资源操作等待确认，请继续无依赖步骤，不要重复申请。' }
+    : { ...(existing.response || { cancelled: true }), interaction_id: existing.id, replayed: true };
+  const interaction = createInteraction({ conversationId: session.conversation_id, kind: 'resource_approval', source: 'agent_loop', reasonCode: action, expireDays: 1, payload: { ...payload, request_digest: requestDigest, action, target, agent_session_id: session.id, title: '确认资源操作', submit_label: '确认执行' } });
+  return { approval_required: true, interaction_id: interaction.id, interaction, message: '资源操作等待确认，请继续不依赖该资源的步骤；确认前不得声称已执行。' };
 }
 function executeListSkills() { const { listSkills } = require('./skills'); return { skills: listSkills().map((skill) => ({ id: skill.id, name: skill.name, description: skill.description, source_label: skill.source_label, managed: skill.managed, enabled: skill.enabled, status: skill.status, validation_errors: skill.validation_errors, can_update: skill.can_update })) }; }
 function executeGetSkillDetails({ skill_id } = {}) { return require('./skills').getSkillManagementDetails(skill_id); }
 function executeCreateSkillDraft(input = {}) { const { createSkillDraft } = require('./skills'); const draft = createSkillDraft(input); return { draft_id: draft.id, validation: draft.validation, valid: draft.validation.length === 0, files: draft.files.map((item) => item.path) }; }
 function executeValidateSkillDraft({ draft_id } = {}) { const draft = require('./skills').getSkillDraft(draft_id); if (!draft) return { error: 'SKILL_DRAFT_NOT_FOUND' }; return { draft_id: draft.id, validation: draft.validation, valid: draft.validation.length === 0, status: draft.status }; }
 function executeInstallSkillDraft({ draft_id } = {}, sessionId) { const draft = require('./skills').getSkillDraft(draft_id); if (!draft) return { error: 'SKILL_DRAFT_NOT_FOUND' }; if (draft.validation.length) return { error: 'SKILL_INVALID', validation: draft.validation }; return resourceApproval(sessionId, draft.metadata?.operation === 'update' ? 'skill_update' : 'skill_install', draft.name, { draft_id: draft.id, files: draft.files.map((item) => item.path), validation: draft.validation }); }
-function executeUpdateSkillDraft(input = {}, sessionId) { const draft = require('./skills').createSkillRevisionDraft(input.skill_id, input); return { draft_id: draft.id, validation: draft.validation, valid: draft.validation.length === 0, pending_confirmation: true }; }
-function executeSetSkillEnabled({ skill_id, enabled } = {}) { const skill = require('./skills').setSkillEnabled(skill_id, enabled); return { skill: { id: skill.id, name: skill.name, enabled: skill.enabled, managed: skill.managed } }; }
-async function executeUpdateSkillFromGit({ skill_id } = {}) { const result = await require('./skills').updateSkillFromGit(skill_id); return { job_id: result.jobId, skill: { id: result.skill.id, name: result.skill.name, enabled: result.skill.enabled } }; }
+function executeUpdateSkillDraft(input = {}, sessionId) { const draft = require('./skills').createSkillRevisionDraft(input.skill_id, input); return { draft_id: draft.id, validation: draft.validation, valid: draft.validation.length === 0, requires_install: true, message: '修订草稿已生成并校验；调用 install_skill_draft 按当前模式执行或申请确认后安装。' }; }
+function executeSetSkillEnabled({ skill_id, enabled } = {}, sessionId) { const skill = require('./skills').getSkill(skill_id); if (!skill) return { error: 'SKILL_NOT_FOUND' }; return resourceApproval(sessionId, 'skill_set_enabled', skill.name, { skill_id: skill.id, enabled: Boolean(enabled) }); }
+async function executeUpdateSkillFromGit({ skill_id } = {}, sessionId) { const skill = require('./skills').getSkill(skill_id); if (!skill) return { error: 'SKILL_NOT_FOUND' }; return resourceApproval(sessionId, 'skill_update_git', skill.name, { skill_id: skill.id }); }
 function executeUninstallSkill({ skill_id } = {}, sessionId) { const skill = require('./skills').getSkill(skill_id); if (!skill) return { error: 'SKILL_NOT_FOUND' }; return resourceApproval(sessionId, skill.managed ? 'skill_uninstall' : 'skill_disable', skill.name, { skill_id: skill.id, managed: skill.managed }); }
 function executeListMcpServers() { const { listServers } = require('./mcp'); return { servers: listServers({ includeDisabled: true }).map((item) => safeMcp(item)) }; }
 function executeGetMcpServerDetails({ server_id } = {}) { const server = require('./mcp').getServer(server_id); if (!server) return { error: 'MCP_SERVER_NOT_FOUND' }; return { server: safeMcp(server, true) }; }
@@ -2064,8 +2221,16 @@ async function executeToolSafely(toolUse = {}, session, notesDir = getEffectiveC
         message: '本轮只有附件或外部材料输入，且用户没有明确要求写入当前文档；请先总结/说明附件内容，或用普通文本询问用途，不要直接生成写入位置提问卡片。',
       };
     }
+    let resolvedInput = toolUse.input || {};
+    if (toolUse.name === 'preview_file_revision') {
+      resolvedInput = { ...resolvedInput, file_path: resolveFileReferencePath(resolvedInput.file_path) };
+    } else if (toolUse.name === 'preview_patch_files') {
+      resolvedInput = { ...resolvedInput, patches: resolvedInput.patches.map(patch => ({
+        ...patch, file_path: resolveFileReferencePath(patch.file_path),
+      })) };
+    }
     if (['create_note', 'preview_patch_files', 'preview_file_revision'].includes(toolUse.name)) {
-      const paths = extractTargetPaths(toolUse);
+      const paths = extractTargetPaths({ ...toolUse, input: resolvedInput });
       for (const targetPath of paths) {
         const operation = toolUse.name === 'create_note' ? 'create' : 'modify';
         const check = validateWrite(session.session_token, targetPath, operation);
@@ -2075,15 +2240,20 @@ async function executeToolSafely(toolUse = {}, session, notesDir = getEffectiveC
     if (context.mcpToolMap?.[toolUse.name]) {
       const { callMcpTool } = require('./mcp');
       const mapping = context.mcpToolMap[toolUse.name];
+      // 外部 MCP 工具的 readOnlyHint 来自服务端自报，不可信；
+      // 手动确认模式下所有外部 MCP 调用一律生成资源确认卡。
+      if (['manual', 'manual_confirm'].includes(require('./agentTaskQueue').getTaskBySession(session.id)?.approval_mode)) {
+        return finalizeResult(await requestResourceTool('external_mcp_tool', { mapping, arguments: toolUse.input || {} }, session.id));
+      }
       const result = await runWithSignal((scopedSignal) => callMcpTool(mapping, toolUse.input || {}, {
         signal: scopedSignal,
-        timeoutMs: context.mcpTimeoutMs || 30_000,
+        timeoutMs: context.mcpTimeoutMs || 120_000,
       }), {
         signal: context.signal,
-        timeoutMs: context.mcpTimeoutMs || 30_000,
+        timeoutMs: context.mcpTimeoutMs || 120_000,
         timeoutCode: 'MCP_TIMEOUT',
       });
-      return finalizeResult(result, { isMcp: true });
+      return finalizeResult(result?.is_error || result?.isError ? { ...result, error: result.error || 'MCP_TOOL_FAILED' } : result, { isMcp: true });
     }
     if (toolUse.name === 'load_skill') {
       const { loadSkill } = require('./skills');
@@ -2097,8 +2267,11 @@ async function executeToolSafely(toolUse = {}, session, notesDir = getEffectiveC
     const executor = TOOL_EXECUTORS[toolUse.name];
     if (!executor) return { error: 'UNKNOWN_TOOL', tool_name: toolUse.name };
     const executionInput = ['create_note', 'preview_patch_files', 'preview_file_revision'].includes(toolUse.name)
-      ? require('./agentVision').restoreFileImageReferences(toolUse.input || {}, session)
-      : toolUse.input || {};
+      ? require('./agentVision').restoreFileImageReferences(resolvedInput, session)
+      : resolvedInput;
+    if (['add_mcp_server', 'update_mcp_server', 'set_mcp_server_enabled'].includes(toolUse.name)) {
+      return finalizeResult(await requestResourceTool(toolUse.name, executionInput, session.id));
+    }
     const result = await runWithSignal(
       (scopedSignal) => executor(executionInput, session.id, notesDir, { ...context, signal: scopedSignal }),
       { signal: context.signal, timeoutMs: context.toolTimeoutMs || 30_000 }
@@ -2110,6 +2283,12 @@ async function executeToolSafely(toolUse = {}, session, notesDir = getEffectiveC
 }
 
 const TOOL_EXECUTORS = {
+  list_available_mcp_tools: (input, _sessionId, _notesDir, context) => {
+    const query = String(input.query || '').trim().toLocaleLowerCase();
+    const tools = (context.availableMcpTools || []).filter((item) => !query || `${item.name} ${item.description}`.toLocaleLowerCase().includes(query));
+    const offset = Math.max(0, Number(input.offset) || 0);
+    return { tools: tools.slice(offset, offset + 10).map(({ name, description }) => ({ name, description })), total: tools.length, next_offset: offset + 10 < tools.length ? offset + 10 : null, diagnostics: context.mcpDiagnostics || [] };
+  },
   list_materials: (input, sessionId) => require('./agentMaterials').listMaterials(getSession(sessionId), input),
   read_attachment: (input, sessionId) => require('./agentMaterials').readAttachment(getSession(sessionId), input),
   list_file_images: (input, sessionId) => require('./agentVision').listFileImages(input, getSession(sessionId)),
@@ -2151,6 +2330,7 @@ const TOOL_EXECUTORS = {
 };
 
 module.exports = {
+  executeApprovedResourceTool,
   buildToolDefinitions,
   validateToolUseBlock,
   extractTargetPaths,
@@ -2186,5 +2366,6 @@ module.exports = {
   discardPreviewPatchFile,
   discardPendingPreviewPatches,
   alignPatchOldText,
+  buildOldNotFoundDiagnostics,
   TOOL_EXECUTORS,
 };

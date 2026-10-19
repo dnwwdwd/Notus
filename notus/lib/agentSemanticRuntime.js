@@ -87,7 +87,7 @@ function buildVerificationContract(userQuery, { taskKind = 'general', webNegated
     ],
     negative_claim_requires_evidence: policy !== 'direct' || negativeClaimRisk,
     correction_from_user: correction,
-    search_budget: policy === 'direct' ? 0 : 2,
+    search_budget: policy === 'direct' ? 0 : 5,
   };
 }
 
@@ -384,7 +384,7 @@ function normalizePlannerIntent(raw = {}, fallback = {}) {
   return {
     ...compiled,
     needs_planner: false,
-    needs_clarification: Boolean(fallback.needs_clarification) || Boolean(raw.needs_clarification) || confidence < 0.55,
+    needs_clarification: Boolean(fallback.needs_clarification) || Boolean(raw.needs_clarification),
     missing_slots: Array.isArray(raw.missing_slots) ? raw.missing_slots.map(String).slice(0, 5) : fallback.missing_slots,
     planner_confidence: confidence,
   };
@@ -392,7 +392,7 @@ function normalizePlannerIntent(raw = {}, fallback = {}) {
 
 async function semanticPlan({ userQuery, fallbackIntent, llmConfig, sessionId, runId } = {}) {
   if (!llmConfig?.llmApiKey || !llmConfig?.llmBaseUrl || !llmConfig?.llmModel) {
-    return { intent: { ...fallbackIntent, needs_clarification: true }, used: false, failed: true };
+    return { intent: { ...fallbackIntent }, used: false, failed: true };
   }
   try {
     const response = await completeChat([{
@@ -421,22 +421,12 @@ async function semanticPlan({ userQuery, fallbackIntent, llmConfig, sessionId, r
     const parsed = JSON.parse(String(response?.message?.content || '{}'));
     return { intent: normalizePlannerIntent(parsed, fallbackIntent), used: true, failed: false };
   } catch {
-    return { intent: { ...fallbackIntent, needs_clarification: true }, used: true, failed: true };
+    return { intent: { ...fallbackIntent }, used: true, failed: true };
   }
 }
 
 function buildClarification(intent = {}) {
   if (!intent.needs_clarification) return null;
-  const skillOptions = [
-    { id: 'skill_discovery', label: '查找公开 Skill', answer_value: 'skill_discovery' },
-    { id: 'skill_install', label: '安装 Skill', answer_value: 'skill_install' },
-    { id: 'skill_create', label: '创建 Skill', answer_value: 'skill_create' },
-  ];
-  const generalOptions = [
-    { id: 'research', label: '查找资料', answer_value: 'web_research' },
-    { id: 'read', label: '读取并分析', answer_value: 'file_read' },
-    { id: 'edit', label: '修改或创建内容', answer_value: 'file_write' },
-  ];
   const specializedQuestions = intent.ambiguity_kind === 'web_permission'
     ? [{
       id: 'web_permission',
@@ -464,19 +454,13 @@ function buildClarification(intent = {}) {
       allow_custom: false,
     }]
     : null;
+  // 分类疑点交给拥有完整上下文的主 Agent；只有明确的权限边界在此暂停。
+  if (!specializedQuestions) return null;
   return {
-    reason_code: 'ambiguous_primary_intent',
-    title: '需要确认任务范围',
-    intro: '当前输入可能对应不同的材料或操作，请先确认后继续。',
-    questions: specializedQuestions || [{
-      id: 'primary_intent',
-      slot: 'primary_intent',
-      label: '这次希望 Notus 主要做什么？',
-      type: 'single_select',
-      required: true,
-      options: intent.ambiguity_kind === 'skill_action' ? skillOptions : generalOptions,
-      allow_custom: true,
-    }],
+    reason_code: intent.ambiguity_kind,
+    title: '确认链接访问范围',
+    intro: '请求中的联网或链接访问范围存在冲突，需要确认后继续。',
+    questions: specializedQuestions,
   };
 }
 

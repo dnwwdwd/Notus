@@ -147,8 +147,8 @@ assert.ok(overlaySource.includes('preview.hideTitle ? null'), '共享预览层�
 assert.ok(eventBusSource.includes("const { recordRunEvent, sanitizeRunEvent } = require('./agentSession');"), '实时事件总线必须使用同一脱敏函数');
 assert.ok(eventBusSource.includes('event: safeEvent'), '实时事件总线必须广播脱敏后的事件');
 assert.ok(!workspaceSource.includes('<figcaption>{image.name || `图片 ${imageIndex + 1}`}</figcaption>'), '工具链缩略图不应显示文件名');
-assert.ok(workspaceSource.includes('const hasViewedImages = visibleSteps.some((step) => Array.isArray(step.images) && step.images.length > 0);'), '已完成任务必须识别到图片工具记录');
-assert.ok(workspaceSource.includes('if (!liveSession && !hasActionRequired && !hasViewedImages) setTraceExpanded(false);'), '已完成任务含图片记录时不能自动收起工具链');
+assert.ok(workspaceSource.includes('if (!liveSession && !hasActionRequired) setTraceExpanded(false);'), '任务结束后必须一律自动收起工具链（含已查看图片的记录）');
+assert.ok(workspaceSource.includes('aria-label="已查看的图片"'), '收起后仍可手动展开查看图片记录');
 assert.ok(styleSource.includes('object-fit: contain;'), '工具链缩略图必须完整显示图片而非裁切');
 assert.ok(!styleSource.includes('.notus-agent-toolchain__image-preview { width: 112px; aspect-ratio: 4 / 3;'), '工具链缩略图容器不得固定为 4:3');
 assert.ok(styleSource.includes('.notus-agent-toolchain__image-preview img { display: block; width: auto; height: auto;'), '工具链缩略图必须按原图比例缩放');

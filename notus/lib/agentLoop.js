@@ -4,7 +4,7 @@ const { getStyleContext } = require('./style');
 const { buildInitialUserMessage } = require('./agentLoopPrompt');
 const { renderAgentLoopPrompt } = require('./prompt/agent-loop/render');
 const { buildConversationContext } = require('./agentConversationContext');
-const { compactMessages, migrateCheckpointResults, INLINE_READ_TOOLS } = require('./agentMessageProjection');
+const { compactMessages, evictOldToolResults, migrateCheckpointResults, INLINE_READ_TOOLS } = require('./agentMessageProjection');
 const {
   clearMessagesCheckpoint,
   detectDeadloop,
@@ -37,7 +37,7 @@ const {
   registerOperationSet,
   resolveOperationSet,
 } = require('./agentTaskChangeSets');
-const { estimateChatRequestTokens, trimTextToTokenBudget } = require('./llmBudget');
+const { estimateChatRequestTokens, resolveLlmBudget, trimTextToTokenBudget } = require('./llmBudget');
 const { getSessionUsage, isCancellationRequested, recordRunUsage } = require('./agentControlPlane');
 const { sha256 } = require('./files');
 const {
@@ -53,28 +53,18 @@ const {
 } = require('./agentResearch');
 const { getSessionTurnFrame } = require('./agentTurnFrames');
 const { projectAgentContext } = require('./agentContextProjector');
+const {
+  MAX_AUTO_COMPACTS_PER_RUN,
+  autoCompactTaskMessages,
+  autoCompactTriggerTokens,
+} = require('./agentTaskCompaction');
 const { projectToolDefinitions, requiredToolNames, toolReplayPolicy } = require('./agentToolProfile');
-const { getInvocationState, reconcileUnresolvedToolCalls, recordRuntimeFact, recordToolCallPrepared, recordToolCallTerminal, shouldTreatToolFailureAsOutcomeUnknown } = require('./agentRuntimeFacts');
+const { getInvocationState, listRuntimeFacts, listUnknownToolCalls, recordRuntimeFact, recordToolCallPrepared, recordToolCallTerminal, shouldTreatToolFailureAsOutcomeUnknown } = require('./agentRuntimeFacts');
 const { archiveToolResult, projectToolResultForModel, readArtifactResultForRuntime } = require('./agentToolResultStore');
 const { evaluateCompletion } = require('./agentCompletionEvaluator');
 
 const DEFAULT_LLM_RETRY_LIMIT = 5;
 const DEFAULT_LLM_RETRY_DELAY_MS = 30_000;
-
-function repeatedToolFailureText(toolUse = {}, result = {}, mcpToolMap = {}) {
-  const mappedName = mcpToolMap?.[toolUse.name]?.toolName;
-  const toolName = mappedName || toolUse.name || '工具';
-  const details = Array.isArray(result?.details)
-    ? result.details.slice(0, 3).map((item) => `${item.path || '/'}：${item.message || item.keyword || '参数无效'}`).filter(Boolean)
-    : [];
-  const reason = result?.error === 'INVALID_TOOL_INPUT'
-    ? `参数未通过 Schema 校验${details.length ? `（${details.join('；')}）` : ''}`
-    : `错误码：${result?.error || 'TOOL_EXECUTION_ERROR'}`;
-  const fallback = String(toolUse.name || '').startsWith('mcp_')
-    ? '已停止重复相同的 MCP 调用；可改正参数，或改用内置链接读取、联网搜索继续。'
-    : '已停止重复相同调用，请调整参数后再继续。';
-  return `${toolName} 连续两次使用相同参数失败：${reason}。${fallback}`;
-}
 
 function waitForRetry(ms, signal) {
   const delayMs = Math.max(0, Number(ms) || 0);
@@ -151,7 +141,7 @@ function classifyLLMError(error = {}) {
     transportError = transportError.cause;
   }
   const retryable = transportFailure
-    || [408, 425, 429, 500, 502, 503, 504].includes(status)
+    || [408, 425, 429, 500, 502, 503, 504, 529].includes(status)
     || error.name === 'FetchError'
     || (error.name === 'TypeError' && /fetch|network|socket/i.test(String(error.message || '')));
   if (retryable) return {
@@ -163,7 +153,7 @@ function classifyLLMError(error = {}) {
     publicCode: code === 'CONTEXT_BUDGET_EXCEEDED' ? code : 'LLM_REQUEST_UNRECOVERABLE',
     publicMessage: code === 'CONTEXT_BUDGET_EXCEEDED'
       ? '当前任务上下文超出模型预算，请缩小处理范围。'
-      : '模型请求无法恢复，请检查任务和模型配置。',
+      : '模型请求失败，请检查任务和模型配置后继续。',
   };
 }
 
@@ -172,13 +162,13 @@ async function callLLMWithRetry(request, maxRetries = DEFAULT_LLM_RETRY_LIMIT, o
   const retryWait = typeof options.waitForRetry === 'function' ? options.waitForRetry : waitForRetry;
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     try {
-      return await completeToolChat(request);
+      return await completeToolChat({ ...request, requestAttempt: attempt + 1 });
     } catch (error) {
       lastError = error;
       const classification = classifyLLMError(error);
       if (classification.retryable && attempt < maxRetries) {
         const delayMs = Math.max(0, Number(options.retryDelayMs?.(attempt) ?? DEFAULT_LLM_RETRY_DELAY_MS));
-        options.onRetry?.({ attempt: attempt + 1, maxRetries, delayMs, classification });
+        options.onRetry?.({ attempt: attempt + 1, maxRetries, delayMs, classification, error });
         if (delayMs > 0) await retryWait(delayMs, request.signal);
         continue;
       }
@@ -212,15 +202,14 @@ function normalizeApprovalMode(value) {
 function buildPreviewCompletionText(toolName, {
   approvalMode = 'auto_confirm',
   applied = false,
-  requiresConfirmation = false,
   result = {},
 } = {}) {
   if (toolName === 'preview_file_revision') {
-    if (requiresConfirmation) {
-      return result.message || '全文修订预览已生成；系统检测到高风险删除、截断或遗漏，已保留给你在下方 diff 卡片中手动确认，正式文件尚未修改。';
-    }
     if (approvalMode === 'auto_confirm' && applied) {
-      return '全文修订已自动应用，可在下方 diff 卡片中查看或回滚。';
+      const warnings = Array.isArray(result?.safety?.warnings) ? result.safety.warnings.filter(Boolean) : [];
+      return warnings.length > 0
+        ? `全文修订已自动应用；请注意：${warnings.join('；')}。可在下方 diff 卡片中核对或回滚。`
+        : '全文修订已自动应用，可在下方 diff 卡片中查看或回滚。';
     }
     return '全文修订预览已生成，请在下方 diff 卡片中应用、废弃或回滚。';
   }
@@ -277,6 +266,9 @@ function buildQuestionCardToolResult(interactionId, sessionId) {
       }),
     };
   }
+  if (interaction.kind === 'resource_approval' && interaction.status === 'failed') {
+    return { isError: false, content: JSON.stringify({ interaction_id: interaction.id, resource_result: interaction.response || { error: 'RESOURCE_ACTION_FAILED', message: '资源操作失败；请说明原因，不要重复提交旧确认卡。' } }) };
+  }
   if (interaction.status !== 'answered') {
     return {
       isError: true,
@@ -323,7 +315,10 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
   const emit = (event) => {
     // 时间线写入失败不能掩盖主任务结果；正常路径下每个用户可见的 v2 事件
     // 都会先脱敏落库，再交给 SSE。断线后可用同一批事件重建工具链。
-    const safeEvent = sanitizeRunEvent(event);
+    const linkedEvent = event?.type === 'final' && typeof event.text === 'string'
+      ? { ...event, text: require('./agentFileLinkResolver').safeNormalizeFinalAgentFileLinks(event.text, sessionId) }
+      : event;
+    const safeEvent = sanitizeRunEvent(linkedEvent);
     if (!safeEvent) return;
     try {
       const eventId = require('./db').getDb().transaction(() => {
@@ -347,24 +342,32 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
     ? eligibleSkillSummaries(session.goal, session.skill_mentions || [])
     : [];
   const mcpSelection = session.mcp_selection || { mode: 'off' };
-  const mcpContext = preparedMcpContext || await prepareMcpTools(
-    mcpSelection, session.goal, session.mcp_session_permissions || {}, { forceRefresh: true },
-  );
+  const mcpContext = preparedMcpContext || (effectiveFrame?.intent?.verification?.network_allowed === false
+    ? { tools: [], availableTools: [], map: {}, instructions: [] }
+    : await prepareMcpTools(mcpSelection, session.goal, session.mcp_session_permissions || {}, { forceRefresh: true }));
   const allTools = buildToolDefinitions(session, { mcpTools: mcpContext.tools });
+  const availableMcpTools = mcpContext.availableTools || mcpContext.tools || [];
+  function exposeDiscoveredTools(result) {
+    for (const item of result?.tools || []) {
+      const definition = availableMcpTools.find((tool) => tool.name === item.name);
+      if (definition && !allTools.some((tool) => tool.name === definition.name)) allTools.push(definition);
+    }
+  }
+
   const tools = projectToolDefinitions(allTools, effectiveFrame);
   let dispatchToolDefinitions = tools;
   session = setSessionRuntimeVersions(session.id, {
     promptVersion: config.agentPromptVersion || 'agent-loop-v2',
     toolsetVersion: sha256(JSON.stringify(tools)).slice(0, 16),
-    tokenBudgetTotal: Number(llmConfig?.llmContextWindowTokens || config.llmContextWindowTokens || 60000),
+    tokenBudgetTotal: Number(llmConfig?.llmContextWindowTokens || config.llmContextWindowTokens || 200000),
   });
   const basePromptOptions = {
     styleContext,
     resourceContext: null,
     skillCatalog,
-    mcpInstructions: mcpContext.instructions,
+    mcpInstructions: [...(mcpContext.instructions || []), ...(mcpContext.diagnostics || []).map((item) => ({ server: item.server, text: `本次 MCP 发现状态：${item.code}。${item.message}` }))],
     intentContract: effectiveFrame ? require('./agentSemanticRuntime').formatTurnFrameForPrompt(effectiveFrame) : '',
-    contextWindowTokens: Number(llmConfig?.llmContextWindowTokens || config.llmContextWindowTokens || 60000),
+    contextWindowTokens: Number(llmConfig?.llmContextWindowTokens || config.llmContextWindowTokens || 200000),
   };
   const renderRequestPrompt = ({ restricted = false, completionCorrection = '' } = {}) => {
     effectiveFrame = getSessionTurnFrame(session.id) || effectiveFrame;
@@ -404,6 +407,19 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
     emit({ type: 'final', text: error.message, status: 'failed', reason: 'checkpoint_result_archive_failed' });
     return { status: 'failed', reason: 'checkpoint_result_archive_failed' };
   }
+  // Restore only previously selected names against the current authorized catalog.
+  const priorCalls = new Map();
+  for (const message of [...(checkpoint?.messages || []), { content: checkpoint?.lastResponseContent || [] }, { content: checkpoint?.toolResults || [] }]) {
+    for (const block of Array.isArray(message.content) ? message.content : []) {
+      if (block.type === 'tool_use') {
+        priorCalls.set(block.id, block.name);
+        exposeDiscoveredTools({ tools: [{ name: block.name }] });
+      }
+      if (block.type === 'tool_result' && priorCalls.get(block.tool_use_id) === 'list_available_mcp_tools') {
+        try { exposeDiscoveredTools(JSON.parse(block.content)); } catch {}
+      }
+    }
+  }
   let checkpointToCommit = checkpoint?.id || null;
   let messages;
   if (checkpoint) {
@@ -420,7 +436,7 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
             ? {
               ...item,
               content: questionCardResult?.content || resumeToolResult?.content || item.content,
-              is_error: Boolean(questionCardResult?.isError || resumeToolResult?.is_error),
+              is_error: Boolean(questionCardResult ? questionCardResult.isError : resumeToolResult ? resumeToolResult.is_error : item.is_error),
             }
             : item
         ))
@@ -445,7 +461,8 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
         checkpoint.appliedToolUseId = '';
         checkpoint.toolResults = restoredResults;
       } else {
-        messages.push({ role: 'assistant', content: checkpoint.lastResponseContent || [] });
+        messages.push({ role: 'assistant', content: checkpoint.lastResponseContent || [],
+          ...(checkpoint.lastResponseProviderState ? { providerState: checkpoint.lastResponseProviderState } : {}) });
         messages.push({ role: 'user', content: restoredResults });
       }
       if (questionCardResult?.isError) {
@@ -462,7 +479,7 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
       }
     }
   } else {
-    const conversationContext = await buildConversationContext({ session, llmConfig, signal, remainingTokens: Math.max(0, Number(session.token_budget_total || llmConfig?.llmContextWindowTokens || config.llmContextWindowTokens || 60000) - getSessionUsage(session.id).total_tokens), onUsage: (usage) => recordRunUsage({ sessionId: session.id, runId, sourceType: 'conversation_summary', usage, usageSource: 'provider' }) });
+    const conversationContext = await buildConversationContext({ session, llmConfig, signal, remainingTokens: Math.max(0, resolveLlmBudget(llmConfig, 'agent_loop').hardInputBudgetTokens - getSessionUsage(session.id).total_tokens), onUsage: (usage) => recordRunUsage({ sessionId: session.id, runId, sourceType: 'conversation_summary', usage, usageSource: 'provider' }) });
     if (conversationContext.degraded) emit({ type: 'progress', stage: 'context_degraded', text: '较早对话摘要暂不可用，原始记录仍可按需查询。' });
     messages = [{
       role: 'user',
@@ -474,9 +491,42 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
     }];
   }
 
+  const imageCache = new Map();
   let loopIndex = Number(session.loop_count || 0);
   let noToolRounds = 0;
   let budgetRestricted = false;
+  let autoCompactCount = 0;
+  const repeatedCalls = new Map();
+  for (const fact of listUnknownToolCalls(session.id)) {
+    const unknownName = priorCalls.get(fact.tool_call_id) || fact.payload.tool_name;
+    if (!unknownName) continue;
+    const unknownDigest = /^[a-f0-9]{64}$/.test(fact.prepared.input_digest || '') ? fact.prepared.input_digest : '*';
+    repeatedCalls.set(`${unknownName}:${unknownDigest}`, { blocked: 0, receipt: {
+      tool_name: fact.payload.tool_name, status: 'failed', outcome_unknown: true,
+      error_code: fact.payload.error_code || 'TOOL_OUTCOME_UNKNOWN',
+      message: fact.payload.error_message || '该调用没有留下可确认的执行结果，不能自动重放。',
+      result_ref: fact.payload.result_ref || null,
+      error_pointers: [''],
+      read_hint: fact.payload.result_ref ? '用 read_tool_result 读取已有错误；由你说明原因与继续步骤，不向用户询问工具是否成功。' : '没有已保存的结果正文。根据执行记录说明限制，不推断成功，不向用户询问工具是否成功。',
+    } });
+  }
+  // 恢复种子除 outcome_unknown 外，还纳入历史 tool_call_blocked 事实：
+  // 崩溃后内存 repeatedCalls 丢失时，被拦截过的相同调用也不会真实重放。
+  // 缺少可靠 input_digest 的旧事实不能按工具名整体拦截，直接跳过。
+  for (const fact of listRuntimeFacts({ sessionId: session.id, factTypes: ['tool_call_blocked'] })) {
+    const blockedName = String(fact.payload?.tool_name || '');
+    if (!blockedName) continue;
+    if (!/^[a-f0-9]{64}$/.test(String(fact.payload?.input_digest || ''))) continue;
+    const blockedKey = `${blockedName}:${fact.payload.input_digest}`;
+    if (repeatedCalls.has(blockedKey)) continue;
+    repeatedCalls.set(blockedKey, { blocked: 0, receipt: {
+      tool_name: blockedName, status: 'failed', error_code: 'TOOL_REPEAT_BLOCKED',
+      not_executed: true,
+      message: '该调用此前已被运行时拦截（相同调用重复出现）。请先读取已有结果，按实际原因更正参数或方法后再继续，不要原样重放。',
+      result_ref: fact.payload?.result_ref || null,
+    } });
+  }
+  let explainRepeatedStop = false;
   let completionCorrection = '';
   let completionCorrectionCount = 0;
   // 自动应用预览后，模型通常还会生成一轮面向用户的总结。保留最近一次
@@ -484,9 +534,31 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
   let latestOperationSetId = null;
   let activeExecutionSegment = null;
   let activeRequestWindow = null;
+  const recordedModelFailures = new WeakMap();
+  const recordModelFailure = (error, classification, retryAttempt = 0, loopIndex = 0) => {
+    if (recordedModelFailures.has(error)) return recordedModelFailures.get(error);
+    const diagnostics = require('./llmDiagnostics').buildLlmFailureDiagnostics(error, { ...config, ...llmConfig });
+    recordedModelFailures.set(error, diagnostics);
+    try { logToolCall({
+      sessionId: session.id, loopIndex, toolName: '__llm_request__', status: 'failed',
+      toolInput: { request_window_id: activeRequestWindow?.id, llm_config_id: llmConfig?.llmConfigId || llmConfig?.id || null, retry_attempt: retryAttempt },
+      toolResult: { error: classification.publicCode, message: classification.publicMessage, diagnostics },
+      durationMs: diagnostics.request?.duration_ms || 0,
+    }); } catch { /* Diagnostic storage must not interrupt checkpoint recovery. */ }
+    try { require('./logger').createLogger({ scope: 'agent.loop' }).warn('agent.llm.request_failed', {
+      session_id: session.id, request_window_id: activeRequestWindow?.id,
+      llm_config_id: llmConfig?.llmConfigId || llmConfig?.id || null,
+      http_status: diagnostics.http_status, error_code: classification.publicCode,
+      reason: llmFailureReason(error), error_category: classification.category,
+      retry_attempts: retryAttempt, diagnostics,
+      message: classification.publicMessage,
+    }); } catch { /* The SSE event still carries sanitized diagnostics. */ }
+    return diagnostics;
+  };
   let pendingDispatch = checkpoint?.phase === 'dispatching_tools' && !checkpoint.appliedToolUseId
     ? {
       content: Array.isArray(checkpoint.lastResponseContent) ? checkpoint.lastResponseContent : [],
+      providerState: checkpoint.lastResponseProviderState,
       toolResults: Array.isArray(checkpoint.toolResults) ? checkpoint.toolResults : [],
       nextToolIndex: Math.max(0, Number(checkpoint.nextToolIndex || 0)),
       executionSegmentId: checkpoint.executionSegmentId,
@@ -494,6 +566,7 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
     }
     : null;
   let currentDispatchContent = pendingDispatch?.content || null;
+  let currentDispatchProviderState = pendingDispatch?.providerState || null;
   let currentToolResults = pendingDispatch?.toolResults || [];
   let currentNextToolIndex = pendingDispatch?.nextToolIndex || 0;
   const resolveAbortResult = () => {
@@ -507,6 +580,7 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
       return { status: 'cancelled', reason: 'cancelled' };
     }
     saveMessagesCheckpoint(session.id, messages, currentDispatchContent || [], '', runId, currentDispatchContent ? {
+      lastResponseProviderState: currentDispatchProviderState,
       phase: 'dispatching_tools',
       executionSegmentId: activeExecutionSegment?.id || pendingDispatch?.executionSegmentId,
       llmRequestWindowId: activeRequestWindow?.id || pendingDispatch?.llmRequestWindowId,
@@ -530,7 +604,35 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
     return { status: 'queued_resume', reason: 'connection_interrupted' };
   };
 
+  const resourceResultVersions = new Map();
+  const resourceInteractions = () => require('./conversationInteractions').listInteractionsByConversation(session.conversation_id, { statuses: ['pending', 'processing', 'answered', 'failed', 'cancelled'] }).filter(item => item.kind === 'resource_approval' && Number(item.payload?.agent_session_id) === Number(session.id));
+  // 注入模型的资源回执正文要有长度上限：异常超长的 result 会撑爆上下文。
+  // 截断只作用于注入文本，完整响应仍保存在 interaction 上，去重版本键不受影响。
+  const RESOURCE_RESULT_TEXT_LIMIT = 1600;
+  const truncateResourceResponse = (response) => {
+    let serialized = '';
+    try { serialized = JSON.stringify(response ?? null) ?? ''; } catch { return { truncated: true, preview: '', original_chars: 0, message: '资源结果无法序列化，已省略正文。' }; }
+    if (serialized.length <= RESOURCE_RESULT_TEXT_LIMIT) return response;
+    return {
+      truncated: true,
+      preview: serialized.slice(0, RESOURCE_RESULT_TEXT_LIMIT),
+      original_chars: serialized.length,
+      message: '资源结果过长已截断；完整结果以持久化回执为准。',
+    };
+  };
+  const appendResourceResults = () => {
+    let changed = false;
+    for (const item of resourceInteractions().filter(item => ['answered', 'failed', 'cancelled'].includes(item.status))) {
+      const version = `${item.status}:${item.updated_at}`;
+      if (resourceResultVersions.get(item.id) === version) continue;
+      resourceResultVersions.set(item.id, version);
+      messages.push({ role: 'user', content: [{ type: 'text', text: `资源确认执行回执（运行时提供）：${JSON.stringify({ interaction_id: item.id, action: item.payload.action, status: item.status, result: truncateResourceResponse(item.response) })}。根据真实结果继续；失败或取消不得声称已执行，不要重复申请相同操作。` }] });
+      changed = true;
+    }
+    return changed;
+  };
   while (true) {
+    appendResourceResults();
     const abortResult = resolveAbortResult();
     if (abortResult) return abortResult;
 
@@ -558,7 +660,7 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
         ? { id: pendingDispatch.llmRequestWindowId }
         : null;
       loopIndex = Math.max(loopIndex, Number(activeExecutionSegment.loop_index || loopIndex));
-      response = { content: pendingDispatch.content, stop_reason: 'tool_use' };
+      response = { content: pendingDispatch.content, providerState: pendingDispatch.providerState, stop_reason: 'tool_use' };
       emit({
         type: 'progress',
         stage: 'tool_resume',
@@ -580,19 +682,73 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
         segment_sequence_no: activeExecutionSegment.sequence_no,
       });
 
-    // Historical soft_limit/hard_limit fields remain for storage compatibility.
-    // Completion and independent budget/safety checks govern execution, not round count.
-    const usageBefore = getSessionUsage(session.id);
-    const tokenBudgetTotal = Math.max(1, Number(session.token_budget_total || llmConfig?.llmContextWindowTokens || config.llmContextWindowTokens || 60000));
-    if (usageBefore.total_tokens >= tokenBudgetTotal) {
-      saveMessagesCheckpoint(session.id, messages, [], '', runId);
-      updateSessionStatus(session.id, 'waiting_limit_confirmation');
-      emit({ type: 'artifact', artifact_type: 'limit_confirmation', reason: 'token_budget_reached', loop_index: loopIndex, usage: usageBefore });
-      return { status: 'waiting_limit_confirmation', reason: 'token_budget_reached', usage: usageBefore };
-    }
-    const contextWindow = Number(llmConfig?.llmContextWindowTokens || config.llmContextWindowTokens || 60000);
+    // 累计 token 预算闸门已移除（REQ-20261010-007 收口）：预算不再是任何形式的
+    // 停止或扩展触发器，成本核算完全依赖 agent_run_usage 逐笔记录与 final 用量。
+    // 单次请求安全由 llmBudget 硬预算与两级上下文压缩保障。历史 soft_limit/
+    // hard_limit/token_budget_total 字段仅作存量兼容，Loop 不再读写。
+    const contextWindow = Number(llmConfig?.llmContextWindowTokens || config.llmContextWindowTokens || 200000);
     const normalPrompt = renderRequestPrompt({ completionCorrection });
     const normalTools = projectToolDefinitions(allTools, effectiveFrame);
+    const preRequestEstimate = estimateChatRequestTokens({ system: normalPrompt.text, messages, tools: normalTools });
+    const preRequestPressure = preRequestEstimate / Math.max(contextWindow, 1);
+    // Claude Code 式两级压缩。第一级 microcompact：把较早的大段读取窗口驱逐为
+    // 引用回执；第二级 auto-compact：仍逼近预算时用一次摘要请求把较早轮次转为
+    // 结构化摘要后继续任务。摘要失败或收益不足才回退整体机械压缩（原路径）。
+    let compaction = null;
+    if (preRequestPressure >= 0.72 && !explainRepeatedStop && autoCompactCount < MAX_AUTO_COMPACTS_PER_RUN) {
+      const evictedMessages = evictOldToolResults(messages, Math.floor(contextWindow * 0.6));
+      if (estimateChatRequestTokens({ messages: evictedMessages }) >= autoCompactTriggerTokens(llmConfig)) {
+        emit({
+          type: 'progress',
+          stage: 'context_compacting',
+          text: '较早执行过程较长，正在生成结构化摘要以继续任务。',
+          loop_index: loopIndex,
+          execution_segment_id: activeExecutionSegment.id,
+          segment_sequence_no: activeExecutionSegment.sequence_no,
+        });
+        compaction = await autoCompactTaskMessages({
+          messages: evictedMessages,
+          llmConfig,
+          signal,
+          autoCompactCount,
+          onUsage: (usage) => recordRunUsage({ sessionId: session.id, runId, sourceType: 'task_compaction', usage, usageSource: 'provider' }),
+        });
+        if (compaction.performed) {
+          messages = compaction.messages;
+          autoCompactCount += 1;
+          emit({
+            type: 'progress',
+            stage: 'context_compacted',
+            text: `已压缩任务上下文：约 ${compaction.tokensBefore} → ${compaction.tokensAfter} tokens，较早过程已转为摘要，完整工具结果仍可按引用读取。`,
+            loop_index: loopIndex,
+            result_summary: {
+              performed: true,
+              context_before: compaction.tokensBefore,
+              context_after: compaction.tokensAfter,
+              middle_exchange_count: compaction.middleExchangeCount,
+              tail_exchange_count: compaction.tailExchangeCount,
+            },
+            execution_segment_id: activeExecutionSegment.id,
+            segment_sequence_no: activeExecutionSegment.sequence_no,
+          });
+        } else {
+          emit({
+            type: 'progress',
+            stage: 'context_compacted',
+            text: compaction.reason === 'summary_failed'
+              ? '上下文压缩未执行：摘要生成失败，已保留原上下文并按既有压缩方式继续。'
+              : '上下文压缩未执行：未满足压缩条件，按既有压缩方式继续。',
+            loop_index: loopIndex,
+            result_summary: { performed: false, reason: compaction.reason },
+            execution_segment_id: activeExecutionSegment.id,
+            segment_sequence_no: activeExecutionSegment.sequence_no,
+          });
+        }
+      }
+    }
+    const compactedMessages = compaction?.performed
+      ? compactMessages(messages, contextWindow)
+      : compactMessages(messages, preRequestPressure >= 0.72 ? Math.floor(contextWindow * 0.6) : contextWindow);
     const estimatedRequestTokens = estimateChatRequestTokens({ system: normalPrompt.text, messages, tools: normalTools });
     const requestPressure = estimatedRequestTokens / Math.max(contextWindow, 1);
     const nextBudgetRestricted = requestPressure >= 0.85;
@@ -600,13 +756,12 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
       emit({ type: 'progress', stage: 'budget_restricted', text: '本次请求上下文接近模型上限，已停止加载可选材料和可选工具。', loop_index: loopIndex });
     }
     budgetRestricted = nextBudgetRestricted;
-    const compactedMessages = compactMessages(messages, requestPressure >= 0.72 ? Math.floor(contextWindow * 0.6) : contextWindow);
     const requiredNames = requiredToolNames(effectiveFrame?.intent || {});
-    if (String(mcpSelection.mode || 'off') === 'server') {
+    if (String(mcpSelection.mode || 'off') !== 'off') {
       Object.keys(mcpContext.map || {}).forEach((name) => requiredNames.add(name));
     }
     const pressureOptionalNames = new Set(['web_search', 'fetch_web_url', 'load_skill', 'read_skill_file', 'list_skills', 'get_skill_details', 'create_skill_draft', 'validate_skill_draft', 'install_skill_draft', 'update_skill_draft', 'set_skill_enabled', 'update_skill_from_git', 'uninstall_skill', 'install_skill_from_git', 'add_mcp_server', 'list_mcp_servers', 'get_mcp_server_details', 'update_mcp_server', 'test_mcp_server', 'set_mcp_server_enabled', 'remove_mcp_server']);
-    const requestTools = budgetRestricted
+    const requestTools = explainRepeatedStop ? [] : budgetRestricted
       ? normalTools.filter((tool) => requiredNames.has(tool.name) || (!tool.mcp && !pressureOptionalNames.has(tool.name)))
       : normalTools;
     dispatchToolDefinitions = requestTools;
@@ -636,7 +791,7 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
     try {
       response = await callLLMWithRetry({
         system: requestPrompt.text,
-        messages: compactedMessages,
+        messages: await require('./agentImageContext').projectImageMessages(compactedMessages, session, { llmConfig, signal, imageCache }),
         tools: requestTools,
         llmConfig,
         taskType: 'agent_loop',
@@ -647,6 +802,10 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
           messages: compactMessages(requestMessages, Math.floor(budget.hardInputBudgetTokens * (mode === 'hard' ? 0.6 : 0.75))),
         }),
         maxRetries: 1,
+        onRequestFailure: (error) => {
+          if (error.code !== 'ABORTED' && !signal?.aborted) recordModelFailure(error, classifyLLMError(error),
+            Math.max(0, Number(error.llm_request?.attempt || 1) - 1), loopIndex);
+        },
         onVisibleText: () => {
           // 文本块可能先于 tool_use 到达。响应完成前不能把它认作正式答案。
           // 保留 Provider 流读取与取消能力，只在下方分类后发布可见文字。
@@ -654,7 +813,8 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
       }, DEFAULT_LLM_RETRY_LIMIT, {
         ...(typeof llmRetryDelayMs === 'function' ? { retryDelayMs: llmRetryDelayMs } : {}),
         ...(typeof llmRetryWait === 'function' ? { waitForRetry: llmRetryWait } : {}),
-        onRetry: ({ attempt, maxRetries, delayMs, classification }) => {
+        onRetry: ({ attempt, maxRetries, delayMs, classification, error }) => {
+          recordModelFailure(error, classification, attempt, loopIndex);
           emitResponseDraft('');
           recordRequestRetry(activeRequestWindow.id, attempt, classification);
           emit({
@@ -702,18 +862,9 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
         return { status: 'queued_resume', reason: 'connection_interrupted' };
       }
       const classification = classifyLLMError(error);
-      // Never persist provider bodies: they can echo credentials, note contents or signed URLs.
-      require('./logger').createLogger('agent.loop').warn('agent.llm.request_failed', {
-        session_id: session.id, request_window_id: activeRequestWindow?.id,
-        llm_config_id: llmConfig?.llmConfigId || llmConfig?.id || null,
-        http_status: Number(error.status || 0), error_code: classification.publicCode,
-        reason: llmFailureReason(error),
-        failure_code: /^[A-Z][A-Z0-9_]{0,79}$/.test(String(error.code || '')) ? error.code : 'UNKNOWN',
-        error_category: classification.category, retry_attempts: Number(error.retryAttempts || 0),
-      });
-      const nextStatus = classification.category === 'fatal'
-        ? 'failed'
-        : classification.category === 'action_required' ? 'waiting_model_recovery' : 'waiting_retry';
+      const diagnostics = recordModelFailure(error, classification, Number(error.retryAttempts || 0), loopIndex);
+      // 模型请求失败一律进入可恢复等待态：任务进度已保留，处理后可从保存点继续（含未知 fatal 错误）
+      const nextStatus = classification.category === 'action_required' ? 'waiting_model_recovery' : 'waiting_retry';
       updateSessionStatus(session.id, nextStatus);
       finishRequestWindow(activeRequestWindow?.id, 'failed', {
         category: classification.category,
@@ -726,9 +877,10 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
         status: nextStatus,
         error_category: classification.category,
         error_code: error.publicCode || classification.publicCode,
+        diagnostics,
         message: error.publicMessage || classification.publicMessage,
         retry_attempts: Number(error.retryAttempts || 0),
-        resumable: classification.category !== 'fatal',
+        resumable: true,
         loop_index: loopIndex,
         execution_segment_id: activeExecutionSegment?.id,
         segment_sequence_no: activeExecutionSegment?.sequence_no,
@@ -755,6 +907,8 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
     });
     }
     const { textBlocks, toolUseBlocks, stopReason, content } = parseResponse(response);
+    const assistantMessage = { role: 'assistant', content,
+      ...(response.providerState ? { providerState: response.providerState } : {}) };
     if (!isResumingDispatch && toolUseBlocks.length === 0 && checkpointToCommit) {
       clearMessagesCheckpoint(session.id, checkpointToCommit);
       checkpointToCommit = null;
@@ -781,7 +935,24 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
       });
     }
 
+    if (explainRepeatedStop) {
+      const finalText = thinking.trim() || [...repeatedCalls.values()].map((entry) => entry.receipt.message || entry.receipt.summary).filter(Boolean).join('\n');
+      updateSessionStatus(session.id, 'failed');
+      updateExecutionSegment(activeExecutionSegment.id, { status: 'failed', completed: true });
+      emit({ type: 'final', text: finalText, status: 'failed', reason: 'repeated_tool_calls_unresolved', loop_index: loopIndex, usage: getSessionUsage(session.id) });
+      return { status: 'failed', reason: 'repeated_tool_calls_unresolved', final_text: finalText };
+    }
+
     if (isGoalAchieved(stopReason, toolUseBlocks)) {
+      messages.push(assistantMessage);
+      if (appendResourceResults()) continue;
+      const pendingResource = resourceInteractions().find(item => ['pending', 'processing'].includes(item.status));
+      if (pendingResource) {
+        saveMessagesCheckpoint(session.id, messages, [], '', runId, { phase: 'waiting_interaction', executionSegmentId: activeExecutionSegment.id });
+        updateSessionStatus(session.id, 'waiting_interaction');
+        emit({ type: 'artifact', artifact_type: 'interaction', interaction: pendingResource, reason: 'resource_approval_requested', non_blocking: false });
+        return { status: 'waiting_interaction', reason: 'resource_approval_requested', interaction: pendingResource, interaction_id: pendingResource.id };
+      }
       logToolCall({ sessionId: session.id, loopIndex, toolName: null, toolInput: null, toolResult: null, thinking, status: 'success', durationMs: 0 });
       {
         const completion = evaluateCompletion({
@@ -809,7 +980,7 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
           continue;
         }
         if (!completion.complete) {
-          const finalText = `任务尚未完成：${completion.reasons.join('；')}。`;
+          const finalText = thinking.trim() || (completion.failureDetails?.length ? completion.failureDetails : completion.reasons).join('\n\n');
           updateSessionStatus(session.id, 'failed');
           recordRuntimeFact({ eventKey: `task:${taskId || session.id}:completion-incomplete`, conversationId: session.conversation_id, sessionId: session.id, taskId, turnFrameId: effectiveFrame?.id, runId, actor: 'runtime', factType: 'completion_incomplete', payload: { reasons: completion.reasons } });
           emit({ type: 'final', text: finalText, status: 'failed', reason: 'incomplete', loop_index: loopIndex, operation_set_id: latestOperationSetId, usage: getSessionUsage(session.id) });
@@ -825,10 +996,10 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
 
     if (toolUseBlocks.length === 0) {
       noToolRounds += 1;
-      messages.push({ role: 'assistant', content });
+      messages.push(assistantMessage);
       if (noToolRounds >= 2) {
         updateSessionStatus(session.id, 'failed');
-        emit({ type: 'final', text: '任务没有继续产生可执行操作。', status: 'failed', reason: 'no_progress', loop_index: loopIndex, usage: getSessionUsage(session.id) });
+        emit({ type: 'final', text: '模型连续返回空操作，未能继续处理当前请求。可以继续原任务或更换模型后重试，已有工具结果会保留。', status: 'failed', reason: 'no_progress', loop_index: loopIndex, usage: getSessionUsage(session.id) });
         return { status: 'failed', reason: 'no_progress' };
       }
       continue;
@@ -837,7 +1008,7 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
 
     const validation = validateToolUseBlock(toolUseBlocks);
     if (validation.error) {
-      messages.push({ role: 'assistant', content });
+      messages.push(assistantMessage);
       messages.push({ role: 'user', content: toolUseBlocks.map((toolUse) => ({ type: 'tool_result', tool_use_id: toolUse.id, content: validation.message, is_error: true })) });
       if (checkpointToCommit) clearMessagesCheckpoint(session.id, checkpointToCommit);
       checkpointToCommit = null;
@@ -849,9 +1020,11 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
     const toolResults = isResumingDispatch ? [...pendingDispatch.toolResults] : [];
     const startToolIndex = isResumingDispatch ? Math.min(pendingDispatch.nextToolIndex, toolUseBlocks.length) : 0;
     currentDispatchContent = content;
+    currentDispatchProviderState = response.providerState || null;
     currentToolResults = toolResults;
     currentNextToolIndex = startToolIndex;
     checkpointToCommit = saveMessagesCheckpoint(session.id, messages, content, '', runId, {
+      lastResponseProviderState: currentDispatchProviderState,
       phase: 'dispatching_tools',
       executionSegmentId: activeExecutionSegment.id,
       llmRequestWindowId: activeRequestWindow?.id,
@@ -880,6 +1053,43 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
         request_window_no: activeRequestWindow?.window_no || 0,
         tool_index: toolIndex,
       });
+      const repeatDigest = sha256(JSON.stringify(toolUse.input || {}));
+      const repeatKey = `${toolUse.name}:${repeatDigest}`;
+      const repeated = repeatedCalls.get(repeatKey) || repeatedCalls.get(`${toolUse.name}:*`);
+      if (repeated) {
+        repeated.blocked += 1;
+        const blockedResult = {
+          ...repeated.receipt, status: 'failed', error_code: 'TOOL_REPEAT_BLOCKED',
+          not_executed: true,
+          repeat_warning: '这次相同调用未执行。先读取之前的结果文件；按实际原因更正参数、选择用户允许的方法，或说明阻塞与继续步骤后结束。',
+        };
+        toolResults.push({ type: 'tool_result', tool_use_id: toolUse.id, content: JSON.stringify(blockedResult), is_error: true });
+        recordRuntimeFact({ eventKey: `${invocationKey}:repeat-blocked`, conversationId: session.conversation_id, sessionId: session.id, taskId, runId, actor: 'runtime', factType: 'tool_call_blocked', toolCallId: toolUse.id, invocationKey, payload: { tool_name: toolUse.name, input_digest: repeatDigest, reason: 'repeated_identical_call', result_ref: repeated.receipt.result_ref || null } });
+        emit({ type: 'progress', stage: 'tool_done', tool_name: toolUse.name, tool_display_name: toolDisplayName, text: '该调用与之前相同，已返回已有结果供继续判断。', result_summary: blockedResult, failed: true, loop_index: loopIndex, tool_index: toolIndex });
+        // 拦截不产生真实执行，但回执必须立刻落入 dispatching_tools 检查点：
+        // 崩溃恢复后 nextToolIndex 已越过被拦截调用，不会真实重放。
+        const saveBlockedCheckpoint = (nextIndex) => {
+          currentToolResults = toolResults;
+          currentNextToolIndex = nextIndex;
+          checkpointToCommit = saveMessagesCheckpoint(session.id, messages, content, '', runId, {
+            lastResponseProviderState: currentDispatchProviderState,
+            phase: 'dispatching_tools',
+            executionSegmentId: activeExecutionSegment.id,
+            llmRequestWindowId: activeRequestWindow?.id,
+            toolResults,
+            nextToolIndex: currentNextToolIndex,
+          });
+        };
+        if (repeated.blocked >= 2) {
+          explainRepeatedStop = true;
+          completionCorrection = '相同调用已多次被拦截，仍未找到可推进的方法。本轮只向用户说明具体失败原因、已有结果与下一步怎么继续，不再调用工具，不声称任务已完成。依据前面的错误文件与回执组织回复，不照搬内部状态码。';
+          for (const skipped of toolUseBlocks.slice(toolIndex + 1)) toolResults.push({ type: 'tool_result', tool_use_id: skipped.id, content: JSON.stringify({ error: 'NOT_EXECUTED', message: '该调用未执行，正在说明当前阻塞。' }), is_error: true });
+          saveBlockedCheckpoint(toolUseBlocks.length);
+          break;
+        }
+        saveBlockedCheckpoint(toolIndex + 1);
+        continue;
+      }
       const startedAt = Date.now();
       recordToolCallPrepared({
           conversationId: session.conversation_id,
@@ -936,6 +1146,7 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
         }
         : await executeToolSafely(toolUse, session, config.notesDir, {
           mcpToolMap: mcpContext.map,
+          imageCache, availableMcpTools, mcpDiagnostics: mcpContext.diagnostics || [],
           toolDefinitions: dispatchToolDefinitions,
           llmConfig,
           runId,
@@ -973,18 +1184,20 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
       }
       const durationMs = Date.now() - startedAt;
       const failed = Boolean(result?.error);
+      if (toolUse.name === 'list_available_mcp_tools' && !failed) exposeDiscoveredTools(result);
       if (externalMcp && !failed && !recoveredInvocation) {
-        require('./agentResearch').recordMcpWebEvidence({ session, toolName: mcpContext.map[toolUse.name].toolName, result: rawResult, query: String(toolUse.input?.query || '') });
+        require('./agentResearch').recordMcpWebEvidence({ session, toolName: mcpContext.map[toolUse.name].toolName, description: dispatchToolDefinitions.find((tool) => tool.name === toolUse.name)?.description || '', result: rawResult, query: String(toolUse.input?.query || toolUse.input?.q || toolUse.input?.search_query || toolUse.input?.keywords || '') });
       }
       const outcomeUnknown = failed && shouldTreatToolFailureAsOutcomeUnknown({
         replayPolicy,
         externalMcp,
         errorCode: result?.error,
+        result: rawResult,
       });
 
       {
         const resourceChangeTools = new Set([
-          'install_skill_from_git', 'install_skill_draft', 'update_skill_draft', 'set_skill_enabled',
+          'install_skill_from_git', 'install_skill_draft', 'set_skill_enabled',
           'update_skill_from_git', 'uninstall_skill', 'add_mcp_server', 'update_mcp_server',
           'set_mcp_server_enabled', 'remove_mcp_server', 'update_global_agent_file',
         ]);
@@ -1005,6 +1218,8 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
             result_ref: resultArtifact?.status === 'ready' ? resultArtifact.result_ref : null,
             artifact_status: resultArtifact?.status || (INLINE_READ_TOOLS.has(toolUse.name) ? 'inline' : 'archive_failed'),
             error_code: result?.error || '',
+            error_message: failed ? require('./agentToolFailure').describeToolFailure(result).slice(0, 400) : '',
+            tool_display_name: mcpContext.map[toolUse.name]?.toolName || toolUse.name,
             resource_changed: !failed && !result?.approval_required && resourceChangeTools.has(toolUse.name),
             operation_set_id: result?.operation_set_id || null,
           },
@@ -1039,37 +1254,11 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
       });
 
       if (outcomeUnknown) {
-        toolResults.push({
-          type: 'tool_result',
-          tool_use_id: toolUse.id,
-          content: JSON.stringify(modelVisibleResult),
-          is_error: true,
-        });
-        const reconciliation = reconcileUnresolvedToolCalls();
-        const interaction = reconciliation.interactions.find((item) => item?.payload?.invocation_key === invocationKey) || null;
-        currentToolResults = toolResults;
-        currentNextToolIndex = toolIndex + 1;
-        saveMessagesCheckpoint(session.id, messages, content, toolUse.id, runId, {
-          phase: 'waiting_interaction',
-          executionSegmentId: activeExecutionSegment.id,
-          llmRequestWindowId: activeRequestWindow?.id,
-          toolResults,
-          nextToolIndex: currentNextToolIndex,
-        });
-        updateExecutionSegment(activeExecutionSegment.id, { status: 'completed', completed: true });
-        updateSessionStatus(session.id, 'waiting_interaction');
-        if (interaction) {
-          emit({
-            type: 'artifact',
-            artifact_type: 'interaction',
-            loop_index: loopIndex,
-            interaction,
-            reason: 'tool_outcome_unknown',
-            execution_segment_id: activeExecutionSegment.id,
-            segment_sequence_no: activeExecutionSegment.sequence_no,
-          });
-        }
-        return { status: 'waiting_interaction', reason: 'tool_outcome_unknown', interaction, interaction_id: interaction?.id || null };
+        modelVisibleResult = {
+          ...modelVisibleResult, outcome_unknown: true,
+          recovery_hint: '本次没有取得可确认的工具结果。请读取已有错误文件和执行记录，由你解释具体原因与下一步；不要生成提问卡询问用户是否调用成功，也不能原样重放可能已产生外部影响的调用。',
+        };
+        repeatedCalls.set(repeatKey, { receipt: modelVisibleResult, blocked: 0 });
       }
 
       if (!INLINE_READ_TOOLS.has(toolUse.name) && resultArtifact?.status !== 'ready') {
@@ -1079,21 +1268,17 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
         return { status: 'failed', reason: 'tool_result_payload_unavailable' };
       }
 
-      if (failed) {
-        if (recordToolFail(session.id, toolUse.name, toolUse.input || {}, result)) {
-          updateExecutionSegment(activeExecutionSegment.id, { status: 'failed', completed: true });
-          updateSessionStatus(session.id, 'failed');
-          emit({ type: 'final', text: repeatedToolFailureText(toolUse, result, mcpContext.map), status: 'failed', reason: 'consecutive_tool_failure', tool_name: toolUse.name, loop_index: loopIndex, usage: getSessionUsage(session.id) });
-          return { status: 'failed', reason: 'consecutive_tool_failure' };
-        }
-      } else {
-        resetToolFail(session.id, toolUse.name);
-        if (detectDeadloop(session.id, toolUse.name, result, toolUse.input || {})) {
-          updateExecutionSegment(activeExecutionSegment.id, { status: 'failed', completed: true });
-          updateSessionStatus(session.id, 'failed');
-          emit({ type: 'final', text: '同一工具连续三次使用相同参数且未获得新结果，任务已停止以避免无效重复。', status: 'failed', reason: 'deadloop_detected', tool_name: toolUse.name, loop_index: loopIndex, usage: getSessionUsage(session.id) });
-          return { status: 'failed', reason: 'deadloop_detected' };
-        }
+      const repeatDetected = failed
+        ? recordToolFail(session.id, toolUse.name, toolUse.input || {}, result)
+        : (resetToolFail(session.id, toolUse.name), detectDeadloop(session.id, toolUse.name, result, toolUse.input || {}));
+      if (repeatDetected) {
+        modelVisibleResult = {
+          ...modelVisibleResult,
+          repeat_warning: failed
+            ? '相同工具和参数已连续失败。请先读取错误结果文件，按具体原因修正或选择用户允许的方法；无法继续时解释原因与用户下一步怎么做。不要原样重复调用。'
+            : '相同调用已连续返回相同结果。请使用已有结果推进，或调整参数/方法；无法继续时解释阻塞，不要原样重复调用。',
+        };
+        repeatedCalls.set(repeatKey, { receipt: modelVisibleResult, blocked: 0 });
       }
 
       toolResults.push({
@@ -1102,10 +1287,14 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
         content: JSON.stringify(modelVisibleResult),
         is_error: failed,
       });
-      if ((toolUse.name === 'ask_question_card' || result?.approval_required) && !failed) {
+      if (result?.approval_required && !failed) {
+        emit({ type: 'artifact', artifact_type: 'interaction', interaction: result.interaction, reason: 'resource_approval_requested', non_blocking: true, loop_index: loopIndex });
+      }
+      if (toolUse.name === 'ask_question_card' && !failed) {
         currentToolResults = toolResults;
         currentNextToolIndex = toolIndex + 1;
         saveMessagesCheckpoint(session.id, messages, content, toolUse.id, runId, {
+          lastResponseProviderState: currentDispatchProviderState,
           phase: 'waiting_interaction',
           executionSegmentId: activeExecutionSegment.id,
           llmRequestWindowId: activeRequestWindow?.id,
@@ -1220,7 +1409,8 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
           }
         }
         const actualApplied = Boolean(previewResult.applied || result.applied);
-        const requiresConfirmation = Boolean(previewResult.requires_confirmation || result.requires_confirmation);
+        // 自动模式一律应用；requires_confirmation 只在真正未应用时（例如手动模式）为真。
+        const requiresConfirmation = !actualApplied && normalizedApprovalMode !== 'auto_confirm';
         const mergedPreviewResult = {
           ...result,
           ...previewResult,
@@ -1273,7 +1463,6 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
         const finalThinking = buildPreviewCompletionText(toolUse.name, {
           approvalMode: normalizedApprovalMode,
           applied: actualApplied,
-          requiresConfirmation,
           result: mergedPreviewResult,
         });
         const batchPatches = Array.isArray(mergedPreviewResult.operation_set?.patches)
@@ -1307,6 +1496,7 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
         });
         if (!actualApplied) {
           saveMessagesCheckpoint(session.id, messages, content, toolUse.id, runId, {
+            lastResponseProviderState: currentDispatchProviderState,
             phase: 'waiting_operation_confirmation',
             executionSegmentId: activeExecutionSegment.id,
             llmRequestWindowId: activeRequestWindow?.id,
@@ -1340,6 +1530,7 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
       currentToolResults = toolResults;
       currentNextToolIndex = toolIndex + 1;
       checkpointToCommit = saveMessagesCheckpoint(session.id, messages, content, '', runId, {
+        lastResponseProviderState: currentDispatchProviderState,
         phase: 'dispatching_tools',
         executionSegmentId: activeExecutionSegment.id,
         llmRequestWindowId: activeRequestWindow?.id,
@@ -1350,11 +1541,12 @@ async function runAgentLoop({ sessionId, taskId = null, turnFrame = null, runId 
       if (abortAfterTool) return abortAfterTool;
     }
 
-    messages.push({ role: 'assistant', content });
+    messages.push(assistantMessage);
     messages.push({ role: 'user', content: toolResults });
     if (checkpointToCommit) clearMessagesCheckpoint(session.id, checkpointToCommit);
     checkpointToCommit = null;
     currentDispatchContent = null;
+    currentDispatchProviderState = null;
     currentToolResults = [];
     currentNextToolIndex = 0;
     updateExecutionSegment(activeExecutionSegment.id, { status: 'completed', completed: true });

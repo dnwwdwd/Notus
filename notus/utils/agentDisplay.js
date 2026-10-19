@@ -7,6 +7,7 @@ export const TOOL_DISPLAY = {
   create_note: '新建笔记',
   preview_patch_files: '生成修改预览',
   preview_file_revision: '生成全文修订预览',
+  __llm_request__: '模型请求',
   preview_file_operations: '生成文件操作预览',
   ask_question_card: '生成提问卡片',
   analyze_folder: '分析目录',

@@ -39,6 +39,9 @@ function safeJsonParse(value, fallback = {}) {
 
 function boundedPayload(payload = {}) {
   const redacted = redactSecrets(payload && typeof payload === 'object' ? payload : { value: payload });
+  // These are runtime identifiers, not tool payload text or credentials.
+  if (/^[a-f0-9]{64}$/.test(String(payload.input_digest || ''))) redacted.input_digest = payload.input_digest;
+  if (/^[A-Za-z0-9_-]{1,128}$/.test(String(payload.tool_name || ''))) redacted.tool_name = payload.tool_name;
   const serialized = JSON.stringify(redacted || {});
   const bytes = Buffer.byteLength(serialized, 'utf8');
   if (bytes <= MAX_FACT_PAYLOAD_BYTES) return serialized;
@@ -191,6 +194,7 @@ function classifyRecoveredResult(result) {
   const errorCount = Array.isArray(value.errors) ? value.errors.length : 0;
   const errorCode = String(
     value.error
+    || ((value.is_error || value.isError) ? 'MCP_TOOL_FAILED' : '')
     || (conflictCount ? 'ROLLBACK_CONFLICT' : '')
     || (errorCount ? 'ROLLBACK_FAILED' : '')
     || (value.success === false ? 'TOOL_REPORTED_FAILURE' : '')
@@ -227,8 +231,6 @@ function reconcileRecoveredResourceInteraction(row, classified, artifact) {
 
 function reconcileUnresolvedToolCalls() {
   const rows = listUnresolvedToolCalls();
-  const blockedSessions = new Set();
-  const interactions = [];
   rows.forEach((row) => {
     const replayPolicy = String(row.payload?.replay_policy || 'non_replayable');
     const recovered = require('./agentToolResultStore').readArtifactResultForReconciliation({
@@ -243,6 +245,7 @@ function reconcileUnresolvedToolCalls() {
         replayPolicy,
         externalMcp: Boolean(row.payload?.external_mcp),
         errorCode,
+        result: recovered.result,
       });
       const resourceChanged = !failed
         && !cancelled
@@ -263,6 +266,7 @@ function reconcileUnresolvedToolCalls() {
           result_ref: recovered.artifact.result_ref,
           artifact_status: 'ready',
           error_code: errorCode,
+          error_message: failed ? require('./agentToolFailure').describeToolFailure(recovered.result).slice(0, 400) : '',
           resource_changed: resourceChanged,
           recovered_from_artifact: true,
         },
@@ -369,7 +373,6 @@ function reconcileUnresolvedToolCalls() {
         reason: 'process_interrupted_after_prepare',
       },
     });
-    if (row.session_id) blockedSessions.add(row.session_id);
   });
   const completedResourceInteractions = getDb().prepare(`
     SELECT prepared.*, terminal.fact_type AS terminal_fact_type, terminal.payload_json AS terminal_payload_json
@@ -405,76 +408,53 @@ function reconcileUnresolvedToolCalls() {
       getDb().prepare("UPDATE agent_task_queue SET status = 'cancelled', run_id = NULL, resume_requested = 0, finished_at = COALESCE(finished_at, datetime('now')), updated_at = datetime('now') WHERE session_id = ?").run(sessionId);
     });
   })();
-  const unknownRows = getDb().prepare(`
-    SELECT unknown_fact.*
-    FROM agent_runtime_facts unknown_fact
-    WHERE unknown_fact.fact_type = 'tool_call_outcome_unknown'
-      AND unknown_fact.invocation_key IS NOT NULL
-      AND NOT EXISTS (
-        SELECT 1 FROM agent_runtime_facts resolved
-        WHERE resolved.invocation_key = unknown_fact.invocation_key
-          AND resolved.fact_type = 'tool_call_outcome_resolved'
-      )
-    ORDER BY unknown_fact.id ASC
-  `).all().map(formatFact);
-  unknownRows.forEach((row) => blockedSessions.add(row.session_id));
-  unknownRows.forEach((row) => {
-    if (!row.session_id) return;
-    const { createInteraction, updateInteraction } = require('./conversationInteractions');
-    const { appendConversationMessage } = require('./conversations');
-    const createdInteraction = getDb().transaction(() => {
-      const alreadyRequested = getDb().prepare(`
-        SELECT 1 FROM agent_runtime_facts
-        WHERE invocation_key = ? AND fact_type = 'tool_outcome_confirmation_requested'
-        LIMIT 1
-      `).get(row.invocation_key);
-      if (alreadyRequested) return null;
-      const interaction = createInteraction({
-        conversationId: row.conversation_id,
-        kind: 'clarify_card',
-        source: 'agent_loop',
-        reasonCode: 'tool_outcome_unknown',
-        payload: {
-          origin: 'tool_outcome_recovery',
-          agent_session_id: row.session_id,
-          invocation_key: row.invocation_key,
-          tool_call_id: row.tool_call_id,
-          tool_name: row.payload?.tool_name || '',
-          title: '需要核实上次工具结果',
-          intro: `上次执行 ${row.payload?.tool_name || '外部工具'} 时进程中断，Notus 无法确认外部结果。请核实后选择实际状态。`,
-          submit_label: '继续任务',
-          questions: [{ id: 'tool_outcome', slot: 'tool_outcome', label: '该操作在外部系统中的实际结果是什么？', type: 'single_select', required: true, options: [
-            { id: 'confirmed_success', label: '已经成功', answer_value: 'confirmed_success' },
-            { id: 'confirmed_failed', label: '确认未成功', answer_value: 'confirmed_failed' },
-            { id: 'still_unknown', label: '仍无法确认', answer_value: 'still_unknown' },
-          ], allow_custom: false }],
-        },
-      });
-      const messageId = appendConversationMessage({ conversationId: row.conversation_id, role: 'assistant', content: interaction.payload.intro, meta: { agent_loop: true, session_id: row.session_id, status: 'waiting_interaction', answer_mode: 'clarify_needed', interaction_id: interaction.id, interaction_kind: interaction.kind, reason: 'tool_outcome_unknown' } });
-      const updatedInteraction = updateInteraction(interaction.id, { messageId });
-      recordRuntimeFact({ eventKey: `${row.invocation_key}:confirmation-requested`, conversationId: row.conversation_id, sessionId: row.session_id, taskId: row.task_id, turnFrameId: row.turn_frame_id, actor: 'runtime', factType: 'tool_outcome_confirmation_requested', toolCallId: row.tool_call_id, invocationKey: row.invocation_key, payload: { interaction_id: interaction.id, tool_name: row.payload?.tool_name || '' } });
-      return updatedInteraction || { ...interaction, message_id: messageId };
-    })();
-    if (createdInteraction) interactions.push(createdInteraction);
-  });
-  if (blockedSessions.size) {
-    const { updateSessionStatus } = require('./agentSession');
-    const { updateTask } = require('./agentTaskQueue');
-    blockedSessions.forEach((sessionId) => {
-      updateSessionStatus(sessionId, 'waiting_interaction');
-      updateTask(sessionId, {
-        status: 'waiting_interaction',
-        lastError: {
-          code: 'TOOL_OUTCOME_UNKNOWN',
-          message: '上次工具调用的外部结果无法确认，已停止自动重试。',
-        },
-      });
-    });
-  }
-  return { unresolved: rows.length, blocked_sessions: [...blockedSessions], interactions };
+  // Retire legacy execution-status questions without treating a dismissal as
+  // evidence that the external operation succeeded or failed.
+  const retiredInteractions = getDb().transaction(() => {
+    const database = getDb();
+    const legacy = database.prepare(`SELECT * FROM conversation_interactions
+      WHERE status IN ('pending','processing','stale','failed')
+        AND json_extract(payload_json, '$.origin') = 'tool_outcome_recovery'`).all();
+    const sessions = new Set();
+    for (const row of legacy) {
+      require('./conversationInteractions').updateInteractionWhen(row.id, ['pending','processing','stale','failed'], { status: 'cancelled' }, database);
+      const sessionId = asId(safeJsonParse(row.payload_json).agent_session_id);
+      if (sessionId) sessions.add(sessionId);
+    }
+    for (const sessionId of sessions) {
+      const session = database.prepare('SELECT status FROM agent_sessions WHERE id = ?').get(sessionId);
+      const task = require('./agentTaskQueue').getTaskBySession(sessionId);
+      const anotherQuestion = database.prepare(`SELECT 1 FROM conversation_interactions
+        WHERE status IN ('pending','processing','stale','failed')
+          AND json_extract(payload_json, '$.agent_session_id') = ? LIMIT 1`).get(sessionId);
+      if (session?.status !== 'waiting_interaction' || task?.status !== 'waiting_interaction' || anotherQuestion) continue;
+      require('./agentSession').updateSessionStatus(sessionId, 'queued_resume');
+      require('./agentTaskQueue').wakeTask(sessionId, { resumeJobId: null });
+    }
+    return legacy.map((row) => Number(row.id));
+  })();
+  return { unresolved: rows.length, blocked_sessions: [], interactions: [], retired_interactions: retiredInteractions };
 }
 
-function shouldTreatToolFailureAsOutcomeUnknown({ replayPolicy, externalMcp = false, errorCode = '' } = {}) {
+function listUnknownToolCalls(sessionId) {
+  return getDb().prepare(`SELECT unknown_fact.*, prepared.payload_json AS prepared_json
+    FROM agent_runtime_facts unknown_fact
+    LEFT JOIN agent_runtime_facts prepared ON prepared.invocation_key = unknown_fact.invocation_key
+      AND prepared.fact_type = 'tool_call_prepared'
+    WHERE unknown_fact.session_id = ? AND unknown_fact.fact_type = 'tool_call_outcome_unknown'
+      AND NOT EXISTS (SELECT 1 FROM agent_runtime_facts resolved
+        WHERE resolved.invocation_key = unknown_fact.invocation_key
+          AND resolved.fact_type = 'tool_call_outcome_resolved')
+    ORDER BY unknown_fact.id ASC`).all(asId(sessionId)).map((row) => ({
+      ...formatFact(row), prepared: safeJsonParse(row.prepared_json),
+    }));
+}
+
+function shouldTreatToolFailureAsOutcomeUnknown({ replayPolicy, externalMcp = false, errorCode = '', result = {} } = {}) {
+  if (String(replayPolicy || '') !== 'non_replayable' || !externalMcp) return false;
+  if (result.error_name === 'UnauthorizedError' || [401, 403].includes(Number(result.http_status || errorCode))) return false;
+  // Legacy explicit MCP replies also carry evidence of a completed response.
+  if (result.is_error || result.isError) return false;
   return String(replayPolicy || '') === 'non_replayable'
     && Boolean(externalMcp)
     && UNKNOWN_OUTCOME_ERROR_CODES.has(String(errorCode || '').trim().toUpperCase());
@@ -499,6 +479,7 @@ module.exports = {
   getInvocationState,
   hasUnknownToolOutcome,
   listRuntimeFacts,
+  listUnknownToolCalls,
   listUnresolvedToolCalls,
   recordRuntimeFact,
   recordToolCallPrepared,

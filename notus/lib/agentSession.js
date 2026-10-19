@@ -449,6 +449,7 @@ function saveMessagesCheckpoint(sessionId, messages, lastResponseContent, applie
   const checkpoint = {
     messages: compactMessagesForStorage(messages),
     last_response_content: lastResponseContent,
+    last_response_provider_state: options.lastResponseProviderState || null,
     saved_at: new Date().toISOString(),
   };
   const db = getDb();
@@ -465,7 +466,9 @@ function saveMessagesCheckpoint(sessionId, messages, lastResponseContent, applie
       sid,
       String(runId || '') || null,
       JSON.stringify(checkpoint.messages),
-      JSON.stringify(lastResponseContent || []),
+      JSON.stringify(options.lastResponseProviderState
+        ? { version: 1, content: lastResponseContent || [], providerState: options.lastResponseProviderState }
+        : lastResponseContent || []),
       String(appliedToolUseId || '') || null,
       String(options.phase || 'before_llm'),
       normalizePositiveInt(options.executionSegmentId),
@@ -501,10 +504,12 @@ function loadMessagesCheckpoint(sessionId) {
     ORDER BY id DESC LIMIT 1
   `).get(sid);
   if (current) {
+    const response = safeJsonParse(current.last_response_content_json, []);
     return {
       id: Number(current.id),
       messages: safeJsonParse(current.messages_json, []),
-      lastResponseContent: safeJsonParse(current.last_response_content_json, []),
+      lastResponseContent: Array.isArray(response) ? response : (response?.content || []),
+      lastResponseProviderState: Array.isArray(response) ? null : (response?.providerState || null),
       appliedToolUseId: current.tool_use_id || '',
       phase: current.phase || 'before_llm',
       executionSegmentId: normalizePositiveInt(current.execution_segment_id),
@@ -524,6 +529,7 @@ function loadMessagesCheckpoint(sessionId) {
     id: null,
     messages: Array.isArray(checkpoint.messages) ? checkpoint.messages : [],
     lastResponseContent: checkpoint.last_response_content || [],
+    lastResponseProviderState: checkpoint.last_response_provider_state || null,
     appliedToolUseId: row.checkpoint_tool_use_id || '',
     toolResultProjectionVersion: 0,
   };
@@ -576,7 +582,8 @@ function clearMessagesCheckpoint(sessionId, checkpointId = null) {
 function summarizeToolResult(toolName, result) {
   if (result?.error) return {
     error: result.error,
-    message: result.message || result.reason || '工具执行失败，请核对调用参数和错误码。',
+    message: require('./agentToolFailure').describeToolFailure(result).slice(0, 400),
+    ...(toolName === '__llm_request__' && result.diagnostics ? { diagnostics: redactSecrets(result.diagnostics) } : {}),
     ...(result.file_path ? { file_path: result.file_path } : {}),
     ...(Array.isArray(result.candidates) ? { candidates: result.candidates.slice(0, 10) } : {}),
     details: Array.isArray(result.details)
@@ -877,6 +884,8 @@ function sanitizeInteractionPayload(interaction = {}) {
     return {
       ...common,
       action: truncateTimelineText(payload.action || '', 512),
+      tool_name: truncateTimelineText(payload.tool_name || '', 128),
+      enabled: Boolean(payload.enabled),
       target: truncateTimelineText(payload.target || '', 4096),
       files: (Array.isArray(payload.files) ? payload.files : [])
         .map((filePath) => truncateTimelineText(filePath, 4096))
@@ -913,6 +922,7 @@ function sanitizeInteractionForRunEvent(interaction = {}) {
 
 function sanitizeRunEvent(event = {}) {
   const type = String(event.type || '').trim();
+  if (type === 'artifact' && event.artifact_type === 'interaction' && (event.interaction?.payload?.origin === 'tool_outcome_recovery' || event.interaction?.reason_code === 'tool_outcome_unknown' || event.reason === 'tool_outcome_unknown')) return null;
   if (!['progress', 'artifact', 'final', 'assistant_text_replace', 'assistant_text_delta'].includes(type)) return null;
   const stage = String(event.stage || '').trim();
   const isImageViewEvent = type === 'progress' && IMAGE_VIEW_STAGES.has(stage);
@@ -937,10 +947,12 @@ function sanitizeRunEvent(event = {}) {
     retry_limit: Math.max(0, Number(event.retry_limit || 0)),
     retry_after_ms: Math.max(0, Number(event.retry_after_ms || 0)),
     artifact_type: String(event.artifact_type || '').trim(),
+    non_blocking: Boolean(event.non_blocking),
     status: String(event.status || '').trim(),
     reason: String(event.reason || '').trim(),
     error_category: String(event.error_category || '').trim(),
     error_code: String(event.error_code || '').trim(),
+    diagnostics: type === 'artifact' && event.artifact_type === 'run_error' ? redactSecrets(event.diagnostics || null) : null,
     error: isImageViewEvent ? truncateTimelineText(event.error || '', 512) : '',
     message: truncateTimelineText(event.message || '', 8 * 1024),
     retry_attempts: Math.max(0, Number(event.retry_attempts || 0)),
@@ -1052,7 +1064,7 @@ function listRunEvents(sessionId) {
       input: taskInput,
     }),
     created_at: row.created_at,
-  }));
+  })).filter((row) => !(row.payload?.type === 'artifact' && row.payload?.artifact_type === 'interaction' && (row.payload?.interaction?.payload?.origin === 'tool_outcome_recovery' || row.payload?.interaction?.reason_code === 'tool_outcome_unknown' || row.payload?.reason === 'tool_outcome_unknown')));
 }
 
 function getLatestRunEventId(sessionId) {

@@ -521,7 +521,19 @@ function resumeNonManualOperationConfirmation({ operationSetId, sessionId, resol
       ORDER BY id DESC LIMIT 1
     `).get(sid, setId);
     const session = db.prepare('SELECT status FROM agent_sessions WHERE id = ?').get(sid);
-    if (!checkpoint || String(session?.status || '') !== 'waiting_operation_confirmation') {
+    if (String(session?.status || '') !== 'waiting_operation_confirmation') {
+      return { resumed: false, changeSet: getTaskChangeSetBySession(sid) };
+    }
+    if (!checkpoint) {
+      // 没有等待该批次的检查点，任务无法续跑：按用户处置收敛会话终态，
+      // 避免工具链永远停留“需要处理”。
+      const terminal = resolution === 'applied' ? 'completed' : 'cancelled';
+      db.prepare(`
+        UPDATE agent_sessions
+        SET status = ?, state_version = state_version + 1, updated_at = datetime('now')
+        WHERE id = ?
+      `).run(terminal, sid);
+      markTaskChangeSetFinished(sid, terminal);
       return { resumed: false, changeSet: getTaskChangeSetBySession(sid) };
     }
     const changeSet = resolveOperationSetInDb(db, { operationSetId: setId, sessionId: sid, resolution, toolResult });

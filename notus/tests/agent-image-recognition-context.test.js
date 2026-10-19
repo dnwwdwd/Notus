@@ -18,10 +18,9 @@ const { buildInitialUserMessage } = require('../lib/agentLoopPrompt');
 assert.ok(startRoute.includes("const { wakeAgentTaskWorker } = require('../../../../lib/agentTaskWorker');"));
 assert.ok(startRoute.includes('const task = createTask({'));
 assert.ok(startRoute.includes('wakeAgentTaskWorker();'));
-assert.ok(taskWorker.includes("const { recognizeConversationImages } = require('./imageRecognition');"));
-assert.ok(taskWorker.includes('currentImageRecognition = await recognizeConversationImages({'));
-assert.ok(taskWorker.includes('initialImages = [];'));
-assert.ok(taskWorker.includes('initialImages, currentImageRecognition,'));
+assert.ok(!taskWorker.includes('recognizeConversationImages'));
+assert.ok(taskWorker.includes("type: 'image_reference'"));
+assert.ok(taskWorker.includes('initialImages,'));
 assert.ok(
   startRoute.indexOf('wakeAgentTaskWorker();') < startRoute.indexOf('return res.status(202).json({ protocol_version: 3, session_id: created.sessionId'),
   '路由必须先创建会话与任务，再唤醒后台 Worker；图片识别由 Worker 异步执行，不能阻塞用户消息的确认响应。'

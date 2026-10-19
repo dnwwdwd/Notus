@@ -13,7 +13,7 @@ const {
   normalizeInteractionResponse,
   updateInteractionWhen,
 } = require('../../../../lib/conversationInteractions');
-const { getLatestRunEventId, setSessionWriteTarget } = require('../../../../lib/agentSession');
+const { getSession, getLatestRunEventId, setSessionWriteTarget } = require('../../../../lib/agentSession');
 const { getDb } = require('../../../../lib/db');
 const {
   createOrGetResumeJob,
@@ -44,7 +44,7 @@ function responseError(code, message = code, status = 409) {
 
 function buildResumeResult(interaction, { resumeJob = null, eventCursor = null } = {}) {
   const sessionId = getAgentSessionId(interaction);
-  if (!sessionId || !['answered', 'cancelled'].includes(interaction?.status)) return null;
+  if (!sessionId || !['answered', 'cancelled', 'failed'].includes(interaction?.status)) return null;
   const cursor = Number(eventCursor);
   return {
     resume_job: resumeJob || getResumeJobByInteraction(interaction.id),
@@ -79,10 +79,34 @@ function buildStatusError(status) {
   return { code: 'INTERACTION_NOT_PENDING', message: '这张提问卡片当前不可继续回答' };
 }
 
+function resumeResourceInteraction(interaction) {
+  const sessionId = getAgentSessionId(interaction);
+  if (!sessionId || getSession(sessionId)?.status !== 'waiting_interaction') return null;
+  const pending = require('../../../../lib/conversationInteractions').listInteractionsByConversation(interaction.conversation_id, { statuses: ['pending', 'processing'] })
+    .some(item => Number(item.payload?.agent_session_id) === sessionId);
+  if (pending) return null;
+  const resumeJob = createOrGetResumeJob({ sessionId, interactionId: interaction.id });
+  wakeAnsweredInteraction(interaction, resumeJob);
+  return resumeJob;
+}
+
 function respondWithCurrentInteraction(res, interactionId, requestId) {
   const current = getInteractionById(interactionId);
   if (!current) {
     return res.status(404).json({ error: '提问卡片不存在', code: 'INTERACTION_NOT_FOUND', request_id: requestId });
+  }
+  if (current.kind === 'resource_approval' && current.status === 'failed') {
+    // 该分支只会在「请求到达前交互已经是 failed」（重放、双击、旧请求重发）或并发竞态时命中。
+    // 首次失败一定在本次请求的 catch 路径内完成 pending→processing→failed 并立即 resume，
+    // 这里再 resume 会让任何重放都重新唤醒 session，因此只回读当前状态，不再触发 resume。
+    return res.status(200).json({
+      interaction: current,
+      resolution_status: 'failed',
+      error: current.response?.message || '资源操作失败，请查看具体原因后重新发起操作。',
+      should_continue: false,
+      idempotent_replay: true,
+      request_id: requestId,
+    });
   }
   if (['answered', 'cancelled'].includes(current.status)) {
     const resume = buildResumeResult(current);
@@ -156,41 +180,7 @@ function buildCorrectionStateFromResponse(interaction, normalizedResponse) {
   return Object.keys(next).length > 0 ? next : null;
 }
 
-function applyResourceApproval(payload, action) {
-  if (action !== 'confirm') return { cancelled: true, action: payload.action };
-  if (payload.action === 'skill_install_git') {
-    return require('../../../../lib/skills').installFromGit({
-      repositoryUrl: String(payload.repository_url || '').trim(),
-      conflictPolicy: 'reject',
-    }).then((installed) => ({
-      approved: true,
-      action: payload.action,
-      installed: (installed.skills || []).map((skill) => ({
-        id: skill.id,
-        name: skill.name,
-        description: skill.description,
-        enabled: Boolean(skill.enabled),
-      })),
-    }));
-  }
-  if (payload.action === 'skill_install' || payload.action === 'skill_update') {
-    const skill = require('../../../../lib/skills').installSkillDraft(payload.draft_id, payload.action === 'skill_update' ? 'replace' : 'reject');
-    return { approved: true, action: payload.action, skill: { id: skill.id, name: skill.name, enabled: skill.enabled } };
-  }
-  if (payload.action === 'skill_uninstall') {
-    require('../../../../lib/skills').deleteSkill(payload.skill_id);
-    return { approved: true, action: payload.action, deleted: true };
-  }
-  if (payload.action === 'skill_disable') {
-    const skill = require('../../../../lib/skills').setSkillEnabled(payload.skill_id, false);
-    return { approved: true, action: payload.action, skill: { id: skill.id, name: skill.name, enabled: skill.enabled } };
-  }
-  if (payload.action === 'mcp_remove') {
-    return Promise.resolve(require('../../../../lib/mcp').removeServer(payload.server_id))
-      .then(() => ({ approved: true, action: payload.action, deleted: true }));
-  }
-  throw responseError('RESOURCE_ACTION_UNKNOWN', '未知资源操作', 400);
-}
+const { applyResourceApproval, publishResourceResolution } = require('../../../../lib/agentResourceApproval');
 
 export default async function handler(req, res) {
   const context = createRequestContext(req, res, '/api/interactions/[id]/respond');
@@ -238,7 +228,12 @@ export default async function handler(req, res) {
   const { action } = req.body || {};
   if (interaction.kind === 'resource_approval') {
     if (interaction.status !== 'pending') return respondWithCurrentInteraction(res, interaction.id, context.request_id);
+    if (!['confirm', 'cancel'].includes(action)) return res.status(400).json({ error: '请选择确认执行或取消', code: 'RESOURCE_DECISION_REQUIRED' });
 
+    if (agentSessionId && ['completed', 'cancelled', 'failed', 'expired'].includes(getSession(agentSessionId)?.status)) {
+      const cancelled = updateInteractionWhen(interaction.id, ['pending'], { status: 'cancelled' });
+      return res.status(409).json({ error: '原任务已结束，请重新发起资源操作。', code: 'RESOURCE_SESSION_INACTIVE', interaction: cancelled });
+    }
     let claimed;
     try {
       claimed = getDb().transaction(() => {
@@ -284,7 +279,13 @@ export default async function handler(req, res) {
           response: { approved: false, error: error.code || 'RESOURCE_ACTION_FAILED', message: error.message },
         });
       })();
-      return res.status(error.status || 400).json({
+      const current = failed || getInteractionById(interaction.id);
+      const eventCursor = getLatestRunEventId(agentSessionId);
+      publishResourceResolution(current);
+      const resumeJob = resumeResourceInteraction(current);
+      return res.status(200).json({
+        resolution_status: 'failed', should_continue: Boolean(resumeJob),
+        ...(buildResumeResult(current, { resumeJob, eventCursor }) || {}),
         error: error.message,
         code: error.code || 'RESOURCE_ACTION_FAILED',
         interaction: failed || getInteractionById(interaction.id),
@@ -317,13 +318,12 @@ export default async function handler(req, res) {
           payload: { tool_name: claimed.payload?.action || 'resource_approval', resource_changed: action === 'confirm', result_ref: resourceArtifact?.status === 'ready' ? resourceArtifact.result_ref : null, artifact_status: resourceArtifact?.status || 'archive_failed' },
         });
       }
-      const resumeJob = agentSessionId
-        ? createOrGetResumeJob({ sessionId: agentSessionId, interactionId: updated.id, ownerId })
-        : null;
+      const eventCursor = agentSessionId ? getLatestRunEventId(agentSessionId) : null;
+      publishResourceResolution(updated);
+      const resumeJob = resumeResourceInteraction(updated);
       if (agentSessionId && resumeJob?.id && resumeJob.status === 'queued') {
         wakeTask(agentSessionId, { resumeJobId: resumeJob.id });
       }
-      const eventCursor = agentSessionId ? getLatestRunEventId(agentSessionId) : null;
       return { updated, resumeJob, eventCursor };
     })();
     if (!finalized) return respondWithCurrentInteraction(res, interaction.id, context.request_id);
@@ -331,7 +331,7 @@ export default async function handler(req, res) {
     return res.status(200).json({
       interaction: finalized.updated,
       resolution_status: action === 'confirm' ? 'resolved' : 'cancelled',
-      should_continue: true,
+      should_continue: Boolean(finalized.resumeJob),
       resume_payload: result,
       ...(buildResumeResult(finalized.updated, { resumeJob: finalized.resumeJob, eventCursor: finalized.eventCursor }) || {}),
       request_id: context.request_id,

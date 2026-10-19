@@ -1,7 +1,7 @@
 const { estimateChatRequestTokens, trimTextToTokenBudget } = require('./llmBudget');
 const { sha256 } = require('./files');
 const { archiveToolResult, buildToolResultReceipt } = require('./agentToolResultStore');
-const INLINE_READ_TOOLS = new Set(['read_tool_result', 'read_conversation_history', 'list_tool_results', 'list_materials', 'read_attachment', 'list_file_images']);
+const INLINE_READ_TOOLS = new Set(['list_available_mcp_tools', 'read_tool_result', 'read_conversation_history', 'list_tool_results', 'list_materials', 'read_attachment', 'list_file_images']);
 function parse(value) { try { return JSON.parse(value); } catch { return null; } }
 
 async function migrateCheckpointResults(checkpoint, session) {
@@ -43,32 +43,39 @@ async function migrateCheckpointResults(checkpoint, session) {
   return { ...checkpoint, messages, toolResults, resumeToolResult, toolResultProjectionVersion: 2 };
 }
 
-function evictOldReadWindows(messages, tokenBudget = 60000) {
+// 参考 Claude Code 的 microcompact：预算超限时保留最近 N 个工具结果原文，
+// 更早的无论大小一律替换为占位回执。提问卡答案没有归档正文，永不驱逐。
+const KEEP_RECENT_TOOL_RESULTS = 8;
+const EVICTED_STATUSES = new Set(['read_window_evicted', 'tool_result_evicted']);
+
+function evictOldToolResults(messages, tokenBudget = 60000) {
   let estimated = estimateChatRequestTokens({ messages });
   if (estimated <= tokenBudget) return messages;
   const names = new Map();
-  const candidates = [];
-  const recentStart = Math.max(1, messages.length - 4);
+  const blocks = [];
   messages.forEach((message, index) => {
     for (const [blockIndex, block] of (Array.isArray(message.content) ? message.content : []).entries()) {
       if (block.type === 'tool_use') names.set(block.id, { name: block.name, input: block.input });
+      if (block.type !== 'tool_result') continue;
       const call = names.get(block.tool_use_id);
-      if (index >= recentStart || block.type !== 'tool_result' || !INLINE_READ_TOOLS.has(call?.name)) continue;
+      if (call?.name === 'ask_question_card') continue;
       const result = parse(block.content);
-      if (block.is_error || result?.error || result?.status === 'read_window_evicted') continue;
-      // Small directories and facts are working context, not disposable read windows.
-      const cost = estimateChatRequestTokens({ messages: [{ role: 'user', content: [block] }] });
-      if (cost <= 2048) continue;
-      candidates.push({ index, blockIndex, block, call, result, cost });
+      if (result && EVICTED_STATUSES.has(result.status)) continue;
+      blocks.push({ index, blockIndex, block, call, result });
     }
   });
+  const keepCount = Math.max(0, Number(KEEP_RECENT_TOOL_RESULTS) || 0);
+  const evictable = blocks.slice(0, Math.max(0, blocks.length - keepCount));
   const projected = messages.slice();
-  for (const { index, blockIndex, block, call, result, cost } of candidates) {
-    if (estimated <= tokenBudget) break;
-    const replacement = { ...block, content: JSON.stringify({ status: 'read_window_evicted', tool_name: call.name,
-      result_ref: result?.result_ref || result?.history_ref, read_arguments: call.input,
+  for (const { index, blockIndex, block, call, result } of evictable) {
+    const cost = estimateChatRequestTokens({ messages: [{ role: 'user', content: [block] }] });
+    const replacement = { ...block, content: JSON.stringify({
+      status: 'tool_result_evicted', tool_name: call?.name || 'unknown_tool',
+      result_ref: result?.result_ref || result?.history_ref || null,
+      read_arguments: call?.input || null,
       next_offset: result?.next_offset, total_bytes: result?.total_bytes,
-      summary: '上下文预算不足，较早的大段材料已移出；仅在完成任务确实缺少该片段时按引用回查，继续分页使用next_offset。' }) };
+      summary: '较早的工具结果已按上下文预算移出；需要正文时用 read_tool_result 按 result_ref 读取，继续分页使用 next_offset，索引不足用 list_tool_results 查找。',
+    }) };
     projected[index] = { ...projected[index], content: projected[index].content.slice() };
     projected[index].content[blockIndex] = replacement;
     estimated -= cost - estimateChatRequestTokens({ messages: [{ role: 'user', content: [replacement] }] });
@@ -76,14 +83,15 @@ function evictOldReadWindows(messages, tokenBudget = 60000) {
   return projected;
 }
 
-function compactMessages(messages = [], tokenBudget = 60000) {
-  const projected = evictOldReadWindows(messages, tokenBudget);
-  if (!projected.length || estimateChatRequestTokens({ messages: projected }) <= tokenBudget) return projected;
-  // 以完整assistant/tool_result交换为单位压缩；未解决的调用不丢弃、不拆对。
+// 兼容旧调用名：语义已升级为按最近 N 个工具结果驱逐。
+const evictOldReadWindows = evictOldToolResults;
+
+// 以完整assistant/tool_result交换为单位分组；未解决的调用不丢弃、不拆对。
+function groupCompleteExchanges(messages = []) {
   const groups = [];
   let group = [];
   let pending = new Set();
-  for (const message of projected.slice(1)) {
+  for (const message of messages) {
     group.push(message);
     for (const block of Array.isArray(message.content) ? message.content : []) {
       if (block.type === 'tool_use') pending.add(block.id);
@@ -92,6 +100,13 @@ function compactMessages(messages = [], tokenBudget = 60000) {
     if (!pending.size) { groups.push(group); group = []; }
   }
   if (group.length) groups.push(group);
+  return groups;
+}
+
+function compactMessages(messages = [], tokenBudget = 60000) {
+  const projected = evictOldToolResults(messages, tokenBudget);
+  if (!projected.length || estimateChatRequestTokens({ messages: projected }) <= tokenBudget) return projected;
+  const groups = groupCompleteExchanges(projected.slice(1));
   const tail = [];
   let budgetUsed = estimateChatRequestTokens({ messages: [projected[0]] });
   let firstKept = groups.length;
@@ -111,4 +126,4 @@ function compactMessages(messages = [], tokenBudget = 60000) {
   const summary = trimTextToTokenBudget(JSON.stringify(receipts), Math.max(128, Math.floor(tokenBudget * 0.1)));
   return [projected[0], { role: 'assistant', content: [{ type: 'text', text: `较早已完成工具交换已压缩。原始结果仍在文件中，可用read_tool_result读取；索引不足时用list_tool_results查找本会话全部结果引用；不能重复执行已完成写入。回执索引：${summary}` }] }, ...tail];
 }
-module.exports = { INLINE_READ_TOOLS, migrateCheckpointResults, evictOldReadWindows, compactMessages };
+module.exports = { INLINE_READ_TOOLS, migrateCheckpointResults, evictOldToolResults, evictOldReadWindows, compactMessages, groupCompleteExchanges, KEEP_RECENT_TOOL_RESULTS };

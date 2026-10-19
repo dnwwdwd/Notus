@@ -183,6 +183,7 @@ function supersedePendingUserActionTasks(conversationId) {
       WHERE q.conversation_id = ?
         AND q.status IN ('waiting_interaction', 'waiting_operation_confirmation', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery')
         AND s.status IN ('waiting_interaction', 'waiting_operation_confirmation', 'waiting_limit_confirmation', 'waiting_retry', 'waiting_model_recovery')
+        AND NOT EXISTS (SELECT 1 FROM conversation_interactions approval WHERE json_extract(approval.payload_json, '$.agent_session_id') = s.id AND approval.kind = 'resource_approval' AND approval.status IN ('pending', 'processing'))
       ORDER BY q.queue_order ASC
     `).all(cid);
     const sessionIds = rows.map((row) => Number(row.session_id)).filter(Boolean);
@@ -212,8 +213,9 @@ function supersedePendingUserActionTasks(conversationId) {
       UPDATE conversation_interactions
       SET status = 'cancelled', updated_at = datetime('now')
       WHERE conversation_id = ?
+        AND (json_extract(payload_json, '$.agent_session_id') IN (${placeholders}) OR (kind != 'resource_approval' AND json_extract(payload_json, '$.agent_session_id') IS NULL))
         AND status IN ('pending', 'failed', 'stale')
-    `).run(cid);
+    `).run(cid, ...sessionIds);
     return sessionIds;
   })();
 }
@@ -228,8 +230,9 @@ function persistTaskFinalMessage(sessionId, { content, status, meta = {} } = {})
     const existing = db.prepare(`SELECT id FROM messages WHERE conversation_id=? AND role='assistant'
       AND json_extract(meta, '$.session_id')=? AND json_extract(meta, '$.status') IN ('completed','failed','cancelled')
       ORDER BY id DESC LIMIT 1`).get(task.conversation_id, Number(sessionId));
+    const safeContent = require('./agentFileLinkResolver').safeNormalizeFinalAgentFileLinks(content || '任务已结束，未保存最终回复正文。', sessionId);
     const messageId = existing?.id || require('./conversations').appendConversationMessage({
-      conversationId: task.conversation_id, role: 'assistant', content: content || '任务已结束，未保存最终回复正文。',
+      conversationId: task.conversation_id, role: 'assistant', content: safeContent,
       meta: { ...meta, agent_loop: true, session_id: Number(sessionId), status },
     });
     db.prepare("UPDATE agent_task_queue SET final_message_id=?, updated_at=datetime('now') WHERE session_id=?").run(messageId, sessionId);
@@ -239,6 +242,35 @@ function persistTaskFinalMessage(sessionId, { content, status, meta = {} } = {})
 
 function recoverOrphanedTasks() {
   const db = getDb();
+  // 老版本资源操作失败只结束卡片；恢复原任务读取失败回执，绝不重放安装。
+  require('./conversationInteractions').cleanupExpiredInteractions(db);
+  const failedResources = db.prepare(`SELECT i.id, s.id AS session_id FROM agent_sessions s
+    JOIN conversation_interactions i ON json_extract(i.payload_json, '$.agent_session_id') = s.id
+    WHERE s.status = 'waiting_interaction' AND i.kind = 'resource_approval' AND i.status IN ('failed', 'answered', 'cancelled')
+      AND NOT EXISTS (SELECT 1 FROM conversation_interactions pending WHERE json_extract(pending.payload_json, '$.agent_session_id') = s.id AND pending.status IN ('pending', 'processing'))
+    ORDER BY i.id DESC`).all();
+  // 资源审批恢复必须可安全重试：发布 resource_resolution 与创建 resume job
+  // 在同一事务内完成，且发布前检查该 interaction 是否已有对应事件，避免
+  // Worker 重启后重复发布；wakeTask 等副作用留到事务外执行。
+  const pendingWakeups = [];
+  db.transaction(() => {
+    for (const row of failedResources) {
+      if (require('./agentSession').getSession(row.session_id)?.status !== 'waiting_interaction') continue;
+      const interaction = require('./conversationInteractions').getInteractionById(row.id);
+      if (!interaction) continue;
+      const alreadyPublished = db.prepare(`SELECT 1 FROM agent_run_events
+        WHERE session_id = ? AND event_type = 'artifact' AND stage = 'resource_resolution'
+          AND json_extract(payload_json, '$.interaction_id') = ? LIMIT 1`)
+        .get(Number(row.session_id), Number(row.id));
+      if (!alreadyPublished) require('./agentResourceApproval').publishResourceResolution(interaction);
+      const job = require('./agentControlPlane').createOrGetResumeJob({ sessionId: row.session_id, interactionId: row.id });
+      if (job.status === 'queued') pendingWakeups.push({ sessionId: row.session_id, resumeJobId: job.id });
+    }
+  })();
+  for (const wakeup of pendingWakeups) {
+    wakeTask(wakeup.sessionId, { resumeJobId: wakeup.resumeJobId });
+  }
+
   return db.transaction(() => {
     const ended = db.prepare(`SELECT q.session_id, s.status FROM agent_task_queue q JOIN agent_sessions s ON s.id=q.session_id
       WHERE q.final_message_id IS NULL AND COALESCE(json_extract(q.input_json, '$.history_discarded'), 0) = 0

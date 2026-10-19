@@ -1,5 +1,5 @@
 const assert = require('assert');
-const { alignPatchOldText } = require('../lib/agentTools');
+const { alignPatchOldText, buildOldNotFoundDiagnostics } = require('../lib/agentTools');
 
 function runTests() {
   const current = [
@@ -30,6 +30,19 @@ function runTests() {
   const ambiguous = alignPatchOldText('A  B C\n\nA B  C', 'A B C');
   assert.strictEqual(ambiguous.ok, false);
   assert.strictEqual(ambiguous.reason, 'OLD_MATCH_NOT_UNIQUE');
+
+  // OLD_NOT_FOUND 诊断：能定位 not_found 行的最近原文行，found 行给出当前行号
+  const diagnostics = buildOldNotFoundDiagnostics(current, '第二段中间被改写的句子。\n第三段继续。');
+  assert.strictEqual(diagnostics.file_hash.length, 64);
+  assert.strictEqual(diagnostics.current_lines, 6);
+  assert.strictEqual(diagnostics.lines.length, 2);
+  assert.strictEqual(diagnostics.lines[0].status, 'not_found');
+  assert.strictEqual(diagnostics.lines[0].nearest_current_line, 5);
+  assert.ok(diagnostics.lines[0].similarity > 0);
+  assert.ok(diagnostics.lines[0].nearest_excerpt.includes('第二段'));
+  assert.strictEqual(diagnostics.lines[1].status, 'found');
+  assert.strictEqual(diagnostics.lines[1].current_line, 6);
+  assert.ok(diagnostics.hint.includes('read_file'));
 
   console.log('agent tools patch match tests passed');
 }

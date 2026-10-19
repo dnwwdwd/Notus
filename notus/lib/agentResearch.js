@@ -436,8 +436,8 @@ function recordQueryAndResultReceipts({ session, sourceType, query, phase, resul
 
 // MCP 搜索结果只有返回可核验的网页来源与内容时才计入联网证据。
 // 不把任意 MCP 调用成功或模型自述当成已联网。
-function recordMcpWebEvidence({ session, toolName = '', result, query = '' } = {}) {
-  if (!/(?:search|fetch|crawl|browse|scrape|web)/i.test(toolName) || result?.error || result?.isError) return;
+function recordMcpWebEvidence({ session, toolName = '', description = '', result, query = '' } = {}) {
+  if (!/(?:search|fetch|crawl|browse|scrape|web|搜索|网页|互联网)/i.test(`${toolName} ${description}`) || result?.error || result?.isError || result?.is_error || result?.success === false) return;
   const results = [];
   const seen = new Set();
   let visited = 0;
@@ -445,7 +445,33 @@ function recordMcpWebEvidence({ session, toolName = '', result, query = '' } = {
     if (depth > 6 || ++visited > 500 || results.length >= 50) return;
     if (typeof value === 'string') {
       if (value.length > 256 * 1024) return;
-      try { visit(JSON.parse(value), depth + 1); } catch {}
+      try { visit(JSON.parse(value), depth + 1); } catch {
+        // Many MCP servers return Markdown instead of structured JSON.
+        // 回退只信任明确的搜索/抓取类工具，并要求 URL 与实质正文同现；
+        // 避免 webhook 等工具返回的普通引用链接或纯链接列表被误计为联网证据。
+        if (!/(?:search|fetch|crawl|scrape|browse|搜索|抓取|读取网页)/i.test(`${toolName} ${description}`) || /webhook/i.test(toolName)) return;
+        const lines = value.split(/\r?\n/);
+        const fallbackBase = new Set();
+        for (let i = 0; i < lines.length && results.length < 50; i += 1) {
+          const urls = lines[i].match(/https?:\/\/[^\s<>\[\]）]+/g) || [];
+          if (!urls.length) continue;
+          const context = [lines[i - 1], lines[i], lines[i + 1]].filter((item) => typeof item === 'string').join('\n').trim();
+          const prose = context.replace(/https?:\/\/[^\s<>\[\]）]+/g, '').replace(/[\s\[\]():：#*|_>-]/g, '');
+          // URL 必须与一段实质正文同现，纯链接列表不产生证据。
+          if (prose.length < 16) continue;
+          const base = context.slice(0, 8000);
+          // 相同上下文只保留一条证据，多出的 URL 合并进同一条 content。
+          if (fallbackBase.has(base)) continue;
+          const fresh = [];
+          for (const raw of urls.slice(0, 20)) {
+            const url = raw.replace(/[)\].,;'"!?，。；！？、]+$/g, '');
+            if (!seen.has(url)) { seen.add(url); fresh.push(url); }
+          }
+          if (!fresh.length) continue;
+          fallbackBase.add(base);
+          results.push({ url: fresh[0], title: '', content: fresh.length > 1 ? `${base}\n相关链接：${fresh.slice(1).join(' ')}` : base });
+        }
+      }
       return;
     }
     if (Array.isArray(value)) { value.slice(0, 100).forEach((item) => visit(item, depth + 1)); return; }
@@ -467,12 +493,10 @@ async function executePlannedResearch({ session, runId = null, sourceType, query
   if (!requestedQuery) return { error: 'QUERY_REQUIRED', message: '检索需要 query 参数', results: [] };
   const state = getResearchState(session.id);
   const requiresTimeEvidence = sourceType === 'web' && /最新|实时|近期|今天|今年|当前(?:价格|版本|状态|数据|新闻|政策)/.test(requestedQuery);
-  const missionKey = String(missionFingerprint || (sourceType === 'web'
-    ? `web-query:${textHash(requestedQuery.toLocaleLowerCase())}`
-    : `session-source:${sourceType}`)).slice(0, 128);
+  const missionKey = String(missionFingerprint || `${sourceType}-query:${textHash(requestedQuery.toLocaleLowerCase())}`).slice(0, 128);
   const legacyPrevious = state.sources?.[sourceType];
   const previous = state.missions?.[missionKey]
-    || (!missionFingerprint && sourceType !== 'web' ? legacyPrevious : null);
+    || (!missionFingerprint && legacyPrevious?.query === requestedQuery ? legacyPrevious : null);
   if (previous?.completed) {
     const records = (previous.query_records || []).map((record) => ({ ...record, cached: true }));
     const providerError = records.length > 0 && records.every((record) => record.status === 'error')
@@ -781,7 +805,7 @@ function getTaskActivity(sessionId) {
   const receipts = sanitizeResearchReceipts(id, { limit: 160 });
   const logs = getDb().prepare(`
     SELECT tool_name, status, loop_index, duration_ms, created_at
-    FROM agent_run_logs WHERE session_id = ? AND tool_name IS NOT NULL
+    FROM agent_run_logs WHERE session_id = ? AND tool_name IS NOT NULL AND tool_name != '__llm_request__'
     ORDER BY id ASC
   `).all(id).map((row) => ({
     tool_name: row.tool_name,

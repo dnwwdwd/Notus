@@ -8,6 +8,17 @@ vm.runInContext(source.slice(source.indexOf('function toPositiveInt'), source.in
 const { applyAgentTimelineEvent: apply, buildRestoredAgentTimeline: restore, buildAgentSubscriptionSnapshot: snapshot } = context;
 const error = { type: 'artifact', artifact_type: 'run_error', resumable: true, message: '旧错误', execution_segment_id: 'a' };
 const hasError = (steps) => steps.some((s) => s.errorType === 'agent');
+const diagnosed = { ...error, diagnostics: { provider_message: 'Missing reasoning_content', provider_request_id: 'provider-400',
+  request: { duration_ms: 123, max_output: 32768 } } };
+const diagnosedStep = apply({}, diagnosed).activeSteps.find((step) => step.errorType === 'agent');
+assert.equal(diagnosedStep.diagnostics.provider_message, 'Missing reasoning_content');
+assert.equal(diagnosedStep.requestId, 'provider-400');
+const restoredDiagnostic = restore({ status: 'waiting_model_recovery', run_events: [{ id: 1, payload: diagnosed }] }).steps.find((step) => step.errorType === 'agent');
+assert.equal(restoredDiagnostic.diagnostics.request.max_output, 32768, '刷新历史必须保留实际预算');
+const sessionTimeline = context.buildRestoredAgentSessionTimeline({ status: 'waiting_model_recovery', run_events: [{ id: 1, payload: diagnosed }] });
+assert.equal(sessionTimeline.steps.filter((step) => step.errorType === 'agent').length, 1, '恢复等待态不能用通用错误重复或覆盖实际错误');
+assert.equal(sessionTimeline.steps.find((step) => step.errorType === 'agent').diagnostics.provider_request_id, 'provider-400');
+assert(context.buildRestoredAgentSessionTimeline({ status: 'waiting_model_recovery' }).steps.some((step) => step.action === 'resume_agent'), '没有错误记录的旧等待任务仍可继续');
 const failedTool = { id: 'failed-tool', kind: 'tool', status: 'error' };
 for (const event of [{type:'session_resumed'}, {type:'progress',stage:'model_requesting'}, {type:'progress',stage:'llm_retry',execution_segment_id:'a'}, {type:'task_state',status:'queued'}]) {
   const failed = apply({activeSteps:[failedTool]}, error);

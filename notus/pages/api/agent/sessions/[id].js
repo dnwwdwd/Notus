@@ -29,7 +29,7 @@ export default async function handler(req, res) {
     }
     const session = getSession(sessionId);
     return res.status(200).json({
-      session: token ? session : sanitizeSessionForRead(session),
+      session: sanitizeSessionForRead(session),
       run_events: listRunEvents(sessionId),
       run_logs: listRunLogs(sessionId),
       research_receipts: sanitizeResearchReceipts(sessionId),

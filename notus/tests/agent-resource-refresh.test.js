@@ -42,7 +42,7 @@ require.cache[llmPath]={id:llmPath,filename:llmPath,loaded:true,exports:{complet
  // Exercise actual discovery implementation against a changing server, including stale-cache failures.
  const src=fs.readFileSync(require.resolve('../lib/mcp'),'utf8');const a=src.indexOf('async function prepareMcpTools');const b=src.indexOf('\nasync function ',a+1);
  let schema='old',calls=0,fail=false;const server={id:'s',name:'Search'};
- const ctx={listServers:()=>[server],isLocalHttpServer:()=>false,isToolCacheStale:()=>false,refreshTools:async()=>{calls++;if(fail)throw Error('offline');schema='new';},cachedTools:()=>[{tool_name:'search',description:'search',input_schema:{type:'object',properties:{[schema]:{type:'string'}}}}],intentTerms:()=>[],MAX_AUTO_SERVERS:5,MAX_AUTO_TOOLS:20,connections:new Map(),connectionKey:()=>'',alias:()=> 'mcp_search'};
+ const ctx={require:(name)=>require(path.resolve(path.dirname(require.resolve('../lib/mcp')),name)),listServers:()=>[server],isLocalHttpServer:()=>false,isToolCacheStale:()=>false,refreshTools:async()=>{calls++;if(fail)throw Error('offline');schema='new';},cachedTools:()=>[{tool_name:'search',description:'search',input_schema:{type:'object',properties:{[schema]:{type:'string'}}}}],intentTerms:()=>[],MAX_AUTO_SERVERS:5,MAX_AUTO_TOOLS:20,connections:new Map(),discoveredToolAnnotations:new Map(),connectionKey:()=>'',alias:()=> 'mcp_search'};
  vm.createContext(ctx);vm.runInContext(src.slice(a,b),ctx);
  assert.equal((await ctx.prepareMcpTools({mode:'off'},'',{},{forceRefresh:true})).tools.length,0);assert.equal(calls,0);
  let tools=(await ctx.prepareMcpTools({mode:'auto'},'',{},{forceRefresh:true})).tools;assert.ok(tools[0].input_schema.properties.new);assert.equal(calls,1);

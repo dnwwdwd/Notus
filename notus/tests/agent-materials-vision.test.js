@@ -128,7 +128,7 @@ async function main() {
   const listed=listFileImages({path:file.path});
   assert.equal(listed.total,3); assert.ok(!JSON.stringify(listed).includes('base64'));
   for(const item of listed.items.slice(0,2)) assert.equal((await resolveImage(session,{ref:item.ref,path:file.path})).source.data,png.toString('base64'));
-  const seen=await inspectImage(session,{ref:listed.items[0].ref,path:file.path});assert.equal(seen.status,'recognized');
+  const seen=await inspectImage(session,{ref:listed.items[0].ref,path:file.path});assert.equal(seen.status,'image_ready');
   const tools = require('../lib/agentTools');
   const realFetch=tools.fetchPublicWebPage;
   const realCheck=tools.publicWebUrl;

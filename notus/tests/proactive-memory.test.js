@@ -63,8 +63,11 @@ async function run() {
   for (const secret of ['数据库密码是 hello123。', 'API key 为 abcdefg123456。', '验证码为 123456。']) {
     assert.strictEqual(update({ file: 'memory', content: `${content}\n${secret}`, expected_hash: result.hash, evidence: goal }, session.sessionId).error, 'MEMORY_SENSITIVE_CONTENT');
   }
-  for (const task_kind of ['general', 'web_research', 'knowledge_research', 'file_read', 'file_write', 'skill_discovery', 'mcp_manage']) {
-    assert.ok(allowedToolNames({ task_kind }).has('update_global_agent_file'));
+  for (const task_kind of ['general', 'file_write']) {
+    assert.ok(allowedToolNames({ task_kind, allowed_actions: ['read', 'write'] }).has('update_global_agent_file'));
+  }
+  for (const task_kind of ['general', 'web_research', 'knowledge_research', 'file_read', 'skill_discovery', 'mcp_manage']) {
+    assert.ok(!allowedToolNames({ task_kind, allowed_actions: ['read'] }).has('update_global_agent_file'), '读取任务不因记忆策略获得写入能力');
   }
   const prompt = renderAgentLoopPrompt({}, { globalAgentContext: memory.buildGlobalAgentContext('安装依赖'), contextWindowTokens: 60000 });
   assert.strictEqual(prompt.envelopes.filter(item => item.source_id === 'memory.md').length, 1);

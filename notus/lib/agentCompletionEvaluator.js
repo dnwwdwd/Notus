@@ -5,7 +5,7 @@ const RESOURCE_MUTATION_TOOLS = new Set([
   'install_skill_from_git', 'install_skill_draft', 'update_skill_draft',
   'set_skill_enabled', 'update_skill_from_git', 'uninstall_skill',
   'add_mcp_server', 'update_mcp_server', 'set_mcp_server_enabled', 'remove_mcp_server',
-  'skill_install_git', 'skill_install', 'skill_update', 'skill_uninstall', 'skill_disable', 'mcp_remove',
+  'skill_install_git', 'skill_install', 'skill_update', 'skill_uninstall', 'skill_disable', 'skill_set_enabled', 'skill_update_git', 'agent_resource_tool', 'mcp_remove',
 ]);
 
 function isResourceMutationTool(toolName = '') {
@@ -57,10 +57,10 @@ function hasResourceChangeEvidence(sessionId) {
     WHERE session_id = ?
       AND fact_type IN ('tool_call_completed','tool_call_outcome_resolved')
       AND json_extract(payload_json, '$.tool_name') IN (
-          'install_skill_from_git','install_skill_draft','update_skill_draft',
+          'install_skill_from_git','install_skill_draft',
           'set_skill_enabled','update_skill_from_git','uninstall_skill',
           'add_mcp_server','update_mcp_server','set_mcp_server_enabled','remove_mcp_server',
-          'skill_install_git','skill_install','skill_update','skill_uninstall','skill_disable','mcp_remove'
+          'skill_install_git','skill_install','skill_update','skill_uninstall','skill_disable','skill_set_enabled','skill_update_git','agent_resource_tool','mcp_remove'
         )
       AND json_extract(payload_json, '$.resource_changed') = 1
     LIMIT 1
@@ -98,16 +98,32 @@ function evaluateCompletion({ sessionId, frame, finalText = '', correctionCount 
   if (criteria.requires_resource_change && !hasResourceChangeEvidence(sessionId)) reasons.push('用户要求资源变更，但没有已执行的资源变更事实');
   if (criteria.requires_answer && !String(finalText || '').trim()) reasons.push('没有可交付的回答');
   if (!reasons.length) return { complete: true, reasons: [], correctable: false, feedback: '' };
+  const failures = getDb().prepare(`
+    SELECT payload_json FROM agent_runtime_facts failure
+    WHERE session_id = ? AND fact_type = 'tool_call_failed'
+      AND NOT EXISTS (
+        SELECT 1 FROM agent_runtime_facts success
+        WHERE success.session_id = failure.session_id AND success.id > failure.id
+          AND success.fact_type = 'tool_call_completed'
+          AND json_extract(success.payload_json, '$.tool_name') = json_extract(failure.payload_json, '$.tool_name')
+      )
+    ORDER BY id DESC LIMIT 3
+  `).all(Number(sessionId)).map((row) => JSON.parse(row.payload_json));
+  const failureDetails = [...new Set(failures.filter((item) => item.error_message).map((item) =>
+    `${item.tool_display_name || item.tool_name}：${item.error_message}`))];
   const correctable = correctionCount < 1 && !hasUnknownToolOutcome(sessionId);
   return {
     complete: false,
     reasons,
+    failureDetails,
     correctable,
     feedback: [
       '## 运行时完成检查',
       '当前结果还没有满足本轮任务契约：',
       ...reasons.map((reason) => `- ${reason}`),
-      '请只补充缺失步骤；不要声称未发生的搜索、读取、安装或文件修改已经完成。',
+      ...failureDetails.map((reason) => `- 已收到的工具失败：${reason.slice(0, 180)}`),
+      '已明确的认证或权限失败需要修复凭据或权限，不能靠重复调用补齐证据；保持用户指定的工具范围。',
+      '若能在授权范围内补齐证据或操作，则继续；若被凭据、权限、外部服务或缺少必要信息阻塞，请直接向用户说明具体原因、已有结果和下一步怎么继续。用户能操作的步骤要具体，不要求用户替你核实工具是否搜索成功；不要机械复述完成检查条目，不声称任务完成。',
     ].join('\n'),
   };
 }

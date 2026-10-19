@@ -29,5 +29,13 @@ const assert = require('assert');
   assert.equal(agentTraceState({ sessionStatus: 'completed', tailStatus: restored.steps.at(-1)?.status }).label, '已处理');
   const waiting = context.applyAgentTimelineEvent({}, { type: 'waiting_preview_confirm', operation_set_id: 8 });
   assert.equal(agentTraceState({ sessionStatus: waiting.sessionStatus }).needsAction, true);
+  for (const status of ['answered', 'cancelled', 'failed']) {
+    let resource = context.applyAgentTimelineEvent({}, {type:'artifact',artifact_type:'interaction',interaction:{id:42,kind:'resource_approval',payload:{action:'skill_install'}},non_blocking:true});
+    assert.equal(resource.sessionStatus,'running');
+    resource = context.applyAgentTimelineEvent(resource,{type:'artifact',artifact_type:'resource_resolution',interaction_id:42,status,text:'结果'});
+    const step=resource.activeSteps.find(item=>item.id==='resource-card-42');
+    assert.equal(step.status,status==='failed'?'error':'done');
+    assert(!step.label.includes('等待'));
+  }
   console.log('agent trace state tests passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -10,7 +10,7 @@ async function runTests() {
     remarkLinkifyAgentFileReferences,
   } = await import('../utils/agentFileLinks.js');
   const files = [
-    { id: 11, path: '项目/计划.md', name: '计划.md' },
+    { id: 11, path: '项目/计划.md', name: '计划.md', title: '项目计划' },
     { id: 12, path: '资料/会议纪要.md', name: '会议纪要.md' },
     { id: 13, path: '归档/会议纪要.md', name: '会议纪要.md' },
   ];
@@ -28,6 +28,39 @@ async function runTests() {
   assert.deepStrictEqual(linkifyAgentFileText('会议纪要.md 需要补充。', files), [{ type: 'text', value: '会议纪要.md 需要补充。' }]);
   assert.strictEqual(parseInternalFileLink('notus://file/12'), 12);
   assert.strictEqual(parseInternalFileLink('notus://file/0'), null);
+  const oj = { id: 44, path: '架构/OJ在线评测系统架构设计.md', name: 'OJ在线评测系统架构设计.md', title: '在线评测系统总体架构方案' };
+  const { resolveAgentFileLinkFromState, normalizeFinalAgentFileLinks } = require('../lib/agentFileLinkResolver');
+  assert.strictEqual(resolveAgentFileLinkFromState({ files: [...files, oj], fileId: 5700, label: 'OJ在线评测系统架构设计', pathHint: oj.path }), null,
+    '文件名、标题和路径不得作为内部链接的文件身份');
+  assert.strictEqual(resolveAgentFileLinkFromState({ files: [...files, oj], fileId: 44, label: '其他文件', pathHint: '不存在.md' })?.id, 44,
+    '有效 ID 不得被显示文字或路径覆盖');
+  assert.strictEqual(normalizeFinalAgentFileLinks('[OJ在线评测系统架构设计](notus://file/5700)', 1, {
+    files: [...files, oj], operationSets: [],
+  }), 'OJ在线评测系统架构设计', '仅凭链接文字不得把失效 ID 指向同名文件');
+  const created = { id: 41, path: '新笔记/正文.md', name: '正文.md', title: '正文' };
+  const createdSet = { status: 'applied', patches: [{ change_type: 'create', status: 'auto_applied', file_id: 41, file_path: created.path }] };
+  assert.strictEqual(resolveAgentFileLinkFromState({ files: [...files, created], operationSets: [createdSet], fileId: 999, label: '查看文件' })?.id, 41,
+    '旧链接无效时仅凭同一任务已应用补丁记录的文件 ID 校正');
+  const corrected = normalizeFinalAgentFileLinks('[查看文件](notus://file/999)', 1, {
+    files: [...files, created], operationSets: [createdSet],
+  });
+  assert.strictEqual(corrected, '[查看文件](notus://file/41)');
+  assert.strictEqual(normalizeFinalAgentFileLinks(corrected, 1, {
+    files: [...files, created], operationSets: [createdSet],
+  }), corrected, '历史链接校正应幂等');
+  assert.strictEqual(resolveAgentFileLinkFromState({ files: [...files, created], operationSets: [createdSet], fileId: 11, label: '查看文件' })?.id, 11,
+    '仍有效的其他文件 ID 不被本任务的新建文件覆盖');
+  assert.strictEqual(resolveAgentFileLinkFromState({ files: [...files, created], operationSets: [{ ...createdSet, patches: [{ ...createdSet.patches[0], file_id: 17 }] }], fileId: 999 }), null,
+    'Diff 记录的 ID 不存在时不能按路径猜测');
+  assert.strictEqual(resolveAgentFileLinkFromState({ files: [...files, created], operationSets: [{ ...createdSet, status: 'cancelled' }], fileId: 999, label: '查看文件' })?.id, 41,
+    '任务取消后已经应用的新建文件仍可打开');
+  assert.strictEqual(resolveAgentFileLinkFromState({ files: [...files, created], operationSets: [{ ...createdSet, status: 'rolled_back' }], fileId: 999, label: '查看文件' }), null,
+    '已回滚的操作集不能作为失效链接的恢复依据');
+  const anotherCreate = { status: 'applied', patches: [{ change_type: 'create', status: 'applied', file_id: 42, file_path: '新笔记/附录.md' }] };
+  assert.strictEqual(resolveAgentFileLinkFromState({ files: [...files, created, { id: 42, path: '新笔记/附录.md' }], operationSets: [createdSet, anotherCreate], fileId: 999, label: '查看文件' }), null,
+    '同一任务创建多个文件且链接文字不明确时不得猜测');
+  assert.strictEqual(resolveAgentFileLinkFromState({ files: [...files, created], operationSets: [{ status: 'applied', patches: [{ status: 'applied', file_id: 41, file_path: created.path }] }], fileId: 999 }), null,
+    '只修改已有文件时不得把失效链接猜成该文件');
 
   const tree = {
     type: 'root',

@@ -6,11 +6,10 @@ const { getSession, updateSessionStatus } = require('./agentSession');
 const { appendConversationMessage, touchConversation } = require('./conversations');
 const { parseAgentInputSources } = require('./agentInputSources');
 const { loadAttachments } = require('./parsedAttachmentStore');
-const { recognizeConversationImages } = require('./imageRecognition');
 const { buildResearchSummary, buildWriteSummary, correctConflictingSourceClaims, registerParsedInputSources } = require('./agentResearch');
 const { createInteraction, getInteractionById, updateInteraction } = require('./conversationInteractions');
-const { acquireRunLease, registerActiveRun, releaseRunLease, renewRunLease, recordRunUsage, recoverStaleRunLeases, settleResumeJob } = require('./agentControlPlane');
-const { assertAttachmentLimits, assertImageContextSize, assertImageLimits, getImageInputBlocks, MAX_ANTHROPIC_IMAGE_CONTEXT_BYTES } = require('./conversationImages');
+const { acquireRunLease, registerActiveRun, releaseRunLease, renewRunLease, recoverStaleRunLeases, settleResumeJob } = require('./agentControlPlane');
+const { assertAttachmentLimits, assertImageLimits, makeConversationImageReference } = require('./conversationImages');
 const { persistTaskFinalMessage, claimRunnableTasks, updateTask, settleTaskRun, recoverOrphanedTasks, getTaskBySession } = require('./agentTaskQueue');
 const { publish } = require('./agentRunEventBus');
 const { getDb } = require('./db');
@@ -19,7 +18,6 @@ const { mergeAgentMedia } = require('./agentMedia');
 const { markTaskChangeSetFinished } = require('./agentTaskChangeSets');
 const { composeTurnFrame } = require('./agentSemanticRuntime');
 const { updateTurnFrame } = require('./agentTurnFrames');
-const { executeRuntimeSearchMission, getSearchCapabilityLimitation } = require('./agentSearchMission');
 const { recordRuntimeFact, reconcileUnresolvedToolCalls } = require('./agentRuntimeFacts');
 
 const logger = createLogger({ subsystem: 'agent-task-worker' });
@@ -54,36 +52,6 @@ function emit(sessionId, runId, event) {
   return publish({ sessionId, runId, event });
 }
 
-function finishWithCapabilityLimitation({ task, sessionId, conversationId, runId, turnFrame, limitation, resumeJob = null }) {
-  const finalText = String(limitation?.message || '当前运行环境不具备完成任务所需的能力。').trim();
-  updateSessionStatus(sessionId, 'failed');
-  markTaskChangeSetFinished(sessionId, 'failed');
-  const messageId = appendConversationMessage({
-    conversationId,
-    role: 'assistant',
-    content: finalText,
-    meta: { agent_loop: true, session_id: sessionId, status: 'failed', reason: 'capability_limit' },
-  });
-  updateTask(sessionId, { status: 'failed', finalMessageId: messageId, finished: true });
-  recordRuntimeFact({
-    eventKey: `task:${task.id}:capability-limit:${limitation.code}`,
-    conversationId,
-    sessionId,
-    taskId: task.id,
-    turnFrameId: turnFrame?.id,
-    runId,
-    actor: 'runtime',
-    factType: 'capability_limited',
-    payload: { capability: 'web_search', error_code: limitation.code },
-  });
-  emit(sessionId, runId, { type: 'final', text: finalText, status: 'failed', reason: 'capability_limit' });
-  touchConversation(conversationId);
-  settleTaskRun(sessionId, 'failed', { finished: true });
-  if (resumeJob) {
-    settleResumeJob(resumeJob.id, 'failed');
-    updateTask(sessionId, { resumeJobId: null });
-  }
-}
 
 async function execute(task) {
   const input = task.input || {};
@@ -237,7 +205,8 @@ async function execute(task) {
       attachments,
       userInputText: userQuery,
       sourceMessageId: task.user_message_id,
-      selectedUrls: turnFrame?.intent?.direct_url_policy?.inspect_urls || [],
+      // URL reading is a model tool choice, including when the user names a specific MCP.
+      selectedUrls: [],
       onEvent: (event) => emit(sessionId, runId, {
         ...event, type: 'progress', stage: event.type || 'attachment_progress', legacy_type: event.type,
         text: event.type === 'attachment_parse_start' ? `正在解析 ${event.source || '附件'}。` : event.status === 'error' ? `${event.source || '附件'}解析失败。` : `${event.source || '附件'}解析完成。`,
@@ -260,55 +229,27 @@ async function execute(task) {
       }) || turnFrame;
     }
     registerParsedInputSources({ sessionId, conversationId, parsedAttachments, attachments: loadAttachments(conversationId) });
-    const preparedMcpContext = await prepareMcpTools(session.mcp_selection, session.goal, session.mcp_session_permissions || {}, { forceRefresh: true });
+    const preparedMcpContext = turnFrame?.intent?.verification?.network_allowed === false
+      ? { tools: [], availableTools: [], map: {}, instructions: [] }
+      : await prepareMcpTools(session.mcp_selection, session.goal, session.mcp_session_permissions || {}, { forceRefresh: true });
     if (controller.signal.aborted || historyDiscarded()) return;
-    if (turnFrame) {
-      const mission = await executeRuntimeSearchMission({ session, task, frame: turnFrame, userQuery, llmConfig, runId, preparedMcpContext, signal: controller.signal });
-      if (historyDiscarded()) return;
-      turnFrame = mission.frame || turnFrame;
-      if (mission.executed && mission.receipt?.payload_unavailable) {
-        throw Object.assign(new Error('联网研究已经执行，但完整结果无法安全保存，后续步骤已停止。'), {
-          code: 'TOOL_RESULT_PAYLOAD_UNAVAILABLE',
-        });
-      }
-      const searchCapabilityLimitation = getSearchCapabilityLimitation(mission.result);
-      if (searchCapabilityLimitation && preparedMcpContext.tools.length === 0) {
-        finishWithCapabilityLimitation({ task, sessionId, conversationId, runId, turnFrame, limitation: searchCapabilityLimitation, resumeJob });
-        return;
-      }
-    }
-    let initialImages = [];
-    let currentImageRecognition = null;
-    if (images.length && task.user_message_id) {
-      const viewedImages = buildViewedImagePreviews(images, conversationId);
-      emit(sessionId, runId, {
-        type: 'progress',
-        stage: 'image_view_start',
-        text: `正在查看 ${images.length} 张图片。`,
-        conversation_id: conversationId,
-        message_id: task.user_message_id,
-        image_count: images.length,
-        images: viewedImages,
-      });
-      try {
-        currentImageRecognition = await recognizeConversationImages({ conversationId, messageId: task.user_message_id, images, llmConfig, signal: controller.signal, onUsage: (usage) => recordRunUsage({ sessionId, runId, sourceType: 'image_recognition', provider: llmConfig.llmProvider, model: llmConfig.llmModel, usage }) });
-        if (currentImageRecognition?.usage) recordRunUsage({ sessionId, sourceType: 'image_recognition', provider: llmConfig.llmProvider, model: llmConfig.llmModel, usage: currentImageRecognition.usage });
-        emit(sessionId, runId, { type: 'progress', stage: 'image_recognition_done', text: `已识别 ${currentImageRecognition?.recognizedCount || 0} 张图片${currentImageRecognition?.failedCount ? `，${currentImageRecognition.failedCount} 张未完成，可按需重试` : ''}。`, status: currentImageRecognition?.failedCount ? 'partial' : 'success', conversation_id: conversationId, message_id: task.user_message_id, image_count: images.length, images: viewedImages });
-        initialImages = [];
-      } catch (error) {
-        if (controller.signal.aborted) throw error;
-        try {
-          if (String(llmConfig.llmApiProtocol || '').toLowerCase() === 'anthropic') assertImageContextSize(images, MAX_ANTHROPIC_IMAGE_CONTEXT_BYTES);
-          initialImages = getImageInputBlocks(images, { messageId: task.user_message_id });
-        } catch {}
-        emit(sessionId, runId, { type: 'progress', stage: 'image_recognition_done', text: '图片查看未完成，任务将继续使用其他材料。', status: 'error', error: error.code || 'IMAGE_RECOGNITION_FAILED', conversation_id: conversationId, message_id: task.user_message_id, image_count: images.length, images: viewedImages });
-      }
-    }
+    // Keep only durable references in checkpoints; bytes are loaded at the Provider boundary.
+    const initialImages = images.map((image) => ({
+      type: 'image_reference',
+      image_ref: makeConversationImageReference(task.user_message_id, image.id),
+      name: image.name,
+      upload_order: image.upload_order,
+    })).sort((left, right) => Number(left.upload_order || 0) - Number(right.upload_order || 0));
+    if (initialImages.length) emit(sessionId, runId, {
+      type: 'progress', stage: 'image_view_start', text: `正在将 ${initialImages.length} 张原图交给模型。`,
+      conversation_id: conversationId, message_id: task.user_message_id,
+      image_count: initialImages.length, images: buildViewedImagePreviews(images, conversationId),
+    });
     if (historyDiscarded()) return;
     const loopResult = await runAgentLoop({
       sessionId, runId, llmConfig, signal: controller.signal, approvalMode: task.approval_mode,
       taskId: task.id, turnFrame, preparedMcpContext,
-      resumeInteractionId: Number(resumeJob?.interaction_id || input.resume_interaction_id || 0) || null, initialImages, currentImageRecognition,
+      resumeInteractionId: Number(resumeJob?.interaction_id || input.resume_interaction_id || 0) || null, initialImages,
       onStream: (event) => {
         if (event.type === 'final') {
           assistantText = String(event.text || '');
@@ -319,11 +260,16 @@ async function execute(task) {
       },
     });
     if (historyDiscarded()) return;
+    if (initialImages.length) emit(sessionId, runId, {
+      type: 'progress', stage: 'image_view_done', text: '本轮图片输入处理已结束。',
+      conversation_id: conversationId, message_id: task.user_message_id,
+      image_count: initialImages.length, images: buildViewedImagePreviews(images, conversationId),
+    });
     const finalSession = getSession(sessionId);
     const status = finalSession.status || loopResult?.status || 'failed';
     if (['completed', 'failed', 'cancelled'].includes(status)) markTaskChangeSetFinished(sessionId, status);
     if (status === 'waiting_interaction' && loopResult?.interaction?.id && !loopResult.interaction.message_id) {
-      const intro = String(loopResult.interaction?.payload?.clarify_intro || '').trim() || '请回答这张提问卡片后继续执行。';
+      const intro = String(loopResult.interaction?.payload?.clarify_intro || '').trim() || (loopResult.interaction.kind === 'resource_approval' ? '资源操作等待确认，确认后继续当前任务。' : '请回答这张提问卡片后继续执行。');
       const messageId = appendConversationMessage({ conversationId, role: 'assistant', content: intro, meta: { agent_loop: true, session_id: sessionId, status, answer_mode: 'clarify_needed', interaction_id: loopResult.interaction.id, interaction_kind: loopResult.interaction.kind || 'clarify_card', reason: loopResult.reason } });
       updateInteraction(loopResult.interaction.id, { messageId });
     }

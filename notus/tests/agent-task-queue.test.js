@@ -124,3 +124,26 @@ updateSessionStatus(newRun.sessionId,'completed');
 require('../lib/agentSession').recordRunEvent({sessionId:newRun.sessionId,event:{type:'final',status:'completed',text:'新答案'}});
 recoverOrphanedTasks();
 assert.deepStrictEqual(getDb().prepare("SELECT content FROM messages WHERE conversation_id=? AND role='assistant'").all(retriedConversation.id).map(r=>r.content),['新答案'],'新任务漏提交的答案仍须恢复');
+
+// 资源审批恢复必须幂等：同一 interaction 只发布一次 resource_resolution，
+// 崩溃重试不得重复发布事件或留下中间态。
+const recoveryConversation = ensureConversation({ kind: 'agent', title: '资源恢复幂等测试' });
+const recoverySession = createSession({ goal: '安装 Skill', authorizedPaths: [''], conversationId: recoveryConversation.id });
+createTask({ sessionId: recoverySession.sessionId, conversationId: recoveryConversation.id, input: { goal: '安装 Skill' } });
+updateSessionStatus(recoverySession.sessionId, 'waiting_interaction');
+updateTask(recoverySession.sessionId, { status: 'waiting_interaction' });
+const failedInteraction = getDb().prepare(`
+  INSERT INTO conversation_interactions (conversation_id, kind, source, status, reason_code, article_hash, payload_json, response_json)
+  VALUES (?, 'resource_approval', 'agent_loop', 'failed', 'resource_approval_requested', '', ?, ?)
+`).run(recoveryConversation.id, JSON.stringify({ agent_session_id: recoverySession.sessionId, action: 'skill_install' }), JSON.stringify({ error: 'GIT_UNAVAILABLE', message: '仓库失败' }));
+const resolutionEventCount = () => getDb().prepare(`SELECT count(*) AS n FROM agent_run_events
+  WHERE session_id = ? AND event_type = 'artifact' AND stage = 'resource_resolution'
+    AND json_extract(payload_json, '$.interaction_id') = ?`)
+  .get(recoverySession.sessionId, Number(failedInteraction.lastInsertRowid)).n;
+recoverOrphanedTasks();
+assert.equal(resolutionEventCount(), 1, '恢复必须为失败资源卡发布一次 resource_resolution');
+assert.equal(getDb().prepare('SELECT status FROM agent_sessions WHERE id = ?').get(recoverySession.sessionId).status, 'queued_resume', '恢复必须创建 resume job 并唤醒任务');
+// 模拟崩溃重试：session 仍停留在 waiting_interaction 时再次恢复，不得重复发布。
+updateSessionStatus(recoverySession.sessionId, 'waiting_interaction');
+recoverOrphanedTasks();
+assert.equal(resolutionEventCount(), 1, '重复恢复不得重复发布 resource_resolution');

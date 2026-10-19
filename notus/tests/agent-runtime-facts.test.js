@@ -38,13 +38,12 @@ async function runTests() {
   recordToolCallPrepared({ conversationId: conversation.id, sessionId: created.sessionId, taskId: task.id, actor: 'model', toolCallId: 'external-1', invocationKey: 'external-1', toolName: 'external_mcp', inputDigest: 'digest', replayPolicy: 'non_replayable' });
   recordToolCallPrepared({ conversationId: conversation.id, sessionId: created.sessionId, taskId: task.id, actor: 'model', toolCallId: 'read-1', invocationKey: 'read-1', toolName: 'read_file', inputDigest: 'digest', replayPolicy: 'read_only' });
   const reconciliation = reconcileUnresolvedToolCalls();
-  assert.ok(reconciliation.blocked_sessions.includes(created.sessionId));
-  assert.strictEqual(reconciliation.interactions.length, 1);
-  assert.ok(reconciliation.interactions[0].message_id);
+  assert.strictEqual(reconciliation.blocked_sessions.length, 0);
+  assert.strictEqual(reconciliation.interactions.length, 0);
   assert.strictEqual(getInvocationState('external-1').terminal.fact_type, 'tool_call_outcome_unknown');
   assert.strictEqual(getInvocationState('read-1').terminal, null);
-  assert.strictEqual(getSession(created.sessionId).status, 'waiting_interaction');
-  assert.strictEqual(getTaskBySession(created.sessionId).status, 'waiting_interaction');
+  assert.strictEqual(getSession(created.sessionId).status, 'created');
+  assert.strictEqual(getTaskBySession(created.sessionId).status, 'queued');
   assert.strictEqual(hasUnknownToolOutcome(created.sessionId), true);
   recordRuntimeFact({ eventKey: 'external-1:user-resolution:test', conversationId: conversation.id, sessionId: created.sessionId, taskId: task.id, actor: 'user', factType: 'tool_call_outcome_resolved', toolCallId: 'external-1', invocationKey: 'external-1', payload: { tool_name: 'external_mcp', resolution: 'confirmed_success' } });
   assert.strictEqual(hasUnknownToolOutcome(created.sessionId), false);
@@ -117,7 +116,7 @@ async function runTests() {
   await require('../lib/agentToolResultStore').archiveToolResult({ conversationId: conversation.id, sessionId: created.sessionId, taskId: task.id, toolCallId: 'archived-timeout', invocationKey: 'archived-timeout', toolName: 'external_mcp', result: { error: 'MCP_TIMEOUT', message: 'timeout' } });
   const timeoutRecovery = reconcileUnresolvedToolCalls();
   assert.strictEqual(getInvocationState('archived-timeout').terminal.fact_type, 'tool_call_outcome_unknown');
-  assert.strictEqual(timeoutRecovery.interactions.filter((item) => item?.payload?.invocation_key === 'archived-timeout').length, 1);
+  assert.strictEqual(timeoutRecovery.interactions.filter((item) => item?.payload?.invocation_key === 'archived-timeout').length, 0);
   assert.strictEqual(reconcileUnresolvedToolCalls().interactions.filter((item) => item?.payload?.invocation_key === 'archived-timeout').length, 0);
 
   const operationSet = require('../lib/canvasOperationSets').createOperationSet({ conversationId: conversation.id, agentSessionId: created.sessionId, toolUseId: 'operation-prepared', articleHash: 'hash', mode: 'create_file', patches: [{ file_path: 'x.md', old: '', new: 'x', status: 'applied' }], status: 'applied' });
@@ -143,6 +142,20 @@ async function runTests() {
   assert.strictEqual(getSession(rollbackCreated.sessionId).status, 'rolled_back');
   assert.strictEqual(getTaskBySession(rollbackCreated.sessionId).status, 'cancelled');
 
+  const interactions = require('../lib/conversationInteractions');
+  for (const terminal of [false, true]) {
+    const other = createSession({ goal: '正常审批保持', conversationId: conversation.id });
+    createTask({ sessionId: other.sessionId, conversationId: conversation.id, input: {} });
+    require('../lib/agentSession').updateSessionStatus(other.sessionId, terminal ? 'cancelled' : 'waiting_interaction');
+    require('../lib/agentTaskQueue').updateTask(other.sessionId, { status: terminal ? 'cancelled' : 'waiting_interaction' });
+    const staleCard = interactions.createInteraction({ conversationId: conversation.id, kind: 'clarify_card', source: 'agent_loop', reasonCode: 'tool_outcome_unknown', payload: { origin: 'tool_outcome_recovery', agent_session_id: other.sessionId } });
+    const normalCard = interactions.createInteraction({ conversationId: conversation.id, kind: 'resource_approval', source: 'agent_loop', reasonCode: 'test', payload: { agent_session_id: other.sessionId, action: 'skill_install' } });
+    reconcileUnresolvedToolCalls();
+    assert.strictEqual(interactions.getInteractionById(staleCard.id).status, 'cancelled');
+    assert.strictEqual(interactions.getInteractionById(normalCard.id).status, 'pending');
+    assert.strictEqual(getSession(other.sessionId).status, terminal ? 'cancelled' : 'waiting_interaction');
+    assert.strictEqual(getTaskBySession(other.sessionId).status, terminal ? 'cancelled' : 'waiting_interaction');
+  }
   console.log('agent runtime facts tests passed');
 }
 

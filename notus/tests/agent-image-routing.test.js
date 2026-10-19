@@ -21,7 +21,7 @@ assert.ok(startRoute.includes('function persistedImages(images, conversationId, 
 assert.ok(startRoute.includes('images: persistedImages(media.images, conversation.id, userMessageId),'));
 assert.ok(taskWorker.includes('const attachments = assertAttachmentLimits(conversationId, media.attachments);'));
 assert.ok(taskWorker.includes('const images = assertImageLimits(conversationId, media.images);'));
-assert.ok(taskWorker.includes('initialImages = getImageInputBlocks(images, { messageId: task.user_message_id });'));
+assert.ok(taskWorker.includes("type: 'image_reference'"));
 assert.ok(inputSources.includes('function isImageAttachment(attachment = {})'));
 assert.ok(inputSources.includes('filter((attachment) => !isImageAttachment(attachment))'));
 assert.ok(controller.includes('function buildUserMessageMedia(input = {}, conversationId = null)'));

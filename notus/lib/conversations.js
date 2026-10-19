@@ -9,6 +9,7 @@ const {
 const DEFAULT_TITLE = '新对话';
 const ACTIVE_AGENT_SESSION_STATUSES = [
   'waiting_interaction',
+  'waiting_operation_confirmation',
   'waiting_limit_confirmation',
   'waiting_retry',
   'waiting_model_recovery',
@@ -19,6 +20,7 @@ const ACTIVE_AGENT_SESSION_STATUSES = [
 const AGENT_SESSION_STATUS_PRIORITY_SQL = `
   CASE s.status
     WHEN 'waiting_interaction' THEN 0
+    WHEN 'waiting_operation_confirmation' THEN 0
     WHEN 'waiting_limit_confirmation' THEN 1
     WHEN 'waiting_retry' THEN 2
     WHEN 'waiting_model_recovery' THEN 2
@@ -164,7 +166,7 @@ function listConversations({ kind = null, fileId, draftKey, query = '', limit = 
       COALESCE((SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id AND m.role IN ('user','assistant')), 0) AS message_count,
       COALESCE((SELECT COUNT(*) FROM agent_sessions s WHERE s.conversation_id = c.id), 0) AS agent_session_count,
       COALESCE((
-        SELECT s.status
+        SELECT CASE WHEN s.status = 'waiting_interaction' AND EXISTS (SELECT 1 FROM conversation_interactions i WHERE json_extract(i.payload_json, '$.agent_session_id') = s.id AND i.kind = 'resource_approval' AND i.status IN ('pending','processing')) THEN 'waiting_resource_confirmation' ELSE s.status END
         FROM agent_sessions s
         WHERE s.conversation_id = c.id
           AND s.status IN (${activeStatusPlaceholders})
@@ -360,7 +362,28 @@ function getConversationMessages(conversationId) {
     WHERE conversation_id = ?
     ORDER BY id ASC
   `).all(normalizedConversationId);
-  return rows.map(parseMessageRow);
+  const messages = rows.map(parseMessageRow);
+  const linked = messages.filter(message => message.role === 'assistant'
+    && normalizeNullablePositiveInt(message.meta?.session_id) && message.content?.includes('notus://file/'));
+  if (linked.length === 0) return messages;
+  try {
+    const files = require('./files').getAllFiles({ skipSync: true });
+    const { listOperationSetsBySession } = require('./canvasOperationSets');
+    const { normalizeFinalAgentFileLinks } = require('./agentFileLinkResolver');
+    const setsBySession = new Map();
+    for (const message of linked) {
+      const sessionId = Number(message.meta.session_id);
+      if (!setsBySession.has(sessionId)) {
+        setsBySession.set(sessionId, listOperationSetsBySession(sessionId, { includeDiff: false, skipCleanup: true }));
+      }
+      message.content = normalizeFinalAgentFileLinks(message.content, sessionId, {
+        files, operationSets: setsBySession.get(sessionId),
+      });
+    }
+  } catch {
+    // A failed file scan must not make conversation history unavailable.
+  }
+  return messages;
 }
 
 function getConversationMessageById(messageId) {

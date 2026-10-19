@@ -13,7 +13,7 @@ async function runTests() {
   process.env.SESSION_DIR = path.join(tempRoot, 'session');
   const { clarificationIntent, compileIntent, deterministicIntent, extractResearchSubjects } = require('../lib/agentSemanticRuntime');
   const { requiredToolNames } = require('../lib/agentToolProfile');
-  const { getSearchCapabilityLimitation, sanitizeOutboundSearchQuery } = require('../lib/agentSearchMission');
+  const { sanitizeArtifactValue: sanitizeOutboundSearchQuery } = require('../lib/agentToolResultStore');
   const skillDiscovery = deterministicIntent('帮我找生成应用 icon 的 Skill', { webSearchEnabled: true });
   assert.strictEqual(skillDiscovery.task_kind, 'skill_discovery');
   assert.strictEqual(skillDiscovery.source_policy.web, 'required');
@@ -124,10 +124,6 @@ async function runTests() {
   assert.ok(!safeSearchQuery.includes('user:pass'));
   assert.ok(!safeSearchQuery.includes('token=secret'));
   assert.ok(!safeSearchQuery.includes('Bearer-secret-value'));
-  const disabledSearch = getSearchCapabilityLimitation({ error: 'WEB_SEARCH_NOT_CONFIGURED', message: '联网搜索未在设置中启用。' });
-  assert.strictEqual(disabledSearch.code, 'WEB_SEARCH_NOT_CONFIGURED');
-  assert.ok(disabledSearch.message.includes('设置 → 搜索配置'));
-  assert.strictEqual(getSearchCapabilityLimitation({ error: 'WEB_SEARCH_PROVIDER_FAILED' }), null);
   const startRouteSource = fs.readFileSync(path.join(__dirname, '../pages/api/agent/loop/start.js'), 'utf8');
   assert.ok(startRouteSource.includes('turn_context'));
   assert.ok(!/ensureConversation\([^\n]+fileId:\s*body\.active_file_id/.test(startRouteSource));

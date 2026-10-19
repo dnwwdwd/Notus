@@ -64,6 +64,7 @@ async function runTests() {
   try {
     const { ensureConversation } = require('../lib/conversations');
     const { createSession, getSession, updateSessionStatus, updateSessionLoopCount } = require('../lib/agentSession');
+    const { getSessionUsage } = require('../lib/agentControlPlane');
     const { runAgentLoop } = require('../lib/agentLoop');
     const { getDb } = require('../lib/db');
     const conversation = ensureConversation({ kind: 'canvas', title: '不限轮次测试' });
@@ -100,10 +101,12 @@ async function runTests() {
     const budget = makeSession();
     getDb().prepare('UPDATE agent_sessions SET token_budget_total = 1 WHERE id = ?').run(budget.sessionId);
     llmCallCount = 0;
-    const budgetResult = await runAgentLoop({ sessionId: budget.sessionId, approvalMode: 'auto_confirm', llmConfig: { llmContextWindowTokens: 1000000 } });
-    assert.equal(budgetResult.reason, 'token_budget_reached');
-    assert.equal(getSession(budget.sessionId).status, 'waiting_limit_confirmation');
-    assert.equal(llmCallCount, 1, '预算耗尽后不再请求模型');
+    const budgetEvents = [];
+    const budgetResult = await runAgentLoop({ sessionId: budget.sessionId, approvalMode: 'auto_confirm', llmConfig: { llmContextWindowTokens: 1000000 }, onStream: e => budgetEvents.push(e) });
+    assert.equal(budgetResult.status, 'completed', '累计预算不再约束任务，照常完成');
+    assert.ok(!budgetEvents.some(e => e.stage === 'budget_auto_extended'), '预算闸门已移除，不再产生扩展事件');
+    assert.ok(getSessionUsage(budget.sessionId).total_tokens > 0, '用量仍逐笔记录');
+    assert.equal(llmCallCount, 36, '任务完整执行完毕');
 
     const vm = require('node:vm');
     const source = fs.readFileSync(require.resolve('../hooks/useAgentLoopController.js'), 'utf8');

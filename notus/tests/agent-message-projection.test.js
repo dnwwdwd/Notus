@@ -88,7 +88,7 @@ async function main() {
   const originalJson = JSON.stringify(largeReads);
   const projectedLarge = evictOldReadWindows(largeReads, 10000);
   const evicted = JSON.parse(projectedLarge[2].content[0].content);
-  assert.strictEqual(evicted.status, 'read_window_evicted');
+  assert.strictEqual(evicted.status, 'tool_result_evicted');
   assert.strictEqual(evicted.read_arguments.result_ref, receipt.result_ref);
   assert.equal(evicted.next_offset,20000);
   assert.equal(JSON.stringify(largeReads),originalJson,'不能修改checkpoint原始消息');
@@ -96,7 +96,11 @@ async function main() {
   const smallUnderPressure = structuredClone(largeReads);
   smallUnderPressure.splice(1,0,{role:'assistant',content:[use('directory','list_file_images',{path:'article.md'})]},
     {role:'user',content:[result('directory',{items:[{ref:'note-image://1/reference/0'}]})]});
-  assert.ok(JSON.stringify(evictOldReadWindows(smallUnderPressure,10000)[2]).includes('note-image://'),'压力下先回收大窗口，保留小目录');
+  const { evictOldToolResults, KEEP_RECENT_TOOL_RESULTS } = require('../lib/agentMessageProjection');
+  const projectedSmall = evictOldToolResults(smallUnderPressure, 10000);
+  const pressureResults = projectedSmall.flatMap(m=>m.content||[]).filter(b=>b.type==='tool_result');
+  const pressureEvicted = pressureResults.filter(b=>JSON.parse(b.content).status==='tool_result_evicted').length;
+  assert.equal(pressureResults.length - pressureEvicted, KEEP_RECENT_TOOL_RESULTS, '压力下无论大小只保留最近 N 个工具结果，其余按引用占位');
   console.log('agent message projection tests passed');
 }
 main().catch((e) => { console.error(e); process.exitCode = 1; });

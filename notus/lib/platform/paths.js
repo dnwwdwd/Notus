@@ -18,6 +18,7 @@ function buildDefaultLayout(runtimeTarget, cwd = process.cwd()) {
       sessionDir: path.join(dataRoot, 'session'),
       agentDir: path.join(dataRoot, 'agent'),
       toolResultDir: path.join(dataRoot, 'agent-tool-results'),
+      importStagingDir: path.join(dataRoot, 'import-staging'),
     };
   }
 
@@ -32,6 +33,8 @@ function buildDefaultLayout(runtimeTarget, cwd = process.cwd()) {
       sessionDir: '/lzcapp/cache/notus/session',
       agentDir: path.join(dataRoot, 'agent'),
       toolResultDir: path.join(dataRoot, 'agent-tool-results'),
+      // 分片暂存是临时数据，固定派生自 dataRoot，不进入备份清单。
+      importStagingDir: path.join(dataRoot, 'import-staging'),
     };
   }
 
@@ -45,6 +48,7 @@ function buildDefaultLayout(runtimeTarget, cwd = process.cwd()) {
     sessionDir: path.join(dataRoot, '.session'),
     agentDir: path.join(dataRoot, 'agent'),
     toolResultDir: path.join(dataRoot, 'agent-tool-results'),
+    importStagingDir: path.join(dataRoot, 'import-staging'),
   };
 }
 
@@ -58,6 +62,7 @@ function derivePathsFromDataRoot(runtimeTarget, dataRoot) {
       sessionDir: path.join(dataRoot, '.session'),
       agentDir: path.join(dataRoot, 'agent'),
       toolResultDir: path.join(dataRoot, 'agent-tool-results'),
+      importStagingDir: path.join(dataRoot, 'import-staging'),
     };
   }
 
@@ -70,6 +75,7 @@ function derivePathsFromDataRoot(runtimeTarget, dataRoot) {
       sessionDir: '/lzcapp/cache/notus/session',
       agentDir: path.join(dataRoot, 'agent'),
       toolResultDir: path.join(dataRoot, 'agent-tool-results'),
+      importStagingDir: path.join(dataRoot, 'import-staging'),
     };
   }
 
@@ -81,6 +87,7 @@ function derivePathsFromDataRoot(runtimeTarget, dataRoot) {
     sessionDir: path.join(dataRoot, 'session'),
     agentDir: path.join(dataRoot, 'agent'),
     toolResultDir: path.join(dataRoot, 'agent-tool-results'),
+    importStagingDir: path.join(dataRoot, 'import-staging'),
   };
 }
 
@@ -103,6 +110,9 @@ function resolvePlatformPaths(env = process.env, options = {}) {
     // 工具结果清理器会删除自身管理的孤立文件，因此目录必须固定在 dataRoot 内，
     // 不允许通过环境变量指向工作区、用户目录或共享目录。
     toolResultDir: path.join(dataRoot, 'agent-tool-results'),
+    // 分片上传暂存同样固定在 dataRoot（懒猫为 cache）内：它属于临时运行数据，
+    // 不参与备份清单，也不允许通过环境变量指向工作区。
+    importStagingDir: derived.importStagingDir,
   };
 }
 

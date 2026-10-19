@@ -49,7 +49,11 @@ export default async function handler(req, res) {
       });
     } catch (error) {
       logger.error('files.create.failed', { error, body: req.body || null });
-      return res.status(400).json({ error: error.message, code: 'FILE_CREATE_FAILED', request_id: context.request_id });
+      return res.status(error.code === 'FILE_ALREADY_EXISTS' ? 409 : 400).json({
+        error: error.message,
+        code: error.code === 'FILE_ALREADY_EXISTS' ? error.code : 'FILE_CREATE_FAILED',
+        request_id: context.request_id,
+      });
     }
   }
 

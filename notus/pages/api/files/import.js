@@ -1,6 +1,6 @@
 const { ensureRuntime } = require('../../../lib/runtime');
-const { ensureMarkdownPath, getFileByPath, normalizeRelativePath, saveFileByPath } = require('../../../lib/files');
-const { indexFileWithFallback } = require('../../../lib/fileIndexing');
+const { importFileBatch, pruneImportJobs, resolveBudgets, DEFAULT_MAX_FILES, DEFAULT_MAX_BYTES } = require('../../../lib/fileImport');
+const { normalizeJobId } = require('../../../lib/importJobs');
 const { createLogger, createRequestContext } = require('../../../lib/logger');
 
 export const config = {
@@ -13,12 +13,6 @@ export const config = {
 
 function send(res, payload) {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
-}
-
-function buildTargetPath(parentPath, name) {
-  const normalizedName = normalizeRelativePath(String(name || '').replace(/\\/g, '/'));
-  const normalizedParent = parentPath ? normalizeRelativePath(parentPath) : '';
-  return ensureMarkdownPath([normalizedParent, normalizedName].filter(Boolean).join('/'));
 }
 
 export default async function handler(req, res) {
@@ -38,6 +32,9 @@ export default async function handler(req, res) {
     parentPath = '',
     conflict_policy: conflictPolicy = 'skip',
     files = [],
+    job_id: jobId = '',
+    max_files: maxFiles,
+    max_bytes: maxBytes,
   } = req.body || {};
 
   if (!Array.isArray(files) || files.length === 0) {
@@ -46,107 +43,70 @@ export default async function handler(req, res) {
   if (!['skip', 'overwrite'].includes(conflictPolicy)) {
     return res.status(400).json({ error: 'conflict_policy must be skip or overwrite', code: 'INVALID_CONFLICT_POLICY', request_id: context.request_id });
   }
+  let resolvedJobId = '';
+  try {
+    resolvedJobId = normalizeJobId(jobId);
+  } catch (error) {
+    return res.status(400).json({ error: error.message, code: error.code || 'IMPORT_JOB_ID_INVALID', request_id: context.request_id });
+  }
+
+  const budgets = resolveBudgets({ maxFiles, maxBytes });
 
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
 
-  const summary = {
-    imported: 0,
-    overwritten: 0,
-    skipped: 0,
-    failed: 0,
-    warnings: 0,
-    errors: [],
-    warning_items: [],
-  };
-
   logger.info('files.import.started', {
     total: files.length,
     parent_path: parentPath || '',
     conflict_policy: conflictPolicy,
+    job_id: resolvedJobId || null,
+    max_files: budgets.maxFiles,
+    max_bytes: budgets.maxBytes,
   });
 
-  for (let index = 0; index < files.length; index += 1) {
-    const current = files[index] || {};
-    const displayName = current.name || `文件-${index + 1}.md`;
-    send(res, {
-      type: 'progress',
-      stage: 'saving',
-      current: index + 1,
-      total: files.length,
-      currentFile: displayName,
-    });
-
-    try {
-      const targetPath = buildTargetPath(parentPath, displayName);
-      if (!/\.md$/i.test(targetPath)) {
-        throw new Error('仅支持导入 .md 文件');
-      }
-
-      const existing = getFileByPath(targetPath);
-    if (existing && conflictPolicy === 'skip') {
-      summary.skipped += 1;
-        send(res, {
-          type: 'file',
-          status: 'skipped',
-          name: displayName,
-          path: targetPath,
-        });
-        continue;
-      }
-
-      const saved = saveFileByPath(targetPath, String(current.content || ''), {
-        titleFromFileName: true,
-      });
-      send(res, {
-        type: 'progress',
-        stage: 'indexing',
-        current: index + 1,
-        total: files.length,
-        currentFile: saved.path,
-      });
-
-      const indexResult = await indexFileWithFallback(saved.path, logger, { action: 'import' });
-      if (existing) summary.overwritten += 1;
-      else summary.imported += 1;
-      if (indexResult.warning) {
-        summary.warnings += 1;
-        summary.warning_items.push({ path: saved.path, error: indexResult.warning });
-      }
-
-      send(res, {
-        type: 'file',
-        status: existing ? 'overwritten' : 'imported',
-        id: saved.id,
-        name: displayName,
-        path: saved.path,
-        indexed: indexResult.indexed,
-        warning: indexResult.warning,
-        warning_code: indexResult.warning_code,
-      });
-    } catch (error) {
-      summary.failed += 1;
-      summary.errors.push({ name: displayName, error: error.message });
-      logger.error('files.import.file_failed', { file_name: displayName, error });
-      send(res, {
-        type: 'file',
-        status: 'failed',
-        name: displayName,
-        error: error.message,
-      });
-    }
+  try {
+    pruneImportJobs();
+  } catch (error) {
+    logger.warn('files.import.prune_failed', { error });
   }
 
-  logger.info('files.import.completed', {
+  const result = await importFileBatch({
+    parentPath,
+    conflictPolicy,
+    files,
+    jobId: resolvedJobId,
+    maxFiles: budgets.maxFiles,
+    maxBytes: budgets.maxBytes,
+    logger,
+    onEvent: (event) => send(res, event),
+  });
+
+  const { summary, remaining } = result;
+  const paused = remaining > 0;
+
+  logger.info(paused ? 'files.import.paused' : 'files.import.completed', {
     total: files.length,
     imported: summary.imported,
     overwritten: summary.overwritten,
     skipped: summary.skipped,
     failed: summary.failed,
     warnings: summary.warnings,
+    remaining,
+    job_id: resolvedJobId || null,
   });
 
-  send(res, { type: 'done', ...summary, total: files.length, request_id: context.request_id });
+  send(res, {
+    type: 'done',
+    ...summary,
+    total: files.length,
+    processed: result.processed,
+    remaining,
+    paused,
+    job_id: resolvedJobId || null,
+    default_max_files: DEFAULT_MAX_FILES,
+    default_max_bytes: DEFAULT_MAX_BYTES,
+    request_id: context.request_id,
+  });
   res.end();
 }

@@ -18,6 +18,7 @@ function ensureDirs(config) {
   fs.mkdirSync(config.sessionDir, { recursive: true });
   fs.mkdirSync(config.agentDir, { recursive: true });
   fs.mkdirSync(config.toolResultDir, { recursive: true });
+  if (config.importStagingDir) fs.mkdirSync(config.importStagingDir, { recursive: true });
 }
 
 function scheduleRetries() {

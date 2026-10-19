@@ -11,6 +11,16 @@ import { useAppStatus } from '../contexts/AppStatusContext';
 import { usePlatform } from '../contexts/PlatformContext';
 import { findEmbeddingModelMeta, inferEmbeddingProvider } from '../lib/embeddingForm';
 import { desktop as desktopClient } from '../utils/platformClient';
+import {
+  IMPORT_MAX_BATCH_BYTES,
+  IMPORT_MAX_BATCH_FILES,
+  createImportJobId,
+  estimateUtf8Bytes,
+  planImportBatches,
+  runImportBatches,
+  shouldUseChunkedUpload,
+  uploadChunkedFile,
+} from '../utils/importQueue';
 
 const SETUP_STEP_STORAGE_KEY = 'notus-setup-step';
 
@@ -101,7 +111,9 @@ async function consumeSseResponse(response, onPayload) {
     } catch {
       message = await response.text();
     }
-    throw new Error(message);
+    const error = new Error(message);
+    error.status = response.status;
+    throw error;
   }
   if (!response.body) throw new Error('接口没有返回可读取的流');
 
@@ -796,53 +808,150 @@ export default function SetupPage() {
       };
     }
 
-    const payloadFiles = await Promise.all(
-      selectedImportFiles.map(async (file) => ({
-        name: getImportEntryLabel(file),
-        content: await file.text(),
-      }))
-    );
-
-    let summary = null;
-    const importedPaths = [];
-    const response = await fetch('/api/files/import', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        conflict_policy: 'skip',
-        files: payloadFiles,
-      }),
-    });
-
-    await consumeSseResponse(response, (event) => {
-      if (event.type === 'progress') {
-        setStep3Progress({
-          stage: event.stage || 'importing',
-          current: event.current || 0,
-          total: event.total || payloadFiles.length,
-          currentFile: event.currentFile || '',
-        });
-      }
-      if (event.type === 'file' && ['imported', 'overwritten'].includes(event.status) && event.path) {
-        importedPaths.push(String(event.path));
-      }
-      if (event.type === 'file' && (event.status === 'failed' || event.warning)) {
-        setStep3Errors((prev) => [...prev, { name: event.name, path: event.path, error: event.error || event.warning }]);
-      }
-      if (event.type === 'done') {
-        summary = {
-          indexed: Math.max((event.imported || 0) + (event.overwritten || 0) - (event.warnings || 0), 0),
-          skipped: event.skipped || 0,
-          warnings: event.warnings || 0,
-          failed: event.failed || 0,
-          errors: [...(event.errors || []), ...(event.warning_items || [])],
+    const jobId = createImportJobId();
+    const entries = await Promise.all(
+      selectedImportFiles.map(async (file) => {
+        const content = await file.text();
+        return {
+          name: getImportEntryLabel(file),
+          content,
+          size: estimateUtf8Bytes(content),
         };
-        setStep3Summary(summary);
-        if (event.errors?.length || event.warning_items?.length) {
-          setStep3Errors((prev) => [...prev, ...(event.errors || []), ...(event.warning_items || [])]);
+      })
+    );
+    const batches = planImportBatches(
+      entries.filter((entry) => !shouldUseChunkedUpload(entry.size)),
+      { maxBatchBytes: IMPORT_MAX_BATCH_BYTES, maxBatchFiles: IMPORT_MAX_BATCH_FILES }
+    );
+    const chunkedEntries = entries.filter((entry) => shouldUseChunkedUpload(entry.size));
+
+    const importedPaths = [];
+    const summary = { indexed: 0, skipped: 0, warnings: 0, failed: 0, errors: [] };
+
+    // 引导页导入与文件树导入共用同一分批协议：单批失败不影响已导入文件，
+    // 已成功文件由 job 记录回放，超限单批会自动拆分重试。
+    const outcome = await runImportBatches({
+      batches,
+      submitBatch: async ({ files: batchEntries, batchIndex, batchCount }) => {
+        const response = await fetch('/api/files/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            conflict_policy: 'skip',
+            job_id: jobId,
+            files: batchEntries.map((entry) => ({ name: entry.name, content: entry.content })),
+          }),
+        });
+
+        let batchSummary = null;
+        await consumeSseResponse(response, (event) => {
+          if (event.type === 'progress') {
+            setStep3Progress({
+              stage: event.stage || 'importing',
+              current: event.current || 0,
+              total: event.total || batchEntries.length,
+              currentFile: batchCount > 1
+                ? `第 ${batchIndex + 1} / ${batchCount} 批 · ${event.currentFile || ''}`
+                : (event.currentFile || ''),
+            });
+          }
+          if (event.type === 'file' && ['imported', 'overwritten'].includes(event.status) && event.path) {
+            importedPaths.push(String(event.path));
+          }
+          if (event.type === 'file' && (event.status === 'failed' || event.warning)) {
+            setStep3Errors((prev) => [...prev, { name: event.name, path: event.path, error: event.error || event.warning }]);
+          }
+          if (event.type === 'done') {
+            batchSummary = event;
+          }
+        });
+
+        const processed = Number(batchSummary?.processed) || batchEntries.length;
+        const paused = Boolean(batchSummary?.paused) && processed < batchEntries.length;
+        if (batchSummary) {
+          summary.indexed += Math.max(
+            (batchSummary.imported || 0) + (batchSummary.overwritten || 0) - (batchSummary.warnings || 0),
+            0
+          );
+          summary.skipped += batchSummary.skipped || 0;
+          summary.warnings += batchSummary.warnings || 0;
+          summary.failed += batchSummary.failed || 0;
+          summary.errors.push(...(batchSummary.errors || []), ...(batchSummary.warning_items || []));
         }
-      }
+        setStep3Summary({ ...summary });
+        return { paused, processed, summary: batchSummary };
+      },
     });
+
+    if (outcome.batchErrors.length > 0) {
+      summary.errors.push(...outcome.batchErrors.map((error) => ({ name: '未完成批次', error })));
+      setStep3Errors((prev) => [...prev, ...outcome.batchErrors.map((error) => ({ name: '未完成批次', error }))]);
+      setStep3Summary({ ...summary });
+    }
+
+    // 分片通道：超过单次请求安全体积的文件按片提交，单片失败按同一策略重发；
+    // 单个文件失败只记录该文件，不影响其余文件与已完成结果。
+    for (const entry of chunkedEntries) {
+      try {
+        await uploadChunkedFile({
+          name: entry.name,
+          content: entry.content,
+          jobId,
+          onProgress: ({ received, totalChunks, retrying }) => {
+            setStep3Progress({
+              stage: 'chunk',
+              current: received,
+              total: totalChunks,
+              currentFile: retrying
+                ? `${entry.name}：分片连接中断，正在重试…`
+                : `${entry.name}：分片 ${received} / ${totalChunks}`,
+            });
+          },
+          submitChunk: async ({ chunkIndex, totalChunks, content: chunkContent }) => {
+            const response = await fetch('/api/files/import/chunk', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                conflict_policy: 'skip',
+                job_id: jobId,
+                name: entry.name,
+                chunk_index: chunkIndex,
+                total_chunks: totalChunks,
+                content: chunkContent,
+              }),
+            });
+
+            let chunkSummary = null;
+            await consumeSseResponse(response, (event) => {
+              if (event.type === 'file' && ['imported', 'overwritten'].includes(event.status) && event.path) {
+                importedPaths.push(String(event.path));
+              }
+              if (event.type === 'file' && (event.status === 'failed' || event.warning)) {
+                setStep3Errors((prev) => [...prev, { name: event.name, path: event.path, error: event.error || event.warning }]);
+              }
+              if (event.type === 'done') chunkSummary = event;
+            });
+
+            if (chunkSummary?.errors?.length) {
+              const error = new Error(chunkSummary.errors[0].error || '分片处理失败');
+              error.status = 0;
+              throw error;
+            }
+            if (chunkSummary?.failed) summary.failed += chunkSummary.failed;
+            if (chunkSummary?.imported) summary.indexed += chunkSummary.imported;
+            if (chunkSummary?.overwritten) summary.indexed += chunkSummary.overwritten;
+            setStep3Summary({ ...summary });
+            return { received: chunkIndex + 1, complete: Boolean(chunkSummary?.complete) };
+          },
+        });
+      } catch (error) {
+        const message = error?.message || '分片上传失败';
+        summary.failed += 1;
+        summary.errors.push({ name: entry.name, error: message });
+        setStep3Errors((prev) => [...prev, { name: entry.name, error: message }]);
+        setStep3Summary({ ...summary });
+      }
+    }
 
     return {
       summary,

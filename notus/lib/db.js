@@ -21,6 +21,8 @@ const agentSemanticRuntimeMigration = require('./migrations/013_agent_semantic_r
 const agentCheckpointProjectionColumnsMigration = require('./migrations/014_agent_checkpoint_projection_columns');
 const agentConversationContextMigration = require('./migrations/015_agent_conversation_context');
 const revisionBasePathMigration = require('./migrations/016_revision_base_path');
+const fileImportJobsMigration = require('./migrations/017_file_import_jobs');
+const fileImportChunksMigration = require('./migrations/018_file_import_chunks');
 
 let db = null;
 let vecAvailable = false;
@@ -72,7 +74,7 @@ function runMigrations(database) {
     );
   `);
 
-  [agentLoopMigration, agentControlPlaneMigration, agentRunTimelineMigration, agentTaskQueueMigration, orphanVectorCleanupMigration, agentExecutionChangesMigration, agentQueueResumeRequestMigration, agentResumeJobBindingMigration, agentSemanticRuntimeMigration, agentCheckpointProjectionColumnsMigration, agentConversationContextMigration, revisionBasePathMigration].forEach((migration) => {
+  [agentLoopMigration, agentControlPlaneMigration, agentRunTimelineMigration, agentTaskQueueMigration, orphanVectorCleanupMigration, agentExecutionChangesMigration, agentQueueResumeRequestMigration, agentResumeJobBindingMigration, agentSemanticRuntimeMigration, agentCheckpointProjectionColumnsMigration, agentConversationContextMigration, revisionBasePathMigration, fileImportJobsMigration, fileImportChunksMigration].forEach((migration) => {
     const version = Number(migration.version);
     if (!Number.isFinite(version) || version <= 0 || typeof migration.up !== 'function') return;
     const applied = database.prepare('SELECT version FROM schema_version WHERE version = ?').get(version);

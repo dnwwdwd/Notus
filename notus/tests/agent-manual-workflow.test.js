@@ -178,6 +178,29 @@ async function main() {
   t = task(); plan = [tool('create_note', { path: 'nested/deep/article.md', content: '# Nested' })]; r = await run(t);
   assert(!fs.existsSync(path.join(root, 'notes/nested'))); assert((await apply(t, r)).result.success); assert(getFileByPath('nested/deep/article.md')); await run(t);
 
+  // 跨批依赖回滚必须倒序；回滚前批时也要结束正在等待后批确认的任务。
+  for (let i = 0; i < 25; i += 1) {
+    t = task();
+    const first = await tools.executeCreateNote({path:`rollback-${i}.md`,content:'# Rollback\n\nalpha'},t.id);
+    assert((await tools.applyPreviewWithConflictCheck(first.operation_set_id,t.id)).success);
+    const second = await tools.executePreviewPatchFiles({patches:[{file_path:`rollback-${i}.md`,old:'alpha',new:'beta'}]},t.id);
+    assert((await tools.applyPreviewWithConflictCheck(second.operation_set_id,t.id)).success);
+    assert.equal((await tools.rollbackPreviewPatchFile(first.operation_set_id,t.id,{patchIndex:0})).error,'LATER_OPERATION_APPLIED');
+    assert(getFileByPath(`rollback-${i}.md`).content.includes('beta'));
+    assert((await tools.rollbackPreviewPatchFile(second.operation_set_id,t.id,{patchIndex:0})).success);
+    assert((await tools.rollbackPreviewPatchFile(first.operation_set_id,t.id,{patchIndex:0})).success);
+    assert(!getFileByPath(`rollback-${i}.md`));
+  }
+  t=task();
+  const earlier=await tools.executeCreateNote({path:'earlier.md',content:'# Earlier'},t.id);
+  assert((await tools.applyPreviewWithConflictCheck(earlier.operation_set_id,t.id)).success);
+  plan=[tool('create_note',{path:'later.md',content:'# Later'})];
+  const later=await run(t); assert.equal(later.status,'waiting_operation_confirmation');
+  const undone=await tools.rollbackPreviewPatchFile(earlier.operation_set_id,t.id,{patchIndex:0});
+  assert(undone.success);
+  resolveManualConfirmation({sessionId:t.id,operationSetId:earlier.operation_set_id,action:'rollback_file',toolResult:undone});
+  assert.equal(getSession(t.id).status,'cancelled'); assert(!getFileByPath('later.md'));
+
   // 超过 JS 参数展开上限的全文 Diff，包含大量相同后缀。
   const long = Array.from({ length: 150000 }, (_, i) => `line ${i}`).join('\n');
   assert.equal(createDiffHunks('', long)[0].newLines, 150000);

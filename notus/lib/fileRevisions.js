@@ -2,7 +2,9 @@ const fs = require('fs');
 const path = require('path');
 const { getDb } = require('./db');
 const { getEffectiveConfig } = require('./config');
-const { getFileByPath, updateFile } = require('./files');
+const { getFileByPath, getFileById, resolveFileReferencePath, updateFile } = require('./files');
+const { repairImageHeadingMarkdown } = require('../utils/markdownImageHeadings');
+const { parseFrontmatter } = require('./markdownMeta');
 const { triggerIncrementalIndex } = require('./indexer');
 const {
   createDiffHunks,
@@ -65,7 +67,7 @@ function extractGoalFilePath(goal = '') {
 
 function resolveRevisionFilePath(session = {}, inputPath = '') {
   const explicit = String(inputPath || '').trim();
-  if (explicit) return normalizeAgentPath(explicit, { ensureMarkdown: true });
+  if (explicit) return resolveFileReferencePath(explicit);
 
   const row = getDb().prepare(`
     SELECT files.path
@@ -182,6 +184,98 @@ function startsWithFrontmatter(content = '') {
   return /^---\n[\s\S]*?\n---(?:\n|$)/.test(normalizeRevisionContent(content));
 }
 
+// 全文修订草稿通常只包含正文。原文的 frontmatter（含 Notus 内部 id 与用户元数据）
+// 不应因为模型没有重复输出就丢失：草稿缺少 frontmatter 时原样保留原文元数据。
+// 模型显式提交新的合法 frontmatter，或用户明确要求删除元数据时，以草稿为准。
+function hasExplicitFrontmatterRemovalIntent(goal = '') {
+  const text = String(goal || '').trim();
+  if (!text) return false;
+  return [
+    /(删除|移除|去掉|清除)[^。！？；\n]{0,12}(frontmatter|元数据|头部属性|文件属性)/i,
+    /(frontmatter|元数据)[^。！？；\n]{0,12}(删除|移除|去掉|清除)/i,
+  ].some((pattern) => pattern.test(text));
+}
+
+function looksLikeFrontmatterStart(content = '') {
+  // 只把“开头连续若干行都是 key: value”视为残缺 frontmatter；
+  // 正文分隔线后跟普通段落或 URL 时不提示。
+  const lines = normalizeRevisionContent(content).split('\n').slice(1);
+  const head = [];
+  for (const line of lines) {
+    if (!line.trim()) break;
+    if (head.length >= 20) break;
+    head.push(line);
+  }
+  if (head.length === 0) return false;
+  return head.every((line) => /^[A-Za-z_][A-Za-z0-9_-]*:\s*(?!\/\/)\S/.test(line));
+}
+
+function mergeMissingSystemFrontmatter(baseContent = '', draftContent = '') {
+  const baseParsed = parseFrontmatter(baseContent);
+  const draftParsed = parseFrontmatter(draftContent);
+  if (!baseParsed.raw || !draftParsed.raw) return draftContent;
+  return injectMissingSystemFields(baseParsed.data, draftContent, draftParsed);
+}
+
+function injectMissingSystemFields(baseData = {}, draftContent = '', draftParsed = {}) {
+  // 模型自己写了 frontmatter 但漏掉 Notus 内部字段时补齐，避免文件丢失稳定 id，
+  // 也避免系统元数据被编辑器当成正文显示。
+  const missing = ['id', 'created_by'].filter((key) => (
+    String(baseData[key] || '').trim()
+    && !String(draftParsed.data?.[key] || '').trim()
+  ));
+  if (missing.length === 0) return draftContent;
+  const extra = missing
+    .map((key) => {
+      const value = String(baseData[key]).trim();
+      // created_by 在原文中通常是不带引号的裸值，保持原样可读。
+      const literal = key === 'created_by' && /^[A-Za-z0-9_.-]+$/.test(value) ? value : JSON.stringify(value);
+      return `${key}: ${literal}`;
+    })
+    .join('\n');
+  const draftBlock = draftContent.slice(0, draftParsed.end).replace(/\n+$/, '');
+  const closingIndex = draftBlock.lastIndexOf('\n---');
+  const inner = draftBlock.slice(4, closingIndex);
+  const body = draftContent.slice(draftParsed.end).replace(/^\n+/, '');
+  return `---\n${extra}\n${inner}\n---\n\n${body}`;
+}
+
+// 草稿以 `---` 开头、后面连续是 key: value 但没有闭合时，按残缺 frontmatter 修复：
+// 补齐原文内部字段并补上结束分隔线，避免残缺块被当成正文。
+function repairIncompleteFrontmatter(baseData = {}, draftContent = '') {
+  const normalized = normalizeRevisionContent(draftContent);
+  if (!/^---\n/.test(normalized) || startsWithFrontmatter(normalized) || !looksLikeFrontmatterStart(normalized)) {
+    return null;
+  }
+  const lines = normalized.split('\n');
+  let end = 1;
+  while (end < lines.length && lines[end].trim()) end += 1;
+  const frontmatterLines = lines.slice(1, end);
+  const body = lines.slice(end).join('\n').replace(/^\n+/, '');
+  const repaired = `---\n${frontmatterLines.join('\n')}\n---\n\n${body}`;
+  const parsed = parseFrontmatter(repaired);
+  return injectMissingSystemFields(baseData, repaired, parsed);
+}
+
+function preserveBaseFrontmatter(baseContent = '', draftContent = '', goal = '') {
+  const base = normalizeRevisionContent(baseContent);
+  const draft = normalizeRevisionContent(draftContent);
+  // 空草稿保持为空；补回 frontmatter 会让“误生成空草稿”看起来像正常修改。
+  if (!draft.trim()) return draft;
+  if (!startsWithFrontmatter(base)) return draft;
+  if (hasExplicitFrontmatterRemovalIntent(goal)) return draft;
+  const parsed = parseFrontmatter(base);
+  if (!parsed.raw) return draft;
+  // 草稿提交了合法 frontmatter 时以草稿为准，但补齐 Notus 内部稳定 id。
+  if (startsWithFrontmatter(draft)) return mergeMissingSystemFrontmatter(base, draft);
+  // 草稿写了残缺 frontmatter：补齐内部字段并闭合。
+  const repaired = repairIncompleteFrontmatter(parsed.data, draft);
+  if (repaired) return repaired;
+  // 草稿没有 frontmatter（或开头是正文分隔线）时保留原文元数据。
+  const block = base.slice(0, parsed.end).replace(/\n+$/, '');
+  return `${block}\n\n${draft.replace(/^\n+/, '')}`;
+}
+
 function hasUnbalancedCodeFence(content = '') {
   const matches = normalizeRevisionContent(content).match(/^```/gm);
   return Boolean(matches && matches.length % 2 === 1);
@@ -234,6 +328,10 @@ function hasExplicitRewriteIntent(goal = '') {
     /整体调整/,
     /整篇.*(改|写|优化|润色)/,
     /(全文|整篇).*重/,
+    // 用户明确要求大范围/全面改写时，正文比例变化是预期结果，不应被当成截断。
+    /(大范围|大面积|大规模|全面|大幅|大量|整体|批量|全篇|全文|整篇|全部)[^。！？；\n]{0,12}(修改|改写|重写|调整|更新|优化|润色|改造|改|变成|换成)/,
+    /(修改|改写|重写|调整|更新|优化|润色|改造|改成|改为|换成)[^。！？；\n]{0,12}(大范围|大面积|大规模|全面|大幅|大量|整体|批量|全篇|全文|整篇|全部)/,
+    /大改|大修|全部改|整体重做|重新写/,
   ].some((pattern) => pattern.test(text));
 }
 
@@ -243,7 +341,8 @@ function analyzeRevisionSafety({
   goal = '',
 } = {}) {
   const base = normalizeRevisionContent(baseContent);
-  const draft = normalizeRevisionContent(draftContent);
+  const rawDraft = normalizeRevisionContent(draftContent);
+  const draft = preserveBaseFrontmatter(base, rawDraft, goal);
   const baseChars = countNonWhitespaceChars(base);
   const draftChars = countNonWhitespaceChars(draft);
   const baseLines = countLines(base);
@@ -256,7 +355,14 @@ function analyzeRevisionSafety({
   if (isDestructiveEmptyRevision(base, draft) && !explicitEmpty) {
     reasons.push('草稿为空，会清空当前非空文件');
   }
-  if (baseChars >= 200 && draftChars > 0 && draftChars < Math.min(120, Math.floor(baseChars * 0.08))) {
+  // 绝对下限：即使明确要求大范围改写，也不能接受只回一句摘要就覆盖全文。
+  if (
+    baseChars >= 200
+    && draftChars > 0
+    && draftChars < Math.min(120, Math.floor(baseChars * 0.08))
+    && !explicitReduction
+    && !explicitEmpty
+  ) {
     reasons.push('草稿体量远小于原文，疑似只生成了片段或摘要');
   }
   if (
@@ -265,8 +371,9 @@ function analyzeRevisionSafety({
     && (baseChars - draftChars) / Math.max(baseChars, 1) >= 0.65
     && !explicitReduction
     && !explicitEmpty
+    && !explicitRewrite
   ) {
-    reasons.push('草稿删除了原文大部分内容，但用户任务没有明确要求大幅删减');
+    reasons.push('草稿删除了原文大部分内容，但用户任务没有明确要求大幅删减或改写');
   }
   if (
     baseLines >= 20
@@ -281,24 +388,29 @@ function analyzeRevisionSafety({
   if (hasTruncationMarker(draft)) {
     reasons.push('草稿包含截断标记，不能作为完整文件落盘');
   }
-  if (startsWithFrontmatter(base) && !startsWithFrontmatter(draft)) {
-    reasons.push('原文包含 frontmatter，但草稿丢失了文件元数据');
+  // 只有草稿确实像是未闭合的 frontmatter 时才提示；正文开头的 Markdown 分隔线不算。
+  if (/^---\n/.test(rawDraft) && !startsWithFrontmatter(rawDraft) && looksLikeFrontmatterStart(rawDraft)) {
+    reasons.push('草稿的 frontmatter 没有正确闭合');
   }
-  if (hasUnbalancedCodeFence(draft)) {
+  if (hasUnbalancedCodeFence(draft) && !hasUnbalancedCodeFence(base)) {
     reasons.push('草稿中的 Markdown 代码围栏没有闭合');
   }
 
-  const requiresConfirmation = reasons.length > 0;
+  // 自动模式始终应用修改；这些检查只作为提示写进 Diff 与回执，由回滚兜底，
+  // 不再把自动模式降级成人工确认。手动模式本来就由用户确认，无需依赖该字段。
+  const warnings = reasons;
   return {
-    requires_confirmation: requiresConfirmation,
-    risk_level: requiresConfirmation ? 'high' : 'normal',
-    reasons,
+    warnings,
+    reasons: warnings,
+    risk_level: warnings.length > 0 ? 'high' : 'normal',
     base_char_count: baseChars,
     draft_char_count: draftChars,
     base_line_count: baseLines,
     draft_line_count: draftLines,
-    message: requiresConfirmation
-      ? `全文修订草稿存在高风险：${reasons.join('；')}。已保留预览等待手动确认，自动模式不会写入正式文件。`
+    // 保留元数据后的最终草稿；预览、diff、应用和回滚都使用这份内容。
+    draft_content: draft,
+    message: warnings.length > 0
+      ? `本次全文修订存在需要留意的变化：${warnings.join('；')}。修改仍会按当前确认方式应用，可在 Diff 中核对或回滚。`
       : '',
   };
 }
@@ -317,7 +429,7 @@ async function previewFileRevision({
   try {
     normalizedPath = resolveRevisionFilePath(session, filePath || snakeFilePath);
   } catch (error) {
-    return { error: 'FILE_PATH_REQUIRED', message: error.message };
+    return { error: error.code || 'FILE_PATH_REQUIRED', message: error.message };
   }
 
   const check = validateWrite(session.session_token, normalizedPath, 'modify');
@@ -326,19 +438,22 @@ async function previewFileRevision({
   if (!file) return { error: 'FILE_NOT_FOUND', path: normalizedPath };
 
   const baseContent = normalizeRevisionContent(file.content || '');
-  const draft = normalizeRevisionContent(ensureConversationImagesInMarkdown(draftContent || snakeDraftContent, {
+  // 只做图片与标题边界修复；frontmatter 补齐统一由 analyzeRevisionSafety 完成，
+  // 确保提示与实际写入使用同一份草稿。
+  const rawDraft = normalizeRevisionContent(repairImageHeadingMarkdown(ensureConversationImagesInMarkdown(draftContent || snakeDraftContent, {
     conversationId: session.conversation_id,
     taskText: session.goal,
-  }));
+  })));
+  const safety = analyzeRevisionSafety({
+    baseContent,
+    draftContent: rawDraft,
+    goal: session.goal,
+  });
+  const draft = safety.draft_content;
   const imageIssue = require('./agentVision').validateImageChanges(baseContent, draft, { allow_image_changes });
   if (imageIssue) return imageIssue;
   const baseHash = hashRevisionContent(baseContent);
   const draftHash = hashRevisionContent(draft);
-  const safety = analyzeRevisionSafety({
-    baseContent,
-    draftContent: draft,
-    goal: session.goal,
-  });
   if (baseHash === draftHash) {
     return {
       no_change: true,
@@ -380,7 +495,8 @@ async function previewFileRevision({
       fileId: file.id,
       conversationId: session.conversation_id,
     }),
-    revisionError: safety.message,
+    // 安全提示只进入工具回执与完成文案，不写入 revision_error，避免 Diff 把它显示成红色错误。
+    revisionError: '',
     revisionParentId: parentOperationSetId || snakeParentOperationSetId,
     revisionSequenceNo: nextSequenceNo(session.conversation_id, file.id, file.path),
   });
@@ -397,12 +513,12 @@ async function previewFileRevision({
     media_changes: latest.media_changes || [],
     applied: false,
     safety,
-    requires_confirmation: safety.requires_confirmation,
+    requires_confirmation: false,
     message: safety.message,
   };
 }
 
-async function applyFileRevision(operationSetId, sessionId, { auto = false } = {}) {
+async function applyFileRevision(operationSetId, sessionId) {
   const set = getRevisionStorageSet(operationSetId);
   if (!set) return { success: false, error: 'OPERATION_SET_NOT_FOUND' };
   if (!isFileRevisionSet(set)) return { success: false, error: 'NOT_FILE_REVISION' };
@@ -412,34 +528,23 @@ async function applyFileRevision(operationSetId, sessionId, { auto = false } = {
   }
   if (!['pending', 'apply_failed'].includes(set.status)) return { success: false, error: 'REVISION_NOT_PENDING', revision_status: set.status };
 
-  const filePath = set.revision_file_path;
-  const file = filePath ? getFileByPath(filePath) : null;
+  const recordedPath = set.revision_file_path;
+  let file = recordedPath ? getFileByPath(recordedPath) : null;
+  if (!file && set.file_id) {
+    // 预览后文件可能已被改名，按旧路径找不到时回退按 file_id 定位当前文件。
+    file = getFileById(set.file_id);
+  }
   if (!file) {
     const failed = updateRevisionFailure(set, 'apply_failed', 'FILE_NOT_FOUND');
     return { success: false, error: 'FILE_NOT_FOUND', operation_set: failed, status: 'apply_failed' };
   }
-  if (auto) {
-    const session = getSession(sessionId);
-    const safety = analyzeRevisionSafety({
-      baseContent: set.revision_base_content || '',
-      draftContent: set.revision_draft_content || '',
-      goal: session.goal,
-    });
-    if (safety.requires_confirmation) {
-      const operationSet = updateRevisionFailure(set, 'pending', safety.message || 'REVISION_REQUIRES_CONFIRMATION');
-      return {
-        success: true,
-        applied: false,
-        requires_confirmation: true,
-        error: 'REVISION_REQUIRES_CONFIRMATION',
-        message: safety.message || '全文修订草稿存在高风险，已保留预览等待手动确认，正式文件尚未修改。',
-        changed_files: [],
-        operation_set: operationSet,
-        safety,
-        status: 'pending',
-      };
-    }
+  const filePath = file.path;
+  if (set.file_id && file.id !== set.file_id) {
+    const stale = updateRevisionFailure(set, 'stale', '预览目标文件已变化，需要重新生成预览');
+    return { success: false, conflict: true, error: 'FILE_IDENTITY_CHANGED', operation_set: stale, status: 'stale' };
   }
+  // 自动模式不再因草稿形态降级为人工确认：真正写入仍受 base_hash 冲突检查保护，
+  // 应用后可用回滚恢复。手动模式由用户自行确认。
 
   const currentContent = normalizeRevisionContent(file.content || '');
   const currentHash = hashRevisionContent(currentContent);
@@ -518,7 +623,7 @@ async function discardFileRevision(operationSetId, sessionId) {
   return { success: true, discarded: true, operation_set: operationSet, status: 'discarded' };
 }
 
-async function rollbackFileRevision(operationSetId, sessionId) {
+async function rollbackFileRevision(operationSetId, sessionId, { force = false } = {}) {
   const set = getRevisionStorageSet(operationSetId);
   if (!set) return { success: false, error: 'OPERATION_SET_NOT_FOUND' };
   if (!isFileRevisionSet(set)) return { success: false, error: 'NOT_FILE_REVISION' };
@@ -526,22 +631,43 @@ async function rollbackFileRevision(operationSetId, sessionId) {
   if (!['applied', 'rollback_conflict'].includes(String(set.status || ''))) {
     return { success: false, error: 'REVISION_NOT_APPLIED', revision_status: set.status };
   }
+  const dependencyError = require('./agentOperationGuards').rollbackDependencyError(set);
+  if (dependencyError) return dependencyError;
   if (!set.revision_applied_hash) {
     const conflict = updateRevisionFailure(set, 'rollback_conflict', '缺少 applied_hash，不能安全回滚');
     return { success: false, conflict: true, error: 'APPLIED_HASH_REQUIRED', operation_set: conflict, status: 'rollback_conflict' };
   }
 
-  const filePath = set.revision_file_path;
-  const file = filePath ? getFileByPath(filePath) : null;
+  const recordedPath = set.revision_file_path;
+  let file = recordedPath ? getFileByPath(recordedPath) : null;
+  if (!file && set.file_id) {
+    // 应用后文件可能已被改名，按旧路径找不到时回退按 file_id 定位当前文件。
+    file = getFileById(set.file_id);
+  }
   if (!file) {
     const conflict = updateRevisionFailure(set, 'rollback_conflict', 'FILE_NOT_FOUND');
     return { success: false, conflict: true, error: 'FILE_NOT_FOUND', operation_set: conflict, status: 'rollback_conflict' };
   }
+  const filePath = file.path;
+  if (set.file_id && file.id !== set.file_id) {
+    const conflict = updateRevisionFailure(set, 'rollback_conflict', '回滚目标文件已变化');
+    return { success: false, conflict: true, error: 'FILE_IDENTITY_CHANGED', operation_set: conflict, status: 'rollback_conflict' };
+  }
 
   const currentHash = hashRevisionContent(file.content || '');
-  if (currentHash !== set.revision_applied_hash) {
-    const conflict = updateRevisionFailure(set, 'rollback_conflict', '文件已在应用后发生变化，不能安全回滚');
-    return { success: false, conflict: true, error: 'ROLLBACK_CONFLICT', operation_set: conflict, status: 'rollback_conflict' };
+  if (currentHash !== set.revision_applied_hash && !force) {
+    // 文件在应用后被外部改动。默认不覆盖，但允许用户二次确认后强制回滚。
+    return {
+      success: false,
+      conflict: true,
+      requires_force_confirmation: true,
+      error: 'ROLLBACK_CONFLICT',
+      message: '文件在应用后已被修改。继续回滚会覆盖这些外部改动，请确认后再试。',
+      file_path: filePath,
+      current_hash: currentHash,
+      applied_hash: set.revision_applied_hash,
+      status: String(set.status || ''),
+    };
   }
 
   try {

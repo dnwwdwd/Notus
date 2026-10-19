@@ -191,9 +191,9 @@ function writeMarkdownFile(relativePath, content) {
   const config = getEffectiveConfig();
   const target = resolveInside(config.notesDir, ensureMarkdownPath(relativePath));
   fs.mkdirSync(path.dirname(target.absolutePath), { recursive: true });
-  const tmpPath = `${target.absolutePath}.notus-${process.pid}-${Date.now()}.tmp`;
+  const tmpPath = `${target.absolutePath}.notus-${process.pid}-${crypto.randomUUID()}.tmp`;
   try {
-    fs.writeFileSync(tmpPath, content, 'utf8');
+    fs.writeFileSync(tmpPath, content, { encoding: 'utf8', flag: 'wx' });
     fs.renameSync(tmpPath, target.absolutePath);
   } catch (error) {
     if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
@@ -363,86 +363,96 @@ function deleteFileVectors(db, fileId) {
 
 function syncFilesFromDisk() {
   const db = getDb();
+  // Keep the disk snapshot and its SQLite reconciliation under the same write lock.
+  // Otherwise a second request can observe a new/renamed path before its writer
+  // updates files, then delete the old row and silently change the public file ID.
+  return db.transaction(() => {
   const paths = listMarkdownFiles();
   const seen = new Set(paths);
 
   paths.forEach((relativePath) => {
-    const content = readMarkdownFile(relativePath);
-    let existing = db.prepare('SELECT * FROM files WHERE path = ?').get(relativePath);
-    const stat = getFileStat(relativePath);
-    // 每次仍读取真实内容并校验 hash，避免同大小/同时间戳的外部修改漏检。
-    // 未变化的记录无需重复解析 Markdown、更新 SQLite 或触碰索引状态。
-    if (existing?.stable_id && existing.hash === sha256(content)
-      && Number(existing.mtime) === Math.floor(stat.mtimeMs) && Number(existing.size) === stat.size) return;
-    let payload = buildFileRecordPayload(db, relativePath, content, existing, stat);
+    try {
+      let existing = db.prepare('SELECT * FROM files WHERE path = ?').get(relativePath);
+      const content = readMarkdownFile(relativePath);
+      const stat = getFileStat(relativePath);
+      // 每次仍读取真实内容并校验 hash：同 Hash、mtime、size 且已有稳定 ID 才跳过
+      // Markdown 解析与数据库写入；同大小/同时间戳的外部编辑仍会被发现
+      //（docs/产品技术实现说明.md 的同步契约，见 Bug 台账同大小同时间外部编辑条目）。
+      if (existing?.stable_id && existing.hash === sha256(content)
+        && Number(existing.mtime) === Math.floor(stat.mtimeMs) && Number(existing.size) === stat.size) return;
+      let payload = buildFileRecordPayload(db, relativePath, content, existing, stat);
 
     if (!existing && payload.frontmatterId) {
-      const renamed = db.prepare(`
-        SELECT *
-        FROM files
-        WHERE stable_id = ?
-          AND path != ?
-        ORDER BY updated_at DESC, id DESC
-        LIMIT 1
-      `).get(payload.frontmatterId, relativePath);
-      if (renamed && !seen.has(renamed.path)) {
-        db.prepare('UPDATE files SET path = ?, updated_at = datetime(\'now\') WHERE id = ?')
-          .run(relativePath, renamed.id);
-        existing = { ...renamed, path: relativePath };
-        payload = buildFileRecordPayload(db, relativePath, content, existing);
+        const renamed = db.prepare(`
+          SELECT *
+          FROM files
+          WHERE stable_id = ?
+            AND path != ?
+          ORDER BY updated_at DESC, id DESC
+          LIMIT 1
+        `).get(payload.frontmatterId, relativePath);
+        if (renamed && !seen.has(renamed.path)) {
+          db.prepare('UPDATE files SET path = ?, updated_at = datetime(\'now\') WHERE id = ?')
+            .run(relativePath, renamed.id);
+          existing = { ...renamed, path: relativePath };
+          payload = buildFileRecordPayload(db, relativePath, content, existing);
+        }
       }
-    }
 
-    const updatedAt = getFileUpdatedAt(relativePath);
-    const shouldInvalidateIndex = Boolean(
-      existing && String(existing.hash || '') !== String(payload.hash || '')
-    );
-    if (shouldInvalidateIndex) {
-      db.transaction(() => {
-        deleteFileVectors(db, existing.id);
-        db.prepare('DELETE FROM chunks WHERE file_id = ?').run(existing.id);
-      })();
-    }
+      const updatedAt = getFileUpdatedAt(relativePath);
+      const shouldInvalidateIndex = Boolean(
+        existing && String(existing.hash || '') !== String(payload.hash || '')
+      );
+      if (shouldInvalidateIndex) {
+        db.transaction(() => {
+          deleteFileVectors(db, existing.id);
+          db.prepare('DELETE FROM chunks WHERE file_id = ?').run(existing.id);
+        })();
+      }
 
-    db.prepare(`
-      INSERT INTO files (
-        path, stable_id, title, hash, size, mtime, char_count, token_count,
-        frontmatter, tags, heading_outline, indexed, updated_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
-      ON CONFLICT(path) DO UPDATE SET
-        stable_id = CASE
-          WHEN files.stable_id IS NULL OR files.stable_id = '' THEN excluded.stable_id
-          ELSE files.stable_id
-        END,
-        title = excluded.title,
-        hash = excluded.hash,
-        size = excluded.size,
-        mtime = excluded.mtime,
-        char_count = excluded.char_count,
-        token_count = excluded.token_count,
-        frontmatter = excluded.frontmatter,
-        tags = excluded.tags,
-        heading_outline = excluded.heading_outline,
-        indexed = CASE WHEN COALESCE(files.hash, '') != excluded.hash THEN 0 ELSE files.indexed END,
-        indexed_at = CASE WHEN COALESCE(files.hash, '') != excluded.hash THEN NULL ELSE files.indexed_at END,
-        index_error = CASE WHEN COALESCE(files.hash, '') != excluded.hash THEN NULL ELSE files.index_error END,
-        retry_count = CASE WHEN COALESCE(files.hash, '') != excluded.hash THEN 0 ELSE files.retry_count END,
-        updated_at = excluded.updated_at
-    `).run(
-      relativePath,
-      payload.stableId,
-      payload.title,
-      payload.hash,
-      payload.size,
-      payload.mtime,
-      payload.charCount,
-      payload.tokenCount,
-      payload.frontmatter,
-      payload.tags,
-      payload.headingOutline,
-      updatedAt
-    );
+      db.prepare(`
+        INSERT INTO files (
+          path, stable_id, title, hash, size, mtime, char_count, token_count,
+          frontmatter, tags, heading_outline, indexed, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+        ON CONFLICT(path) DO UPDATE SET
+          stable_id = CASE
+            WHEN files.stable_id IS NULL OR files.stable_id = '' THEN excluded.stable_id
+            ELSE files.stable_id
+          END,
+          title = excluded.title,
+          hash = excluded.hash,
+          size = excluded.size,
+          mtime = excluded.mtime,
+          char_count = excluded.char_count,
+          token_count = excluded.token_count,
+          frontmatter = excluded.frontmatter,
+          tags = excluded.tags,
+          heading_outline = excluded.heading_outline,
+          indexed = CASE WHEN COALESCE(files.hash, '') != excluded.hash THEN 0 ELSE files.indexed END,
+          indexed_at = CASE WHEN COALESCE(files.hash, '') != excluded.hash THEN NULL ELSE files.indexed_at END,
+          index_error = CASE WHEN COALESCE(files.hash, '') != excluded.hash THEN NULL ELSE files.index_error END,
+          retry_count = CASE WHEN COALESCE(files.hash, '') != excluded.hash THEN 0 ELSE files.retry_count END,
+          updated_at = excluded.updated_at
+      `).run(
+        relativePath,
+        payload.stableId,
+        payload.title,
+        payload.hash,
+        payload.size,
+        payload.mtime,
+        payload.charCount,
+        payload.tokenCount,
+        payload.frontmatter,
+        payload.tags,
+        payload.headingOutline,
+        updatedAt
+      );
+    } catch (error) {
+      // 单个文件读取/解析失败不能瘫痪全库同步；保留 DB 旧记录，仅跳过该文件。
+      console.warn(`[files] syncFilesFromDisk 跳过无法读取的文件 ${relativePath}: ${error?.message || error}`);
+    }
   });
 
   const rows = db.prepare('SELECT id, path FROM files').all();
@@ -456,11 +466,13 @@ function syncFilesFromDisk() {
       });
     })();
   }
+  }).immediate();
 }
 
 function getFileById(id) {
-  syncFilesFromDisk();
   const db = getDb();
+  return db.transaction(() => {
+  syncFilesFromDisk();
   const row = db.prepare('SELECT * FROM files WHERE id = ?').get(Number(id));
   if (!row) return null;
   const content = readMarkdownFile(row.path);
@@ -477,11 +489,26 @@ function getFileById(id) {
     heading_outline: parseJsonSafe(row.heading_outline, []),
     updated_at: row.updated_at,
   };
+  }).immediate();
+}
+
+function resolveFileReferencePath(reference) {
+  const value = String(reference || '').trim();
+  if (!/^notus:/i.test(value)) return ensureMarkdownPath(value);
+  const match = value.match(/^notus:\/\/file\/([1-9]\d*)(?:[?#].*)?$/i);
+  const id = match ? Number(match[1]) : null;
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    throw Object.assign(new Error('文件 ID 引用格式无效'), { code: 'INVALID_FILE_REFERENCE' });
+  }
+  const file = getFileById(id);
+  if (!file) throw Object.assign(new Error('该文件 ID 已不存在，请使用有效文件引用。'), { code: 'FILE_NOT_FOUND' });
+  return file.path;
 }
 
 function getFileByPath(filePath) {
-  syncFilesFromDisk();
   const db = getDb();
+  return db.transaction(() => {
+  syncFilesFromDisk();
   const normalized = ensureMarkdownPath(filePath);
   const row = db.prepare('SELECT * FROM files WHERE path = ?').get(normalized);
   if (!row) return null;
@@ -499,11 +526,14 @@ function getFileByPath(filePath) {
     heading_outline: parseJsonSafe(row.heading_outline, []),
     updated_at: row.updated_at,
   };
+  }).immediate();
 }
 
-function getAllFiles() {
-  syncFilesFromDisk();
+function getAllFiles(options = {}) {
+  const { skipSync = false } = options || {};
   const db = getDb();
+  return db.transaction(() => {
+  if (!skipSync) syncFilesFromDisk();
   return db.prepare(`
     SELECT id, path, title, indexed, updated_at, index_error
     FROM files
@@ -517,6 +547,7 @@ function getAllFiles() {
     updated_at: row.updated_at,
     status: row.index_error ? 'error' : (row.indexed ? undefined : 'indexing'),
   }));
+  }).immediate();
 }
 
 function compareUpdatedAtDesc(left, right) {
@@ -597,8 +628,24 @@ function createFolder(folderPath) {
 
 function createFile(filePath, content = '', options = {}) {
   const initialContent = content || `# ${getBaseName(filePath).replace(/\.md$/i, '')}\n\n`;
-  const finalPath = writeMarkdownFile(filePath, injectFrontmatterId(initialContent));
-  const row = upsertFileRecord(finalPath, readMarkdownFile(finalPath), 0);
+  const db = getDb();
+  const row = db.transaction(() => {
+    const target = resolveInside(getEffectiveConfig().notesDir, ensureMarkdownPath(filePath));
+    if (fs.existsSync(target.absolutePath)) {
+      const error = new Error(`文件已存在：${target.relativePath}`);
+      error.code = 'FILE_ALREADY_EXISTS';
+      throw error;
+    }
+    const finalPath = writeMarkdownFile(filePath, injectFrontmatterId(initialContent));
+    try {
+      return upsertFileRecord(finalPath, readMarkdownFile(finalPath), 0);
+    } catch (error) {
+      // SQLite rejected the create; do not leave an untracked note that a retry
+      // would mistake for a completed request.
+      try { fs.unlinkSync(target.absolutePath); } catch {}
+      throw error;
+    }
+  }).immediate();
   const createdFile = {
     id: row.id,
     path: row.path,
@@ -831,6 +878,7 @@ function restoreFolderSnapshot(snapshot = {}) {
 }
 
 function renameFile(oldPath, newPath) {
+  return getDb().transaction(() => {
   const config = getEffectiveConfig();
   const oldTarget = resolveInside(config.notesDir, oldPath);
   const newTarget = resolveInside(config.notesDir, ensureMarkdownPath(newPath));
@@ -865,6 +913,7 @@ function renameFile(oldPath, newPath) {
     old_path: oldTarget.relativePath,
     new_path: newTarget.relativePath,
   };
+  }).immediate();
 }
 
 function syncFileHeadingToName(id, nextTitle) {
@@ -899,12 +948,14 @@ function moveFolder(folderPath, dest) {
 }
 
 function listFilesByIds(ids = []) {
-  syncFilesFromDisk();
+  const db = getDb();
   const normalizedIds = ids.map((id) => Number(id)).filter((id) => Number.isFinite(id));
   if (normalizedIds.length === 0) return [];
+  return db.transaction(() => {
+  syncFilesFromDisk();
   const placeholders = normalizedIds.map(() => '?').join(',');
   const orderMap = new Map(normalizedIds.map((id, index) => [id, index]));
-  const rows = getDb().prepare(`
+  const rows = db.prepare(`
     SELECT id, path, title, indexed, updated_at
     FROM files
     WHERE id IN (${placeholders})
@@ -920,12 +971,35 @@ function listFilesByIds(ids = []) {
     indexed: row.indexed,
     updated_at: row.updated_at,
     }));
+  }).immediate();
 }
 
 function listFilesByPaths(paths = []) {
-  return paths
-    .map((itemPath) => getFileByPath(itemPath))
-    .filter(Boolean);
+  const normalizedPaths = paths.map((itemPath) => ensureMarkdownPath(itemPath)).filter(Boolean);
+  if (normalizedPaths.length === 0) return [];
+  const db = getDb();
+  return db.transaction(() => {
+  syncFilesFromDisk();
+  const uniquePaths = [...new Set(normalizedPaths)];
+  const placeholders = uniquePaths.map(() => '?').join(',');
+  const rows = db.prepare(`
+    SELECT id, path, title, indexed, updated_at
+    FROM files
+    WHERE path IN (${placeholders})
+  `).all(...uniquePaths);
+  const rowByPath = new Map(rows.map((row) => [row.path, row]));
+  return normalizedPaths
+    .map((itemPath) => rowByPath.get(itemPath))
+    .filter(Boolean)
+    .map((row) => ({
+      id: row.id,
+      path: row.path,
+      title: row.title || getBaseName(row.path).replace(/\.md$/i, ''),
+      name: getBaseName(row.path),
+      indexed: row.indexed,
+      updated_at: row.updated_at,
+    }));
+  }).immediate();
 }
 
 module.exports = {
@@ -950,6 +1024,7 @@ module.exports = {
   listMarkdownFiles,
   syncFilesFromDisk,
   getFileById,
+  resolveFileReferencePath,
   getFileByPath,
   getAllFiles,
   listFilesByIds,

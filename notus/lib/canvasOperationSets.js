@@ -406,7 +406,7 @@ function listOperationSetsByConversation(conversationId, options = {}) {
 
 function listOperationSetsBySession(sessionId, options = {}) {
   const database = getDb();
-  cleanupExpiredOperationSets(database);
+  if (!options.skipCleanup) cleanupExpiredOperationSets(database);
   if (!hasColumn(database, 'canvas_operation_sets', 'agent_session_id')) return [];
   const normalizedSessionId = normalizeNullablePositiveInt(sessionId);
   if (!normalizedSessionId) return [];
@@ -420,7 +420,7 @@ function listOperationSetsBySession(sessionId, options = {}) {
       AND status IN (${statuses.map(() => '?').join(',')})
     ORDER BY created_at ASC, id ASC
   `).all(normalizedSessionId, ...statuses);
-  return rows.map(formatRow);
+  return rows.map((row) => formatRow(row, { includeDiff: options.includeDiff !== false }));
 }
 
 module.exports = {

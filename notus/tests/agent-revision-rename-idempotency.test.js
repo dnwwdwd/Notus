@@ -23,7 +23,7 @@ async function fixture(label) {
   const sessionId = newSession(conversation.id);
   const preview = await previewFileRevision({ file_path: original.path, draft_content: original.content.replace('# 旧标题', '# 新标题') }, sessionId);
   registerOperationSet({ operationSetId: preview.operation_set_id, sessionId, conversationId: conversation.id });
-  const applied = await applyFileRevision(preview.operation_set_id, sessionId, { auto: true });
+  const applied = await applyFileRevision(preview.operation_set_id, sessionId);
   assert.ok(applied.success && applied.applied, JSON.stringify(applied));
   resolveOperationSet({ operationSetId: preview.operation_set_id, sessionId, resolution: 'applied', toolResult: applied });
   assert.equal(applied.operation_set.revision_base_path, original.path);
@@ -75,7 +75,7 @@ async function main() {
   for (const title of ['阶段稿', '终稿', '最终定稿']) {
     const preview = await previewFileRevision({ file_path: previous.path, draft_content: previous.content.replace(/^# .+$/m, `# ${title}`) }, repeated.sessionId);
     registerOperationSet({ operationSetId: preview.operation_set_id, sessionId: repeated.sessionId, conversationId: repeated.conversation.id });
-    const result = await applyFileRevision(preview.operation_set_id, repeated.sessionId, { auto: true });
+    const result = await applyFileRevision(preview.operation_set_id, repeated.sessionId);
     assert.ok(result.success);
     resolveOperationSet({ operationSetId: preview.operation_set_id, sessionId: repeated.sessionId, resolution: 'applied', toolResult: result });
     previous = getFileByPath(result.file_path);

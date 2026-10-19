@@ -13,6 +13,7 @@ const {
   extendHardLimit,
   extendTokenBudget,
   getSession,
+  sanitizeSessionForRead,
   updateSessionStatus,
   validateSessionAccess,
 } = require('../../../../lib/agentSession');
@@ -142,6 +143,13 @@ export default async function handler(req, res) {
     })();
     return res.status(200).json({ success: true });
   }
+  if (action.startsWith('rollback')) {
+    if (['running', 'queued_resume'].includes(access.session.status)) return res.status(409).json({ success: false, error: '请先中断正在执行的任务，再回滚修改。', code: 'TASK_RUNNING' });
+    const set = currentConversation.operationSet;
+    const index = set.revision_type === 'file_revision' ? null : patchIndex !== null ? Number(patchIndex) : set.patches.findIndex(patch => patch.file_path === filePath);
+    const conflict = require('../../../../lib/agentOperationGuards').rollbackDependencyError(set, index);
+    if (conflict) return res.status(409).json(conflict);
+  }
   const taskBeforeOperation = getTaskBySession(sessionId);
   const turnFrame = getSessionTurnFrame(sessionId);
   const operationInvocationKey = `operation-set:${operationSetId}:${action}:${patchIndex ?? (filePath || 'all')}`;
@@ -153,7 +161,7 @@ export default async function handler(req, res) {
     if (action === 'apply_file' || action === 'apply_all' || action === 'apply') {
       result = await applyFileRevision(operationSetId, sessionId);
     } else if (action === 'rollback_file' || action === 'rollback') {
-      result = await rollbackFileRevision(operationSetId, sessionId);
+      result = await rollbackFileRevision(operationSetId, sessionId, { force });
     } else if (action === 'discard_file' || action === 'discard_pending') {
       result = await discardFileRevision(operationSetId, sessionId);
     } else {
@@ -182,7 +190,9 @@ export default async function handler(req, res) {
   const eventBase = { type: 'artifact', operation_set_id: Number(operationSetId), execution_segment_id: handledSet?.execution_segment_id,
     status: eventStatus, change_file_count: handledSet?.revision_type === 'file_revision' ? 1 : handledPatches.length - directoryCount, change_directory_count: directoryCount };
   publish({ sessionId, event: { ...eventBase, artifact_type: 'operation_set', message: result.success ? '' : '本批应用未完成，已成功的修改保留，请检查失败项。' } });
-  if (result.success && isOperationSetResolved(handledSet)) publish({ sessionId, event: { ...eventBase, artifact_type: 'operation_resolution', text: eventStatus === 'applied' ? '本批已成功应用。' : '本批已处理。' } });
+  const resolutionEvent = result.success && isOperationSetResolved(handledSet)
+    ? { ...eventBase, artifact_type: 'operation_resolution', text: eventStatus === 'applied' ? '本批已成功应用。' : '本批已处理。' }
+    : null;
   result.task_change_set = getTaskChangeSetBySession(sessionId);
   if (result.conflict) return res.status(409).json(result);
   if (!result.success) return res.status(400).json(result);
@@ -215,12 +225,15 @@ export default async function handler(req, res) {
       resumed = true;
     }
   }
+  // operation_resolution 事件在确认是否续跑之后发布：客户端据此把停留在
+  // “等待确认”的任务收敛为完成，避免工具链一直显示“需要处理”且不折叠。
+  if (resolutionEvent) publish({ sessionId, event: { ...resolutionEvent, task_resumed: resumed } });
   recordRuntimeFact({ eventKey: `operation-set:${operationSetId}:${action}:state`, conversationId: access.session.conversation_id, sessionId, taskId: taskBeforeOperation?.id, turnFrameId: turnFrame?.id, actor: 'user', factType: String(action).startsWith('rollback') ? 'operation_rolled_back' : String(action).startsWith('discard') ? 'operation_discarded' : 'operation_applied', payload: { operation_set_id: Number(operationSetId), action, status: latestOperationSet?.status || '' } });
   return res.status(200).json({
     ...result,
     operation_set: latestOperationSet,
     task_change_set: changeSet,
     task_resumed: resumed,
-    session: getSession(sessionId),
+    session: sanitizeSessionForRead(getSession(sessionId)),
   });
 }

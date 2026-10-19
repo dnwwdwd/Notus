@@ -8,7 +8,6 @@ const { readSecret, saveSecret, removeSecret } = require('./secretStore');
 
 const OWNER_ID = 'local-user';
 const connections = new Map();
-const MAX_AUTO_SERVERS = 3;
 const MAX_AUTO_TOOLS = 20;
 const TOOL_CACHE_TTL_MS = 5 * 60 * 1000;
 
@@ -196,21 +195,27 @@ function intentTerms(goal = '') {
 async function prepareMcpTools(selection = {}, goal = '', sessionPermissions = {}, { forceRefresh = false } = {}) {
   const mode = selection.mode || 'off';
   if (mode === 'off') return { tools: [], map: {}, instructions: [] };
-  const servers = listServers({ includeDisabled: false }).filter((server) => sessionPermissions.allow_local_http === true || !isLocalHttpServer(server));
+  const diagnostics = [];
+  const enabledServers = listServers({ includeDisabled: false });
+  const servers = enabledServers.filter((server) => {
+    if (sessionPermissions.allow_local_http === true || !isLocalHttpServer(server)) return true;
+    diagnostics.push({ server: server.name, code: 'MCP_LOCAL_HTTP_NOT_AUTHORIZED', message: '当前任务没有本地 HTTP MCP 授权。' });
+    return false;
+  });
   let selected = mode === 'server' ? servers.filter((item) => item.id === selection.serverId) : servers;
   // 连接测试会写入缓存；长期运行或重启后，首次任务也应在缓存过期时静默
   // 刷新，避免自动选择和工具 schema 长期停留在旧版本。
   const unavailable = new Set();
-  await Promise.all(selected.filter((server) => forceRefresh || isToolCacheStale(server.id)).map((server) => refreshTools(server).catch(() => {
+  await Promise.all(selected.filter((server) => forceRefresh || isToolCacheStale(server.id)).map((server) => refreshTools(server).catch((error) => {
     if (forceRefresh) unavailable.add(server.id);
+    diagnostics.push({ server: server.name, code: error.code || 'MCP_DISCOVERY_FAILED', message: require('./agentToolPolicy').redactSecrets(error.message || '本次无法读取服务工具目录，请检查 MCP 连接。') });
   })));
   // 强制发现失败时，旧缓存只留作诊断，不能冒充本次可用的工具定义。
   selected = selected.filter((server) => !unavailable.has(server.id));
   if (mode === 'auto') {
     const terms = intentTerms(goal);
     const ranked = selected.map((server) => ({ server, score: cachedTools(server.id).reduce((score, tool) => score + terms.reduce((sum, term) => sum + (String(`${server.name} ${tool.tool_name} ${tool.description}`).toLowerCase().includes(term) ? 1 : 0), 0), 0) })).sort((left, right) => right.score - left.score || String(left.server.name).localeCompare(String(right.server.name)));
-    selected = ranked.filter((item) => item.score > 0).slice(0, MAX_AUTO_SERVERS).map((item) => item.server);
-    if (selected.length === 0) selected = ranked.slice(0, MAX_AUTO_SERVERS).map((item) => item.server);
+    selected = ranked.map((item) => item.server);
   }
   const map = {}; const tools = []; const instructions = [];
   for (const server of selected) {
@@ -218,9 +223,16 @@ async function prepareMcpTools(selection = {}, goal = '', sessionPermissions = {
     if (!cached.length) { try { await refreshTools(server); cached = cachedTools(server.id); } catch { continue; } }
     const connection = connections.get(connectionKey(server));
     if (connection?.instructions) instructions.push({ server: server.name, text: connection.instructions });
-    cached.slice(0, MAX_AUTO_TOOLS).forEach((tool) => { const name = alias(server.id, tool.tool_name); map[name] = { serverId: server.id, toolName: tool.tool_name }; tools.push({ name, description: `[MCP：${server.name} / ${tool.tool_name}] ${tool.description || '无说明'}`, input_schema: tool.input_schema, mcp: map[name] }); });
+    // readOnlyHint 是 MCP 服务端自报的建议值，不能作为免确认依据；
+    // mapping 不携带 readOnly，手动模式下所有外部 MCP 工具一律生成确认卡。
+    cached.forEach((tool) => { const name = alias(server.id, tool.tool_name); map[name] = { serverId: server.id, toolName: tool.tool_name }; tools.push({ name, description: `[MCP：${server.name} / ${tool.tool_name}] ${tool.description || '无说明'}`, input_schema: tool.input_schema, mcp: map[name] }); });
   }
-  return { tools: tools.slice(0, MAX_AUTO_TOOLS), map, instructions };
+  const terms = intentTerms(goal);
+  const rankedTools = tools.map((tool, index) => ({ tool, index, score: terms.filter((term) => `${tool.description} ${tool.name}`.toLowerCase().includes(term)).length }))
+    .sort((a, b) => b.score - a.score || a.index - b.index);
+  const visibleTools = rankedTools.slice(0, MAX_AUTO_TOOLS).map((item) => item.tool);
+  if (!visibleTools.length && !diagnostics.length) diagnostics.push({ server: 'MCP', code: 'MCP_NO_TOOLS', message: '当前选择下没有可用工具，请检查 MCP 服务的启用状态及工具目录。' });
+  return { tools: visibleTools, availableTools: rankedTools.map((item) => item.tool), map, instructions, diagnostics };
 }
 async function callMcpTool(mapping, args, options = {}) {
   const server = getServer(mapping?.serverId); if (!server || !server.enabled) return { error: 'MCP_TOOL_NOT_FOUND', message: 'MCP 工具不可用' };
@@ -232,7 +244,7 @@ async function callMcpTool(mapping, args, options = {}) {
       { signal: options.signal, timeout: options.timeoutMs }
     );
     return normalizeToolResult(result);
-  } catch (error) { return { error: error.code || 'MCP_CONNECTION_FAILED', message: error.message }; }
+  } catch (error) { return { error: error.code || 'MCP_CONNECTION_FAILED', message: error.message, error_name: error.name || '', http_status: Number(error.status || error.statusCode || error.code) || null }; }
 }
 function normalizeToolResult(result) {
   const value = result || {}; const serialized = JSON.stringify(value); if (serialized.length > 60000) return { truncated: true, summary: serialized.slice(0, 60000), is_error: Boolean(value.isError) }; return { content: value.content || [], structured_content: value.structuredContent || null, is_error: Boolean(value.isError) };

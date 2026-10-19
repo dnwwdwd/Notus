@@ -641,13 +641,13 @@ a {
 .notus-agent-error-card__footer {
   display: flex;
   flex: 0 0 auto;
-  align-items: flex-end;
+  align-items: stretch;
   justify-content: flex-end;
   padding: 12px 12px 12px 0;
 }
 
-.notus-agent-error-card__actions { display: flex; flex: 0 0 auto; justify-content: flex-end; gap: 8px; }
-.notus-agent-error-card__actions button { height: 48px; min-width: 72px; min-height: 48px; border-radius: 9px; padding: 0 12px; font-size: 12px; font-weight: 800; }
+.notus-agent-error-card__actions { display: flex; flex: 0 0 auto; align-items: stretch; justify-content: flex-end; gap: 8px; }
+.notus-agent-error-card__actions button { height: auto; min-width: 72px; min-height: 0; border-radius: 9px; padding: 0 12px; font-size: 12px; font-weight: 800; }
 .notus-agent-error-card__secondary { border: 1px solid var(--border-subtle); background: var(--bg-secondary); color: var(--text-secondary); }
 .notus-agent-error-card__primary { display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid var(--accent); background: var(--accent); color: #fff; box-shadow: 0 4px 11px rgba(217, 119, 87, 0.18); }
 .notus-agent-error-card__primary:disabled { cursor: not-allowed; opacity: 0.52; box-shadow: none; }
@@ -666,12 +666,16 @@ a {
   align-items: center;
   justify-content: center;
   padding: 24px;
+  /* 移动端/刘海屏：给外壳留出安全区，避免内容被圆角与系统手势条遮挡。 */
+  padding: max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));
+  background: rgba(45, 45, 45, 0.28);
 }
 
 .notus-diff-dialog {
   display: flex;
   width: min(980px, calc(100vw - 48px));
-  height: min(760px, calc(100vh - 48px));
+  /* 使用 dvh 跟随移动端浏览器地址栏收起/展开，避免底部操作区被裁掉。 */
+  height: min(760px, calc(100dvh - 48px));
   min-width: 0;
   flex-direction: column;
   overflow: hidden;
@@ -700,6 +704,12 @@ a {
   align-items: center;
   flex-shrink: 0;
   gap: 8px;
+}
+
+/* 触控尺寸：标题栏“文件/关闭”入口保证至少 36px 命中区，移动端不缩小。 */
+.notus-diff-dialog__header-actions button {
+  min-width: 36px;
+  min-height: 36px;
 }
 
 .notus-diff-dialog__file-toggle {
@@ -781,7 +791,13 @@ a {
   max-width: 100%;
   max-height: 144px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   gap: 8px;
+}
+
+/* 底部操作按钮统一 40px 触控高度，窄屏换行后仍可完整点击。 */
+.notus-diff-dialog__footer > div > button {
+  min-height: 40px;
 }
 
 .notus-diff-dialog__file-backdrop {
@@ -792,6 +808,7 @@ a {
   .notus-diff-dialog__backdrop {
     align-items: stretch;
     padding: 12px;
+    padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
   }
 
   .notus-diff-dialog {
@@ -851,6 +868,12 @@ a {
     height: 100%;
   }
 
+  /* 窄屏文件抽屉：每项 40px 触控高度，便于手指点击。 */
+  .notus-diff-dialog__sidebar button,
+  .notus-diff-dialog__sidebar a {
+    min-height: 40px;
+  }
+
   .notus-diff-dialog__content-header {
     padding: 8px 12px;
   }
@@ -872,7 +895,8 @@ a {
 
 @media (max-width: 420px) {
   .notus-diff-dialog__backdrop {
-    padding: 0;
+    /* 小屏铺满视口，仅保留安全区，避免刘海屏遮挡标题与底部操作。 */
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
   }
 
   .notus-diff-dialog {
@@ -881,6 +905,12 @@ a {
 
   .notus-diff-dialog__footer > div {
     flex-wrap: wrap;
+  }
+
+  /* 小屏压缩 diff 行左右留白，尽量多显示代码列。 */
+  .notus-diff-dialog__lines > div {
+    padding-left: 8px !important;
+    padding-right: 8px !important;
   }
 }
 
@@ -2668,11 +2698,41 @@ a {
 
 .notus-streaming-cursor { display:inline-block; width:2px; height:1em; margin-left:3px; background:var(--accent); animation:blink .95s step-end infinite; }
 
-/* 计时仅做轻微文字过渡，不使用转圈，也不闪动整个工具链。 */
-.notus-agent-trace-status { display: inline-flex; align-items: baseline; white-space: pre; font-variant-numeric: tabular-nums; }
-.notus-agent-trace-status[data-animate] .notus-agent-trace-status__phase { animation: notus-trace-text-in 180ms ease-out both; }
-.notus-agent-trace-status[data-animate] .notus-agent-trace-status__elapsed { animation: notus-trace-text-in 160ms ease-out both; }
-@keyframes notus-trace-text-in { from { opacity: .35; transform: translateY(2px); } to { opacity: 1; transform: translateY(0); } }
+/* 计时不转圈。擦亮只表示“任务在跑”：只有运行中的状态行（含“N 秒”）整行做反复从
+   左到右的擦亮高光，任务结束、取消或等待用户处理后立即停止并恢复普通文字颜色。
+   高光铺在整行容器上并横向平铺，文字任何时刻都有底色可裁剪，不会出现空白或丢字。 */
+.notus-agent-trace-status {
+  display: inline;
+  white-space: pre;
+  font-variant-numeric: tabular-nums;
+}
+.notus-agent-trace-status[data-running] {
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  background-image: linear-gradient(90deg,
+    var(--text-tertiary) 0%,
+    var(--text-tertiary) 44%,
+    var(--text-secondary) 48.5%,
+    var(--text-primary) 50%,
+    var(--text-secondary) 51.5%,
+    var(--text-tertiary) 56%,
+    var(--text-tertiary) 100%);
+  background-size: 200% 100%;
+  background-repeat: repeat-x;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: notus-trace-shine 2.4s linear infinite;
+}
+@keyframes notus-trace-shine {
+  0% { background-position: 150% 0; }
+  62% { background-position: -50% 0; }
+  100% { background-position: -50% 0; }
+}
 @media (prefers-reduced-motion: reduce) {
-  .notus-agent-trace-status[data-animate] .notus-agent-trace-status__phase, .notus-agent-trace-status[data-animate] .notus-agent-trace-status__elapsed { animation: none; }
+  .notus-agent-trace-status[data-running] {
+    animation: none;
+    color: inherit;
+    -webkit-text-fill-color: currentColor;
+    background-image: none;
+  }
 }

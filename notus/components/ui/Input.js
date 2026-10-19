@@ -124,8 +124,9 @@ export const SelectInput = ({ value, options = [], onChange, disabled, style }) 
   />
 );
 
-export const TextArea = ({ value, placeholder, onChange, minRows = 2, style, ...rest }) => (
+export const TextArea = forwardRef(({ value, placeholder, onChange, minRows = 2, style, ...rest }, ref) => (
   <textarea
+    ref={ref}
     value={value || ''}
     placeholder={placeholder}
     onChange={onChange}
@@ -146,4 +147,6 @@ export const TextArea = ({ value, placeholder, onChange, minRows = 2, style, ...
     }}
     {...rest}
   />
-);
+));
+
+TextArea.displayName = 'TextArea';

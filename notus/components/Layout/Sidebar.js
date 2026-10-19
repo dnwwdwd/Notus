@@ -27,6 +27,18 @@ import { shouldSelectCreatedFileInContext } from '../../lib/sidebarRouting';
 import { sortFilesForDisplay, sortTreeForDisplay } from '../../lib/sidebarSort';
 import { navigateWithFallback } from '../../utils/navigation';
 import { canMoveTreeItem, normalizeTreePath } from '../../utils/sidebarTreeDrag';
+import {
+  IMPORT_MAX_BATCH_BYTES,
+  IMPORT_MAX_BATCH_FILES,
+  createImportJobId,
+  estimateUtf8Bytes,
+  mergeImportResults,
+  planImportBatches,
+  runImportBatches,
+  shouldUseChunkedUpload,
+  summarizeImportResults,
+  uploadChunkedFile,
+} from '../../utils/importQueue';
 
 function flatTree(nodes, openFolders, searchMode = false, depth = 0) {
   const out = [];
@@ -145,7 +157,9 @@ async function parseErrorResponse(response, fallbackMessage) {
 
 async function consumeSseResponse(response, onPayload) {
   if (!response.ok) {
-    throw new Error(await parseErrorResponse(response, '请求失败'));
+    const error = new Error(await parseErrorResponse(response, '请求失败'));
+    error.status = response.status;
+    throw error;
   }
   if (!response.body) {
     throw new Error('当前浏览器不支持流式响应');
@@ -406,6 +420,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
   const importDirectoryInputRef = useRef(null);
   const searchInputRef = useRef(null);
   const createNameInputRef = useRef(null);
+  const renameNameInputRef = useRef(null);
   const scrollContainerRef = useRef(null);
   const saveScrollFrameRef = useRef(null);
   const {
@@ -476,6 +491,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
   const [importSummary, setImportSummary] = useState(null);
   const [importRunError, setImportRunError] = useState('');
   const [importDragging, setImportDragging] = useState(false);
+  const importJobIdRef = useRef('');
 
   const [exportOpen, setExportOpen] = useState(false);
   const [exportQuery, setExportQuery] = useState('');
@@ -565,15 +581,6 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
   useEffect(() => {
     sidebarScrollByTabRef.current = sidebarScrollByTab;
   }, [sidebarScrollByTab]);
-
-  useEffect(() => {
-    if (!createMode) return undefined;
-    const timer = window.setTimeout(() => {
-      createNameInputRef.current?.focus?.();
-      createNameInputRef.current?.select?.();
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [createMode]);
 
   const handleContextMenu = useCallback((node, x, y) => {
     setContextMenu({ node, x, y });
@@ -884,7 +891,6 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
     const failedNames = new Set(importFailedResults.map((item) => item.name || item.path));
     return selectedImportFiles.filter((file) => failedNames.has(getImportDisplayName(file)));
   }, [importFailedResults, selectedImportFiles]);
-
   const currentPage = active === 'files' ? 'files' : 'files';
 
   useEffect(() => {
@@ -946,6 +952,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
     setImportParentPath('');
     setConflictPolicy('skip');
     setSelectedImportFiles([]);
+    importJobIdRef.current = '';
     clearImportRunState();
     clearImportInputs();
   };
@@ -957,6 +964,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
     setImportParentPath(extractParentPath(activeFile?.path));
     setConflictPolicy('skip');
     setSelectedImportFiles([]);
+    importJobIdRef.current = '';
     clearImportRunState();
     clearImportInputs();
   };
@@ -1032,7 +1040,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
     setImportProgress({ current: 0, total: deduped.length, currentFile: '', stage: 'idle' });
   };
 
-  const runImport = async (filesToImport = selectedImportFiles) => {
+  const runImport = async (filesToImport = selectedImportFiles, options = {}) => {
     if (filesToImport.length === 0) {
       toast('请先选择要导入的 Markdown 文件', 'warning');
       return;
@@ -1043,60 +1051,215 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
     setImportResultOpen(true);
     setImporting(true);
     clearImportRunState();
-    setImportProgress({ current: 0, total: filesToImport.length, currentFile: '', stage: 'idle' });
+    const totalCount = filesToImport.length;
+    setImportProgress({ current: 0, total: totalCount, currentFile: '', stage: 'idle' });
+    // 重试失败项时保留本轮导入已经成功的文件结果，弹窗继续展示整体状态。
+    const priorResults = options.reuseJob ? importResults : [];
+    if (priorResults.length > 0) setImportResults(priorResults);
+
+    // 同一次导入共用一个 job_id：分批续传、413 拆批重试和失败项重试都落在同一个幂等作业上，
+    // 已成功落盘的文件在重试时由服务端按作业记录直接回放，不重复写盘和索引。
+    const jobId = options.reuseJob && importJobIdRef.current
+      ? importJobIdRef.current
+      : createImportJobId();
+    importJobIdRef.current = jobId;
 
     try {
-      const payloadFiles = await Promise.all(
-        filesToImport.map(async (file) => ({
-          name: getImportDisplayName(file),
-          content: await file.text(),
-        }))
+      const entries = await Promise.all(
+        filesToImport.map(async (file) => {
+          const content = await file.text();
+          return {
+            file,
+            name: getImportDisplayName(file),
+            content,
+            size: estimateUtf8Bytes(content),
+          };
+        })
       );
 
-      const response = await fetch('/api/files/import', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          parentPath: importParentPath,
-          conflict_policy: conflictPolicy,
-          files: payloadFiles,
-        }),
+      // 超过分片阈值的文件走分片通道，其余仍按体积切批；两条通道共用同一个 job_id 与结果累加器。
+      const chunkedEntries = entries.filter((entry) => shouldUseChunkedUpload(entry.size));
+      const batchedEntries = entries.filter((entry) => !shouldUseChunkedUpload(entry.size));
+      const batches = planImportBatches(batchedEntries, {
+        maxBatchBytes: IMPORT_MAX_BATCH_BYTES,
+        maxBatchFiles: IMPORT_MAX_BATCH_FILES,
       });
 
-      let summary = null;
-      await consumeSseResponse(response, (event) => {
-        if (event.type === 'progress') {
-          setImportProgress({
-            current: event.current || 0,
-            total: event.total || payloadFiles.length,
-            currentFile: event.currentFile || '',
-            stage: event.stage || 'idle',
+      const batchErrors = [];
+      let processedCount = 0;
+      // 结果用本地累加器维护，避免依赖 React state 的闭包快照丢失已到达的逐文件结果。
+      let latestResults = priorResults;
+
+      const recordEvent = (event) => {
+        latestResults = mergeImportResults(latestResults, [event]);
+        setImportResults(latestResults);
+      };
+
+      const outcome = await runImportBatches({
+        batches,
+        onBatchRetry: ({ attempt, split, error }) => {
+          setImportProgress((prev) => ({
+            ...prev,
+            stage: 'saving',
+            currentFile: split
+              ? '单批体积超限，正在自动拆分后重试…'
+              : `连接中断，正在重试第 ${attempt} 次…`,
+          }));
+          if (!split) toast(`${error?.message || '导入中断'}，正在自动重试…`, 'info');
+        },
+        submitBatch: async ({ files: batchEntries, batchIndex, batchCount }) => {
+          const response = await fetch('/api/files/import', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              parentPath: importParentPath,
+              conflict_policy: conflictPolicy,
+              job_id: jobId,
+              files: batchEntries.map((entry) => ({ name: entry.name, content: entry.content })),
+            }),
           });
-          return;
-        }
 
-        if (event.type === 'file') {
-          setImportResults((prev) => [...prev, event]);
-          return;
-        }
+          let summary = null;
+          await consumeSseResponse(response, (event) => {
+            if (event.type === 'progress') {
+              setImportProgress({
+                current: Math.min(processedCount + (event.current || 0), totalCount),
+                total: totalCount,
+                currentFile: event.currentFile || '',
+                stage: event.stage || 'idle',
+              });
+              return;
+            }
 
-        if (event.type === 'done') {
-          summary = event;
-          setImportSummary(event);
-          setImportProgress({
-            current: event.total || payloadFiles.length,
-            total: event.total || payloadFiles.length,
+            if (event.type === 'file') {
+              recordEvent(event);
+              return;
+            }
+
+            if (event.type === 'done') {
+              summary = event;
+            }
+          });
+
+          const processed = Number(summary?.processed) || batchEntries.length;
+          processedCount += processed;
+          const paused = Boolean(summary?.paused) && processed < batchEntries.length;
+          setImportProgress((prev) => ({
+            ...prev,
+            current: paused ? processedCount : Math.min(processedCount, totalCount),
+            total: totalCount,
+            currentFile: paused ? `已完成 ${processedCount} / ${totalCount}，继续导入剩余文件…` : '',
+            stage: paused ? 'saving' : 'indexing',
+          }));
+          if (batchIndex + 1 < batchCount && !paused) {
+            setImportProgress((prev) => ({
+              ...prev,
+              currentFile: `第 ${batchIndex + 2} / ${batchCount} 批准备中…`,
+            }));
+          }
+          return { paused, processed, summary };
+        },
+      });
+
+      batchErrors.push(...outcome.batchErrors);
+
+      // 分片通道：逐个文件顺序提交分片，单片失败按同一重试策略重发；
+      // 单个文件的分片失败只影响该文件，其它分片文件继续处理。
+      for (const entry of chunkedEntries) {
+        try {
+          await uploadChunkedFile({
+            name: entry.name,
+            content: entry.content,
+            jobId,
+            onProgress: ({ received, totalChunks, retrying }) => {
+              setImportProgress((prev) => ({
+                ...prev,
+                stage: retrying ? 'saving' : 'chunk',
+                current: Math.min(processedCount, totalCount),
+                total: totalCount,
+                currentFile: retrying
+                  ? `${entry.name}：分片连接中断，正在重试…`
+                  : `${entry.name}：分片 ${received} / ${totalChunks}`,
+              }));
+            },
+            submitChunk: async ({ chunkIndex, totalChunks, content: chunkContent }) => {
+              const response = await fetch('/api/files/import/chunk', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  parentPath: importParentPath,
+                  conflict_policy: conflictPolicy,
+                  job_id: jobId,
+                  name: entry.name,
+                  chunk_index: chunkIndex,
+                  total_chunks: totalChunks,
+                  content: chunkContent,
+                }),
+              });
+
+              let summary = null;
+              await consumeSseResponse(response, (event) => {
+                if (event.type === 'file') {
+                  recordEvent(event);
+                  return;
+                }
+                if (event.type === 'done') summary = event;
+              });
+
+              const failed = summary?.errors?.[0];
+              if (failed) {
+                const error = new Error(failed.error || '分片处理失败');
+                error.status = 0;
+                error.code = failed.code;
+                throw error;
+              }
+              return {
+                received: summary?.complete === false ? chunkIndex + 1 : chunkIndex + 1,
+                complete: Boolean(summary?.complete),
+              };
+            },
+          });
+          processedCount += 1;
+          setImportProgress((prev) => ({
+            ...prev,
+            stage: 'indexing',
+            current: Math.min(processedCount, totalCount),
+            total: totalCount,
             currentFile: '',
-            stage: 'done',
-          });
+          }));
+        } catch (error) {
+          const message = error?.message || '分片上传失败';
+          batchErrors.push(`${entry.name}：${message}`);
+          recordEvent({ status: 'failed', name: entry.name, error: message });
         }
+      }
+
+      latestResults = mergeImportResults(
+        latestResults,
+        batchErrors.map((message, index) => ({ status: 'failed', name: `未完成批次 ${index + 1}`, error: message }))
+      );
+      setImportResults(latestResults);
+      const settled = summarizeImportResults(latestResults);
+      setImportSummary({ ...settled, batch_errors: batchErrors, total: totalCount });
+      setImportRunError(batchErrors.join('\n'));
+      setImportProgress({
+        current: totalCount,
+        total: totalCount,
+        currentFile: '',
+        stage: batchErrors.length > 0 ? 'error' : 'done',
       });
 
       await refreshFiles();
-      toast(
-        summary ? `导入完成：${formatImportSummary(summary)}` : '导入完成',
-        summary && summary.failed > 0 ? 'warning' : 'success'
-      );
+      const failedCount = latestResults.filter((item) => item.status === 'failed').length;
+      const succeeded = latestResults.length - failedCount;
+      if (batchErrors.length > 0) {
+        toast(`导入结束：成功 ${succeeded} 个，失败 ${failedCount} 个；${batchErrors[0]}`, 'warning');
+      } else {
+        toast(
+          failedCount > 0 ? `导入结束：成功 ${succeeded} 个，失败 ${failedCount} 个` : `导入完成：成功 ${succeeded} 个`,
+          failedCount > 0 ? 'warning' : 'success'
+        );
+      }
     } catch (error) {
       const message = error.message || '导入失败';
       setImportRunError(message);
@@ -1116,7 +1279,8 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
 
   const handleRetryFailedImports = async () => {
     if (retryableImportFiles.length === 0) return;
-    await runImport(retryableImportFiles);
+    // 复用同一个 job_id：已经成功的文件由服务端按作业记录回放，不会重复写盘。
+    await runImport(retryableImportFiles, { reuseJob: true });
   };
 
   const toggleExportSelection = (fileId) => {
@@ -1188,6 +1352,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
     setSelectedImportFiles([]);
     setImportParentPath(contextMenu.node.path);
     setConflictPolicy('skip');
+    importJobIdRef.current = '';
     setContextMenu(null);
     setImportOpen(true);
   };
@@ -1241,6 +1406,8 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
         open={Boolean(createMode)}
         onClose={resetCreateDialog}
         title={createMode === 'folder' ? '新建目录' : '新建文件'}
+        initialFocusRef={createNameInputRef}
+        selectInitialFocus
         footer={
           <>
             <Button variant="ghost" onClick={resetCreateDialog}>取消</Button>
@@ -1270,7 +1437,6 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
               value={newName}
               onChange={(event) => setNewName(event.target.value)}
               placeholder={createMode === 'folder' ? '例如：新的专题' : '例如：新的草稿'}
-              autoFocus
               onKeyDown={(event) => {
                 if (event.key === 'Enter') handleCreate();
               }}
@@ -1480,7 +1646,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
             <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)', lineHeight: 1.7 }}>
               {importing
                 ? (importProgress.currentFile
-                  ? `当前${importProgress.stage === 'indexing' ? '索引' : '保存'}：${importProgress.currentFile}`
+                  ? `${importProgress.stage === 'chunk' ? '分片上传' : importProgress.stage === 'indexing' ? '当前索引' : '当前保存'}：${importProgress.currentFile}`
                   : '正在准备导入…')
                 : (importSummary ? formatImportSummary(importSummary) : '本轮导入已结束')}
             </div>
@@ -2093,6 +2259,8 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
           open
           onClose={() => { setRenameOpen(false); setRenameNode(null); }}
           title={renameNode?.type === 'folder' ? '重命名目录' : '重命名文件'}
+          initialFocusRef={renameNameInputRef}
+          selectInitialFocus
           footer={
             <>
               <Button variant="ghost" onClick={() => { setRenameOpen(false); setRenameNode(null); }}>取消</Button>
@@ -2103,7 +2271,7 @@ export const Sidebar = ({ active, tocDisabled = true, tocItems, width = 240, req
           }
         >
           <TextInput
-            autoFocus
+            ref={renameNameInputRef}
             value={renameName}
             onChange={(e) => setRenameName(e.target.value)}
             onKeyDown={(e) => {

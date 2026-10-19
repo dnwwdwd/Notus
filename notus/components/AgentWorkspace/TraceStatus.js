@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useState } from 'react';
 
 function elapsedLabel(milliseconds, running) {
   const seconds = Math.max(0, Math.floor(milliseconds / 1000));
@@ -11,8 +11,6 @@ function elapsedLabel(milliseconds, running) {
 }
 
 export const TraceStatus = memo(function TraceStatus({ phase, startedAt, finishedAt, running }) {
-  const animate = useRef(running);
-  if (running) animate.current = true;
   const stoppedAt = running ? 0 : finishedAt;
   const [elapsed, setElapsed] = useState(() => startedAt ? elapsedLabel((running ? Date.now() : finishedAt) - startedAt, running) : '');
   useEffect(() => {
@@ -26,8 +24,10 @@ export const TraceStatus = memo(function TraceStatus({ phase, startedAt, finishe
     const timer = window.setInterval(update, 100);
     return () => window.clearInterval(timer);
   }, [startedAt, stoppedAt, running]);
-  return <span className="notus-agent-trace-status" role="status" aria-live="off" data-running={running || undefined} data-animate={animate.current || undefined}>
-    <span key={phase} className="notus-agent-trace-status__phase">{phase}</span>
-    {elapsed ? <span key={`${phase}-${elapsed}`} className="notus-agent-trace-status__elapsed">{phase === '任务已提交' ? ` · 已等待 ${elapsed}` : ` ${elapsed}`}</span> : null}
+  // 擦亮高光由 .notus-agent-trace-status 整行承担（含“N 秒”），子节点不再各自动画，
+  // 也不需要按 phase/elapsed 重新挂载来重启动画。
+  return <span className="notus-agent-trace-status" role="status" aria-live="off" data-running={running || undefined}>
+    <span className="notus-agent-trace-status__phase">{phase}</span>
+    {elapsed ? <span className="notus-agent-trace-status__elapsed">{phase === '任务已提交' ? ` · 已等待 ${elapsed}` : ` ${elapsed}`}</span> : null}
   </span>;
 });

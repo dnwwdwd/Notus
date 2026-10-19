@@ -2,6 +2,7 @@
 // editor: Tiptap editor instance (lifted from WysiwygEditor via onEditorReady)
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { Dialog } from '../ui/Dialog';
+import { scheduleInitialFocus } from '../ui/dialogFocus';
 import { DropdownSelect } from '../ui/DropdownSelect';
 import { Icons } from '../ui/Icons';
 import { TextInput } from '../ui/Input';
@@ -47,12 +48,15 @@ const ToolbarButton = ({ active, title, onClick, disabled, children }) => {
 
 const UrlDialog = ({ title, placeholder, defaultValue = 'https://', confirmLabel = '确认', onConfirm, onClose }) => {
   const [url, setUrl] = useState(defaultValue);
+  const urlInputRef = useRef(null);
 
   return (
     <Dialog
       open
       onClose={onClose}
       title={title}
+      initialFocusRef={urlInputRef}
+      selectInitialFocus
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>取消</Button>
@@ -61,7 +65,7 @@ const UrlDialog = ({ title, placeholder, defaultValue = 'https://', confirmLabel
       }
     >
       <TextInput
-        autoFocus
+        ref={urlInputRef}
         value={url}
         onChange={(event) => setUrl(event.target.value)}
         onKeyDown={(event) => {
@@ -77,6 +81,7 @@ const UrlDialog = ({ title, placeholder, defaultValue = 'https://', confirmLabel
 const TableDialog = ({ onConfirm, onClose }) => {
   const [rows, setRows] = useState('3');
   const [columns, setColumns] = useState('3');
+  const rowsInputRef = useRef(null);
 
   const parsedRows = Number(rows);
   const parsedColumns = Number(columns);
@@ -98,6 +103,8 @@ const TableDialog = ({ onConfirm, onClose }) => {
       onClose={onClose}
       title="插入表格"
       maxWidth={420}
+      initialFocusRef={rowsInputRef}
+      selectInitialFocus
       footer={(
         <>
           <Button variant="ghost" onClick={onClose}>取消</Button>
@@ -113,13 +120,13 @@ const TableDialog = ({ onConfirm, onClose }) => {
           <label style={{ display: 'grid', gap: 6, fontSize: 'var(--text-sm)', fontWeight: 600 }}>
             行数
             <TextInput
+              ref={rowsInputRef}
               type="number"
               min="1"
               max="20"
               value={rows}
               onChange={(event) => setRows(event.target.value)}
               onKeyDown={(event) => { if (event.key === 'Enter') confirm(); }}
-              autoFocus
               aria-label="表格行数"
             />
           </label>
@@ -159,10 +166,17 @@ async function uploadEditorImage(fileId, file) {
 
 const ImageDialog = ({ fileId, onConfirm, onClose, onError }) => {
   const fileInputRef = useRef(null);
+  const imageUrlInputRef = useRef(null);
   const [mode, setMode] = useState('local');
   const [selectedFile, setSelectedFile] = useState(null);
   const [url, setUrl] = useState('https://');
   const [submitting, setSubmitting] = useState(false);
+
+  // 从“选择图片”切到“图片链接”时，输入框刚挂载，需要补一次聚焦。
+  useEffect(() => {
+    if (mode !== 'link') return undefined;
+    return scheduleInitialFocus(imageUrlInputRef, { select: true });
+  }, [mode]);
 
   const handleConfirm = async () => {
     if (mode === 'link') {
@@ -189,6 +203,7 @@ const ImageDialog = ({ fileId, onConfirm, onClose, onError }) => {
       open
       onClose={onClose}
       title="插入图片"
+      initialFocusRef={imageUrlInputRef}
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>取消</Button>
@@ -251,6 +266,7 @@ const ImageDialog = ({ fileId, onConfirm, onClose, onError }) => {
           </div>
         ) : (
           <TextInput
+            ref={imageUrlInputRef}
             value={url}
             onChange={(event) => setUrl(event.target.value)}
             placeholder="https://example.com/image.png"

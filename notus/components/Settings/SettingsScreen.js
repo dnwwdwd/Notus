@@ -6,6 +6,7 @@ import { DropdownSelect } from '../ui/DropdownSelect';
 import { SearchInput, TextInput } from '../ui/Input';
 import { ConfirmDialog, Dialog } from '../ui/Dialog';
 import { ProgressBar } from '../ui/ProgressBar';
+import { Skeleton } from '../ui/Skeleton';
 import { Badge } from '../ui/Badge';
 import { Toggle } from '../ui/Toggle';
 import { useToast } from '../ui/Toast';
@@ -493,6 +494,10 @@ const SEARCH_MODE_OPTIONS = {
     { value: 'deep', label: 'deep', description: '质量更高，耗时更长。' },
   ],
   zhipu: [{ value: 'search-prime', label: '默认搜索引擎：search-prime', description: '使用智谱默认搜索能力。' }],
+  deepseek: [
+    { value: 'normal', label: '正文模式', description: '返回网页正文，适合作为回答依据。' },
+    { value: 'fast', label: '摘要模式', description: '只返回摘要，速度快、消耗低。' },
+  ],
 };
 
 const SearchConfig = () => {
@@ -1551,6 +1556,20 @@ const ShortcutsSettings = () => {
   );
 };
 
+// Skill 列表加载时用骨架屏占位，形状与真实 Skill 行一致（图标、名称、描述、开关）。
+const SkillRowSkeleton = () => (
+  <div style={SETTINGS_RESOURCE_ROW_STYLE} aria-hidden="true">
+    <div style={{ display: 'flex', alignItems: 'center', gap: 11, minWidth: 0, flex: '1 1 340px' }}>
+      <Skeleton width={34} height={34} style={{ borderRadius: 10, flexShrink: 0 }} />
+      <div style={{ minWidth: 0, flex: 1, display: 'grid', gap: 7 }}>
+        <Skeleton width="38%" height={13} />
+        <Skeleton width="70%" height={11} />
+      </div>
+    </div>
+    <Skeleton width={44} height={22} style={{ borderRadius: 999, flexShrink: 0 }} />
+  </div>
+);
+
 const SkillsSettings = () => {
   const toast = useToast();
   const [skills, setSkills] = useState([]);
@@ -1566,6 +1585,7 @@ const SkillsSettings = () => {
   const [zipReplaceExisting, setZipReplaceExisting] = useState(false);
   const zipInputRef = useRef(null);
   const zipDragCounterRef = useRef(0);
+  const repositoryUrlInputRef = useRef(null);
 
   const load = useCallback(async () => {
     const response = await fetch('/api/skills', { cache: 'no-store' });
@@ -1685,8 +1705,13 @@ const SkillsSettings = () => {
           <Button variant="primary" onClick={() => setGitInstallOpen(true)}><Icons.download size={14} />从 Git 安装</Button>
         </div>
         <section style={{ ...SETTINGS_SURFACE_STYLE, display: 'grid', gap: 8, padding: 14 }}>
-          <div style={{ display: 'grid', gap: 8 }}>
-            {skills.map((skill) => (
+          <div style={{ display: 'grid', gap: 8 }} aria-busy={loading || undefined}>
+            {loading ? (
+              <div role="status" aria-label="正在加载 Skill 列表" style={{ display: 'grid', gap: 8 }}>
+                {[0, 1, 2].map((index) => <SkillRowSkeleton key={index} />)}
+              </div>
+            ) : null}
+            {!loading ? skills.map((skill) => (
               <div key={skill.id} style={{ ...SETTINGS_RESOURCE_ROW_STYLE, flexWrap: 'wrap' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 11, minWidth: 0, flex: '1 1 340px' }}>
                   <div style={SETTINGS_RESOURCE_ICON_STYLE}><Icons.skill size={17} /></div>
@@ -1700,12 +1725,12 @@ const SkillsSettings = () => {
                   <Toggle on={Boolean(skill.enabled)} disabled={skill.status !== 'valid'} onChange={(enabled) => toggleSkill(skill, enabled)} />
                 </div>
               </div>
-            ))}
+            )) : null}
             {!loading && skills.length === 0 ? <div style={{ padding: '24px 16px', border: '1px dashed #D9D5CA', borderRadius: 12, color: '#8A8881', fontSize: 13, textAlign: 'center' }}>尚未发现可用 Skill</div> : null}
           </div>
         </section>
       </div>
-      <Dialog open={gitInstallOpen} onClose={() => !installing && setGitInstallOpen(false)} closeOnBackdrop={false} title="从 Git 安装 Skill" maxWidth={520} footer={<><Button variant="ghost" disabled={installing} onClick={() => setGitInstallOpen(false)}>取消</Button><Button variant="primary" loading={installing} onClick={installFromGit}>安装</Button></>}><div style={{ display: 'grid', gap: 16 }}><Field label="HTTPS 仓库地址" hint="将依次尝试 main 和 master 分支；仓库根目录必须包含 SKILL.md。"><TextInput value={repositoryUrl} onChange={(event) => setRepositoryUrl(event.target.value)} placeholder="https://github.com/org/skill.git" /></Field></div></Dialog>
+      <Dialog open={gitInstallOpen} onClose={() => !installing && setGitInstallOpen(false)} closeOnBackdrop={false} title="从 Git 安装 Skill" maxWidth={520} initialFocusRef={repositoryUrlInputRef} selectInitialFocus footer={<><Button variant="ghost" disabled={installing} onClick={() => setGitInstallOpen(false)}>取消</Button><Button variant="primary" loading={installing} onClick={installFromGit}>安装</Button></>}><div style={{ display: 'grid', gap: 16 }}><Field label="HTTPS 仓库地址" hint="将依次尝试 main 和 master 分支；仓库根目录必须包含 SKILL.md。"><TextInput ref={repositoryUrlInputRef} value={repositoryUrl} onChange={(event) => setRepositoryUrl(event.target.value)} placeholder="https://github.com/org/skill.git" /></Field></div></Dialog>
       <Dialog
         open={zipInstallOpen}
         onClose={closeZipInstall}
@@ -1761,6 +1786,7 @@ const ExternalMcpAccess = () => {
   const [rawToken, setRawToken] = useState('');
   const [saving, setSaving] = useState(false);
   const [detailChange, setDetailChange] = useState(null);
+  const tokenNameInputRef = useRef(null);
   const endpoint = typeof window === 'undefined' ? '/api/mcp' : `${window.location.origin}/api/mcp`;
   const emptyDraft = { name: '', enabled: true, approval_mode: 'manual', permissions: EXTERNAL_MCP_DEFAULT_PERMISSIONS };
 
@@ -1864,8 +1890,8 @@ const ExternalMcpAccess = () => {
       {changes.map((change) => <div key={change.id} style={{ ...SETTINGS_RESOURCE_ROW_STYLE, flexWrap: 'wrap' }}><div style={{ minWidth: 0, flex: '1 1 300px' }}><div style={{ fontSize: 13, fontWeight: 700 }}>{change.token_name} · {change.tool_name}</div><div style={{ marginTop: 4, color: change.status === 'conflict' ? 'var(--danger)' : '#8A8881', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{change.status === 'conflict' ? change.error_message || '文件已变化' : change.path || '文件变更'}</div></div><Button size="sm" variant="ghost" onClick={() => setDetailChange(change)}>查看 Diff</Button></div>)}
       {!loading && changes.length === 0 ? <div style={{ color: '#8A8881', fontSize: 12 }}>手动确认 Token 生成的变更会显示在这里。</div> : null}
     </section>
-    <Dialog open={Boolean(draft)} onClose={() => !saving && setDraft(null)} closeOnBackdrop={false} title={draft?.id ? '编辑 MCP Token' : '创建 MCP Token'} maxWidth={620} footer={<><Button variant="ghost" disabled={saving} onClick={() => setDraft(null)}>取消</Button><Button variant="primary" loading={saving} onClick={save}>{draft?.id ? '保存' : '创建'}</Button></>}>
-      {draft ? <div style={{ display: 'grid', gap: 16 }}><Field label="名称"><TextInput value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="例如：桌面自动化 Agent" /></Field><Field label="应用模式" hint="自动应用仍会校验文件哈希和局部替换内容；手动确认会先进入本页待确认变更。"><SegmentedTabs value={draft.approval_mode} onChange={(approval_mode) => setDraft((current) => ({ ...current, approval_mode, permissions: approval_mode === 'auto' ? (current.permissions || []).filter((permission) => permission !== 'get_change_status') : current.permissions }))} options={[{ value: 'manual', label: '手动确认' }, { value: 'auto', label: '自动应用' }]} /></Field>{[...EXTERNAL_MCP_PERMISSION_GROUPS, ...(draft.approval_mode === 'manual' ? [EXTERNAL_MCP_MANUAL_PERMISSION_GROUP] : [])].map((group) => <div key={group.title} style={{ display: 'grid', gap: 9 }}><div style={{ fontSize: 13, fontWeight: 700 }}>{group.title}</div>{group.items.map(([permission, label]) => <div key={permission} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}><span style={{ fontSize: 13, color: '#4D4A45' }}>{label}</span><Toggle on={(draft.permissions || []).includes(permission)} onChange={(enabled) => togglePermission(permission, enabled)} /></div>)}</div>)}<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}><span style={{ fontSize: 13, fontWeight: 600 }}>启用此 Token</span><Toggle on={Boolean(draft.enabled)} onChange={(enabled) => setDraft({ ...draft, enabled })} /></div></div> : null}
+    <Dialog open={Boolean(draft)} onClose={() => !saving && setDraft(null)} closeOnBackdrop={false} title={draft?.id ? '编辑 MCP Token' : '创建 MCP Token'} maxWidth={620} initialFocusRef={tokenNameInputRef} selectInitialFocus footer={<><Button variant="ghost" disabled={saving} onClick={() => setDraft(null)}>取消</Button><Button variant="primary" loading={saving} onClick={save}>{draft?.id ? '保存' : '创建'}</Button></>}>
+      {draft ? <div style={{ display: 'grid', gap: 16 }}><Field label="名称"><TextInput ref={tokenNameInputRef} value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="例如：桌面自动化 Agent" /></Field><Field label="应用模式" hint="自动应用仍会校验文件哈希和局部替换内容；手动确认会先进入本页待确认变更。"><SegmentedTabs value={draft.approval_mode} onChange={(approval_mode) => setDraft((current) => ({ ...current, approval_mode, permissions: approval_mode === 'auto' ? (current.permissions || []).filter((permission) => permission !== 'get_change_status') : current.permissions }))} options={[{ value: 'manual', label: '手动确认' }, { value: 'auto', label: '自动应用' }]} /></Field>{[...EXTERNAL_MCP_PERMISSION_GROUPS, ...(draft.approval_mode === 'manual' ? [EXTERNAL_MCP_MANUAL_PERMISSION_GROUP] : [])].map((group) => <div key={group.title} style={{ display: 'grid', gap: 9 }}><div style={{ fontSize: 13, fontWeight: 700 }}>{group.title}</div>{group.items.map(([permission, label]) => <div key={permission} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}><span style={{ fontSize: 13, color: '#4D4A45' }}>{label}</span><Toggle on={(draft.permissions || []).includes(permission)} onChange={(enabled) => togglePermission(permission, enabled)} /></div>)}</div>)}<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}><span style={{ fontSize: 13, fontWeight: 600 }}>启用此 Token</span><Toggle on={Boolean(draft.enabled)} onChange={(enabled) => setDraft({ ...draft, enabled })} /></div></div> : null}
     </Dialog>
     <Dialog open={Boolean(rawToken)} onClose={() => setRawToken('')} closeOnBackdrop={false} title="请立即保存 MCP Token" maxWidth={620} footer={<Button variant="primary" onClick={() => setRawToken('')}>我已保存</Button>}><div style={{ display: 'grid', gap: 12 }}><NoteBox tone="warning">Token 只会显示这一次。关闭后无法再次查看，只能重新生成。</NoteBox><div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}><TextInput value={rawToken} readOnly onFocus={(event) => event.target.select()} style={{ paddingRight: 42, fontFamily: 'var(--font-mono)' }} /><Tooltip content="复制 Token"><button type="button" aria-label="复制 Token" onClick={() => copy(rawToken, 'MCP Token 已复制')} style={{ position: 'absolute', right: 8, width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)', border: 'none', background: 'transparent', borderRadius: 'var(--radius-sm)', cursor: 'pointer', transition: 'color var(--transition-fast)' }} onMouseEnter={(event) => { event.currentTarget.style.color = 'var(--text-secondary)'; }} onMouseLeave={(event) => { event.currentTarget.style.color = 'var(--text-tertiary)'; }}><Icons.copy size={14} /></button></Tooltip></div></div></Dialog>
     <FileOperationDiffDialog operationSet={changeOperationSet} open={Boolean(detailChange)} onClose={() => setDetailChange(null)} onApplyAll={applyChange} onApplyFile={applyChange} onDiscardFile={rejectChange} allowDiscardPending discardLabel="拒绝变更" />
@@ -1880,6 +1906,7 @@ const McpSettings = () => {
   const [capabilities, setCapabilities] = useState(null);
   const [draft, setDraft] = useState(null);
   const [testingId, setTestingId] = useState('');
+  const serverNameInputRef = useRef(null);
   const empty = { name: '', transport: 'streamable_http', enabled: true, url: '', allowLocalHttp: false, headers: [], command: '', args: '', cwd: '' };
   const load = useCallback(async () => { const response = await fetch('/api/settings/mcp/servers', { cache: 'no-store' }); const payload = await readJsonResponse(response, { fallbackMessage: '读取 MCP Server 失败' }); setServers(Array.isArray(payload.servers) ? payload.servers : []); }, []);
   useEffect(() => { Promise.all([load(), fetch('/api/runtime/capabilities', { cache: 'no-store' }).then((response) => readJsonResponse(response, { fallbackMessage: '读取运行环境能力失败' }))]).then(([, payload]) => setCapabilities(payload)).catch((error) => toast(error.message || '读取 MCP Server 失败', 'error')).finally(() => setLoading(false)); }, [load, toast]);
@@ -1932,9 +1959,9 @@ const McpSettings = () => {
           </section>
         </>}
       </div>
-      <Dialog open={Boolean(draft)} onClose={() => setDraft(null)} closeOnBackdrop={false} title={draft?.id ? '编辑 MCP Server' : '添加 MCP Server'} maxWidth={560} footer={<><Button variant="ghost" onClick={() => setDraft(null)}>取消</Button><Button variant="primary" onClick={save}>保存</Button></>}>
+      <Dialog open={Boolean(draft)} onClose={() => setDraft(null)} closeOnBackdrop={false} title={draft?.id ? '编辑 MCP Server' : '添加 MCP Server'} maxWidth={560} initialFocusRef={serverNameInputRef} selectInitialFocus footer={<><Button variant="ghost" onClick={() => setDraft(null)}>取消</Button><Button variant="primary" onClick={save}>保存</Button></>}>
         {draft ? <div style={{ display: 'grid', gap: 16 }}>
-          <Field label="名称"><TextInput value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="例如：本地文件工具" /></Field>
+          <Field label="名称"><TextInput ref={serverNameInputRef} value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="例如：本地文件工具" /></Field>
           {supportsStdio ? <Field label="传输方式"><SegmentedTabs value={draft.transport} onChange={(transport) => setDraft({ ...draft, transport })} options={transportOptions} /></Field> : null}
           {draft.transport === 'stdio' ? <><Field label="命令"><TextInput value={draft.command} onChange={(event) => setDraft({ ...draft, command: event.target.value })} placeholder="npx" /></Field><Field label="参数" hint="用空格分隔；带空格的参数可用双引号。"><TextInput value={draft.args} onChange={(event) => setDraft({ ...draft, args: event.target.value })} placeholder="-y @modelcontextprotocol/server-filesystem /path" /></Field><Field label="工作目录" hint="可选，必须为绝对路径。"><TextInput value={draft.cwd} onChange={(event) => setDraft({ ...draft, cwd: event.target.value })} placeholder="/Users/name/project" /></Field></> : <><Field label="URL"><TextInput value={draft.url} onChange={(event) => setDraft({ ...draft, url: event.target.value })} placeholder="https://example.com/mcp" /></Field><Field label="本机 HTTP 地址" hint="仅在本机运行的 MCP 使用 http 时打开；只允许 localhost、127.0.0.1 或 ::1。"><div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, minHeight: 32 }}><span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>允许连接本机回环地址</span><Toggle on={Boolean(draft.allowLocalHttp)} onChange={(allowLocalHttp) => setDraft({ ...draft, allowLocalHttp })} /></div></Field><Field label="请求 Header" hint="认证值以密钥保存，编辑已有认证项时留空即可保留原值；列表和任务日志不会显示认证值。"><div style={{ display: 'grid', gap: 8 }}>{(draft.headers || []).map((header, index) => <div key={`${header.secretId || 'new'}-${index}`} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}><div style={{ flex: '1 1 130px', minWidth: 0 }}><TextInput aria-label={`Header 名称 ${index + 1}`} value={header.name} onChange={(event) => updateHeader(index, { name: event.target.value })} placeholder="Header 名称" /></div><div style={{ flex: '1 1 180px', minWidth: 0 }}><TextInput aria-label={`Header 值 ${index + 1}`} masked value={header.value} onChange={(event) => updateHeader(index, { value: event.target.value, configured: Boolean(event.target.value) || header.configured })} placeholder={header.configured ? '已保存，留空不修改' : 'Header 值'} /></div><Button size="sm" variant="ghost" aria-label={`删除 Header ${index + 1}`} onClick={() => removeHeader(index)}>删除</Button></div>)}<div><Button size="sm" variant="secondary" onClick={addHeader}><Icons.plus size={13} />添加 Header</Button></div></div></Field></>}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}><span style={{ fontSize: 13, fontWeight: 600 }}>启用此 Server</span><Toggle on={Boolean(draft.enabled)} onChange={(enabled) => setDraft({ ...draft, enabled })} /></div>

@@ -203,6 +203,26 @@ assert.ok(settings.includes("{ id: 'global-agent', label: 'Agent 个性', icon: 
   assert.ok(globalStyles.includes('.notus-diff-dialog__backdrop {\n  position: fixed;\n  inset: 0;\n  z-index: 2000;'), 'Diff 弹窗必须位于页面吸顶工具栏之上');
   assert.ok(globalStyles.includes('@media (max-width: 960px)'), 'Diff 详情必须定义窄屏布局');
   assert.ok(globalStyles.includes('.notus-diff-dialog__sidebar.is-mobile-open'), '窄屏文件列表必须使用悬浮抽屉状态');
+
+  // Diff 弹窗移动端/响应式适配：两个弹窗共用同一套外壳类，外壳跟随移动端视口与安全区。
+  const fileOperationDiff = read('components/AIPanel/FileOperationDiffDialog.js');
+  assert.ok(fileOperationDiff.includes("import { createPortal } from 'react-dom';"), '设置页 Diff 弹窗必须通过 portal 脱离设置弹窗堆叠上下文');
+  assert.ok(fileOperationDiff.includes('createPortal(') && fileOperationDiff.includes('document.body'), '设置页 Diff 弹窗必须挂载到 document.body');
+  assert.ok(fileOperationDiff.includes('className="notus-diff-dialog__backdrop"'), '设置页 Diff 弹窗必须复用统一外壳类');
+  assert.ok(fileOperationDiff.includes('className="notus-diff-dialog"'), '设置页 Diff 弹窗必须复用统一弹窗类');
+  assert.ok(fileOperationDiff.includes('className="notus-diff-dialog__body"'), '设置页 Diff 弹窗必须复用统一双栏容器');
+  assert.ok(fileOperationDiff.includes('className="notus-diff-dialog__scroll"'), '设置页 Diff 弹窗正文必须在独立滚动区内');
+  assert.ok(fileOperationDiff.includes('notus-diff-dialog__sidebar'), '设置页 Diff 弹窗文件列表必须复用抽屉侧栏');
+  assert.ok(fileOperationDiff.includes('notus-diff-dialog__file-toggle'), '设置页 Diff 弹窗窄屏必须提供文件入口');
+  assert.ok(fileOperationDiff.includes('notus-diff-dialog__file-backdrop'), '设置页 Diff 弹窗文件抽屉必须有独立遮罩');
+  assert.ok(!fileOperationDiff.includes("gridTemplateColumns: '220px"), '设置页 Diff 弹窗不得再使用固定 220px 双栏');
+  assert.ok(globalStyles.includes('100dvh'), 'Diff 弹窗高度必须使用 dvh 跟随移动端视口');
+  assert.ok(globalStyles.includes('env(safe-area-inset-top)'), 'Diff 弹窗外壳必须避让移动端安全区');
+  assert.ok(globalStyles.includes('.notus-diff-dialog__header-actions button {'), 'Diff 弹窗标题栏入口必须定义触控尺寸');
+  assert.ok(globalStyles.includes('.notus-diff-dialog__footer > div > button {'), 'Diff 弹窗底部操作按钮必须定义触控尺寸');
+  assert.ok(agentWorkspace.includes('notus-diff-dialog__batch-link'), '累计 Diff 的批次详情入口必须使用主色调样式类');
+  assert.ok(agentWorkspace.includes('<Icons.chevronRight size={13} />'), '批次详情按钮必须带可点击引导箭头');
+  assert.ok(appRoot.includes('viewport-fit=cover'), '必须声明 viewport-fit=cover 才能使用安全区');
   assert.ok(agentWorkspace.includes("step?.errorType !== 'agent' && step?.kind !== 'segment'"), 'Agent 错误和内部执行段都不能进入普通工具步骤列表');
   assert.ok(agentWorkspace.includes("attachmentMode === 'parsed'"));
   assert.ok(!agentWorkspace.includes('pasted-text-'), '粘贴附件名称不使用自动生成的英文前缀');
@@ -257,6 +277,18 @@ assert.ok(settings.includes("{ id: 'global-agent', label: 'Agent 个性', icon: 
   assert.ok(documentTabs.includes('onContextMenu={(event) => {'));
   assert.ok(documentTabs.includes('title="重命名文件"'));
   assert.ok(documentTabs.includes('height: 48'));
+  // 关闭其他标签：位于右键菜单“关闭标签”之后，以右键的标签为基准。
+  assert.ok(
+    documentTabs.includes("['关闭其他标签', tabs.filter(file => file.id !== contextMenu?.file?.id)]"),
+    '右键菜单必须提供“关闭其他标签”，并以右键的标签为基准'
+  );
+  const menuOrder = documentTabs.indexOf("['关闭标签'");
+  const closeOthersOrder = documentTabs.indexOf("['关闭其他标签'");
+  assert.ok(menuOrder >= 0 && closeOthersOrder > menuOrder, '“关闭其他标签”必须紧随“关闭标签”之后');
+  assert.ok(
+    documentTabs.includes('onCloseMany?.(targets)'),
+    '“关闭其他标签”必须复用既有批量关闭入口，保持未保存保护一致'
+  );
   assert.ok(!agentWorkspace.includes('MentionPreviewDialog'), '文件 Mention 不应再打开预览弹窗');
   assert.ok(agentWorkspace.includes('const handleOpenMention = useCallback((mention) => {'));
   assert.ok(agentWorkspace.includes('onOpenDiffFile?.(mention.path);'));
@@ -273,10 +305,9 @@ assert.ok(settings.includes("{ id: 'global-agent', label: 'Agent 个性', icon: 
   assert.ok(fileAgentWorkspace.includes('function collectFileMentions(nodes = [])'));
   assert.ok(fileAgentWorkspace.includes('...collectFileMentions(fileTree),'));
 
-  assert.ok(filesPage.includes("const FILES_EDITOR_AUTO_COLLAPSE_QUERY = '(max-width: 760px)'"));
+  assert.ok(filesPage.includes("const FILES_SINGLE_PANEL_QUERY = '(max-width: 760px)'"));
   assert.ok(filesPage.includes('const FILES_AGENT_FIXED_WIDTH = 456;'));
-  assert.ok(filesPage.includes('const renderedWorkspacePanels = {'));
-  assert.ok(filesPage.includes('const renderedEditorAutoCollapsed = editorAutoCollapsed'));
+  assert.ok(filesPage.includes('const renderedWorkspacePanels = workspacePanels;'));
   assert.ok(filesPage.includes("toast('该文档已删除或不存在', 'info')"));
   assert.ok(filesPage.includes('onOpenDiffFile={handleOpenDiffFile}'));
   assert.ok(filesPage.includes('function findFileInTree(nodes = [], path = \'\')'));
@@ -320,8 +351,8 @@ assert.ok(settings.includes("{ id: 'global-agent', label: 'Agent 个性', icon: 
   assert.ok(agentWorkspace.includes('function buildInteractionHistoryStep'));
   assert.ok(agentWorkspace.includes('function mergeInteractionStepsIntoTimeline'));
   assert.ok(agentWorkspace.includes('const interactionStepsFor'));
-  assert.ok(fileAgentWorkspace.includes('function isInternalInteractionAnswerMessage'), '提问卡片回答摘要必须在消息列表中标记为内部记录');
-  assert.ok(fileAgentWorkspace.includes("messages.filter((message) => !isInternalInteractionAnswerMessage(message))"), '内部回答摘要不得作为独立聊天消息显示');
+  assert.ok(fileAgentWorkspace.includes('isInternalAgentInteractionMessage, mapConversationMessages } from \'../../utils/conversations\''), '提问卡片回答摘要必须在消息列表中标记为内部记录');
+  assert.ok(fileAgentWorkspace.includes("messages.filter((message) => !isInternalAgentInteractionMessage(message))"), '内部回答摘要不得作为独立聊天消息显示');
   assert.ok(!fileAgentWorkspace.includes('if (payload.answer_message)'), '回答接口返回的内部摘要不得即时插入聊天消息列表');
   assert.ok(agentWorkspace.includes("if (interaction?.status !== 'answered') return null;"), '待回答卡片由等待步骤承载，只有已回答 interaction 才追加问答步骤');
   assert.ok(agentWorkspace.includes('const pendingSteps = interactionSteps.filter'), '已回答问题必须追加在原提问步骤后，不能覆盖等待回答步骤');
@@ -366,6 +397,14 @@ assert.ok(settings.includes("{ id: 'global-agent', label: 'Agent 个性', icon: 
   const knowledgePage = read('pages/knowledge.js');
   assert.ok(knowledgePage.includes("destination: '/files'"));
   assert.ok(!knowledgePage.includes('attachmentMode="parsed"'));
+
+  // failed 资源确认卡必须提供“知道了”处置路径：点击后仅本地从待处理列表移除，不调后端。
+  const fileWorkspaceFailedCard = read('components/AgentWorkspace/FileAgentWorkspace.js');
+  assert.ok(fileWorkspaceFailedCard.includes('const handleFailedInteractionDismiss = useCallback'), 'failed 资源卡必须提供本地清理处理函数');
+  assert.ok(/failed \? <div[^>]*>\s*<Button variant="secondary" onClick=\{\(\) => onDismiss\?\.\(\)\}>知道了<\/Button>/.test(fileWorkspaceFailedCard), 'failed 分支必须渲染“知道了”按钮并触发 onDismiss');
+  assert.ok(fileWorkspaceFailedCard.includes('onDismiss={() => handleFailedInteractionDismiss(activeInteraction)}'), '资源确认卡必须接入 failed 卡的本地清理回调');
+  assert.ok(!fileWorkspaceFailedCard.includes("activeInteraction.kind === 'resource_approval' ? <ResourceApprovalDrawer"), '内联交互层的 resource_approval 死分支必须移除');
+  assert.ok(fileWorkspaceFailedCard.includes("previous.filter((item) => Number(item.id) !== interactionId)"), '“知道了”只允许从 pendingInteractions 移除该交互');
 
   console.log('ui bug regressions tests passed');
 }

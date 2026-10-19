@@ -5,6 +5,7 @@ import { ConversationDrawer } from '../ChatArea/ConversationDrawer';
 import { IconButton } from '../ui/IconButton';
 import { Icons } from '../ui/Icons';
 import { Spinner } from '../ui/Spinner';
+import { Button } from '../ui/Button';
 import { Tooltip } from '../ui/Tooltip';
 import { AiLockedState } from '../ui/AiLockedState';
 import { useToast } from '../ui/Toast';
@@ -13,7 +14,7 @@ import { buildRestoredAgentTimeline, useAgentLoopController } from '../../hooks/
 import { useLlmConfigs } from '../../hooks/useLlmConfigs';
 import { useStableAiReadiness } from '../../hooks/useStableAiReadiness';
 import { deriveAiReadiness } from '../../utils/aiReadiness';
-import { isInternalAgentInteractionMessage, mapConversationMessages } from '../../utils/conversations';
+import { getConversationTitle, isInternalAgentInteractionMessage, mapConversationMessages } from '../../utils/conversations';
 import {
   buildConversationExportFileName,
   downloadTextFile,
@@ -224,26 +225,27 @@ function McpApprovalDrawer({ interaction, submitting, onDecision }) {
   );
 }
 
-function ResourceApprovalDrawer({ interaction, submitting, onDecision, onPhaseChange }) {
+function ResourceApprovalDrawer({ interaction, submitting, onDecision, onDismiss }) {
   const payload = interaction?.payload || {};
-  const actionLabels = { skill_install: '安装 Skill', skill_update: '覆盖修订 Skill', skill_uninstall: '卸载 Skill', skill_disable: '停用外部 Skill', mcp_remove: '删除 MCP Server' };
-  const detail = [payload.target ? `目标：${payload.target}` : '', Array.isArray(payload.files) && payload.files.length ? `文件：${payload.files.join('、')}` : ''].filter(Boolean).join('；');
-  const cardInteraction = {
-    ...interaction,
-    payload: {
-      ...payload,
-      title: `确认${actionLabels[payload.action] || '资源操作'}？`,
-      kicker: 'Agent 需要你确认',
-      submit_label: '确认执行',
-      footer_hint: detail || '确认后将继续当前 Agent 任务',
-      collapsed_summary: detail || '等待确认',
-      questions: [{ id: 'resource_decision', label: detail || '是否继续执行该操作？', type: 'single_select', required: true, allow_custom: false, options: [{ id: 'confirm', label: '确认执行', description: '执行这项资源操作。', answer_value: 'confirm' }, { id: 'cancel', label: '取消', description: '不执行，保留草稿。', answer_value: 'cancel' }] }],
-    },
-  };
-  return <ClarifyDrawer interaction={cardInteraction} collapsible={false} submitting={submitting} submitLabel="确认执行" onPhaseChange={onPhaseChange} onSubmit={(_, answers) => onDecision?.(answers?.resource_decision?.option_id === 'confirm' ? 'confirm' : 'cancel')} onRetry={() => {}} onCancel={() => onDecision?.('cancel')} />;
+  const labels = { external_mcp_tool: '执行 MCP 操作', add_mcp_server: '添加 MCP Server', update_mcp_server: '更新 MCP Server', set_mcp_server_enabled: '调整 MCP Server 启用状态', update_global_agent_file: '更新全局 Agent 文件', skill_install_git: '安装 Skill', skill_install: '安装 Skill', skill_update: '更新 Skill', skill_update_git: '更新 Skill', skill_uninstall: '卸载 Skill', skill_disable: '停用 Skill', skill_set_enabled: payload.enabled ? '启用 Skill' : '停用 Skill', mcp_remove: '删除 MCP Server' };
+  const pending = interaction?.status === 'pending';
+  const failed = interaction?.status === 'failed';
+  return <section role="region" aria-label="资源操作确认" style={{ padding: 16, border: '1px solid var(--border-subtle)', borderRadius: 12, background: 'var(--bg-primary)' }}>
+    <strong>{labels[payload.tool_name || payload.action] || '资源操作'} · {failed ? '执行失败' : interaction?.status === 'processing' ? '正在执行' : '等待确认'}</strong>
+    <p style={{ overflowWrap: 'anywhere' }}>{payload.target}</p>
+    {payload.files?.length ? <p>{payload.files.join('、')}</p> : null}
+    {failed ? <p role="alert">{interaction.response?.message || '资源操作失败，请查看执行记录后重新发起操作。'}</p> : null}
+    {pending ? <div style={{ display: 'flex', gap: 8 }}>
+      <Button variant="primary" disabled={submitting} onClick={() => onDecision('confirm')}>{submitting ? '正在执行…' : '确认执行'}</Button>
+      <Button variant="secondary" disabled={submitting} onClick={() => onDecision('cancel')}>取消</Button>
+    </div> : null}
+    {failed ? <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+      <Button variant="secondary" onClick={() => onDismiss?.()}>知道了</Button>
+    </div> : null}
+  </section>;
 }
 
-export function FileAgentWorkspace({ allFiles = [], fileTree = [], activeFileId = null, refreshFiles, onFilesChanged, onAgentPanelLockChange, beforeAgentRun, fullWidth = false, onOpenDiffFile, onOpenFileLink }) {
+export function FileAgentWorkspace({ allFiles = [], fileTree = [], activeFileId = null, refreshFiles, onFilesChanged, onAgentPanelLockChange, onActiveConversationChange, beforeAgentRun, fullWidth = false, onOpenDiffFile, onOpenFileLink }) {
   const { openSettings } = useSettingsDialog();
   const toast = useToast();
   const { status: appStatus, loading: appStatusLoading } = useAppStatus();
@@ -599,6 +601,15 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], activeFileId 
     return () => onAgentPanelLockChange?.({ locked: false, message: '' });
   }, [agentPanelLockMessage, agentPanelLocked, onAgentPanelLockChange]);
 
+  // 把当前打开的对话标题上报给文件页，用于编辑器收起时的网页标题。
+  useEffect(() => {
+    const active = conversationList.find((item) => Number(item.id) === Number(activeConversationId)) || null;
+    onActiveConversationChange?.({
+      id: normalizeConversationId(activeConversationId),
+      title: active ? getConversationTitle(active) : '',
+    });
+  }, [activeConversationId, conversationList, onActiveConversationChange]);
+
   useEffect(() => {
     agentPresentationRef.current = {
       activeSession: agentLoop.activeAgentSession,
@@ -779,6 +790,10 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], activeFileId 
   }, [activeConversationId, activeFileId, refreshConversationList, selectedLlmConfigId]);
 
   const handleSend = useCallback(async (query, options = {}) => {
+    if (pendingOperationSets.some(set => ['pending', 'partial', 'apply_failed'].includes(set.status) && (set.revision_type === 'file_revision' || set.patches?.some(patch => ['pending', 'failed'].includes(patch.status || 'pending'))))) {
+      toast('还有待处理的修改，请先在 Diff 中手动应用或废弃，再发送新消息。', 'warning');
+      return;
+    }
     const llmConfigId = options.llmConfigId || selectedLlmConfigId;
     if (!llmConfigId) {
       toast('请先在模型配置中新增至少一个 LLM 配置', 'warning');
@@ -792,7 +807,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], activeFileId 
       ...buildAgentTask(query, { ...options, llmConfigId }),
       approval_mode: agentConfirmMode,
     });
-  }, [agentConfirmMode, agentLoop, beforeAgentRun, buildAgentTask, selectedLlmConfigId, toast]);
+  }, [agentConfirmMode, agentLoop, beforeAgentRun, buildAgentTask, pendingOperationSets, selectedLlmConfigId, toast]);
 
   const handleNewConversation = useCallback(() => {
     // 用户明确选择新对话后，初始化中的“恢复上次对话”异步流程不得再写回旧会话。
@@ -860,8 +875,9 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], activeFileId 
         resume_ticket: interaction.resume_ticket,
       }),
     });
-    const payload = await readApiResponse(response, '回答提问卡片失败');
+    const payload = await response.json().catch(() => ({}));
     if (payload.interaction) setPendingInteractions((previous) => upsertById(previous, payload.interaction));
+    if (!response.ok) throw new Error(payload.error || '提交交互失败');
     return payload;
   }, []);
 
@@ -968,12 +984,21 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], activeFileId 
     setInteractionSubmittingId(interaction.id);
     try {
       const payload = await respondToInteraction(interaction, { action: decision });
-      if (payload.resolution_status === 'resolved') dispatchAgentResourceChange(interaction?.payload?.action);
+      if (payload.resolution_status === 'failed') toast(payload.error || payload.interaction?.response?.message || '资源操作失败', 'error');
+      if (payload.resolution_status === 'resolved') dispatchAgentResourceChange(interaction?.payload?.tool_name || interaction?.payload?.action);
       if (payload.should_continue && shouldReconnectInteractionSession(payload.interaction || interaction)) {
         await resumeInteraction(payload.interaction || interaction, payload, { subscribeOnly: true });
       }
     } catch (error) { toast(error.message || '资源操作失败', 'error'); } finally { setInteractionSubmittingId(null); }
   }, [respondToInteraction, resumeInteraction, shouldReconnectInteractionSession, toast]);
+
+  // failed 资源卡没有可继续的服务端动作，用户点击“知道了”后仅做本地清理，
+  // 从待处理列表移除该卡片，不调用后端，也不影响该交互的落库状态。
+  const handleFailedInteractionDismiss = useCallback((interaction) => {
+    const interactionId = Number(interaction?.id || 0);
+    if (!Number.isFinite(interactionId) || interactionId <= 0) return;
+    setPendingInteractions((previous) => previous.filter((item) => Number(item.id) !== interactionId));
+  }, []);
 
   const displayedMessages = useMemo(() => {
     const visibleMessages = messages.filter((message) => !isInternalAgentInteractionMessage(message));
@@ -1001,7 +1026,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], activeFileId 
   const inputDisabled = !aiUiState.ready;
 
   return (
-    <div className={`notus-file-agent-workspace${activeInteraction ? ' has-interaction' : ''}`} style={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative', background: 'var(--bg-primary)' }}>
+    <div className={`notus-file-agent-workspace${activeInteraction && activeInteraction.kind !== 'resource_approval' ? ' has-interaction' : ''}`} style={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative', background: 'var(--bg-primary)' }}>
       <div className="notus-file-agent-workspace__header" style={{ height: 48, padding: '0 12px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', flexShrink: 0 }}>
         <div style={{ display: 'flex', gap: 4 }}>
           <Tooltip content="查看历史对话"><span><IconButton label="查看历史对话" size={30} active={historyDrawerOpen} onClick={() => setHistoryDrawerOpen(true)}><Icons.clock size={14} /></IconButton></span></Tooltip>
@@ -1010,6 +1035,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], activeFileId 
       </div>
       <div className="notus-file-agent-workspace__content" style={{ flex: 1, minHeight: 0, position: 'relative' }}>
         <AgentWorkspace
+          resourceConfirmation={activeInteraction?.kind === 'resource_approval' ? <ResourceApprovalDrawer interaction={activeInteraction} submitting={interactionSubmittingId === activeInteraction.id} onDecision={(decision) => handleResourceApproval(activeInteraction, decision)} onDismiss={() => handleFailedInteractionDismiss(activeInteraction)} /> : null}
           conversationId={activeConversationId}
           messages={displayedMessages}
           interactions={pendingInteractions}
@@ -1031,7 +1057,7 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], activeFileId 
           onConversationRewritten={handleConversationRewritten}
           onApplyOperationSet={(operationSet) => agentLoop.applyOperationSet(operationSet)}
           onApplyOperationFile={(operationSet, patchIndex) => agentLoop.applyOperationFile(operationSet, patchIndex)}
-          onRollbackOperationFile={(operationSet, patchIndex) => agentLoop.rollbackOperationFile(operationSet, patchIndex)}
+          onRollbackOperationFile={(operationSet, patchIndex, options) => agentLoop.rollbackOperationFile(operationSet, patchIndex, options)}
           onDiscardOperationFile={(operationSet) => agentLoop.discardPendingOperationSet(operationSet)}
           disabled={inputDisabled}
           placeholder="输入任务，或使用 @ 查找并引用文件…"
@@ -1045,15 +1071,15 @@ export function FileAgentWorkspace({ allFiles = [], fileTree = [], activeFileId 
           onOpenFileLink={onOpenFileLink}
           onCitationClick={(citation) => {
             const fileId = Number(citation?.file_id);
-            if (Number.isInteger(fileId) && fileId > 0) onOpenFileLink?.(fileId);
+            if (Number.isInteger(fileId) && fileId > 0) onOpenFileLink?.(fileId, citation?.path || citation?.file || '');
           }}
           restoringConversation={restoringConversation}
         />
         {aiUiState.showLockedState ? <AiLockedState compact variant="panel" onAction={() => openSettings('model')} /> : null}
-        {activeInteraction ? (
+        {activeInteraction && activeInteraction.kind !== 'resource_approval' ? (
           <div className="notus-file-agent-workspace__interaction-layer">
             <div className="notus-file-agent-workspace__interaction-drawer">
-              {activeInteraction.kind === 'mcp_approval' ? <McpApprovalDrawer interaction={activeInteraction} submitting={interactionSubmittingId === activeInteraction.id} onDecision={(decision) => handleMcpApproval(activeInteraction, decision)} /> : activeInteraction.kind === 'resource_approval' ? <ResourceApprovalDrawer interaction={activeInteraction} submitting={interactionSubmittingId === activeInteraction.id} onPhaseChange={setClarifyPhase} onDecision={(decision) => handleResourceApproval(activeInteraction, decision)} /> : <ClarifyDrawer interaction={activeInteraction} collapsible={false} answerDraft={interactionAnswerDrafts[String(activeInteraction.id)]} onAnswerDraftChange={(answers) => handleInteractionAnswerDraftChange(activeInteraction.id, answers)} submitting={interactionSubmittingId === activeInteraction.id} submitLabel="提交" onPhaseChange={setClarifyPhase} onSubmit={handleInteractionSubmit} onRetry={resumeInteraction} onCancel={handleInteractionCancel} />}
+              {activeInteraction.kind === 'mcp_approval' ? <McpApprovalDrawer interaction={activeInteraction} submitting={interactionSubmittingId === activeInteraction.id} onDecision={(decision) => handleMcpApproval(activeInteraction, decision)} /> : <ClarifyDrawer interaction={activeInteraction} collapsible={false} answerDraft={interactionAnswerDrafts[String(activeInteraction.id)]} onAnswerDraftChange={(answers) => handleInteractionAnswerDraftChange(activeInteraction.id, answers)} submitting={interactionSubmittingId === activeInteraction.id} submitLabel="提交" onPhaseChange={setClarifyPhase} onSubmit={handleInteractionSubmit} onRetry={resumeInteraction} onCancel={handleInteractionCancel} />}
             </div>
           </div>
         ) : null}

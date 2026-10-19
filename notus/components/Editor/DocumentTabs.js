@@ -16,6 +16,7 @@ export function DocumentTabs({ files = [], activeFileId = null, onActivate, onCl
   const [renameName, setRenameName] = useState('');
   const [renaming, setRenaming] = useState(false);
   const tabButtonRefs = useRef(new Map());
+  const renameInputRef = useRef(null);
   const tabs = useMemo(() => (Array.isArray(files) ? files.filter(Boolean) : []), [files]);
 
   const openRename = useCallback((file) => {
@@ -194,6 +195,8 @@ export function DocumentTabs({ files = [], activeFileId = null, onActivate, onCl
             <DropdownMenu.Item onSelect={() => openRename(contextMenu.file)}>重命名</DropdownMenu.Item>
             {[
               ['关闭标签', tabs.filter(file => file.id === contextMenu?.file?.id)],
+              // “关闭其他标签”紧随“关闭标签”，以右键的标签为基准，保留它自身。
+              ['关闭其他标签', tabs.filter(file => file.id !== contextMenu?.file?.id)],
               ['关闭左侧所有标签', tabs.slice(0, Math.max(0, tabs.findIndex(file => file.id === contextMenu?.file?.id)))],
               ['关闭右侧所有标签', tabs.slice(tabs.findIndex(file => file.id === contextMenu?.file?.id) + 1)],
               ['关闭所有标签', tabs],
@@ -206,6 +209,8 @@ export function DocumentTabs({ files = [], activeFileId = null, onActivate, onCl
           open
           onClose={closeRename}
           title="重命名文件"
+          initialFocusRef={renameInputRef}
+          selectInitialFocus
           footer={(
             <>
               <Button variant="ghost" onClick={closeRename}>取消</Button>
@@ -214,7 +219,7 @@ export function DocumentTabs({ files = [], activeFileId = null, onActivate, onCl
           )}
         >
           <TextInput
-            autoFocus
+            ref={renameInputRef}
             value={renameName}
             placeholder="文件名（不含 .md 后缀）"
             onChange={(event) => setRenameName(event.target.value)}

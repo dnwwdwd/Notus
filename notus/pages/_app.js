@@ -55,6 +55,7 @@ export default function App({ Component, pageProps }) {
     <>
       <Head>
         <title>Notus</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
         <meta name="application-name" content="Notus" />
         <meta name="description" content="本地 Markdown 文件工作区与 AI Agent" />
         <meta name="theme-color" content="#C15F3C" />

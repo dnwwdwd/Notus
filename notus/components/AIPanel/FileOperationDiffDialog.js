@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Icons } from '../ui/Icons';
 
 const C = {
@@ -136,12 +137,15 @@ export function FileOperationDiffDialog({
   const operations = useMemo(() => operationItems(operationSet), [operationSet]);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [busyKey, setBusyKey] = useState('');
+  const [fileDrawerOpen, setFileDrawerOpen] = useState(false);
 
   useEffect(() => {
     setSelectedIndex((prev) => Math.min(prev, Math.max(operations.length - 1, 0)));
+    setFileDrawerOpen(false);
   }, [operationSet?.id, operations.length]);
 
   if (!open) return null;
+  if (typeof document === 'undefined') return null;
 
   const activeOperation = operations[Math.min(selectedIndex, Math.max(operations.length - 1, 0))] || {};
   const activePath = activeOperation.new_path || activeOperation.file_path || activeOperation.path || '文件操作';
@@ -179,24 +183,28 @@ export function FileOperationDiffDialog({
     }
   };
 
-  return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 80, background: 'rgba(45,45,45,0.28)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-      <div role="dialog" aria-modal="true" aria-label="修改详情" style={{ width: 'min(980px, calc(100vw - 48px))', height: 'min(760px, calc(100vh - 48px))', background: C.card, borderRadius: 18, overflow: 'hidden', boxShadow: '0 24px 80px rgba(45,45,45,0.22)', display: 'flex', flexDirection: 'column' }}>
-        <div style={{ minHeight: 58, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '14px 18px', borderBottom: `1px solid ${C.border}`, background: C.page }}>
+  return createPortal(
+    <div className="notus-diff-dialog__backdrop">
+      <div className="notus-diff-dialog" role="dialog" aria-modal="true" aria-label="修改详情">
+        <div className="notus-diff-dialog__header" style={{ borderBottom: `1px solid ${C.border}`, background: C.page }}>
           <div style={{ minWidth: 0 }}>
             <div style={{ fontSize: 15, fontWeight: 800, color: C.text }}>修改详情</div>
             <div style={{ marginTop: 3, fontSize: 12, color: C.tertiary }}>{pendingCount > 0 ? `${pendingCount} 项待确认` : '本次修改已全部处理'}</div>
           </div>
-          <button type="button" aria-label="关闭" onClick={onClose} style={transitionButton({ width: 34, height: 34, borderRadius: 10, background: C.card, color: C.secondary, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', boxShadow: `inset 0 0 0 1px ${C.border}` })}><Icons.x size={16} /></button>
+          <div className="notus-diff-dialog__header-actions">
+            <button type="button" className="notus-diff-dialog__file-toggle notus-agent-pressable" aria-label="打开文件列表" aria-expanded={fileDrawerOpen} onClick={() => setFileDrawerOpen(true)} style={transitionButton({ borderRadius: 10, background: C.card, color: C.secondary, alignItems: 'center', justifyContent: 'center', gap: 6, boxShadow: `inset 0 0 0 1px ${C.border}` })}><Icons.list size={15} /><span>文件</span></button>
+            <button type="button" aria-label="关闭" onClick={onClose} style={transitionButton({ width: 36, height: 36, borderRadius: 10, background: C.card, color: C.secondary, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', boxShadow: `inset 0 0 0 1px ${C.border}` })}><Icons.x size={16} /></button>
+          </div>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '220px minmax(0, 1fr)', minHeight: 0, flex: 1, overflow: 'hidden' }}>
-          <div style={{ borderRight: `1px solid ${C.border}`, background: C.page, padding: 8, overflowY: 'auto' }}>
+        <div className="notus-diff-dialog__body">
+          {fileDrawerOpen ? <button type="button" className="notus-diff-dialog__file-backdrop" aria-label="关闭文件列表" onClick={() => setFileDrawerOpen(false)} /> : null}
+          <nav className={['notus-diff-dialog__sidebar', fileDrawerOpen ? 'is-mobile-open' : ''].filter(Boolean).join(' ')} aria-label="文件列表" style={{ borderRight: `1px solid ${C.border}`, background: C.page }}>
             {operations.map((operation, index) => {
               const pathText = operation.new_path || operation.file_path || operation.path || '文件操作';
               const active = index === selectedIndex;
               const statusMeta = patchStatusMeta(operation.status);
               return (
-                <button key={operation.id || index} type="button" onClick={() => setSelectedIndex(index)} style={transitionButton({ width: '100%', textAlign: 'left', display: 'grid', gap: 4, padding: '9px 10px', borderRadius: 10, background: active ? C.card : 'transparent', color: active ? C.text : C.secondary, boxShadow: active ? `inset 0 0 0 1px ${C.border}` : 'none' })}>
+                <button key={operation.id || index} type="button" onClick={() => { setSelectedIndex(index); setFileDrawerOpen(false); }} style={transitionButton({ width: '100%', textAlign: 'left', display: 'grid', gap: 4, padding: '9px 10px', borderRadius: 10, background: active ? C.card : 'transparent', color: active ? C.text : C.secondary, boxShadow: active ? `inset 0 0 0 1px ${C.border}` : 'none' })}>
                   <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                     <span style={{ minWidth: 0, fontSize: 12, fontWeight: 800, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{operationLabel(operation)}</span>
                     <span style={{ flexShrink: 0, width: 7, height: 7, borderRadius: 999, background: statusMeta.color }} />
@@ -205,19 +213,19 @@ export function FileOperationDiffDialog({
                 </button>
               );
             })}
-          </div>
-          <div style={{ minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', background: C.soft, overflow: 'hidden' }}>
-            <div style={{ minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '8px 12px', borderBottom: `1px solid ${C.border}`, background: C.card }}>
+          </nav>
+          <div className="notus-diff-dialog__content" style={{ background: C.soft }}>
+            <div className="notus-diff-dialog__content-header" style={{ borderBottom: `1px solid ${C.border}`, background: C.card }}>
               <span style={{ minWidth: 0, fontSize: 12, color: C.secondary, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{activePath}</span>
               <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 800, color: activeStatus.color, background: activeStatus.bg, borderRadius: 999, padding: '4px 8px' }}>{activeStatus.label}</span>
             </div>
-            <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '12px 0', overscrollBehavior: 'contain' }}>
+            <div className="notus-diff-dialog__scroll" style={{ overscrollBehavior: 'contain' }}>
               {activeOperation.error ? (
                 <div style={{ margin: '0 12px 12px', padding: '10px 12px', borderRadius: 10, background: 'var(--danger-subtle)', color: 'var(--danger)', fontSize: 12, lineHeight: 1.65, boxShadow: 'inset 0 0 0 1px color-mix(in srgb, var(--danger) 18%, transparent)' }}>
                   {activeOperation.error}
                 </div>
               ) : null}
-              <div style={{ minWidth: 'max-content', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12.5, lineHeight: 1.65 }}>
+              <div className="notus-diff-dialog__lines" style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>
                 {diffLines.length === 0 ? <div style={{ padding: '0 14px', color: C.tertiary }}>没有可展示的 diff 内容。</div> : diffLines.map((line, index) => {
                   const hunk = line.type === 'hunk';
                   const remove = line.type === 'remove';
@@ -231,9 +239,8 @@ export function FileOperationDiffDialog({
                 })}
               </div>
             </div>
-            <div style={{ minHeight: 56, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '10px 12px', borderTop: `1px solid ${C.border}`, background: C.card }}>
-              <span style={{ flex: 1, minWidth: 0, fontSize: 12, lineHeight: 1.6, color: C.tertiary }}>预览未应用时回滚等同于放弃；已应用后回滚会尽量恢复原路径或删除快照。</span>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+            <div className="notus-diff-dialog__footer" style={{ borderTop: `1px solid ${C.border}`, background: C.page, justifyContent: 'flex-end' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'wrap', gap: 8, minWidth: 0 }}>
                 {canDiscard ? (
                   <button type="button" disabled={Boolean(busyKey)} onClick={() => runFileAction('discard')} style={transitionButton({ height: 32, padding: '0 11px', borderRadius: 9, background: C.soft, color: C.secondary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: busyKey ? 'not-allowed' : 'pointer' })}>{discardLabel}</button>
                 ) : null}
@@ -245,6 +252,7 @@ export function FileOperationDiffDialog({
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

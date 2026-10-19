@@ -32,6 +32,9 @@ import { CitationHighlight } from './CitationHighlightExtension';
 import { TextAlignCenter, CenterParagraph, CenterHeading, MarkdownHardBreak } from './TextAlignCenterExtension';
 import { findMarkdownTableBlock } from '../../lib/editorMarkdownTable';
 import { extractMarkdownTaskList } from '../../lib/editorMarkdownTaskList';
+import markdownImageHeadings from '../../utils/markdownImageHeadings';
+
+const { serializeBlockImageMarkdown, repairImageHeadingMarkdown } = markdownImageHeadings;
 
 const lowlight = createLowlight(all);
 const MATH_MARKDOWN_PASTE_PATTERN = /(?:\$\$[\s\S]+?\$\$|\$(?!\s)(?:\\.|[^$\n\\])+\$)/;
@@ -193,11 +196,13 @@ function convertMarkdownTableAroundSelection(editorInstance) {
 }
 
 function MathDialog({ value = '', mode = 'inline', onChange, onClose, onConfirm }) {
+  const mathInputRef = useRef(null);
   return (
     <Dialog
       open
       onClose={onClose}
       title={mode === 'block' ? '编辑块级公式' : '编辑行内公式'}
+      initialFocusRef={mathInputRef}
       footer={(
         <>
           <Button variant="ghost" onClick={onClose}>取消</Button>
@@ -208,15 +213,15 @@ function MathDialog({ value = '', mode = 'inline', onChange, onClose, onConfirm 
       <div style={{ display: 'grid', gap: 10 }}>
         <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
           {mode === 'block'
-            ? '输入 LaTeX 内容，保存后会以块级公式显示，并写回 Markdown 的 $$...$$ 语法。'
+            ? '输入 LaTeX 内容，保存后会以块级公式显示，并写回 Markdown 的 $...$ 语法。'
             : '输入 LaTeX 内容，保存后会以内联公式显示，并写回 Markdown 的 $...$ 语法。'}
         </div>
         <TextArea
+          ref={mathInputRef}
           value={value}
           minRows={mode === 'block' ? 5 : 3}
           placeholder={mode === 'block' ? '\\sum_{i=1}^{n} x_i = X' : 'E = mc^2'}
           onChange={onChange}
-          autoFocus
           spellCheck={false}
           style={{ fontFamily: 'var(--font-mono)' }}
         />
@@ -236,6 +241,9 @@ export const WysiwygEditor = ({ value, onChange, onSave, onEditorReady, onOpenFi
   const [imagePreview, setImagePreview] = useState(null);
 
   const LocalImage = useMemo(() => Image.extend({
+    addStorage() {
+      return { markdown: { serialize: serializeBlockImageMarkdown } };
+    },
     renderHTML({ HTMLAttributes }) {
       return ['img', {
         ...HTMLAttributes,
@@ -428,18 +436,20 @@ export const WysiwygEditor = ({ value, onChange, onSave, onEditorReady, onOpenFi
   // Sync when file switches (value changes externally)
   useEffect(() => {
     if (!editor || value === undefined) return;
+    const normalizedValue = repairImageHeadingMarkdown(value || '');
     const current = editor.storage.markdown.getMarkdown();
-    if (current !== value) {
+    if (current !== normalizedValue) {
       isSyncingContentRef.current = true;
       if (syncFrameRef.current) window.cancelAnimationFrame(syncFrameRef.current);
       // tiptap-markdown overrides setContent to parse markdown instead of treating it as HTML.
-      editor.commands.setContent(value || '', { emitUpdate: false });
+      editor.commands.setContent(normalizedValue, { emitUpdate: false });
+      if (normalizedValue !== value) onChange?.(normalizedValue);
       syncFrameRef.current = window.requestAnimationFrame(() => {
         isSyncingContentRef.current = false;
         syncFrameRef.current = null;
       });
     }
-  }, [editor, value]);
+  }, [editor, onChange, value]);
 
   useEffect(() => () => {
     if (syncFrameRef.current) window.cancelAnimationFrame(syncFrameRef.current);

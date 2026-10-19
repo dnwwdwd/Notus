@@ -3,8 +3,23 @@ import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Button } from './Button';
 import { Icons } from './Icons';
+import { scheduleInitialFocus } from './dialogFocus';
 
-export const Dialog = ({ open, onClose, title, children, footer, maxWidth = 480, className = '', closeOnBackdrop = true, bodyStyle, dialogStyle, showHeader = Boolean(title) }) => {
+export const Dialog = ({
+  open,
+  onClose,
+  title,
+  children,
+  footer,
+  maxWidth = 480,
+  className = '',
+  closeOnBackdrop = true,
+  bodyStyle,
+  dialogStyle,
+  showHeader = Boolean(title),
+  initialFocusRef = null,
+  selectInitialFocus = false,
+}) => {
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
@@ -16,6 +31,11 @@ export const Dialog = ({ open, onClose, title, children, footer, maxWidth = 480,
     if (open) document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [open, onClose]);
+
+  useEffect(() => {
+    if (!open || !mounted || !initialFocusRef) return undefined;
+    return scheduleInitialFocus(initialFocusRef, { select: selectInitialFocus });
+  }, [open, mounted, initialFocusRef, selectInitialFocus]);
 
   if (!open || !mounted) return null;
 

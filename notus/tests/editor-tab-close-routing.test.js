@@ -13,7 +13,6 @@ const syncCode = page.includes('  const syncWorkspaceRoute =')
 const routeCode = between(page.slice(page.indexOf('  requestOpenFileRef.current = requestOpenWorkspaceFile;')), '  useEffect(() => {\n    if (!router.isReady', '  useEffect(() => {\n    router.beforePopState');
 const missingCode = between(page, '    const closeMissingFile =', '    if (navigationGuard) {\n      navigationGuard(closeMissingFile)');
 const handlerCode = between(page, '  const handleCloseTab =', '  const handleRenameTab =');
-
 function harness(ids, active, dirty = false) {
   const allFiles = [1, 2, 3].map(id => ({ id, type: 'file', path: `${id}.md` }));
   const transitions = [];
@@ -43,13 +42,14 @@ function harness(ids, active, dirty = false) {
     replace(href) { return this.push(href); },
   };
   const scope = vm.createContext(state);
-  vm.runInContext(`${closeCode}${syncCode}${openCode}${handlerCode}\nthis.close = handleCloseTab; this.open = openWorkspaceFile;`, scope);
+  vm.runInContext(`${closeCode}${syncCode}${openCode}${handlerCode}\nthis.close = handleCloseTab; this.closeMany = handleCloseTabs; this.open = openWorkspaceFile;`, scope);
   state.requestOpenWorkspaceFile = file => { state.open(file); return true; };
   return {
     state, transitions,
     effect: () => vm.runInContext(routeCode, scope),
     closeMissing: () => vm.runInContext(`{ ${missingCode} closeMissingFile(); }`, scope),
     close: id => state.close(allFiles.find(file => file.id === id)),
+    closeMany: files => state.closeMany(files),
     tabs: () => [...state.openFileIdsRef.current],
     persisted: () => persisted,
     confirm: saved => { if (saved && pendingAction) { const action = pendingAction; pendingAction = null; action(); } },
@@ -112,6 +112,21 @@ function harness(ids, active, dirty = false) {
   missing.effect();
   assert.deepStrictEqual(missing.tabs(), [2], '外部删除关闭不能被旧地址恢复');
   await missing.settle();
+
+  // 关闭其他标签：活动标签必须保留并继续作为当前文件，非活动标签全部关闭。
+  {
+    const h = harness([1, 2, 3], 2);
+    h.effect();
+    const others = [1, 3].map(id => ({ id }));
+    h.closeMany(others);
+    h.effect();
+    assert.deepStrictEqual(h.tabs(), [2], '关闭其他标签后只保留活动标签');
+    assert.strictEqual(h.state.activeFileId, 2, '活动标签不得被关闭其他标签改动');
+    assert.deepStrictEqual([...h.persisted().openFileIds], [2], '持久化状态必须同步为仅剩活动标签');
+    if (h.transitions.length) await h.settle();
+    h.effect();
+    assert.deepStrictEqual(h.tabs(), [2], '旧地址不得重新打开被关闭的其他标签');
+  }
 
   const failed = harness([1, 2], 1);
   failed.close(1);

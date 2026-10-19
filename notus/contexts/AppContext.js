@@ -113,6 +113,7 @@ export function AppProvider({ children }) {
   // In-memory file content cache (fileId → markdown string)
   const contentCache = useRef(new Map());
   const filesRef = useRef(files);
+  const fileRefreshVersionRef = useRef(0);
   const workspaceHydratedRef = useRef(false);
   const activeFileIdRef = useRef(initialWorkspaceState.activeFileId);
   const openFileIdsRef = useRef(initialWorkspaceState.openFileIds);
@@ -226,6 +227,7 @@ export function AppProvider({ children }) {
   }, [pendingCitation]);
 
   const refreshFiles = useCallback(async (options = {}) => {
+    const refreshVersion = ++fileRefreshVersionRef.current;
     const hasExistingTree = filesRef.current.length > 0;
     const background = options.background ?? hasExistingTree;
     if (!background || !hasExistingTree) {
@@ -238,6 +240,10 @@ export function AppProvider({ children }) {
         throw new Error(tree.error || '读取文件树失败');
       }
 
+      // A slower earlier request must not replace a newer tree after Agent creates a file.
+      if (refreshVersion !== fileRefreshVersionRef.current) return tree;
+
+      filesRef.current = tree;
       setFiles(tree);
       writeCachedTree(tree);
       setHasLoadedFilesOnce(true);
@@ -275,7 +281,7 @@ export function AppProvider({ children }) {
 
       return tree;
     } finally {
-      setLoadingFiles(false);
+      if (refreshVersion === fileRefreshVersionRef.current) setLoadingFiles(false);
     }
   }, [persistWorkspaceState]);
 

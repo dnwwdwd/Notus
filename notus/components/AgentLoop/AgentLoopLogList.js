@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Badge } from '../ui/Badge';
+import { ModelFailureDetails } from './ModelFailureDetails';
 import { getAgentLoopReasonLabel, getAgentToolLabel, getAgentToolResultSummary } from '../../utils/agentDisplay';
 import { formatFullTimestamp, parseMessageTimestamp } from '../../utils/messageTimestamps';
 
@@ -141,12 +142,16 @@ export function AgentLoopLogList({
                           </div>
                         </div>
                         <div style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-xs)', whiteSpace: 'nowrap' }}>
-                          {Number(log.duration_ms || 0)} ms
+                          {log.tool_name === '__llm_request__' && !Number.isFinite(log.tool_result?.diagnostics?.request?.duration_ms)
+                            ? '耗时未记录' : `${Number(log.duration_ms || 0)} ms`}
                         </div>
                       </div>
                       <div style={{ color: failed ? 'var(--danger)' : 'var(--text-secondary)', fontSize: 'var(--text-xs)', lineHeight: 1.7 }}>
                         {getAgentToolResultSummary(log.tool_result)}
                       </div>
+                      <ModelFailureDetails diagnostics={log.tool_result?.diagnostics} requestWindowId={log.tool_input?.request_window_id} />
+                      {log.tool_name === '__llm_request__' && !log.tool_result?.diagnostics
+                        ? <div style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-xs)' }}>该历史记录未保存上游诊断，具体拒绝原因无法恢复。</div> : null}
                       {log.thinking ? (
                         <details style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', lineHeight: 1.7 }}>
                           <summary style={{ cursor: 'pointer' }}>查看本轮思考文本</summary>

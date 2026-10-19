@@ -6,6 +6,8 @@ import { getConversationTitle } from '../../utils/conversations';
 
 const AGENT_TASK_STATUS_META = {
   waiting_interaction: { label: '等待回答', tone: 'var(--accent)' },
+  waiting_resource_confirmation: { label: '等待确认', tone: 'var(--accent)' },
+  waiting_operation_confirmation: { label: '等待应用', tone: 'var(--accent)' },
   waiting_limit_confirmation: { label: '等待确认', tone: 'var(--accent)' },
   waiting_retry: { label: '可继续', tone: 'var(--warning)' },
   waiting_model_recovery: { label: '可继续', tone: 'var(--warning)' },

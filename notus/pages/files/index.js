@@ -51,7 +51,22 @@ const FILES_EDITOR_MIN_WIDTH = 560;
 const FILES_AGENT_MIN_WIDTH = 456;
 const FILES_AGENT_FIXED_WIDTH = 456;
 const FILES_AGENT_FIXED_WIDTH_QUERY = '(max-width: 1280px)';
-const FILES_EDITOR_AUTO_COLLAPSE_QUERY = '(max-width: 760px)';
+const FILES_SINGLE_PANEL_QUERY = '(max-width: 760px)';
+
+function isFilesSinglePanelViewport() {
+  return typeof window !== 'undefined' && window.matchMedia(FILES_SINGLE_PANEL_QUERY).matches;
+}
+
+function normalizeFilesWorkspacePanels(panels, preferredPanel = 'agent') {
+  const next = {
+    editorOpen: panels?.editorOpen !== false,
+    agentOpen: panels?.agentOpen !== false,
+  };
+  if (isFilesSinglePanelViewport() && next.editorOpen && next.agentOpen) {
+    next[preferredPanel === 'editor' ? 'agentOpen' : 'editorOpen'] = false;
+  }
+  return next;
+}
 
 function splitEditorTitleAndBody(visibleContent = '', fallbackTitle = '') {
   const source = String(visibleContent || '').replace(/\r\n/g, '\n').replace(/^\n+/, '');
@@ -84,14 +99,8 @@ function findFileInTree(nodes = [], path = '') {
   return null;
 }
 
-function findFileByIdInTree(nodes = [], fileId) {
-  const targetFileId = Number(fileId);
-  for (const node of Array.isArray(nodes) ? nodes : []) {
-    if (node?.type === 'file' && Number(node.id) === targetFileId) return node;
-    const nested = findFileByIdInTree(node?.children || [], targetFileId);
-    if (nested) return nested;
-  }
-  return null;
+function collectFilesInTree(nodes = []) {
+  return (Array.isArray(nodes) ? nodes : []).flatMap(node => node?.type === 'file' ? [node] : collectFilesInTree(node?.children || []));
 }
 
 function readFilesWorkspaceLayout() {
@@ -128,12 +137,12 @@ function readFilesWorkspacePanels() {
   if (typeof window === 'undefined') return { editorOpen: true, agentOpen: true };
   try {
     const parsed = JSON.parse(window.localStorage.getItem(FILES_PANELS_STORAGE_KEY) || '{}');
-    return {
+    return normalizeFilesWorkspacePanels({
       editorOpen: parsed?.editorOpen !== false,
       agentOpen: parsed?.agentOpen !== false,
-    };
+    });
   } catch {
-    return { editorOpen: true, agentOpen: true };
+    return normalizeFilesWorkspacePanels({ editorOpen: true, agentOpen: true });
   }
 }
 
@@ -187,17 +196,18 @@ export default function FilesPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [showIndexToast, setShowIndexToast] = useState(false);
-  const [workspacePanels, setWorkspacePanels] = useState(() => readFilesWorkspacePanels());
+  const [workspacePanels, setWorkspacePanels] = useState({ editorOpen: false, agentOpen: true });
   const [workspaceLayout, setWorkspaceLayout] = useState(() => readFilesWorkspaceLayout());
   const [workspaceDefaults, setWorkspaceDefaults] = useState(null);
   const [agentFileChangeVersion, setAgentFileChangeVersion] = useState(0);
   const [agentFixedWidthViewport, setAgentFixedWidthViewport] = useState(false);
-  const [editorAutoCollapsed, setEditorAutoCollapsed] = useState(false);
   const [agentPanelLock, setAgentPanelLock] = useState({ locked: false, message: '' });
+  const [activeConversation, setActiveConversation] = useState({ id: null, title: '' });
   const workspacePanelsRef = useRef(workspacePanels);
   const hasOpenedFileRef = useRef(false);
   const hasRestoredStartupFileRef = useRef(false);
   const lastSelectedFileIdRef = useRef(null);
+  const panelLockNoticeAtRef = useRef(0);
   const requestOpenFileRef = useRef(null);
 
   const loadFile = useCallback(async (fileId) => {
@@ -239,27 +249,30 @@ export default function FilesPage() {
     return () => { cancelled = true; };
   }, []);
 
-  const updateWorkspacePanels = useCallback((patch) => {
-    setWorkspacePanels((previous) => {
-      const next = { ...previous, ...patch };
-      writeFilesWorkspacePanels(next);
-      return next;
-    });
+  const updateWorkspacePanels = useCallback((patch, preferredPanel = 'agent') => {
+    const next = normalizeFilesWorkspacePanels({ ...workspacePanelsRef.current, ...patch }, preferredPanel);
+    workspacePanelsRef.current = next;
+    setWorkspacePanels(next);
+    writeFilesWorkspacePanels(next);
   }, []);
 
   useEffect(() => {
-    workspacePanelsRef.current = workspacePanels;
-  }, [workspacePanels]);
+    // 服务端与客户端首帧保持一致，挂载后再恢复本地状态，避免窄屏水合时图标与面板不一致。
+    const restored = readFilesWorkspacePanels();
+    workspacePanelsRef.current = restored;
+    setWorkspacePanels(restored);
+    writeFilesWorkspacePanels(restored);
+  }, []);
 
   useEffect(() => {
-    const query = window.matchMedia(FILES_EDITOR_AUTO_COLLAPSE_QUERY);
+    const query = window.matchMedia(FILES_SINGLE_PANEL_QUERY);
     const updateViewport = () => {
-      if (query.matches && workspacePanelsRef.current.editorOpen && workspacePanelsRef.current.agentOpen) setEditorAutoCollapsed(true);
+      if (query.matches) updateWorkspacePanels(agentPanelLock.locked ? { agentOpen: true } : {}, 'agent');
     };
     updateViewport();
     query.addEventListener('change', updateViewport);
     return () => query.removeEventListener('change', updateViewport);
-  }, []);
+  }, [agentPanelLock.locked, updateWorkspacePanels]);
 
   useEffect(() => {
     const query = window.matchMedia(FILES_AGENT_FIXED_WIDTH_QUERY);
@@ -276,7 +289,7 @@ export default function FilesPage() {
     if (!Number.isFinite(restoredFileId) || restoredFileId <= 0) return;
     if (Number(workspaceActiveFileId) !== restoredFileId) return;
 
-    // 应用启动时已有选中文档，面板状态应完全沿用上次关闭窗口时的记录。
+    // 启动恢复文件保留面板状态；窄屏旧双展开记录已在读取时归一为单面板。
     hasRestoredStartupFileRef.current = true;
     hasOpenedFileRef.current = true;
   }, [restoredActiveFileId, workspaceActiveFileId, workspaceHydrated]);
@@ -295,11 +308,13 @@ export default function FilesPage() {
     if (hasOpenedFileRef.current || !workspaceDefaults) return;
     hasOpenedFileRef.current = true;
     // 启动恢复沿用上次关窗时的组合；用户主动打开的首个文件始终需要可见编辑器。
+    const keepAgentVisible = isFilesSinglePanelViewport() && agentPanelLock.locked;
     updateWorkspacePanels({
       ...workspaceDefaults,
-      editorOpen: hasRestoredStartupFileRef.current ? workspaceDefaults.editorOpen : true,
-    });
-  }, [activeFile?.id, restoredActiveFileId, updateWorkspacePanels, workspaceActiveFileId, workspaceDefaults, workspaceHydrated]);
+      editorOpen: keepAgentVisible ? false : true,
+      agentOpen: keepAgentVisible ? true : workspaceDefaults.agentOpen,
+    }, keepAgentVisible ? 'agent' : 'editor');
+  }, [activeFile?.id, agentPanelLock.locked, restoredActiveFileId, updateWorkspacePanels, workspaceActiveFileId, workspaceDefaults, workspaceHydrated]);
 
   const handleFilesLayoutChange = useCallback((nextPercent) => {
     const editorWidthPercent = clampFilesLayout(nextPercent);
@@ -322,10 +337,20 @@ export default function FilesPage() {
     setAgentFileChangeVersion((previous) => previous + 1);
   }, [activeFileId, clearCachedContent, toast]);
 
-  const expandEditorForFile = useCallback(() => {
-    setEditorAutoCollapsed(false);
-    if (!workspacePanelsRef.current.editorOpen) updateWorkspacePanels({ editorOpen: true });
-  }, [updateWorkspacePanels]);
+  const expandEditorForFile = useCallback((notifyLocked = false) => {
+    const singlePanel = isFilesSinglePanelViewport();
+    if (singlePanel && workspacePanelsRef.current.agentOpen && agentPanelLock.locked) {
+      if (notifyLocked && Date.now() - panelLockNoticeAtRef.current > 1200) {
+        panelLockNoticeAtRef.current = Date.now();
+        toast(agentPanelLock.message || 'AI 正在处理当前任务，请完成后再展开编辑器。', 'info');
+      }
+      return false;
+    }
+    if (!workspacePanelsRef.current.editorOpen || (singlePanel && workspacePanelsRef.current.agentOpen)) {
+      updateWorkspacePanels({ editorOpen: true }, 'editor');
+    }
+    return true;
+  }, [agentPanelLock.locked, agentPanelLock.message, toast, updateWorkspacePanels]);
 
   useEffect(() => {
     const nextFileId = Number(activeFile?.id || 0);
@@ -335,7 +360,7 @@ export default function FilesPage() {
     }
     const isRestoredStartupFile = hasRestoredStartupFileRef.current && lastSelectedFileIdRef.current === null;
     if (!isRestoredStartupFile && Number(lastSelectedFileIdRef.current) !== nextFileId) {
-      expandEditorForFile();
+      expandEditorForFile(true);
     }
     lastSelectedFileIdRef.current = nextFileId;
   }, [activeFile?.id, expandEditorForFile]);
@@ -736,13 +761,14 @@ export default function FilesPage() {
 
   const handleOpenEditorLink = useCallback(async (fileId) => {
     const targetFileId = Number(fileId);
-    let targetFile = allFiles.find((file) => Number(file?.id) === targetFileId);
+    let currentFiles = allFiles;
+    try {
+      currentFiles = collectFilesInTree(await refreshFiles({ background: true }));
+    } catch {}
+    const targetFile = Number.isSafeInteger(targetFileId) && targetFileId > 0
+      ? currentFiles.find(file => Number(file.id) === targetFileId)
+      : null;
     if (!targetFile) {
-      try {
-        targetFile = findFileByIdInTree(await refreshFiles({ background: true }), targetFileId);
-      } catch {}
-    }
-    if (!targetFile || Number(targetFile.id) !== targetFileId) {
       toast('该文件已删除或不存在', 'info');
       return;
     }
@@ -907,11 +933,7 @@ export default function FilesPage() {
     </div>
   );
 
-  const renderedEditorAutoCollapsed = editorAutoCollapsed && workspacePanels.editorOpen && workspacePanels.agentOpen;
-  const renderedWorkspacePanels = {
-    editorOpen: workspacePanels.editorOpen && !renderedEditorAutoCollapsed,
-    agentOpen: workspacePanels.agentOpen,
-  };
+  const renderedWorkspacePanels = workspacePanels;
 
   const agentPanel = (
     <FileAgentWorkspace
@@ -921,6 +943,7 @@ export default function FilesPage() {
       refreshFiles={refreshFiles}
       onFilesChanged={handleAgentFilesChanged}
       onAgentPanelLockChange={setAgentPanelLock}
+      onActiveConversationChange={setActiveConversation}
       beforeAgentRun={() => (activeFile && saveState !== 'saved' ? handleSave() : true)}
       fullWidth={!renderedWorkspacePanels.editorOpen}
       onOpenDiffFile={handleOpenDiffFile}
@@ -953,16 +976,22 @@ export default function FilesPage() {
       toast(agentPanelLock.message || 'AI 正在处理当前任务，请完成后再收起面板。', 'info');
       return;
     }
-    updateWorkspacePanels({ agentOpen: !workspacePanelsRef.current.agentOpen });
+    updateWorkspacePanels({ agentOpen: !workspacePanelsRef.current.agentOpen }, 'agent');
   };
 
-  const pageTitle = activeFile
+  // 网页标题按“当前真正展示的面板”决定：富文本编辑器打开时用文章标题（优先级最高）；
+  // 编辑器收起、只开 AI 面板时用已打开对话的标题；都不适用时回到 Notus。
+  const articlePageTitle = activeFile
     ? String(
       (loadedFileIdRef.current === activeFileId ? documentTitle : '')
       || activeFile.title
       || getFileNameLabel(activeFile, '未命名文档')
     ).replace(/\s+/g, ' ').trim() || '未命名文档'
-    : 'Notus';
+    : '';
+  const conversationPageTitle = String(activeConversation?.title || '').replace(/\s+/g, ' ').trim();
+  const pageTitle = renderedWorkspacePanels.editorOpen
+    ? (articlePageTitle || (workspacePanels.agentOpen ? conversationPageTitle : '') || 'Notus')
+    : (workspacePanels.agentOpen && conversationPageTitle ? conversationPageTitle : 'Notus');
 
   return (
     <Shell
@@ -977,12 +1006,8 @@ export default function FilesPage() {
       editorOpen={renderedWorkspacePanels.editorOpen}
       agentOpen={workspacePanels.agentOpen}
       onToggleEditor={() => {
-        if (editorAutoCollapsed) {
-          setEditorAutoCollapsed(false);
-          updateWorkspacePanels({ editorOpen: true });
-          return;
-        }
-        updateWorkspacePanels({ editorOpen: !workspacePanels.editorOpen });
+        if (workspacePanelsRef.current.editorOpen) updateWorkspacePanels({ editorOpen: false });
+        else expandEditorForFile(true);
       }}
       onToggleAgent={handleToggleAgentPanel}
     >

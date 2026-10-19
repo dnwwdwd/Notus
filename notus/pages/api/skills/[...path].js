@@ -16,7 +16,9 @@ async function readJsonBody(req) {
 }
 
 function parseForm(req) {
-  const form = formidable({ multiples: false, maxFileSize: 100 * 1024 * 1024 });
+  // formidable v3 的 CJS 出口是模块对象（工厂在 .default/.formidable 上），
+  // 直接调用会报 "p is not a function"；与其他上传路由统一使用 formidable.formidable。
+  const form = formidable.formidable({ multiples: false, maxFileSize: 100 * 1024 * 1024 });
   return new Promise((resolve, reject) => form.parse(req, (error, fields, files) => error ? reject(error) : resolve({ fields, files })));
 }
 
@@ -43,5 +45,5 @@ export default async function handler(req, res) {
     if (req.method === 'GET') { const skill = getSkill(id); return skill ? res.status(200).json({ skill }) : res.status(404).json({ error: 'Skill 不存在' }); }
     if (req.method === 'DELETE') return res.status(200).json(deleteSkill(id));
     return res.status(405).end();
-  } catch (error) { return res.status(error.code === 'SKILL_NOT_MANAGED' ? 403 : 400).json({ error: error.message, code: error.code || 'SKILL_API_ERROR' }); }
+  } catch (error) { console.error('[skills-api] 失败:', error && error.stack || error); return res.status(error.code === 'SKILL_NOT_MANAGED' ? 403 : 400).json({ error: error.message, code: error.code || 'SKILL_API_ERROR' }); }
 }

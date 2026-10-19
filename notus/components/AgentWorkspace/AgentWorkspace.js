@@ -10,7 +10,7 @@ import { createPortal } from 'react-dom';
 import { Button } from '../ui/Button';
 import { TextInput } from '../ui/Input';
 import { Toggle } from '../ui/Toggle';
-import { Dialog } from '../ui/Dialog';
+import { ConfirmDialog, Dialog } from '../ui/Dialog';
 import { Icons, SKILL_ICON_PATHS } from '../ui/Icons';
 import { ImagePreviewOverlay } from '../ui/ImagePreviewOverlay';
 import { MentionItem } from './MentionItem';
@@ -39,6 +39,7 @@ const SEARCH_PROVIDER_FALLBACKS = [
   { id: 'tavily', name: 'Tavily', quota_url: 'https://app.tavily.com/home', max_limit: 20, requires_api_key: true },
   { id: 'exa', name: 'Exa', quota_url: 'https://dashboard.exa.ai/api-keys', max_limit: 100, requires_api_key: true },
   { id: 'zhipu', name: '智谱', quota_url: 'https://bigmodel.cn/usercenter/proj-mgmt/overview', max_limit: 50, requires_api_key: true },
+  { id: 'deepseek', name: 'DeepSeek', quota_url: 'https://platform.deepseek.com/api_keys', max_limit: 50, requires_api_key: true },
 ];
 
 const SEARCH_MODE_LABELS = {
@@ -59,6 +60,10 @@ const SEARCH_MODE_LABELS = {
   zhipu: [
     { value: 'search-prime', label: 'Search Prime' },
     { value: 'search-std', label: 'Search Standard' },
+  ],
+  deepseek: [
+    { value: 'normal', label: '正文模式' },
+    { value: 'fast', label: '摘要模式' },
   ],
 };
 
@@ -857,9 +862,9 @@ function ToolChain({ steps, loading, sessionStatus = '', sessionId = '', started
   const tailStatus = renderedSteps[renderedSteps.length - 1]?.status || 'done';
   const traceState = agentTraceState({ sessionStatus, loading, tailStatus, hasError: Boolean(displayedErrorStep) });
   const hasActionRequired = traceState.needsAction;
-  const hasViewedImages = visibleSteps.some((step) => Array.isArray(step.images) && step.images.length > 0);
-  // 已完成的历史记录通常保持收起；但图片查看属于需要可见确认的结果，不能被自动折叠隐藏。
-  const [traceExpanded, setTraceExpanded] = useState(() => liveSession || hasActionRequired || hasViewedImages);
+  // 任务结束后一律自动收起执行记录（含“已查看图片”结果），只在运行中或等待用户
+  // 处理时保持展开；用户仍可手动展开查看图片、参数与结果。
+  const [traceExpanded, setTraceExpanded] = useState(() => liveSession || hasActionRequired);
   const stepKey = visibleSteps.map((step, index) => step.id || step.label || index).join('|');
 
   useEffect(() => {
@@ -886,8 +891,8 @@ function ToolChain({ steps, loading, sessionStatus = '', sessionId = '', started
   const status = <TraceStatus phase={statusLabel} startedAt={firstTimestamp} finishedAt={lastTimestamp} running={hasRunning} />;
 
   useEffect(() => {
-    if (!liveSession && !hasActionRequired && !hasViewedImages) setTraceExpanded(false);
-  }, [hasActionRequired, hasViewedImages, liveSession]);
+    if (!liveSession && !hasActionRequired) setTraceExpanded(false);
+  }, [hasActionRequired, liveSession]);
 
   if (!visibleSteps.length && !liveSession && !displayedErrorStep) return null;
 
@@ -1204,6 +1209,7 @@ function DiffDialog({ approvalMode, onLoadItem, onRetry, onOpenBatch, onOperatio
   const [busyKey, setBusyKey] = useState('');
   const [fileDrawerOpen, setFileDrawerOpen] = useState(false);
   const [visibleLineCount, setVisibleLineCount] = useState(500);
+  const [forceRollbackConfirm, setForceRollbackConfirm] = useState(null);
   const [visibleFileCount, setVisibleFileCount] = useState(100);
   useEffect(() => { setVisibleFileCount(100); }, [operationSet?.id]);
   useEffect(() => { setVisibleLineCount(500); }, [operationSet?.id, selectedIndex]);
@@ -1230,7 +1236,7 @@ function DiffDialog({ approvalMode, onLoadItem, onRetry, onOpenBatch, onOperatio
   const diffLines = useMemo(() => buildDiffLines(activeOperation), [activeOperation]);
   if (!open) return null;
   if (operationSet?.loading || operationSet?.loadError) return typeof document === 'undefined' ? null : createPortal(
-    <div className="notus-diff-dialog__backdrop" style={{ background: 'rgba(45,45,45,0.28)' }}>
+    <div className="notus-diff-dialog__backdrop">
       <div className="notus-diff-dialog" role="dialog" aria-modal="true" aria-label="修改详情" aria-busy={Boolean(operationSet.loading)}>
         <div className="notus-diff-dialog__header"><strong>修改详情</strong><button type="button" aria-label="关闭" onClick={onClose}>关闭</button></div>
         <div role={operationSet.loadError ? 'alert' : 'status'} style={{ padding: 24 }}>{operationSet.loadError || <div className="notus-diff-loading-skeleton" aria-label="正在加载修改详情"><div><Skeleton width="70%" height={20} /><SkeletonText lines={6} /></div><div><Skeleton width="45%" height={24} /><SkeletonText lines={7} /><SkeletonText lines={7} /></div></div>}{operationSet.loadError ? <button type="button" onClick={onRetry}>重试</button> : null}</div>
@@ -1261,22 +1267,34 @@ function DiffDialog({ approvalMode, onLoadItem, onRetry, onOpenBatch, onOperatio
     const next = operations.findIndex((item, index) => index !== selectedIndex && isPatchPending(item));
     if (next >= 0) setSelectedIndex(next);
   };
-  const runFileAction = async (kind) => {
+  const runFileAction = async (kind, options = {}) => {
     const key = `${kind}-${activeOperation.patchIndex}`;
     setBusyKey(key);
     try {
       let result;
       if (kind === 'apply') result = await onApplyFile?.(operationSet, activeOperation.patchIndex);
       else if (kind === 'discard') result = await onDiscardFile?.(operationSet, activeOperation.patchIndex);
-      else result = await onRollbackFile?.(operationSet, activeOperation.patchIndex);
+      else result = await onRollbackFile?.(operationSet, activeOperation.patchIndex, { force: Boolean(options.force) });
       if (!taskCumulative && result?.operation_set) onOperationUpdated?.(result.operation_set);
       if (taskCumulative && kind === 'discard') onClose?.();
       moveToNextPending();
+      return result;
     } catch (error) {
+      if (error?.requiresConfirmation) {
+        setForceRollbackConfirm({ error, kind });
+        return null;
+      }
       toast(error.message || '处理修改失败', 'error');
+      return null;
     } finally {
       setBusyKey('');
     }
+  };
+  const confirmForceRollback = async () => {
+    const pending = forceRollbackConfirm;
+    setForceRollbackConfirm(null);
+    if (!pending) return;
+    await runFileAction(pending.kind, { force: true });
   };
   const runApplyAll = async () => {
     setBusyKey('apply-all');
@@ -1306,7 +1324,7 @@ function DiffDialog({ approvalMode, onLoadItem, onRetry, onOpenBatch, onOperatio
   };
 
   const dialog = (
-    <div className="notus-diff-dialog__backdrop" style={{ background: 'rgba(45,45,45,0.28)' }}>
+    <div className="notus-diff-dialog__backdrop">
       <div className="notus-diff-dialog" role="dialog" aria-modal="true" aria-label="修改详情">
         <div className="notus-diff-dialog__header" style={{ borderBottom: '1px solid ' + C.border, background: C.page }}>
           <div style={{ minWidth: 0 }}>
@@ -1337,7 +1355,7 @@ function DiffDialog({ approvalMode, onLoadItem, onRetry, onOpenBatch, onOperatio
                 </div>
               );
             })}
-            {operations.length > visibleFileCount ? <button type="button" onClick={() => setVisibleFileCount(count => count + 100)} style={{ padding: 12 }}>继续显示文件（{visibleFileCount} / {operations.length}）</button> : null}
+            {operations.length > visibleFileCount ? <button type="button" onClick={() => setVisibleFileCount(count => count + 100)} style={{ minHeight: 40, padding: 12 }}>继续显示文件（{visibleFileCount} / {operations.length}）</button> : null}
           </nav>
           <div className="notus-diff-dialog__content" style={{ background: '#FAFAFA' }}>
             <div className="notus-diff-dialog__content-header" style={{ borderBottom: '1px solid ' + C.border, background: '#fff' }}>
@@ -1401,7 +1419,7 @@ function DiffDialog({ approvalMode, onLoadItem, onRetry, onOpenBatch, onOperatio
                     </div>
                   );
                 })}
-                {diffLines.length > visibleLineCount ? <button type="button" onClick={() => setVisibleLineCount(count => count + 500)} style={{ padding: '10px 14px', cursor: 'pointer' }}>继续显示 500 行（已显示 {visibleLineCount} / {diffLines.length} 行）</button> : null}
+                {diffLines.length > visibleLineCount ? <button type="button" onClick={() => setVisibleLineCount(count => count + 500)} style={{ minHeight: 40, padding: '10px 14px', cursor: 'pointer' }}>继续显示 500 行（已显示 {visibleLineCount} / {diffLines.length} 行）</button> : null}
               </div>
             </div>
             <div className="notus-diff-dialog__footer" style={{ borderTop: '1px solid ' + C.border, background: 'var(--bg-primary)', justifyContent: 'flex-end' }}>
@@ -1412,7 +1430,7 @@ function DiffDialog({ approvalMode, onLoadItem, onRetry, onOpenBatch, onOperatio
                 {canDiscard ? (
                   <button type="button" disabled={Boolean(busyKey)} onClick={() => runFileAction('discard')} style={transitionButton({ height: 32, padding: '0 11px', borderRadius: 9, background: C.muted, color: C.secondary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: busyKey ? 'not-allowed' : 'pointer' })}>废弃预览</button>
                 ) : null}
-                {taskCumulative && operationSet?.batches?.length ? operationSet.batches.slice().reverse().map((batch) => <button key={batch.id} type="button" disabled={Boolean(busyKey)} onClick={() => onOpenBatch?.(batch)} style={transitionButton({ padding: '6px 10px', borderRadius: 6, background: C.muted, color: C.secondary, cursor: 'pointer' })}>批次 {batch.batch_sequence_no} 详情</button>) : null}
+                {taskCumulative && operationSet?.batches?.length ? operationSet.batches.slice().reverse().map((batch) => <button key={batch.id} type="button" className="notus-agent-pressable notus-diff-dialog__batch-link" disabled={Boolean(busyKey)} onClick={() => onOpenBatch?.(batch)} style={transitionButton({ display: 'inline-flex', alignItems: 'center', gap: 4, minHeight: 32, padding: '6px 12px', borderRadius: 8, background: 'var(--accent)', color: 'var(--text-on-accent)', boxShadow: '0 1px 6px color-mix(in srgb, var(--accent) 28%, transparent)', fontSize: 12, fontWeight: 800, cursor: busyKey ? 'not-allowed' : 'pointer' })}><span>批次 {batch.batch_sequence_no} 详情</span><Icons.chevronRight size={13} /></button>) : null}
                 {!taskCumulative ? <button type="button" disabled={!canRollback || Boolean(busyKey)} onClick={() => runFileAction('rollback')} style={transitionButton({ height: 32, padding: '0 11px', borderRadius: 9, background: canRollback ? 'rgba(254,202,202,0.65)' : C.muted, color: canRollback ? '#991B1B' : C.tertiary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: (!canRollback || busyKey) ? 'not-allowed' : 'pointer' })}>回滚修改</button> : null}
                 {!taskCumulative ? <button type="button" disabled={!canApply || Boolean(busyKey)} onClick={() => runFileAction('apply')} style={transitionButton({ height: 32, padding: '0 12px', borderRadius: 9, background: canApply ? '#16A34A' : C.muted, color: canApply ? '#fff' : C.tertiary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: (!canApply || busyKey) ? 'not-allowed' : 'pointer' })}>应用修改</button> : null}
                 {pendingCount > 0 && approvalMode !== 'auto_confirm' ? <button type="button" disabled={!canApplyAll || Boolean(busyKey)} onClick={runApplyAll} style={transitionButton({ height: 32, padding: '0 13px', borderRadius: 9, background: canApplyAll ? C.accent : C.muted, color: canApplyAll ? '#fff' : C.tertiary, fontSize: 12, fontWeight: 800, opacity: busyKey ? 0.7 : 1, cursor: (!canApplyAll || busyKey) ? 'not-allowed' : 'pointer' })}>全部应用</button> : null}
@@ -1423,7 +1441,21 @@ function DiffDialog({ approvalMode, onLoadItem, onRetry, onOpenBatch, onOperatio
       </div>
     </div>
   );
-  return typeof document === 'undefined' ? null : createPortal(dialog, document.body);
+  if (typeof document === 'undefined') return null;
+  return (
+    <>
+      {createPortal(dialog, document.body)}
+      <ConfirmDialog
+        open={Boolean(forceRollbackConfirm)}
+        onClose={() => setForceRollbackConfirm(null)}
+        onConfirm={confirmForceRollback}
+        title="确认强制回滚"
+        message={forceRollbackConfirm?.error?.message || '文件在应用后已被修改。继续回滚会覆盖这些外部改动，确定继续吗？'}
+        confirmLabel="仍然回滚"
+        danger
+      />
+    </>
+  );
 }
 
 function UserMessageRow({ message, disabled, removing = false, onResendMessage, onOpenAttachment, onPreviewMention, onPreviewImages }) {
@@ -2629,6 +2661,10 @@ function AgentInput({ loading, disabled, llmConfigs, selectedConfigId, onConfigC
         mcpSelection: mcpMode === 'auto' ? { mode: 'auto' } : { mode: 'off' },
         onTaskAccepted: clearAcceptedComposer,
       });
+      if (!taskAccepted) {
+        restoreComposerDom(currentComposer.segments);
+        setComposerState(currentComposer);
+      }
     } catch (error) {
       if (taskAccepted) return;
       restoreComposerDom(currentComposer.segments);
@@ -3185,8 +3221,8 @@ function SearchConfigView({ config, onSaved, onBack, selectProvider }) {
   );
 }
 
-export function AgentWorkspace({ messages, conversationId = null, interactions = [], streamText, loading, error, activeSteps, activeSessionId = null, activeSessionStatus = '', sessionTimelines = {}, taskChangeSetsBySession = {}, interruptibleSessionId = null, llmConfigs, selectedConfigId, onConfigChange, onSend, onStop, onResumeAgentTask, onConversationRewritten, onApplyOperationSet, onApplyOperationFile, onRollbackOperationFile, onDiscardOperationFile, onCitationClick, citationSelection, disabled, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [], fullWidth = false, onOpenDiffFile, restoringConversation = false, files = [], onOpenFileLink }) {
-  const { openSettings } = useSettingsDialog();
+export function AgentWorkspace({ resourceConfirmation = null, messages, conversationId = null, interactions = [], streamText, loading, error, activeSteps, activeSessionId = null, activeSessionStatus = '', sessionTimelines = {}, taskChangeSetsBySession = {}, interruptibleSessionId = null, llmConfigs, selectedConfigId, onConfigChange, onSend, onStop, onResumeAgentTask, onConversationRewritten, onApplyOperationSet, onApplyOperationFile, onRollbackOperationFile, onDiscardOperationFile, onCitationClick, citationSelection, disabled, placeholder, agentConfirmMode, onAgentConfirmModeChange, attachmentMode = 'metadata', mentionOptions = [], fullWidth = false, onOpenDiffFile, restoringConversation = false, files = [], onOpenFileLink }) {
+  const { openSettings, open: settingsDialogOpen } = useSettingsDialog();
   const toast = useToast();
   const [searchConfig, setSearchConfig] = useState({ enabled: false, selected_provider: 'firecrawl', modes: {}, counts: {}, api_key_set: {}, providers: SEARCH_PROVIDER_FALLBACKS });
   const [searchPreference, setSearchPreference] = useState(() => readAgentInputPreference());
@@ -3330,17 +3366,14 @@ export function AgentWorkspace({ messages, conversationId = null, interactions =
       return rewritten === undefined ? message : { ...message, content: rewritten };
     });
   const visibleActiveSteps = Array.isArray(activeSteps) ? activeSteps : [];
-  const lastMessage = visibleMessages[visibleMessages.length - 1] || null;
-  const messageScrollKey = [
-    visibleMessages.length,
-    lastMessage?.id || '',
-    String(lastMessage?.content || '').length,
-    lastMessage?.operationSet?.id || '',
-    lastMessage?.operationSet?.status || '',
-  ].join(':');
-  const activeStepsScrollKey = visibleActiveSteps
-    .map((step) => [step?.id || '', step?.status || '', step?.label || '', step?.detail || '', step?.result || ''].join('/'))
-    .join('|');
+  // 滚动锚点只取“结构性”变化：对话切换与用户消息数量，不含流式正文与工具步骤，
+  // 这样模型输出（含最终回复）不会把视图强行拉到底部。
+  const conversationScrollKey = String(conversationId || '');
+  const userMessageScrollKey = (() => {
+    const userMessages = visibleMessages.filter((message) => message?.role === 'user');
+    const lastUserMessage = userMessages[userMessages.length - 1] || null;
+    return `${userMessages.length}:${lastUserMessage?.id || ''}`;
+  })();
 
   useEffect(() => {
     const currentIds = new Set(sourceMessages.map((message) => String(message.id)));
@@ -3374,6 +3407,22 @@ export function AgentWorkspace({ messages, conversationId = null, interactions =
     }).catch(() => {});
     return () => { cancelled = true; };
   }, []);
+
+  // 设置弹窗关闭后重新拉取联网搜索配置，避免输入框仍按挂载时的旧 api_key_set 判断服务商可用性
+  const searchConfigStaleRef = useRef(false);
+  useEffect(() => {
+    if (settingsDialogOpen) {
+      searchConfigStaleRef.current = true;
+      return;
+    }
+    if (!searchConfigStaleRef.current) return;
+    searchConfigStaleRef.current = false;
+    let cancelled = false;
+    fetch('/api/settings/search-providers').then((response) => response.json()).then((payload) => {
+      if (!cancelled) setSearchConfig((prev) => ({ ...prev, ...payload }));
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [settingsDialogOpen]);
 
   useEffect(() => {
     setSearchPreference(readAgentInputPreference());
@@ -3423,32 +3472,16 @@ export function AgentWorkspace({ messages, conversationId = null, interactions =
     });
   }, []);
 
-  useEffect(() => {
-    const container = scrollContainerRef.current;
-    const content = container?.querySelector('.notus-agent-workspace__content');
-    if (!content || typeof ResizeObserver === 'undefined') return undefined;
-    let frame = 0;
-    const observer = new ResizeObserver(() => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
-        if (shouldStickToBottomRef.current) scrollContainerToBottom(container);
-      });
-    });
-    observer.observe(content);
-    return () => { observer.disconnect(); cancelAnimationFrame(frame); };
-  }, []);
-
+  // 模型输出期间不再自动滚动：内容增长、流式文字和工具步骤都不触发贴底。
+  // 只有切换对话或用户自己发出消息时才滚到底部，避免打断阅读；需要时仍可用
+  // 输入框上方的“滚动到最新消息”按钮手动贴底。
   useIsomorphicLayoutEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
-    if (!shouldStickToBottomRef.current && !isNearScrollBottom(container)) {
-      setShowJumpToBottom(true);
-      return;
-    }
     scrollContainerToBottom(container);
     shouldStickToBottomRef.current = true;
     setShowJumpToBottom(false);
-  }, [messageScrollKey, String(streamText || '').length, Boolean(loading), activeStepsScrollKey, error]);
+  }, [conversationScrollKey, userMessageScrollKey]);
 
   useEffect(() => {
     if (!detailOperationSet?.id || detailOperationSet.type === 'task_cumulative') return;
@@ -3661,6 +3694,7 @@ export function AgentWorkspace({ messages, conversationId = null, interactions =
             onOpenFileLink={onOpenFileLink}
             onAgentStepAction={handleAgentStepAction}
           />}
+          {resourceConfirmation}
           <div style={{ height: 12 }} />
         </div>
       </main>

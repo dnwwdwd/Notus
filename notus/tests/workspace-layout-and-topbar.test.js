@@ -35,12 +35,12 @@ assert.ok(filesPage.includes('editorWidthPercent'), 'files page should persist t
 assert.ok(filesPage.includes('agentWidthPercent'), 'files page should persist the agent panel width');
 assert.ok(filesPage.includes('JSON.stringify({'), 'files page should serialize the workspace panel widths');
 assert.ok(filesPage.includes('workspaceLayout.editorWidthPercent'), 'files page should apply the stored editor width on initialization');
-assert.ok(filesPage.includes('renderedWorkspacePanels.editorOpen'), 'narrow workspace should derive the rendered editor state from the saved panel state');
+assert.ok(filesPage.includes('const renderedWorkspacePanels = workspacePanels;'), 'rendered panels should follow the normalized saved state');
 assert.ok(filesPage.includes('collapseLeft={!renderedWorkspacePanels.editorOpen}'), 'editor collapse should preserve the same two-panel React tree');
 assert.ok(filesPage.includes('collapseRight={!renderedWorkspacePanels.agentOpen}'), 'agent collapse should preserve the same two-panel React tree');
 assert.ok(filesPage.includes('fixedRightPx={agentFixedWidthViewport ? FILES_AGENT_FIXED_WIDTH : 0}'), 'narrow dual-pane workspace should keep the AI panel width fixed');
 assert.ok(filesPage.includes('hasRestoredStartupFileRef'), 'files page should distinguish a restored startup file from a newly opened file');
-assert.ok(filesPage.includes('面板状态应完全沿用上次关闭窗口时的记录'), 'a restored startup file should preserve the saved panel combination');
+assert.ok(filesPage.includes('窄屏旧双展开记录已在读取时归一为单面板'), 'a restored startup file should use normalized narrow panel state');
 assert.ok(filesPage.includes('isWaitingForRestoredFile'), 'files page should keep the restored panel state while the startup file is resolving');
 assert.ok(filesPage.includes('findFileInTree(await refreshFiles({ background: true }), normalizedPath)'), 'Diff file links should refresh the tree before reporting a file missing');
 

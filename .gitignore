@@ -37,3 +37,6 @@ notus/secrets/
 
 # Agent 工具结果运行数据（正文及回执文件不纳入版本库）。
 agent-tool-results/
+
+# 本地回归笔记与临时文档。
+/notes/
